@@ -1,0 +1,86 @@
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+
+mod bead;
+mod config;
+mod dispatch;
+mod linear;
+mod scanner;
+
+#[derive(Parser)]
+#[command(name = "loom", about = "Weaves beads, repos, and review layers into coordinated work")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Scan repos for issues, create beads (bottom-up discovery)
+    Scan {
+        /// Config file listing repos to scan
+        #[arg(short, long, default_value = "loom.toml")]
+        config: String,
+    },
+    /// Decompose a Linear ticket into repo-scoped beads (top-down planning)
+    Plan {
+        /// Linear ticket ID or URL
+        ticket: String,
+    },
+    /// Bidirectional sync: beads ↔ Linear status
+    Sync,
+    /// Show aggregated status across all repos
+    Status,
+    /// Dispatch a bead to a Claude Code agent in an isolated worktree
+    Dispatch {
+        /// Bead ID to work on
+        bead_id: String,
+        /// Use isolated git worktree
+        #[arg(long, default_value_t = true)]
+        isolate: bool,
+    },
+    /// Start MCP server exposing loom as tools
+    Serve {
+        /// Transport: stdio or http
+        #[arg(long, default_value = "stdio")]
+        transport: String,
+        /// Port for HTTP transport
+        #[arg(long, default_value = "8383")]
+        port: u16,
+    },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Command::Scan { config } => {
+            let cfg = config::load(&config)?;
+            let beads = scanner::scan_repos(&cfg.repos)?;
+            println!("Found {} beads across {} repos", beads.len(), cfg.repos.len());
+            for b in &beads {
+                println!("  {} [{}] {} — {}", b.repo, b.status, b.id, b.title);
+            }
+        }
+        Command::Plan { ticket } => {
+            linear::plan(&ticket).await?;
+        }
+        Command::Sync => {
+            linear::sync().await?;
+        }
+        Command::Status => {
+            let cfg = config::load("loom.toml")?;
+            let beads = scanner::scan_repos(&cfg.repos)?;
+            scanner::print_status(&beads);
+        }
+        Command::Dispatch { bead_id, isolate } => {
+            dispatch::run(&bead_id, isolate).await?;
+        }
+        Command::Serve { transport, port } => {
+            todo!("MCP server on {transport}:{port}")
+        }
+    }
+
+    Ok(())
+}

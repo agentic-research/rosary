@@ -1,0 +1,62 @@
+# Loom configuration
+# Lists all repositories that loom scans and manages.
+
+[loom]
+# Linear team/project for sync (fill in when Linear is wired)
+# linear_team = "ART"
+# linear_project = "ART"
+
+# Default dispatch settings
+# max_concurrent_agents = 2
+# agent_timeout_minutes = 30
+
+# Loom manages itself first.
+[[repo]]
+name = "loom"
+path = "~/remotes/art/loom"
+lang = "rust"
+self = true  # This repo IS loom -- used for dogfooding
+
+# ---- ART repos ----
+
+[[repo]]
+name = "mache"
+path = "~/remotes/art/mache"
+lang = "go"
+
+[[repo]]
+name = "assay"
+path = "~/remotes/art/assay"
+lang = "go"
+
+[[repo]]
+name = "tropo"
+path = "~/remotes/art/tropo"
+lang = "go"
+
+[[repo]]
+name = "ley-line"
+path = "~/remotes/art/ley-line"
+lang = "rust"
+
+[[repo]]
+name = "crumb"
+path = "~/remotes/art/crumb"
+lang = "go"
+
+[[repo]]
+name = "art-hooks"
+path = "~/remotes/art/art-hooks"
+lang = "go"
+
+# ---- netstoat-labs repos ----
+
+[[repo]]
+name = "the-firm"
+path = "~/remotes/jamestexas/the-firm"
+lang = "go"
+
+[[repo]]
+name = "gt-infra"
+path = "~/remotes/jamestexas/gt-infra"
+lang = "go"
