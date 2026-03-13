@@ -87,6 +87,10 @@ bd create "<title>" \
   --labels "perspective:pm,action:<type>,survey:<date>"
 ```
 
+## Rules
+
+All findings are checked against [GOLDEN_RULES.md](rules/GOLDEN_RULES.md). Rules 8 (cite sources) and 9 (integrity beats intelligence) are especially relevant at this zoom level — strategic findings must be evidence-backed, not vibes. Tag relevant rules on beads.
+
 ## Tools Available
 
 - `bd ready` across repos — cross-repo work items

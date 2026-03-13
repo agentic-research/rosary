@@ -108,6 +108,12 @@ pub struct Bead {
     pub dependency_count: u32,
     pub dependent_count: u32,
     pub comment_count: u32,
+    /// Git branch or jj bookmark name associated with this bead.
+    pub branch: Option<String>,
+    /// GitHub/GitLab PR URL associated with this bead.
+    pub pr_url: Option<String>,
+    /// jj change ID (immutable, preferred over branch for jj workflows).
+    pub jj_change_id: Option<String>,
 }
 
 impl Bead {
@@ -172,11 +178,45 @@ impl Bead {
                 .get("comment_count")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32,
+            branch: value
+                .get("branch")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            pr_url: value
+                .get("pr_url")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            jj_change_id: value
+                .get("jj_change_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
         })
     }
 
     pub fn is_ready(&self) -> bool {
         self.status == "open" && self.dependency_count == 0
+    }
+}
+
+impl fmt::Display for Bead {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "[{}] {} ({})",
+            self.id,
+            self.title,
+            self.status,
+        )?;
+        if let Some(ref branch) = self.branch {
+            write!(f, " branch={branch}")?;
+        }
+        if let Some(ref pr_url) = self.pr_url {
+            write!(f, " pr={pr_url}")?;
+        }
+        if let Some(ref jj_id) = self.jj_change_id {
+            write!(f, " jj={jj_id}")?;
+        }
+        Ok(())
     }
 }
 
@@ -357,5 +397,42 @@ mod tests {
 
         let bead = Bead::from_bd_json(&val, "mache").unwrap();
         assert!(!bead.is_ready());
+    }
+
+    #[test]
+    fn bead_pr_fields_default_none() {
+        let val = json!({
+            "id": "x-1",
+            "title": "some task",
+            "status": "open",
+            "priority": 1,
+            "created_at": "2026-03-12T00:00:00Z",
+            "updated_at": "2026-03-12T00:00:00Z"
+        });
+
+        let bead = Bead::from_bd_json(&val, "repo").unwrap();
+        assert!(bead.branch.is_none());
+        assert!(bead.pr_url.is_none());
+        assert!(bead.jj_change_id.is_none());
+    }
+
+    #[test]
+    fn bead_pr_fields_display() {
+        let val = json!({
+            "id": "x-2",
+            "title": "with PR",
+            "status": "open",
+            "priority": 1,
+            "pr_url": "https://github.com/org/repo/pull/42",
+            "created_at": "2026-03-12T00:00:00Z",
+            "updated_at": "2026-03-12T00:00:00Z"
+        });
+
+        let bead = Bead::from_bd_json(&val, "repo").unwrap();
+        let display = format!("{bead}");
+        assert!(
+            display.contains("https://github.com/org/repo/pull/42"),
+            "display should include pr_url: {display}"
+        );
     }
 }

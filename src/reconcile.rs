@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::bead::BeadState;
 use crate::config::{self, RepoConfig};
-use crate::dispatch::{self, AgentHandle};
+use crate::dispatch::{self, AgentHandle, ClaudeProvider};
 use crate::dolt::{DoltClient, DoltConfig};
 use crate::queue::{self, QueueEntry, WorkQueue};
 use crate::scanner;
@@ -266,7 +266,7 @@ impl Reconciler {
             let repo_path = self.repo_info.get(&entry.repo).map(|(p, _)| p.clone());
 
             if let (Some(bead), Some(path)) = (bead, repo_path) {
-                match dispatch::spawn(bead, &path, true, entry.generation).await {
+                match dispatch::spawn(bead, &path, true, entry.generation, &ClaudeProvider).await {
                     Ok(handle) => {
                         println!(
                             "[dispatch] {} (gen={}, retries={})",

@@ -120,6 +120,9 @@ impl DoltClient {
                 comment_count: row
                     .try_get::<i64, _>("comment_count")
                     .unwrap_or(0) as u32,
+                branch: None,
+                pr_url: None,
+                jj_change_id: None,
             })
             .collect();
 
@@ -166,6 +169,9 @@ impl DoltClient {
             comment_count: row
                 .try_get::<i64, _>("comment_count")
                 .unwrap_or(0) as u32,
+                branch: None,
+                pr_url: None,
+                jj_change_id: None,
         }))
     }
 
@@ -178,6 +184,112 @@ impl DoltClient {
             .await
             .with_context(|| format!("updating status for {id}"))?;
         Ok(())
+    }
+
+    /// Create a new bead (issue) in the database.
+    pub async fn create_bead(
+        &self,
+        id: &str,
+        title: &str,
+        description: &str,
+        priority: u8,
+        issue_type: &str,
+    ) -> Result<()> {
+        query(
+            r#"INSERT INTO issues (id, title, description, status, priority, issue_type, created_at, updated_at)
+               VALUES (?, ?, ?, 'open', ?, ?, NOW(), NOW())"#,
+        )
+        .bind(id)
+        .bind(title)
+        .bind(description)
+        .bind(priority as i32)
+        .bind(issue_type)
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("creating bead {id}"))?;
+        Ok(())
+    }
+
+    /// Close a bead by setting its status to 'closed'.
+    pub async fn close_bead(&self, id: &str) -> Result<()> {
+        query("UPDATE issues SET status = 'closed', updated_at = NOW() WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("closing bead {id}"))?;
+        Ok(())
+    }
+
+    /// Add a comment to an issue.
+    pub async fn add_comment(&self, issue_id: &str, body: &str, author: &str) -> Result<()> {
+        query(
+            "INSERT INTO comments (issue_id, body, author, created_at) VALUES (?, ?, ?, NOW())",
+        )
+        .bind(issue_id)
+        .bind(body)
+        .bind(author)
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("adding comment to {issue_id}"))?;
+        Ok(())
+    }
+
+    /// Search beads by title or description substring match.
+    pub async fn search_beads(&self, query_str: &str, repo_name: &str) -> Result<Vec<Bead>> {
+        let pattern = format!("%{query_str}%");
+        let rows = query(
+            r#"SELECT id, title, description, status, priority, issue_type,
+                      assignee, created_at, updated_at,
+                      (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
+                      (SELECT COUNT(*) FROM dependencies d WHERE d.issue_id = i.id) as dependency_count,
+                      (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
+               FROM issues i
+               WHERE title LIKE ? OR description LIKE ?
+               ORDER BY priority ASC, created_at DESC"#,
+        )
+        .bind(&pattern)
+        .bind(&pattern)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| format!("searching beads for '{query_str}'"))?;
+
+        let beads = rows
+            .iter()
+            .map(|row| Bead {
+                id: row.get("id"),
+                title: row.get("title"),
+                description: row.try_get("description").unwrap_or_default(),
+                status: row.get("status"),
+                priority: row
+                    .try_get::<i32, _>("priority")
+                    .unwrap_or(2) as u8,
+                issue_type: row
+                    .try_get("issue_type")
+                    .unwrap_or_else(|_| "task".to_string()),
+                owner: row.try_get("assignee").ok(),
+                repo: repo_name.to_string(),
+                created_at: row
+                    .try_get("created_at")
+                    .unwrap_or_default(),
+                updated_at: row
+                    .try_get("updated_at")
+                    .unwrap_or_default(),
+                dependency_count: row
+                    .try_get::<i64, _>("dependency_count")
+                    .unwrap_or(0) as u32,
+                dependent_count: row
+                    .try_get::<i64, _>("dep_count")
+                    .unwrap_or(0) as u32,
+                comment_count: row
+                    .try_get::<i64, _>("comment_count")
+                    .unwrap_or(0) as u32,
+                branch: None,
+                pr_url: None,
+                jj_change_id: None,
+            })
+            .collect();
+
+        Ok(beads)
     }
 
     /// Log an event to the events table for audit trail.
@@ -304,5 +416,55 @@ mod tests {
         let bead = client.get_bead(id, "test").await.unwrap();
         assert!(bead.is_some());
         assert_eq!(bead.unwrap().id, *id);
+    }
+
+    /// Integration test — creates, searches, comments, and closes a bead.
+    /// Only runs when a real Dolt server is available.
+    #[tokio::test]
+    async fn crud_lifecycle_live_dolt() {
+        let beads_dir = match std::env::var("RSRY_TEST_BEADS_DIR") {
+            Ok(dir) => dir,
+            Err(_) => {
+                eprintln!("skipping: RSRY_TEST_BEADS_DIR not set");
+                return;
+            }
+        };
+
+        let config = DoltConfig::from_beads_dir(Path::new(&beads_dir)).unwrap();
+        let client = DoltClient::connect(&config).await.unwrap();
+
+        let test_id = format!("test-crud-{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+
+        // Create
+        client
+            .create_bead(&test_id, "Test CRUD bead", "Integration test description", 2, "task")
+            .await
+            .unwrap();
+
+        // Verify created
+        let bead = client.get_bead(&test_id, "test").await.unwrap();
+        assert!(bead.is_some(), "bead should exist after creation");
+        let bead = bead.unwrap();
+        assert_eq!(bead.title, "Test CRUD bead");
+        assert_eq!(bead.status, "open");
+
+        // Search
+        let results = client.search_beads("CRUD bead", "test").await.unwrap();
+        assert!(results.iter().any(|b| b.id == test_id), "search should find created bead");
+
+        // Add comment
+        client
+            .add_comment(&test_id, "Test comment body", "test-runner")
+            .await
+            .unwrap();
+
+        // Close
+        client.close_bead(&test_id).await.unwrap();
+
+        // Verify closed
+        let bead = client.get_bead(&test_id, "test").await.unwrap();
+        assert!(bead.is_some());
+        assert_eq!(bead.unwrap().status, "closed");
     }
 }

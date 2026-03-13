@@ -1,8 +1,11 @@
-//! Dispatch beads to Claude Code agents for execution.
+//! Dispatch beads to AI agent providers for execution.
 //!
 //! Two entry points:
 //! - `run()`: Original blocking dispatch (reads Dolt, spawns agent, waits).
 //! - `spawn()`: Async dispatch returning an `AgentHandle` for the reconciliation loop.
+//!
+//! The `AgentProvider` trait abstracts over different AI backends (Claude, Gemini,
+//! Codex, etc). `ClaudeProvider` is the default implementation.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -10,6 +13,44 @@ use std::path::{Path, PathBuf};
 use crate::bead::Bead;
 use crate::dolt::{DoltClient, DoltConfig};
 use crate::scanner::expand_path;
+
+/// Trait for AI agent providers. Implementations handle spawning and
+/// communicating with different AI backends (Claude, Gemini, Codex, etc).
+pub trait AgentProvider: Send + Sync {
+    /// Spawn an agent process for the given prompt in the given directory.
+    /// Returns a handle to the running process.
+    fn spawn_agent(
+        &self,
+        prompt: &str,
+        work_dir: &Path,
+    ) -> Result<tokio::process::Child>;
+
+    /// Human-readable name of this provider.
+    fn name(&self) -> &str;
+}
+
+/// Default provider that shells out to the Claude Code CLI (`claude --print`).
+pub struct ClaudeProvider;
+
+impl AgentProvider for ClaudeProvider {
+    fn spawn_agent(
+        &self,
+        prompt: &str,
+        work_dir: &Path,
+    ) -> Result<tokio::process::Child> {
+        tokio::process::Command::new("claude")
+            .args(["--print", prompt])
+            .current_dir(work_dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("spawning claude CLI in {}", work_dir.display()))
+    }
+
+    fn name(&self) -> &str {
+        "claude"
+    }
+}
 
 /// Handle to a running Claude Code agent process.
 pub struct AgentHandle {
@@ -90,14 +131,16 @@ async fn create_worktree(
     }
 }
 
-/// Spawn a Claude Code agent for a bead. Returns a handle without waiting.
+/// Spawn an AI agent for a bead. Returns a handle without waiting.
 ///
 /// This is the async entry point for the reconciliation loop.
+/// The `provider` argument controls which AI backend is used.
 pub async fn spawn(
     bead: &Bead,
     repo_path: &Path,
     isolate: bool,
     generation: u64,
+    provider: &dyn AgentProvider,
 ) -> Result<AgentHandle> {
     let path = expand_path(repo_path);
     let prompt = build_prompt(bead);
@@ -113,15 +156,11 @@ pub async fn spawn(
         path.clone()
     };
 
-    println!("Dispatching {} to Claude Code...", bead.id);
+    println!("Dispatching {} to {}...", bead.id, provider.name());
 
-    let child = tokio::process::Command::new("claude")
-        .args(["--print", &prompt])
-        .current_dir(&work_dir)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .with_context(|| format!("spawning claude CLI for {}", bead.id))?;
+    let child = provider
+        .spawn_agent(&prompt, &work_dir)
+        .with_context(|| format!("spawning {} for {}", provider.name(), bead.id))?;
 
     Ok(AgentHandle {
         bead_id: bead.id.clone(),
@@ -148,7 +187,7 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
 
     client.update_status(bead_id, "dispatched").await?;
 
-    let mut handle = spawn(&bead, &path, isolate, bead.generation()).await?;
+    let mut handle = spawn(&bead, &path, isolate, bead.generation(), &ClaudeProvider).await?;
     let status = handle.wait().await?;
 
     if status.success() {
@@ -173,6 +212,12 @@ mod tests {
     }
 
     #[test]
+    fn claude_provider_name() {
+        let provider = ClaudeProvider;
+        assert_eq!(provider.name(), "claude");
+    }
+
+    #[test]
     fn build_prompt_includes_title_and_description() {
         let bead = Bead {
             id: "test-1".into(),
@@ -188,6 +233,9 @@ mod tests {
             dependency_count: 0,
             dependent_count: 0,
             comment_count: 0,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
         };
 
         let prompt = build_prompt(&bead);

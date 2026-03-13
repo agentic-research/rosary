@@ -85,6 +85,9 @@ pub struct WorkQueue {
     heap: BinaryHeap<QueueEntry>,
     in_queue: HashSet<String>,
     backoff: HashMap<String, BackoffState>,
+    /// Minimum priority level for auto-dispatch. Beads with priority > min_priority
+    /// are blocked (P0=highest, P3=lowest). Default 2 means P0, P1, P2 pass; P3 blocked.
+    pub min_priority: u8,
 }
 
 impl WorkQueue {
@@ -93,6 +96,7 @@ impl WorkQueue {
             heap: BinaryHeap::new(),
             in_queue: HashSet::new(),
             backoff: HashMap::new(),
+            min_priority: 2,
         }
     }
 
@@ -201,6 +205,14 @@ pub fn triage_score(bead: &Bead, retries: u32, now: chrono::DateTime<chrono::Utc
     0.4 * priority_score + 0.3 * dependency_score + 0.2 * age_score + 0.1 * retry_penalty
 }
 
+/// Check whether a bead's priority passes the severity floor.
+///
+/// Priority numbering: 0 = P0 (highest urgency), 3 = P3 (lowest).
+/// A floor of 2 means P0, P1, P2 pass (priority <= floor); P3 is blocked.
+pub fn passes_severity_floor(bead: &Bead, floor: u8) -> bool {
+    bead.priority <= floor
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +233,9 @@ mod tests {
             dependency_count: deps,
             dependent_count: 0,
             comment_count: 0,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
         }
     }
 
@@ -417,5 +432,54 @@ mod tests {
 
         let first = q.dequeue(now).unwrap();
         assert_eq!(first.bead_id, "older");
+    }
+
+    #[test]
+    fn severity_floor_blocks_low_priority() {
+        let bead = make_bead("p3", 3, 0, "2026-03-12T00:00:00Z");
+        assert!(
+            !passes_severity_floor(&bead, 2),
+            "P3 bead should be blocked by floor=2"
+        );
+    }
+
+    #[test]
+    fn severity_floor_passes_high_priority() {
+        let bead = make_bead("p1", 1, 0, "2026-03-12T00:00:00Z");
+        assert!(
+            passes_severity_floor(&bead, 2),
+            "P1 bead should pass floor=2"
+        );
+    }
+
+    #[test]
+    fn severity_floor_edge_at_boundary() {
+        let bead = make_bead("p2", 2, 0, "2026-03-12T00:00:00Z");
+        assert!(
+            passes_severity_floor(&bead, 2),
+            "P2 bead should pass floor=2 (boundary is inclusive)"
+        );
+    }
+
+    #[test]
+    fn age_does_not_override_severity_floor() {
+        // An old P3 bead should still be blocked by the severity floor,
+        // regardless of how high its age-based triage score would be.
+        let bead = make_bead("old-p3", 3, 0, "2025-01-01T00:00:00Z");
+        assert!(
+            !passes_severity_floor(&bead, 2),
+            "old P3 bead should still be blocked by floor=2"
+        );
+        // Also verify it would have a nonzero triage score (age contributes),
+        // confirming that age alone cannot bypass the floor.
+        let now = chrono::Utc::now();
+        let score = triage_score(&bead, 0, now);
+        assert!(score > 0.0, "old bead has positive triage score ({score}) but floor still blocks it");
+    }
+
+    #[test]
+    fn work_queue_default_min_priority() {
+        let q = WorkQueue::new();
+        assert_eq!(q.min_priority, 2, "default min_priority should be 2");
     }
 }
