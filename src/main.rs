@@ -106,7 +106,9 @@ async fn main() -> Result<()> {
             reconcile::run(&config, concurrency, interval, once, dry_run).await?;
         }
         Command::Serve { transport, port } => {
-            todo!("MCP server on {transport}:{port}")
+            eprintln!("loom serve is not yet implemented (transport={transport}, port={port})");
+            eprintln!("Tracking: https://github.com/art-technologies/loom — see loom-ccq");
+            std::process::exit(1);
         }
     }
 

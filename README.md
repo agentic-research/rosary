@@ -94,7 +94,7 @@ If any check fails, it stops there. Compile failures mean something is fundament
 
 ## Self-management
 
-Loom manages its own development. It scans its own repo for issues, dispatches agents to fix them, and verifies the results. If it can't manage itself, it can't manage anything else.
+Loom is configured to scan its own repo (`self = true` in loom.toml). The goal is for loom to manage its own development — finding its own bugs, dispatching agents to fix them, and verifying the results. This isn't fully proven yet, but the plumbing is in place.
 
 ## Architecture
 
@@ -104,5 +104,5 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full technical picture 
 
 ```
 cargo build
-cargo test    # 51 tests
+cargo test    # 52 tests
 ```

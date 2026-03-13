@@ -191,7 +191,10 @@ impl VerifyTier for ShellCheck {
         {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Tool not installed — skip rather than fail
+                eprintln!(
+                    "[verify] warning: '{}' not found, skipping {} check",
+                    self.program, self.name
+                );
                 return Ok(VerifyResult::Pass);
             }
             Err(e) => return Err(e.into()),

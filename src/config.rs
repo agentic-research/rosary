@@ -40,29 +40,6 @@ pub fn load(path: &str) -> Result<Config> {
     Ok(config)
 }
 
-/// Default config for when no file exists — scans known ART repos
-pub fn default_config() -> Config {
-    Config {
-        repo: vec![
-            repo("mache", "~/remotes/art/mache"),
-            repo("assay", "~/remotes/art/assay"),
-            repo("tropo", "~/remotes/art/tropo"),
-            repo("ley-line", "~/remotes/art/ley-line"),
-            repo("loom", "~/remotes/art/loom"),
-        ],
-        linear: None,
-    }
-}
-
-fn repo(name: &str, path: &str) -> RepoConfig {
-    RepoConfig {
-        name: name.to_string(),
-        path: PathBuf::from(path),
-        lang: None,
-        self_managed: false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

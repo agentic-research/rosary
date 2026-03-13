@@ -1,7 +1,7 @@
 //! Reconciliation loop — the core of loom.
 //!
 //! Implements a Kubernetes-controller-style desired-state loop:
-//!   scan → diff → triage → dispatch → verify → report → sleep → repeat
+//!   scan → triage → dispatch → verify → report → sleep → repeat
 //!
 //! Modeled after driftlessaf's workqueue patterns and gem's tiered verification.
 

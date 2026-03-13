@@ -6,19 +6,13 @@ Loom is a cross-repo task orchestrator that weaves beads (per-repo work items), 
 
 ```mermaid
 graph TB
-    subgraph "Control Plane (loom)"
+    subgraph "loom"
         CLI[loom CLI]
         RC[Reconciler]
         SC[Scanner]
         TR[Triage / Queue]
         DI[Dispatcher]
         VE[Verifier]
-    end
-
-    subgraph "Data Plane (ley-line)"
-        TS[tree-sitter]
-        EM[Embeddings]
-        JJ[jj VCS]
     end
 
     subgraph "Storage"
@@ -49,14 +43,13 @@ The core of loom is a Kubernetes-controller-style desired-state loop. Every iter
 ```mermaid
 flowchart LR
     SCAN["1. SCAN<br/>Discover beads<br/>across repos"]
-    DIFF["2. DIFF<br/>Desired vs<br/>actual state"]
-    TRIAGE["3. TRIAGE<br/>Score & enqueue<br/>eligible beads"]
-    DISPATCH["4. DISPATCH<br/>Spawn Claude<br/>Code agents"]
-    VERIFY["5. VERIFY<br/>Tiered checks<br/>on results"]
-    REPORT["6. REPORT<br/>Update status,<br/>log events"]
-    SLEEP["7. SLEEP<br/>Wait interval"]
+    TRIAGE["2. TRIAGE<br/>Score & enqueue<br/>eligible beads"]
+    DISPATCH["3. DISPATCH<br/>Spawn Claude<br/>Code agents"]
+    VERIFY["4. VERIFY<br/>Tiered checks<br/>on results"]
+    REPORT["5. REPORT<br/>Update status,<br/>log events"]
+    SLEEP["6. SLEEP<br/>Wait interval"]
 
-    SCAN --> DIFF --> TRIAGE --> DISPATCH --> VERIFY --> REPORT --> SLEEP --> SCAN
+    SCAN --> TRIAGE --> DISPATCH --> VERIFY --> REPORT --> SLEEP --> SCAN
 ```
 
 ## Bead State Machine
@@ -251,7 +244,7 @@ lang = "go"
 - **Kubernetes controllers**: Desired state vs actual state, reconciliation loop, generation tracking
 - **driftlessaf** (Chainguard): Workqueue with priority, NotBefore scheduling, exponential backoff, provider overlay pattern
 - **gem** (sibling repo): Tiered deterministic evaluation, consecutive-revert stopping, mode-aware dispatch
-- **LTS formal model**: 8-state machine with 5 invariants (progress, fairness, idempotency, termination, no double-dispatch)
+- **State machine design**: 8-state bead lifecycle with generation tracking and bounded retries
 
 ## Future Architecture
 
