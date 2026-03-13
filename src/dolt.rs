@@ -4,8 +4,9 @@
 //! then queries the Dolt server directly over MySQL wire protocol via sqlx.
 
 use anyhow::{Context, Result};
-use sqlx::mysql::MySqlPool;
-use sqlx::Row;
+use sqlx_core::query::query;
+use sqlx_core::row::Row;
+use sqlx_mysql::MySqlPool;
 use std::path::Path;
 
 use crate::bead::Bead;
@@ -75,7 +76,7 @@ impl DoltClient {
 
     /// List all open issues as Beads.
     pub async fn list_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
-        let rows = sqlx::query(
+        let rows = query(
             r#"SELECT id, title, description, status, priority, issue_type,
                       assignee, created_at, updated_at,
                       (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
@@ -127,7 +128,7 @@ impl DoltClient {
 
     /// Get a single bead by ID.
     pub async fn get_bead(&self, id: &str, repo_name: &str) -> Result<Option<Bead>> {
-        let row = sqlx::query(
+        let row = query(
             r#"SELECT id, title, description, status, priority, issue_type,
                       assignee, created_at, updated_at,
                       (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
@@ -170,7 +171,7 @@ impl DoltClient {
 
     /// Update a bead's status.
     pub async fn update_status(&self, id: &str, status: &str) -> Result<()> {
-        sqlx::query("UPDATE issues SET status = ?, updated_at = NOW() WHERE id = ?")
+        query("UPDATE issues SET status = ?, updated_at = NOW() WHERE id = ?")
             .bind(status)
             .bind(id)
             .execute(&self.pool)
@@ -182,7 +183,7 @@ impl DoltClient {
     /// Log an event to the events table for audit trail.
     /// Best-effort: logs warning on failure rather than propagating error.
     pub async fn log_event(&self, issue_id: &str, event_type: &str, detail: &str) {
-        let result = sqlx::query(
+        let result = query(
             "INSERT INTO events (issue_id, event_type, detail, created_at) VALUES (?, ?, ?, NOW())",
         )
         .bind(issue_id)

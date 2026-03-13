@@ -18,8 +18,10 @@ chrono = { version = "0.4", features = ["serde"] }
 toml = "1.0.6"
 shellexpand = "3.1.2"
 dirs-next = "2.0.0"
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "mysql", "sqlite", "chrono"], default-features = false }
+sqlx-core = { version = "0.8.6", features = ["chrono"], default-features = false }
+sqlx-mysql = { version = "0.8.6", features = ["chrono"], default-features = false }
 reqwest = { version = "0.12", features = ["json"] }
+leyline-vcs = { path = "../ley-line/rs/crates/vcs", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

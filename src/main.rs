@@ -10,6 +10,7 @@ mod queue;
 mod reconcile;
 mod scanner;
 mod serve;
+mod vcs;
 mod verify;
 
 #[derive(Parser)]
