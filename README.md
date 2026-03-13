@@ -1,67 +1,108 @@
 # loom
 
-Cross-repo task orchestrator. Weaves [beads](https://github.com/gastown/beads) (per-repo issues), [Linear](https://linear.app) (cross-repo projects), and review layers into coordinated work.
+Loom keeps track of work across multiple code repos and gets it done automatically.
+
+It finds issues, decides what to work on next, hands tasks to AI agents, checks their work, and reports back. Think of it as a project manager that never sleeps.
+
+## What it does
+
+1. **Finds work** — scans your repos for open issues (stored as "beads" in each repo)
+2. **Prioritizes** — scores each issue by urgency, age, and dependencies
+3. **Dispatches** — sends the highest-priority work to Claude Code agents
+4. **Checks results** — runs a gauntlet of checks: does it compile? do tests pass? is the diff reasonable?
+5. **Retries or moves on** — if the agent's fix didn't work, it tries again with backoff. After too many failures, it flags the issue for a human.
+
+## Quick start
+
+```
+cargo build
+cargo test
+
+# See what's out there
+loom scan
+
+# Let it run (dry run first to see what it would do)
+loom run --once --dry-run
+
+# For real — single pass, max 3 agents at a time
+loom run --once --concurrency 3
+
+# Continuous loop, checking every 30 seconds
+loom run
+```
 
 ## Commands
 
-```
-loom scan       # Discover issues across repos, create beads (bottom-up)
-loom plan <id>  # Decompose Linear ticket into repo-scoped beads (top-down)
-loom sync       # Bidirectional sync: beads ↔ Linear status
-loom status     # Aggregated view across all repos
-loom dispatch   # Send a bead to a Claude Code agent in an isolated worktree
-loom serve      # MCP server (stdio or HTTP)
-```
+| Command | What it does |
+|---------|-------------|
+| `loom scan` | Look at all your repos, find open issues |
+| `loom status` | Summary of what's open, ready, blocked |
+| `loom dispatch <id>` | Hand one specific issue to an AI agent |
+| `loom run` | The main loop — find work, do work, check work, repeat |
+| `loom plan <ticket>` | Break a Linear ticket into per-repo tasks *(coming soon)* |
+| `loom sync` | Keep Linear and local issues in sync *(coming soon)* |
+| `loom serve` | Expose loom as an MCP tool server *(coming soon)* |
 
-## Flow
+## How the loop works
 
 ```
-Linear PRD ──plan──▶ beads (per-repo, file-scoped)
-                          │
-beads ◀──scan── repo issues (lint, idiom, duplication, docs)
-                          │
-              dispatch ───▶ Claude Code agent (worktree)
-                          │
-              sync ───────▶ Linear status update
+  find issues ──► pick the best one ──► give it to an agent
+       ▲                                       │
+       │                                       ▼
+   wait a bit ◄── update status ◄── check the agent's work
 ```
 
-Bidirectional: top-down (Linear → decompose → beads) and bottom-up (scan → beads → sync to Linear).
+Each issue goes through these states:
 
-## Review Layers
+```
+open → queued → dispatched → verifying → done
+                                      └→ rejected (retry)
+                                      └→ blocked (needs human)
+```
 
-| # | Layer | What |
-|---|-------|------|
-| 1 | Style | lint + format (clippy, golangci-lint) |
-| 2 | Idiom | structural patterns (tropo + mache + ley-line) |
-| 3 | Cohomology | change coherence (tropo sheaf) |
-| 4 | Clone detection | duplication (ley-line embeddings) |
-| 5 | Hygiene | no binaries/experiments in remote |
-| 6 | Doc coverage | assay |
+Failed issues get retried with increasing wait times. After 5 failures or 3 regressions in a row, loom gives up and flags it.
 
 ## Config
 
-`loom.toml` lists repos to manage:
+Tell loom which repos to watch in `loom.toml`:
 
 ```toml
-[[repos]]
-name = "mache"
-path = "~/remotes/art/mache"
+[[repo]]
+name = "my-app"
+path = "~/code/my-app"
 
-[[repos]]
-name = "loom"
-path = "~/remotes/art/loom"
-
-[linear]
-team = "ART"
+[[repo]]
+name = "my-lib"
+path = "~/code/my-lib"
 ```
 
-## Self-Management
+## How issues are stored
 
-Loom manages its own development. `loom scan` finds issues in loom, `loom dispatch` fixes them, `loom sync` tracks in Linear. If it can't manage itself, it can't manage anything else.
+Each repo has a `.beads/` directory with a local database (powered by [Dolt](https://www.dolthub.com/)). Loom talks directly to these databases over MySQL — no shelling out to CLI tools.
+
+## Checking the agent's work
+
+After an agent finishes, loom runs these checks in order:
+
+1. Did it actually commit something?
+2. Does the code compile?
+3. Do the tests pass?
+4. Does the linter approve?
+5. Is the change a reasonable size?
+
+If any check fails, it stops there. Compile failures mean something is fundamentally wrong. Test or lint failures get retried.
+
+## Self-management
+
+Loom manages its own development. It scans its own repo for issues, dispatches agents to fix them, and verifies the results. If it can't manage itself, it can't manage anything else.
+
+## Architecture
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full technical picture with diagrams.
 
 ## Build
 
 ```
 cargo build
-cargo test
+cargo test    # 51 tests
 ```
