@@ -1,5 +1,92 @@
+use std::collections::hash_map::DefaultHasher;
+use std::fmt;
+use std::hash::{Hash, Hasher};
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+/// Bead lifecycle states — modeled as a Labeled Transition System.
+///
+/// Transitions:
+///   open → queued (triage selects)
+///   queued → dispatched (semaphore acquired)
+///   dispatched → verifying (agent exits)
+///   verifying → done (all tiers pass)
+///   verifying → rejected (tier fails)
+///   verifying → blocked (needs human / partial)
+///   rejected → open (retry after backoff)
+///   blocked → open (dependency resolved / manual unblock)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeadState {
+    Open,
+    Queued,
+    Dispatched,
+    Verifying,
+    Done,
+    Rejected,
+    Blocked,
+    Stale,
+}
+
+impl BeadState {
+    /// Valid successor states from this state.
+    pub fn valid_transitions(self) -> &'static [BeadState] {
+        match self {
+            BeadState::Open => &[BeadState::Queued],
+            BeadState::Queued => &[BeadState::Dispatched],
+            BeadState::Dispatched => &[BeadState::Verifying],
+            BeadState::Verifying => &[BeadState::Done, BeadState::Rejected, BeadState::Blocked],
+            BeadState::Rejected => &[BeadState::Open],
+            BeadState::Blocked => &[BeadState::Open],
+            BeadState::Done => &[],
+            BeadState::Stale => &[BeadState::Open],
+        }
+    }
+
+    /// Check if transitioning to `next` is valid.
+    pub fn can_transition_to(self, next: BeadState) -> bool {
+        self.valid_transitions().contains(&next)
+    }
+
+    /// Whether this state is terminal (no further transitions).
+    pub fn is_terminal(self) -> bool {
+        self.valid_transitions().is_empty()
+    }
+}
+
+impl fmt::Display for BeadState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            BeadState::Open => "open",
+            BeadState::Queued => "queued",
+            BeadState::Dispatched => "dispatched",
+            BeadState::Verifying => "verifying",
+            BeadState::Done => "done",
+            BeadState::Rejected => "rejected",
+            BeadState::Blocked => "blocked",
+            BeadState::Stale => "stale",
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl From<&str> for BeadState {
+    fn from(s: &str) -> Self {
+        match s {
+            "open" => BeadState::Open,
+            "queued" => BeadState::Queued,
+            "dispatched" => BeadState::Dispatched,
+            "verifying" => BeadState::Verifying,
+            "done" | "closed" => BeadState::Done,
+            "rejected" => BeadState::Rejected,
+            "blocked" => BeadState::Blocked,
+            "stale" => BeadState::Stale,
+            "in_progress" => BeadState::Dispatched, // legacy mapping
+            _ => BeadState::Open,
+        }
+    }
+}
 
 /// A bead is a file-scoped work item tracked in a repo's .beads/ directory.
 /// This is the common representation used across scanner, sync, and dispatch.
@@ -21,6 +108,23 @@ pub struct Bead {
 }
 
 impl Bead {
+    /// Content-based generation hash. Changes when semantic content changes,
+    /// but not when status/timestamps change. Used for idempotency —
+    /// if generation matches last processed, skip re-dispatch.
+    pub fn generation(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.id.hash(&mut hasher);
+        self.title.hash(&mut hasher);
+        self.description.hash(&mut hasher);
+        self.priority.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Parse the status string into a typed BeadState.
+    pub fn state(&self) -> BeadState {
+        BeadState::from(self.status.as_str())
+    }
+
     /// Parse from `bd list --json` output
     pub fn from_bd_json(value: &serde_json::Value, repo: &str) -> Option<Self> {
         Some(Bead {
@@ -104,6 +208,132 @@ mod tests {
         assert_eq!(bead.id, "mache-tgl");
         assert_eq!(bead.repo, "mache");
         assert!(bead.is_ready());
+    }
+
+    #[test]
+    fn state_from_string() {
+        assert_eq!(BeadState::from("open"), BeadState::Open);
+        assert_eq!(BeadState::from("queued"), BeadState::Queued);
+        assert_eq!(BeadState::from("dispatched"), BeadState::Dispatched);
+        assert_eq!(BeadState::from("verifying"), BeadState::Verifying);
+        assert_eq!(BeadState::from("done"), BeadState::Done);
+        assert_eq!(BeadState::from("closed"), BeadState::Done);
+        assert_eq!(BeadState::from("rejected"), BeadState::Rejected);
+        assert_eq!(BeadState::from("blocked"), BeadState::Blocked);
+        assert_eq!(BeadState::from("stale"), BeadState::Stale);
+        assert_eq!(BeadState::from("in_progress"), BeadState::Dispatched);
+        assert_eq!(BeadState::from("garbage"), BeadState::Open);
+    }
+
+    #[test]
+    fn state_display_roundtrip() {
+        let states = [
+            BeadState::Open,
+            BeadState::Queued,
+            BeadState::Dispatched,
+            BeadState::Verifying,
+            BeadState::Done,
+            BeadState::Rejected,
+            BeadState::Blocked,
+            BeadState::Stale,
+        ];
+        for state in states {
+            let s = state.to_string();
+            assert_eq!(BeadState::from(s.as_str()), state);
+        }
+    }
+
+    #[test]
+    fn valid_transitions() {
+        assert!(BeadState::Open.can_transition_to(BeadState::Queued));
+        assert!(!BeadState::Open.can_transition_to(BeadState::Done));
+
+        assert!(BeadState::Queued.can_transition_to(BeadState::Dispatched));
+        assert!(!BeadState::Queued.can_transition_to(BeadState::Open));
+
+        assert!(BeadState::Dispatched.can_transition_to(BeadState::Verifying));
+        assert!(!BeadState::Dispatched.can_transition_to(BeadState::Done));
+
+        assert!(BeadState::Verifying.can_transition_to(BeadState::Done));
+        assert!(BeadState::Verifying.can_transition_to(BeadState::Rejected));
+        assert!(BeadState::Verifying.can_transition_to(BeadState::Blocked));
+
+        assert!(BeadState::Rejected.can_transition_to(BeadState::Open));
+        assert!(!BeadState::Rejected.can_transition_to(BeadState::Done));
+
+        assert!(BeadState::Done.is_terminal());
+    }
+
+    #[test]
+    fn generation_changes_with_content() {
+        let bead1 = Bead::from_bd_json(
+            &json!({
+                "id": "x-1", "title": "fix bug", "description": "desc",
+                "status": "open", "priority": 1,
+                "created_at": "2026-03-12T00:00:00Z",
+                "updated_at": "2026-03-12T00:00:00Z"
+            }),
+            "repo",
+        )
+        .unwrap();
+
+        let bead2 = Bead::from_bd_json(
+            &json!({
+                "id": "x-1", "title": "fix bug UPDATED", "description": "desc",
+                "status": "open", "priority": 1,
+                "created_at": "2026-03-12T00:00:00Z",
+                "updated_at": "2026-03-12T00:00:00Z"
+            }),
+            "repo",
+        )
+        .unwrap();
+
+        // Same content → same generation
+        assert_eq!(bead1.generation(), bead1.generation());
+        // Different title → different generation
+        assert_ne!(bead1.generation(), bead2.generation());
+    }
+
+    #[test]
+    fn generation_ignores_status_and_timestamps() {
+        let bead1 = Bead::from_bd_json(
+            &json!({
+                "id": "x-1", "title": "t", "description": "d",
+                "status": "open", "priority": 1,
+                "created_at": "2026-03-12T00:00:00Z",
+                "updated_at": "2026-03-12T00:00:00Z"
+            }),
+            "repo",
+        )
+        .unwrap();
+
+        let bead2 = Bead::from_bd_json(
+            &json!({
+                "id": "x-1", "title": "t", "description": "d",
+                "status": "in_progress", "priority": 1,
+                "created_at": "2026-03-11T00:00:00Z",
+                "updated_at": "2026-03-13T00:00:00Z"
+            }),
+            "repo",
+        )
+        .unwrap();
+
+        assert_eq!(bead1.generation(), bead2.generation());
+    }
+
+    #[test]
+    fn bead_state_accessor() {
+        let bead = Bead::from_bd_json(
+            &json!({
+                "id": "x-1", "title": "t",
+                "status": "in_progress", "priority": 1,
+                "created_at": "2026-03-12T00:00:00Z",
+                "updated_at": "2026-03-12T00:00:00Z"
+            }),
+            "repo",
+        )
+        .unwrap();
+        assert_eq!(bead.state(), BeadState::Dispatched);
     }
 
     #[test]

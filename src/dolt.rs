@@ -150,7 +150,7 @@ impl DoltClient {
                 .try_get::<i32, _>("priority")
                 .unwrap_or(2) as u8,
             issue_type: row
-                .try_get("type")
+                .try_get("issue_type")
                 .unwrap_or_else(|_| "task".to_string()),
             owner: row.try_get("assignee").ok(),
             repo: repo_name.to_string(),
@@ -177,6 +177,23 @@ impl DoltClient {
             .await
             .with_context(|| format!("updating status for {id}"))?;
         Ok(())
+    }
+
+    /// Log an event to the events table for audit trail.
+    /// Best-effort: logs warning on failure rather than propagating error.
+    pub async fn log_event(&self, issue_id: &str, event_type: &str, detail: &str) {
+        let result = sqlx::query(
+            "INSERT INTO events (issue_id, event_type, detail, created_at) VALUES (?, ?, ?, NOW())",
+        )
+        .bind(issue_id)
+        .bind(event_type)
+        .bind(detail)
+        .execute(&self.pool)
+        .await;
+
+        if let Err(e) = result {
+            eprintln!("warning: failed to log event for {issue_id}: {e}");
+        }
     }
 }
 

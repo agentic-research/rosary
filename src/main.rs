@@ -6,7 +6,10 @@ mod config;
 mod dispatch;
 mod dolt;
 mod linear;
+mod queue;
+mod reconcile;
 mod scanner;
+mod verify;
 
 #[derive(Parser)]
 #[command(name = "loom", about = "Weaves beads, repos, and review layers into coordinated work")]
@@ -42,6 +45,24 @@ enum Command {
         /// Use isolated git worktree
         #[arg(long, default_value_t = true)]
         isolate: bool,
+    },
+    /// Run the reconciliation loop (scan → triage → dispatch → verify → report)
+    Run {
+        /// Config file listing repos
+        #[arg(short, long, default_value = "loom.toml")]
+        config: String,
+        /// Max concurrent Claude Code agents
+        #[arg(long, default_value_t = 3)]
+        concurrency: usize,
+        /// Seconds between scan iterations
+        #[arg(long, default_value_t = 30)]
+        interval: u64,
+        /// Single pass (no loop)
+        #[arg(long)]
+        once: bool,
+        /// Print what would be dispatched without actually spawning agents
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Start MCP server exposing loom as tools
     Serve {
@@ -80,6 +101,9 @@ async fn main() -> Result<()> {
         }
         Command::Dispatch { bead_id, repo, isolate } => {
             dispatch::run(&bead_id, std::path::Path::new(&repo), isolate).await?;
+        }
+        Command::Run { config, concurrency, interval, once, dry_run } => {
+            reconcile::run(&config, concurrency, interval, once, dry_run).await?;
         }
         Command::Serve { transport, port } => {
             todo!("MCP server on {transport}:{port}")
