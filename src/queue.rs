@@ -116,11 +116,11 @@ impl WorkQueue {
             match self.heap.pop() {
                 None => break None,
                 Some(entry) => {
-                    if let Some(state) = self.backoff.get(&entry.bead_id) {
-                        if !state.is_eligible(now) {
-                            deferred.push(entry);
-                            continue;
-                        }
+                    if let Some(state) = self.backoff.get(&entry.bead_id)
+                        && !state.is_eligible(now)
+                    {
+                        deferred.push(entry);
+                        continue;
                     }
                     self.in_queue.remove(&entry.bead_id);
                     break Some(entry);
@@ -155,15 +155,18 @@ impl WorkQueue {
     }
 
     /// Number of entries currently in the queue.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.heap.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.heap.is_empty()
     }
 
     /// Check if a bead is already enqueued.
+    #[allow(dead_code)]
     pub fn contains(&self, bead_id: &str) -> bool {
         self.in_queue.contains(bead_id)
     }

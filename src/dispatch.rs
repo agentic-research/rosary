@@ -13,7 +13,9 @@ use crate::scanner::expand_path;
 
 /// Handle to a running Claude Code agent process.
 pub struct AgentHandle {
+    #[allow(dead_code)] // stored for debugging/logging
     pub bead_id: String,
+    #[allow(dead_code)] // stored for generation tracking
     pub generation: u64,
     pub child: tokio::process::Child,
     pub work_dir: PathBuf,

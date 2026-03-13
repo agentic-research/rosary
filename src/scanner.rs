@@ -74,10 +74,10 @@ fn count_repos(beads: &[Bead]) -> usize {
 
 pub fn expand_path(path: &std::path::Path) -> std::path::PathBuf {
     let s = path.to_string_lossy();
-    if s.starts_with('~') {
-        if let Some(home) = dirs_next::home_dir() {
-            return home.join(&s[2..]);
-        }
+    if s.starts_with('~')
+        && let Some(home) = dirs_next::home_dir()
+    {
+        return home.join(&s[2..]);
     }
     path.to_path_buf()
 }

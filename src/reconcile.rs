@@ -8,7 +8,6 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::bead::BeadState;
@@ -58,7 +57,6 @@ struct BeadTracker {
 pub struct Reconciler {
     config: ReconcilerConfig,
     queue: WorkQueue,
-    semaphore: Arc<tokio::sync::Semaphore>,
     active: HashMap<String, AgentHandle>,
     trackers: HashMap<String, BeadTracker>,
     /// Map repo name → (path, lang) for verification
@@ -99,7 +97,6 @@ impl std::fmt::Display for IterationSummary {
 
 impl Reconciler {
     pub fn new(config: ReconcilerConfig) -> Self {
-        let permits = config.max_concurrent;
         let mut repo_info = HashMap::new();
 
         // Build repo info map from config
@@ -112,7 +109,6 @@ impl Reconciler {
         Reconciler {
             config,
             queue: WorkQueue::new(),
-            semaphore: Arc::new(tokio::sync::Semaphore::new(permits)),
             active: HashMap::new(),
             trackers: HashMap::new(),
             repo_info,
@@ -229,10 +225,10 @@ impl Reconciler {
                 let bead_gen = bead.generation();
 
                 // Skip if already processed at this generation
-                if let Some(tracker) = self.trackers.get(&bead.id) {
-                    if tracker.last_generation == bead_gen {
-                        continue;
-                    }
+                if let Some(tracker) = self.trackers.get(&bead.id)
+                    && tracker.last_generation == bead_gen
+                {
+                    continue;
                 }
 
                 let enqueued = self.queue.enqueue(QueueEntry {

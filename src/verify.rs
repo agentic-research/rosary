@@ -53,6 +53,7 @@ impl VerifySummary {
     /// Whether the failure is in tiers 0-1 (commit/compile) — fundamentally broken.
     /// Returns true only if compile-level or below failed (nothing passed, or only commit passed
     /// but compile failed).
+    #[allow(dead_code)] // API surface — used in tests
     pub fn is_fundamental_failure(&self) -> bool {
         match self.highest_passing_tier {
             None => true, // nothing passed at all

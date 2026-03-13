@@ -31,6 +31,7 @@ pub enum BeadState {
 
 impl BeadState {
     /// Valid successor states from this state.
+    #[allow(dead_code)] // API surface — used in tests, will be used for transition validation
     pub fn valid_transitions(self) -> &'static [BeadState] {
         match self {
             BeadState::Open => &[BeadState::Queued],
@@ -45,11 +46,13 @@ impl BeadState {
     }
 
     /// Check if transitioning to `next` is valid.
+    #[allow(dead_code)]
     pub fn can_transition_to(self, next: BeadState) -> bool {
         self.valid_transitions().contains(&next)
     }
 
     /// Whether this state is terminal (no further transitions).
+    #[allow(dead_code)]
     pub fn is_terminal(self) -> bool {
         self.valid_transitions().is_empty()
     }
@@ -126,6 +129,7 @@ impl Bead {
     }
 
     /// Parse from `bd list --json` output
+    #[allow(dead_code)] // used in tests and future CLI integration
     pub fn from_bd_json(value: &serde_json::Value, repo: &str) -> Option<Self> {
         Some(Bead {
             id: value.get("id")?.as_str()?.to_string(),
@@ -176,6 +180,7 @@ impl Bead {
     }
 }
 
+#[allow(dead_code)]
 fn parse_datetime(v: Option<&serde_json::Value>) -> DateTime<Utc> {
     v.and_then(|v| v.as_str())
         .and_then(|s| s.parse().ok())
