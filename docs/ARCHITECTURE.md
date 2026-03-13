@@ -1,13 +1,13 @@
-# Loom Architecture
+# Rosary Architecture
 
-Loom is a cross-repo task orchestrator that weaves beads (per-repo work items), Linear tickets, and review layers into coordinated autonomous development work.
+Rosary is a cross-repo task orchestrator that strings beads (per-repo work items), Linear tickets, and review layers into coordinated autonomous development work.
 
 ## System Overview
 
 ```mermaid
 graph TB
-    subgraph "loom"
-        CLI[loom CLI]
+    subgraph "rosary"
+        CLI[rsry CLI]
         RC[Reconciler]
         SC[Scanner]
         TR[Triage / Queue]
@@ -38,7 +38,7 @@ graph TB
 
 ## Reconciliation Loop
 
-The core of loom is a Kubernetes-controller-style desired-state loop. Every iteration:
+The core of rosary is a Kubernetes-controller-style desired-state loop. Every iteration:
 
 ```mermaid
 flowchart LR
@@ -95,12 +95,14 @@ graph LR
         dolt["dolt.rs<br/>(MySQL client)"]
         bead["bead.rs<br/>(data model)"]
         config["config.rs<br/>(TOML loader)"]
-        linear["linear.rs<br/>(stubbed)"]
+        linear["linear.rs<br/>(Linear GraphQL)"]
+        serve["serve.rs<br/>(MCP server)"]
     end
 
     main --> reconcile
     main --> scanner
     main --> dispatch
+    main --> serve
 
     reconcile --> scanner
     reconcile --> queue
@@ -198,25 +200,25 @@ Each repo has a `.beads/` directory with a running Dolt server:
 ```
 repo/.beads/
 ├── dolt-server.port     # TCP port (e.g., 53214)
-├── metadata.json        # {"dolt_database": "loom", ...}
+├── metadata.json        # {"dolt_database": "rosary", ...}
 ├── dolt/                # Dolt data directory
 │   └── (versioned SQL database)
 ├── config.yaml          # bd configuration
 └── interactions.jsonl   # agent interaction log
 ```
 
-Loom connects via native MySQL wire protocol: `mysql://root@127.0.0.1:{port}/{database}`
+Rosary connects via native MySQL wire protocol: `mysql://root@127.0.0.1:{port}/{database}`
 
 Key tables: `issues` (51 columns), `dependencies`, `comments`, `events`
 
 ## Configuration
 
-`loom.toml` declares repos to manage:
+`rosary.toml` declares repos to manage:
 
 ```toml
 [[repo]]
-name = "loom"
-path = "~/remotes/art/loom"
+name = "rosary"
+path = "~/remotes/art/rosary"
 lang = "rust"
 self = true  # dogfooding flag
 
@@ -230,14 +232,14 @@ lang = "go"
 
 | Command | Status | Description |
 |---------|--------|-------------|
-| `loom scan` | Working | Discover beads across repos via Dolt |
-| `loom status` | Working | Aggregate view across repos |
-| `loom dispatch <id>` | Working | Spawn Claude Code for a single bead |
-| `loom run` | Working | Full reconciliation loop |
-| `loom run --once --dry-run` | Working | Single pass, print without spawning |
-| `loom plan <ticket>` | Stubbed | Linear ticket decomposition |
-| `loom sync` | Stubbed | Bidirectional beads-Linear sync |
-| `loom serve` | Stubbed | MCP server via rmcp |
+| `rsry scan` | Working | Discover beads across repos via Dolt |
+| `rsry status` | Working | Aggregate view across repos |
+| `rsry dispatch <id>` | Working | Spawn Claude Code for a single bead |
+| `rsry run` | Working | Full reconciliation loop |
+| `rsry run --once --dry-run` | Working | Single pass, print without spawning |
+| `rsry plan <ticket>` | Working | Fetch Linear ticket details |
+| `rsry sync` | Working | List open Linear issues (read-only) |
+| `rsry serve` | Working | MCP server (stdio transport) |
 
 ## Design Influences
 
@@ -251,11 +253,12 @@ lang = "go"
 ```mermaid
 graph TB
     subgraph "Planned"
-        MCP["MCP Server<br/>(rmcp)"]
-        LIN["Linear Client<br/>(cynic/GraphQL)"]
+        SDK["Agent SDK<br/>(replace CLI)"]
+        LIN["Linear Sync<br/>(bidirectional)"]
         LEY["ley-line Integration<br/>(tree-sitter, embeddings)"]
         JJD["jj Dispatch<br/>(workspaces)"]
         EVT["Event Bus<br/>(UDS, ADR-010)"]
+        BEAD["Bead Management<br/>(rsry bead create/close)"]
     end
 
     subgraph "Implemented"
@@ -264,11 +267,14 @@ graph TB
         DIS["Dispatcher"]
         VER["Verifier"]
         QUE["Queue"]
+        MCP["MCP Server"]
+        LINR["Linear Client"]
     end
 
-    REC --> MCP
+    REC --> SDK
     REC --> LIN
     VER --> LEY
     DIS --> JJD
     REC --> EVT
+    REC --> BEAD
 ```

@@ -18,7 +18,7 @@ pub struct RepoConfig {
     pub path: PathBuf,
     /// Language hint (rust, go, python, etc.). Auto-detected if absent.
     pub lang: Option<String>,
-    /// Whether this repo IS loom itself (dogfooding flag).
+    /// Whether this repo IS rosary itself (dogfooding flag).
     #[serde(default, rename = "self")]
     pub self_managed: bool,
 }
@@ -53,8 +53,8 @@ path = "~/remotes/art/mache"
 lang = "go"
 
 [[repo]]
-name = "loom"
-path = "~/remotes/art/loom"
+name = "rosary"
+path = "~/remotes/art/rosary"
 lang = "rust"
 self = true
 
@@ -67,7 +67,7 @@ project = "Platform"
         assert_eq!(config.repo[0].name, "mache");
         assert_eq!(config.repo[0].lang.as_deref(), Some("go"));
         assert!(!config.repo[0].self_managed);
-        assert_eq!(config.repo[1].name, "loom");
+        assert_eq!(config.repo[1].name, "rosary");
         assert!(config.repo[1].self_managed);
         assert_eq!(config.linear.unwrap().team, "ART");
     }

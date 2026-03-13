@@ -106,13 +106,13 @@ mod tests {
     }
 
     /// Integration test — scans a real repo with a running Dolt server.
-    /// Set LOOM_TEST_BEADS_DIR to a .beads/ directory (e.g. ~/remotes/art/mache/.beads).
+    /// Set RSRY_TEST_BEADS_DIR to a .beads/ directory (e.g. ~/remotes/art/mache/.beads).
     #[tokio::test]
     async fn scan_live_repo() {
-        let beads_dir = match std::env::var("LOOM_TEST_BEADS_DIR") {
+        let beads_dir = match std::env::var("RSRY_TEST_BEADS_DIR") {
             Ok(dir) => dir,
             Err(_) => {
-                eprintln!("skipping: LOOM_TEST_BEADS_DIR not set");
+                eprintln!("skipping: RSRY_TEST_BEADS_DIR not set");
                 return;
             }
         };

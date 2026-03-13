@@ -133,7 +133,7 @@ pub async fn spawn(
 }
 
 /// Original blocking dispatch — reads Dolt, spawns agent, waits for completion.
-/// Kept for `loom dispatch` CLI command.
+/// Kept for `rsry dispatch` CLI command.
 pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
     let path = expand_path(repo_path);
     let beads_dir = path.join(".beads");

@@ -1,4 +1,4 @@
-//! MCP server for loom — exposes beads capabilities as tools over JSON-RPC.
+//! MCP server for rosary — exposes beads capabilities as tools over JSON-RPC.
 //!
 //! Implements the Model Context Protocol (MCP) over stdio transport.
 //! Reads line-delimited JSON-RPC from stdin, writes responses to stdout.
@@ -78,7 +78,7 @@ fn tool_definitions() -> Value {
     json!({
         "tools": [
             {
-                "name": "loom_scan",
+                "name": "rsry_scan",
                 "description": "Scan all configured repos for beads (work items). Returns a JSON array of beads with their status, priority, and metadata.",
                 "inputSchema": {
                     "type": "object",
@@ -87,7 +87,7 @@ fn tool_definitions() -> Value {
                 }
             },
             {
-                "name": "loom_status",
+                "name": "rsry_status",
                 "description": "Return aggregated status counts across all repos: open, ready, in_progress, and blocked bead counts.",
                 "inputSchema": {
                     "type": "object",
@@ -96,7 +96,7 @@ fn tool_definitions() -> Value {
                 }
             },
             {
-                "name": "loom_list_beads",
+                "name": "rsry_list_beads",
                 "description": "List all beads with optional status filter. Returns a JSON array of matching beads.",
                 "inputSchema": {
                     "type": "object",
@@ -110,7 +110,7 @@ fn tool_definitions() -> Value {
                 }
             },
             {
-                "name": "loom_run_once",
+                "name": "rsry_run_once",
                 "description": "Run a single reconciliation pass (scan, triage, dispatch, verify). Use dry_run=true to preview without spawning agents.",
                 "inputSchema": {
                     "type": "object",
@@ -134,16 +134,16 @@ fn tool_definitions() -> Value {
 
 async fn call_tool(name: &str, args: &Value, config_path: &str) -> Result<Value> {
     match name {
-        "loom_scan" => tool_scan(config_path).await,
-        "loom_status" => tool_status(config_path).await,
-        "loom_list_beads" => {
+        "rsry_scan" => tool_scan(config_path).await,
+        "rsry_status" => tool_status(config_path).await,
+        "rsry_list_beads" => {
             let status = args
                 .get("status")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             tool_list_beads(config_path, status.as_deref()).await
         }
-        "loom_run_once" => {
+        "rsry_run_once" => {
             let dry_run = args
                 .get("dry_run")
                 .and_then(|v| v.as_bool())
@@ -246,7 +246,7 @@ fn handle_initialize(id: Value) -> JsonRpcResponse {
                 "tools": {}
             },
             "serverInfo": {
-                "name": "loom",
+                "name": "rosary",
                 "version": env!("CARGO_PKG_VERSION")
             }
         }),
@@ -299,7 +299,7 @@ async fn handle_tools_call(id: Value, params: &Value, config_path: &str) -> Json
 /// Run the MCP server.
 pub async fn run(transport: &str, port: u16) -> Result<()> {
     match transport {
-        "stdio" => run_stdio("loom.toml").await,
+        "stdio" => run_stdio("rosary.toml").await,
         "http" => {
             eprintln!("HTTP transport not yet implemented (port={port})");
             eprintln!("Use --transport stdio for now");
@@ -317,7 +317,7 @@ async fn run_stdio(config_path: &str) -> Result<()> {
     let reader = BufReader::new(stdin);
     let mut lines = reader.lines();
 
-    eprintln!("[loom-mcp] server started (stdio transport)");
+    eprintln!("[rsry-mcp] server started (stdio transport)");
 
     while let Some(line) = lines.next_line().await.context("reading stdin")? {
         let line = line.trim().to_string();
@@ -378,7 +378,7 @@ async fn run_stdio(config_path: &str) -> Result<()> {
         stdout.flush().await?;
     }
 
-    eprintln!("[loom-mcp] stdin closed, shutting down");
+    eprintln!("[rsry-mcp] stdin closed, shutting down");
     Ok(())
 }
 
@@ -400,10 +400,10 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert!(names.contains(&"loom_scan"));
-        assert!(names.contains(&"loom_status"));
-        assert!(names.contains(&"loom_list_beads"));
-        assert!(names.contains(&"loom_run_once"));
+        assert!(names.contains(&"rsry_scan"));
+        assert!(names.contains(&"rsry_status"));
+        assert!(names.contains(&"rsry_list_beads"));
+        assert!(names.contains(&"rsry_run_once"));
     }
 
     #[test]
@@ -426,7 +426,7 @@ mod tests {
         let result = resp.result.unwrap();
         assert_eq!(result["protocolVersion"], "2024-11-05");
         assert!(result["capabilities"]["tools"].is_object());
-        assert_eq!(result["serverInfo"]["name"], "loom");
+        assert_eq!(result["serverInfo"]["name"], "rosary");
     }
 
     #[test]
@@ -448,10 +448,10 @@ mod tests {
 
     #[test]
     fn parse_request_with_params() {
-        let raw = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"loom_list_beads","arguments":{"status":"open"}}}"#;
+        let raw = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"rsry_list_beads","arguments":{"status":"open"}}}"#;
         let req: JsonRpcRequest = serde_json::from_str(raw).unwrap();
         assert_eq!(req.method, "tools/call");
-        assert_eq!(req.params["name"], "loom_list_beads");
+        assert_eq!(req.params["name"], "rsry_list_beads");
         assert_eq!(req.params["arguments"]["status"], "open");
     }
 

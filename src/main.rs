@@ -13,7 +13,7 @@ mod serve;
 mod verify;
 
 #[derive(Parser)]
-#[command(name = "loom", about = "Weaves beads, repos, and review layers into coordinated work")]
+#[command(name = "rsry", about = "Strings beads, repos, and review layers into coordinated work")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -24,7 +24,7 @@ enum Command {
     /// Scan repos for issues, create beads (bottom-up discovery)
     Scan {
         /// Config file listing repos to scan
-        #[arg(short, long, default_value = "loom.toml")]
+        #[arg(short, long, default_value = "rosary.toml")]
         config: String,
     },
     /// Decompose a Linear ticket into repo-scoped beads (top-down planning)
@@ -50,7 +50,7 @@ enum Command {
     /// Run the reconciliation loop (scan → triage → dispatch → verify → report)
     Run {
         /// Config file listing repos
-        #[arg(short, long, default_value = "loom.toml")]
+        #[arg(short, long, default_value = "rosary.toml")]
         config: String,
         /// Max concurrent Claude Code agents
         #[arg(long, default_value_t = 3)]
@@ -65,7 +65,7 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Start MCP server exposing loom as tools
+    /// Start MCP server exposing rosary as tools
     Serve {
         /// Transport: stdio or http
         #[arg(long, default_value = "stdio")]
@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
             linear::sync().await?;
         }
         Command::Status => {
-            let cfg = config::load("loom.toml")?;
+            let cfg = config::load("rosary.toml")?;
             let beads = scanner::scan_repos(&cfg.repo).await?;
             scanner::print_status(&beads);
         }

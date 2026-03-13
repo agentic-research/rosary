@@ -1,7 +1,7 @@
-# Loom configuration
-# Lists all repositories that loom scans and manages.
+# Rosary configuration
+# Lists all repositories that rosary scans and manages.
 
-[loom]
+[rosary]
 # Linear team/project for sync (fill in when Linear is wired)
 # linear_team = "ART"
 # linear_project = "ART"
@@ -10,12 +10,12 @@
 # max_concurrent_agents = 2
 # agent_timeout_minutes = 30
 
-# Loom manages itself first.
+# Rosary manages itself first.
 [[repo]]
-name = "loom"
-path = "~/remotes/art/loom"
+name = "rosary"
+path = "~/remotes/art/rosary"
 lang = "rust"
-self = true  # This repo IS loom -- used for dogfooding
+self = true  # This repo IS rosary -- used for dogfooding
 
 # ---- ART repos ----
 

@@ -1,8 +1,12 @@
 [package]
-name = "loom"
+name = "rosary"
 version = "0.1.0"
 edition = "2024"
-description = "Weaves beads, repos, and review layers into coordinated work"
+description = "Strings beads, repos, and review layers into coordinated work"
+
+[[bin]]
+name = "rsry"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

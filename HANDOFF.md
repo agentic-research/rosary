@@ -1,4 +1,4 @@
-# Loom Handoff
+# Rosary Handoff
 
 ## Done This Session
 
@@ -6,42 +6,30 @@
 - **Installed beads** (`bd init`) in mache repo -- 17 open beads created
 - **Migrated** 3x `KNOWN_ISSUES.md` files to beads (validated each against code, 2 items were already fixed, deleted the files)
 - **Scanned** `_agent_log/*.md` files for remaining work items, created beads for valid ones
-- **Scaffolded loom** (Rust project at `~/remotes/art/loom`) -- compiles, 4 tests passing
-- **Loom modules**: `main.rs` (CLI), `bead.rs` (bd JSON parser), `config.rs` (TOML), `scanner.rs` (multi-repo scan via bd), `linear.rs` (stubbed), `dispatch.rs` (stubbed)
+- **Scaffolded rosary** (Rust project, formerly "loom") -- compiles, 66 tests passing
+- **Rosary modules**: `main.rs` (CLI), `bead.rs` (state machine), `config.rs` (TOML), `scanner.rs` (multi-repo scan via Dolt), `linear.rs` (GraphQL client), `dispatch.rs` (agent spawning), `reconcile.rs` (reconciliation loop), `verify.rs` (tiered checks), `queue.rs` (priority queue), `serve.rs` (MCP server), `dolt.rs` (MySQL client)
 
 ## Architecture Decisions
 
-- Loom is **Rust** (single binary, no runtime deps)
-- Beads via `bd` CLI subprocess (not direct DB access -- beads uses Dolt, not SQLite)
-- Linear via `cynic` crate + GraphQL schema (no official Rust SDK)
-- MCP server via `rmcp` crate (official Rust MCP SDK)
-- Claude Code spawning via `std::process::Command`
+- Rosary is **Rust** (single binary, no runtime deps)
+- Beads via native MySQL to Dolt (direct DB access, not CLI subprocess)
+- Linear via `reqwest` + raw GraphQL queries
+- MCP server via manual JSON-RPC (zero new deps)
+- Claude Code spawning via `tokio::process::Command`
 - Bidirectional flow: bottom-up (scan -> beads) AND top-down (Linear PRD -> beads)
 
 ## The Self-Management Thesis
 
-Loom's proof of concept is that it manages its own development. Specifically:
+Rosary's proof of concept is that it manages its own development. Specifically:
 
-1. `loom scan` should find issues in loom's own code and create beads
-2. `loom dispatch` should fix those beads using Claude Code agents
-3. `loom sync` should track progress in Linear
-4. The review layers (lint, idiom, cohomology, duplication, hygiene, docs) should run against loom itself
-5. `.beads/` in loom tracks loom's own work items
-6. A `loom.toml` config at the repo root lists loom itself + all ART repos
+1. `rsry scan` should find issues in rosary's own code and create beads
+2. `rsry dispatch` should fix those beads using Claude Code agents
+3. `rsry sync` should track progress in Linear
+4. The review layers (lint, idiom, cohomology, duplication, hygiene, docs) should run against rosary itself
+5. `.beads/` in rosary tracks rosary's own work items
+6. A `rosary.toml` config at the repo root lists rosary itself + all ART repos
 
-This is the "eating your own dogfood" pattern -- if loom can't manage its own backlog, it can't manage anyone else's.
-
-## Next Steps (Priority Order)
-
-1. `git init` + first commit in loom
-2. Create `loom.toml` config listing ART repos
-3. Wire `loom scan` to actually run (it compiles but needs a config file)
-4. Implement `loom status` aggregation
-5. Fill in Linear GraphQL client (`cynic` + Linear schema)
-6. Fill in dispatch (spawn Claude Code with bead context)
-7. Add MCP server (`rmcp`)
-8. Set up CI (GitHub Actions)
-9. Create beads in loom for loom's own TODOs
+This is the "eating your own dogfood" pattern -- if rosary can't manage its own backlog, it can't manage anyone else's.
 
 ## Key References
 

@@ -1,4 +1,4 @@
-//! Reconciliation loop — the core of loom.
+//! Reconciliation loop — the core of rosary.
 //!
 //! Implements a Kubernetes-controller-style desired-state loop:
 //!   scan → triage → dispatch → verify → report → sleep → repeat
@@ -496,7 +496,7 @@ fn detect_language(path: &std::path::Path) -> String {
     }
 }
 
-/// Entry point for `loom run`.
+/// Entry point for `rsry run`.
 pub async fn run(
     config_path: &str,
     concurrency: usize,
