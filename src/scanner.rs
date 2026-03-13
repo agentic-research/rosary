@@ -98,6 +98,8 @@ mod tests {
         let repos = vec![RepoConfig {
             name: "nonexistent".to_string(),
             path: std::path::PathBuf::from("/tmp/no-such-repo"),
+            lang: None,
+            self_managed: false,
         }];
         let beads = scan_repos(&repos).await.unwrap();
         assert!(beads.is_empty());
@@ -123,6 +125,8 @@ mod tests {
         let repos = vec![RepoConfig {
             name: "test-repo".to_string(),
             path: repo_path.to_path_buf(),
+            lang: None,
+            self_managed: false,
         }];
 
         let beads = scan_repos(&repos).await.unwrap();

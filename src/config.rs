@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub repos: Vec<RepoConfig>,
+    /// Repo entries — accepts `[[repo]]` in TOML (singular).
+    #[serde(alias = "repos")]
+    pub repo: Vec<RepoConfig>,
     pub linear: Option<LinearConfig>,
 }
 
@@ -14,6 +16,11 @@ pub struct RepoConfig {
     pub name: String,
     /// Path to the repo root (absolute or ~ prefixed)
     pub path: PathBuf,
+    /// Language hint (rust, go, python, etc.). Auto-detected if absent.
+    pub lang: Option<String>,
+    /// Whether this repo IS loom itself (dogfooding flag).
+    #[serde(default, rename = "self")]
+    pub self_managed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,7 +43,7 @@ pub fn load(path: &str) -> Result<Config> {
 /// Default config for when no file exists — scans known ART repos
 pub fn default_config() -> Config {
     Config {
-        repos: vec![
+        repo: vec![
             repo("mache", "~/remotes/art/mache"),
             repo("assay", "~/remotes/art/assay"),
             repo("tropo", "~/remotes/art/tropo"),
@@ -51,6 +58,8 @@ fn repo(name: &str, path: &str) -> RepoConfig {
     RepoConfig {
         name: name.to_string(),
         path: PathBuf::from(path),
+        lang: None,
+        self_managed: false,
     }
 }
 
@@ -59,23 +68,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_toml_config() {
+    fn parse_toml_config_singular() {
         let toml = r#"
-[[repos]]
+[[repo]]
 name = "mache"
 path = "~/remotes/art/mache"
+lang = "go"
 
-[[repos]]
-name = "assay"
-path = "~/remotes/art/assay"
+[[repo]]
+name = "loom"
+path = "~/remotes/art/loom"
+lang = "rust"
+self = true
 
 [linear]
 team = "ART"
 project = "Platform"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.repos.len(), 2);
-        assert_eq!(config.repos[0].name, "mache");
+        assert_eq!(config.repo.len(), 2);
+        assert_eq!(config.repo[0].name, "mache");
+        assert_eq!(config.repo[0].lang.as_deref(), Some("go"));
+        assert!(!config.repo[0].self_managed);
+        assert_eq!(config.repo[1].name, "loom");
+        assert!(config.repo[1].self_managed);
         assert_eq!(config.linear.unwrap().team, "ART");
+    }
+
+    #[test]
+    fn parse_toml_config_plural_alias() {
+        // [[repos]] still works via serde alias
+        let toml = r#"
+[[repos]]
+name = "mache"
+path = "~/remotes/art/mache"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.repo.len(), 1);
+        assert_eq!(config.repo[0].name, "mache");
     }
 }

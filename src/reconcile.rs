@@ -14,9 +14,10 @@ use std::time::{Duration, Instant};
 use crate::bead::BeadState;
 use crate::config::{self, RepoConfig};
 use crate::dispatch::{self, AgentHandle};
+use crate::dolt::{DoltClient, DoltConfig};
 use crate::queue::{self, QueueEntry, WorkQueue};
 use crate::scanner;
-use crate::verify::VerifySummary;
+use crate::verify::{Verifier, VerifySummary};
 
 /// Configuration for the reconciliation loop.
 pub struct ReconcilerConfig {
@@ -24,7 +25,7 @@ pub struct ReconcilerConfig {
     pub scan_interval: Duration,
     pub max_retries: u32,
     pub triage_threshold: f64,
-    pub repos: Vec<RepoConfig>,
+    pub repo: Vec<RepoConfig>,
     pub once: bool,
     pub dry_run: bool,
 }
@@ -36,7 +37,7 @@ impl Default for ReconcilerConfig {
             scan_interval: Duration::from_secs(30),
             max_retries: 5,
             triage_threshold: 0.3,
-            repos: Vec::new(),
+            repo: Vec::new(),
             once: false,
             dry_run: false,
         }
@@ -46,6 +47,7 @@ impl Default for ReconcilerConfig {
 /// Tracks state of a bead across loop iterations.
 #[derive(Debug)]
 struct BeadTracker {
+    repo: String,
     last_generation: u64,
     retries: u32,
     consecutive_reverts: u32,
@@ -61,6 +63,10 @@ pub struct Reconciler {
     trackers: HashMap<String, BeadTracker>,
     /// Map repo name → (path, lang) for verification
     repo_info: HashMap<String, (PathBuf, String)>,
+    /// Stash work_dir + repo when agent completes so verify_agent can find it
+    completed_work_dirs: HashMap<String, (PathBuf, String)>,
+    /// Dolt clients keyed by repo name, lazily connected
+    dolt_clients: HashMap<String, DoltClient>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -97,9 +103,9 @@ impl Reconciler {
         let mut repo_info = HashMap::new();
 
         // Build repo info map from config
-        for repo in &config.repos {
+        for repo in &config.repo {
             let path = scanner::expand_path(&repo.path);
-            let lang = detect_language(&path);
+            let lang = repo.lang.clone().unwrap_or_else(|| detect_language(&path));
             repo_info.insert(repo.name.clone(), (path, lang));
         }
 
@@ -110,6 +116,8 @@ impl Reconciler {
             active: HashMap::new(),
             trackers: HashMap::new(),
             repo_info,
+            completed_work_dirs: HashMap::new(),
+            dolt_clients: HashMap::new(),
         }
     }
 
@@ -142,7 +150,7 @@ impl Reconciler {
         let mut summary = IterationSummary::default();
 
         // Phase 1: SCAN
-        let beads = scanner::scan_repos(&self.config.repos).await?;
+        let beads = scanner::scan_repos(&self.config.repo).await?;
         summary.scanned = beads.len();
 
         // Phase 2: CHECK COMPLETED — poll active agents
@@ -150,32 +158,55 @@ impl Reconciler {
         summary.completed = completed.len();
 
         // Phase 3: VERIFY completed agents
+        // Collect (bead_id, repo, new_status) for Dolt persistence after processing.
+        let mut status_updates: Vec<(String, String, String)> = Vec::new();
+
         for (bead_id, exit_success) in &completed {
+            let repo = self.trackers.get(bead_id.as_str())
+                .map(|t| t.repo.clone())
+                .unwrap_or_default();
+
             if *exit_success {
                 let verify_result = self.verify_agent(bead_id);
                 match verify_result {
                     Some(vs) if vs.passed() => {
                         summary.passed += 1;
                         self.on_pass(bead_id);
+                        status_updates.push((bead_id.clone(), repo, "closed".into()));
                     }
                     Some(vs) => {
                         summary.failed += 1;
-                        if self.on_fail(bead_id, &vs) {
+                        let deadlettered = self.on_fail(bead_id, &vs);
+                        if deadlettered {
                             summary.deadlettered += 1;
+                            status_updates.push((bead_id.clone(), repo, "blocked".into()));
+                        } else {
+                            status_updates.push((bead_id.clone(), repo, "open".into()));
                         }
                     }
                     None => {
                         // No verifier available (unknown repo) — treat as pass
                         summary.passed += 1;
                         self.on_pass(bead_id);
+                        status_updates.push((bead_id.clone(), repo, "closed".into()));
                     }
                 }
             } else {
+                self.completed_work_dirs.remove(bead_id);
                 summary.failed += 1;
-                if self.on_fail_exit(bead_id) {
+                let deadlettered = self.on_fail_exit(bead_id);
+                if deadlettered {
                     summary.deadlettered += 1;
+                    status_updates.push((bead_id.clone(), repo, "blocked".into()));
+                } else {
+                    status_updates.push((bead_id.clone(), repo, "open".into()));
                 }
             }
+        }
+
+        // Persist state transitions to Dolt (best-effort)
+        for (bead_id, repo, status) in &status_updates {
+            self.persist_status(bead_id, repo, status).await;
         }
 
         // Phase 4: TRIAGE — score open beads, enqueue above threshold
@@ -245,16 +276,19 @@ impl Reconciler {
                             "[dispatch] {} (gen={}, retries={})",
                             entry.bead_id, entry.generation, entry.retries
                         );
+                        self.persist_status(&entry.bead_id, &entry.repo, "dispatched").await;
                         self.active.insert(entry.bead_id.clone(), handle);
-                        self.trackers
+                        let tracker = self.trackers
                             .entry(entry.bead_id.clone())
                             .or_insert(BeadTracker {
+                                repo: entry.repo.clone(),
                                 last_generation: entry.generation,
                                 retries: entry.retries,
                                 consecutive_reverts: 0,
                                 highest_tier: None,
-                            })
-                            .last_generation = entry.generation;
+                            });
+                        tracker.last_generation = entry.generation;
+                        tracker.repo = entry.repo.clone();
                         summary.dispatched += 1;
                     }
                     Err(e) => {
@@ -274,25 +308,35 @@ impl Reconciler {
         let bead_ids: Vec<String> = self.active.keys().cloned().collect();
         for bead_id in bead_ids {
             let handle = self.active.get_mut(&bead_id).unwrap();
+            let mut done = false;
+            let mut success = false;
+
             match handle.try_wait() {
                 Ok(Some(status)) => {
-                    completed.push((bead_id.clone(), status.success()));
-                    self.active.remove(&bead_id);
+                    done = true;
+                    success = status.success();
                 }
                 Ok(None) => {
                     // Check timeout (10 min default)
                     if handle.elapsed() > chrono::Duration::minutes(10) {
                         eprintln!("[timeout] killing agent for {bead_id}");
                         let _ = handle.kill();
-                        completed.push((bead_id.clone(), false));
-                        self.active.remove(&bead_id);
+                        done = true;
                     }
                 }
                 Err(e) => {
                     eprintln!("[error] polling agent for {bead_id}: {e}");
-                    completed.push((bead_id.clone(), false));
-                    self.active.remove(&bead_id);
+                    done = true;
                 }
+            }
+
+            if done {
+                let handle = self.active.remove(&bead_id).unwrap();
+                let repo = self.trackers.get(&bead_id)
+                    .map(|t| t.repo.clone())
+                    .unwrap_or_default();
+                self.completed_work_dirs.insert(bead_id.clone(), (handle.work_dir, repo));
+                completed.push((bead_id, success));
             }
         }
 
@@ -300,15 +344,60 @@ impl Reconciler {
     }
 
     /// Run verification tiers on an agent's work directory.
-    fn verify_agent(&self, bead_id: &str) -> Option<VerifySummary> {
-        // Find which repo this bead belongs to
-        let tracker = self.trackers.get(bead_id)?;
-        let _ = tracker; // used for future generation checks
+    fn verify_agent(&mut self, bead_id: &str) -> Option<VerifySummary> {
+        let (work_dir, repo) = self.completed_work_dirs.remove(bead_id)?;
 
-        // Look up the work directory from the active handle — but it's already removed.
-        // For now, find repo info from the tracker's last known state.
-        // TODO: store work_dir in tracker when agent completes
-        None
+        // Look up language for this repo
+        let lang = self.repo_info.get(&repo)
+            .map(|(_, l)| l.as_str())
+            .unwrap_or("unknown");
+
+        let verifier = Verifier::for_language(lang);
+        match verifier.run(&work_dir) {
+            Ok(summary) => {
+                println!(
+                    "[verify] {bead_id}: {} (highest_tier={:?})",
+                    if summary.passed() { "PASS" } else { "FAIL" },
+                    summary.highest_passing_tier,
+                );
+                Some(summary)
+            }
+            Err(e) => {
+                eprintln!("[verify] {bead_id}: error running verification: {e}");
+                None
+            }
+        }
+    }
+
+    /// Get or lazily connect a DoltClient for a repo.
+    async fn dolt_client(&mut self, repo: &str) -> Option<&DoltClient> {
+        if self.dolt_clients.contains_key(repo) {
+            return self.dolt_clients.get(repo);
+        }
+
+        let (path, _) = self.repo_info.get(repo)?;
+        let beads_dir = path.join(".beads");
+        let config = DoltConfig::from_beads_dir(&beads_dir).ok()?;
+        match DoltClient::connect(&config).await {
+            Ok(client) => {
+                self.dolt_clients.insert(repo.to_string(), client);
+                self.dolt_clients.get(repo)
+            }
+            Err(e) => {
+                eprintln!("[dolt] failed to connect for {repo}: {e}");
+                None
+            }
+        }
+    }
+
+    /// Update bead status in Dolt and log the transition. Best-effort.
+    async fn persist_status(&mut self, bead_id: &str, repo: &str, status: &str) {
+        if let Some(client) = self.dolt_client(repo).await {
+            if let Err(e) = client.update_status(bead_id, status).await {
+                eprintln!("[dolt] failed to update {bead_id} to {status}: {e}");
+            }
+            client.log_event(bead_id, "state_change", &format!("→ {status}")).await;
+        }
     }
 
     fn on_pass(&mut self, bead_id: &str) {
@@ -322,6 +411,7 @@ impl Reconciler {
     /// Handle a verification failure. Returns true if deadlettered.
     fn on_fail(&mut self, bead_id: &str, summary: &VerifySummary) -> bool {
         let tracker = self.trackers.entry(bead_id.to_string()).or_insert(BeadTracker {
+            repo: String::new(),
             last_generation: 0,
             retries: 0,
             consecutive_reverts: 0,
@@ -368,6 +458,7 @@ impl Reconciler {
     /// Handle agent exit failure (non-zero exit). Returns true if deadlettered.
     fn on_fail_exit(&mut self, bead_id: &str) -> bool {
         let tracker = self.trackers.entry(bead_id.to_string()).or_insert(BeadTracker {
+            repo: String::new(),
             last_generation: 0,
             retries: 0,
             consecutive_reverts: 0,
@@ -422,7 +513,7 @@ pub async fn run(
     let reconciler_config = ReconcilerConfig {
         max_concurrent: concurrency,
         scan_interval: Duration::from_secs(interval),
-        repos: cfg.repos,
+        repo: cfg.repo,
         once,
         dry_run,
         ..Default::default()
@@ -488,7 +579,7 @@ mod tests {
         let config = ReconcilerConfig {
             once: true,
             dry_run: true,
-            repos: Vec::new(),
+            repo: Vec::new(),
             ..Default::default()
         };
 
@@ -502,7 +593,7 @@ mod tests {
     fn on_pass_clears_state() {
         let config = ReconcilerConfig {
             once: true,
-            repos: Vec::new(),
+            repo: Vec::new(),
             ..Default::default()
         };
         let mut r = Reconciler::new(config);
@@ -510,6 +601,7 @@ mod tests {
         r.trackers.insert(
             "x".into(),
             BeadTracker {
+                repo: "test".into(),
                 last_generation: 1,
                 retries: 2,
                 consecutive_reverts: 1,
@@ -526,7 +618,7 @@ mod tests {
         let config = ReconcilerConfig {
             max_retries: 3,
             once: true,
-            repos: Vec::new(),
+            repo: Vec::new(),
             ..Default::default()
         };
         let mut r = Reconciler::new(config);
@@ -542,7 +634,7 @@ mod tests {
         let config = ReconcilerConfig {
             max_retries: 100, // won't hit this
             once: true,
-            repos: Vec::new(),
+            repo: Vec::new(),
             ..Default::default()
         };
         let mut r = Reconciler::new(config);
@@ -551,6 +643,7 @@ mod tests {
         r.trackers.insert(
             "x".into(),
             BeadTracker {
+                repo: "test".into(),
                 last_generation: 1,
                 retries: 0,
                 consecutive_reverts: 0,

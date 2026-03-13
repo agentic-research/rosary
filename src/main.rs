@@ -82,8 +82,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Scan { config } => {
             let cfg = config::load(&config)?;
-            let beads = scanner::scan_repos(&cfg.repos).await?;
-            println!("Found {} beads across {} repos", beads.len(), cfg.repos.len());
+            let beads = scanner::scan_repos(&cfg.repo).await?;
+            println!("Found {} beads across {} repos", beads.len(), cfg.repo.len());
             for b in &beads {
                 println!("  {} [{}] {} — {}", b.repo, b.status, b.id, b.title);
             }
@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
         }
         Command::Status => {
             let cfg = config::load("loom.toml")?;
-            let beads = scanner::scan_repos(&cfg.repos).await?;
+            let beads = scanner::scan_repos(&cfg.repo).await?;
             scanner::print_status(&beads);
         }
         Command::Dispatch { bead_id, repo, isolate } => {
