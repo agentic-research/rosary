@@ -39,9 +39,9 @@ loom run
 | `loom status` | Summary of what's open, ready, blocked |
 | `loom dispatch <id>` | Hand one specific issue to an AI agent |
 | `loom run` | The main loop — find work, do work, check work, repeat |
-| `loom plan <ticket>` | Break a Linear ticket into per-repo tasks *(coming soon)* |
-| `loom sync` | Keep Linear and local issues in sync *(coming soon)* |
-| `loom serve` | Expose loom as an MCP tool server *(coming soon)* |
+| `loom plan <ticket>` | Fetch a Linear ticket and display details (decomposition coming soon) |
+| `loom sync` | List open Linear issues for your team (bidirectional sync coming soon) |
+| `loom serve` | Expose loom as an MCP tool server (stdio transport) |
 
 ## How the loop works
 
@@ -96,6 +96,32 @@ If any check fails, it stops there. Compile failures mean something is fundament
 
 Loom is configured to scan its own repo (`self = true` in loom.toml). The goal is for loom to manage its own development — finding its own bugs, dispatching agents to fix them, and verifying the results. This isn't fully proven yet, but the plumbing is in place.
 
+## MCP server
+
+Expose loom as tools inside Claude Code:
+
+```bash
+# Register loom as an MCP server (one-time)
+claude mcp add loom -- /path/to/loom serve --transport stdio
+
+# Or with HTTP transport
+loom serve --transport http --port 8383
+```
+
+This gives Claude access to `loom_scan`, `loom_status`, `loom_list_beads`, and `loom_run_once` — enabling the "agents orchestrating agents" pattern.
+
+## Linear integration
+
+Requires `LINEAR_API_KEY` (get one at https://linear.app/settings/api):
+
+```bash
+export LINEAR_API_KEY=lin_api_...
+export LINEAR_TEAM=ART           # optional, defaults to ART
+
+loom plan ART-123                # fetch ticket details
+loom sync                        # list open issues for team
+```
+
 ## Architecture
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full technical picture with diagrams.
@@ -104,5 +130,5 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full technical picture 
 
 ```
 cargo build
-cargo test    # 52 tests
+cargo test    # 66 tests
 ```
