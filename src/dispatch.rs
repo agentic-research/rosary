@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::process::Command;
 
 use crate::dolt::{DoltClient, DoltConfig};
@@ -58,18 +58,23 @@ pub async fn run(bead_id: &str, repo_path: &std::path::Path, isolate: bool) -> R
         path.clone()
     };
 
-    // Step 4: Spawn Claude Code
+    // Step 4: Update bead status before spawning
+    client.update_status(bead_id, "in_progress").await?;
+
+    // Step 5: Spawn Claude Code
     println!("Dispatching {bead_id} to Claude Code...");
 
-    // TODO: actually spawn claude CLI
-    // Command::new("claude")
-    //     .args(["--print", &prompt])
-    //     .current_dir(&work_dir)
-    //     .status()?;
-    let _ = (&prompt, &work_dir); // suppress unused warnings until spawn is wired
+    let status = Command::new("claude")
+        .args(["--print", &prompt])
+        .current_dir(&work_dir)
+        .status()
+        .with_context(|| "spawning claude CLI")?;
 
-    // Step 5: Update bead status
-    client.update_status(bead_id, "in_progress").await?;
+    if status.success() {
+        println!("Claude Code completed successfully for {bead_id}");
+    } else {
+        eprintln!("warning: claude exited with {status} for {bead_id}");
+    }
 
     Ok(())
 }
