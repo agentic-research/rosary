@@ -45,6 +45,16 @@ path = "~/remotes/art/crumb"
 lang = "go"
 
 [[repo]]
+name = "kiln"
+path = "~/remotes/art/kiln"
+lang = "go"
+
+[[repo]]
+name = "signet"
+path = "~/github/art/signet"
+lang = "go"
+
+[[repo]]
 name = "art-hooks"
 path = "~/remotes/art/art-hooks"
 lang = "go"
