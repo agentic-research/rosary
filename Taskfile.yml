@@ -1,0 +1,55 @@
+version: '3'
+
+vars:
+  # ley-line ships a fuse.pc wrapper that maps fuse-t for the fuser crate.
+  # Adjust LEY_LINE_DIR if ley-line is checked out elsewhere.
+  LEY_LINE_DIR: '{{.ROOT_DIR}}/../ley-line'
+  FUSE_PKG_CONFIG_PATH:
+    sh: 'if [ "$(uname)" = "Darwin" ]; then echo "{{.LEY_LINE_DIR}}/rs/pkgconfig"; fi'
+
+env:
+  PKG_CONFIG_PATH: '{{.FUSE_PKG_CONFIG_PATH}}'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build rsry binary (debug)
+    cmds:
+      - cargo build
+
+  release:
+    desc: Build rsry binary (release)
+    cmds:
+      - cargo build --release
+
+  test:
+    desc: Run all tests
+    cmds:
+      - cargo test
+
+  check:
+    desc: Compile check without codegen
+    cmds:
+      - cargo check
+
+  lint:
+    desc: Run clippy
+    cmds:
+      - cargo clippy -- -D warnings
+
+  fmt:
+    desc: Format code
+    cmds:
+      - cargo fmt
+
+  all:
+    desc: fmt + check + lint + test
+    cmds:
+      - task: fmt
+      - task: check
+      - task: lint
+      - task: test
