@@ -1,20 +1,21 @@
-use anyhow::{Context, Result};
-use std::process::Command;
+use anyhow::Result;
 
 use crate::bead::Bead;
 use crate::config::RepoConfig;
+use crate::dolt::{DoltClient, DoltConfig};
 
-/// Scan all configured repos for beads via `bd list --json`
-pub fn scan_repos(repos: &[RepoConfig]) -> Result<Vec<Bead>> {
+/// Scan all configured repos for beads via native MySQL to Dolt.
+pub async fn scan_repos(repos: &[RepoConfig]) -> Result<Vec<Bead>> {
     let mut all_beads = Vec::new();
 
     for repo in repos {
         let path = expand_path(&repo.path);
-        if !path.join(".beads").exists() {
+        let beads_dir = path.join(".beads");
+        if !beads_dir.exists() {
             continue;
         }
 
-        match read_beads(&path, &repo.name) {
+        match read_beads(&beads_dir, &repo.name).await {
             Ok(beads) => all_beads.extend(beads),
             Err(e) => eprintln!("warning: failed to read beads from {}: {e}", repo.name),
         }
@@ -30,28 +31,11 @@ pub fn scan_repos(repos: &[RepoConfig]) -> Result<Vec<Bead>> {
     Ok(all_beads)
 }
 
-/// Read beads from a single repo by invoking `bd list --json`
-fn read_beads(repo_path: &std::path::Path, repo_name: &str) -> Result<Vec<Bead>> {
-    let output = Command::new("bd")
-        .arg("list")
-        .arg("--json")
-        .current_dir(repo_path)
-        .output()
-        .with_context(|| format!("running bd list in {}", repo_path.display()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("bd list failed in {repo_name}: {stderr}");
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let values: Vec<serde_json::Value> =
-        serde_json::from_str(&stdout).with_context(|| "parsing bd list JSON output")?;
-
-    Ok(values
-        .iter()
-        .filter_map(|v| Bead::from_bd_json(v, repo_name))
-        .collect())
+/// Read beads from a single repo via native MySQL connection to Dolt.
+async fn read_beads(beads_dir: &std::path::Path, repo_name: &str) -> Result<Vec<Bead>> {
+    let config = DoltConfig::from_beads_dir(beads_dir)?;
+    let client = DoltClient::connect(&config).await?;
+    client.list_beads(repo_name).await
 }
 
 pub fn print_status(beads: &[Bead]) {
@@ -88,7 +72,7 @@ fn count_repos(beads: &[Bead]) -> usize {
     repos.len()
 }
 
-fn expand_path(path: &std::path::Path) -> std::path::PathBuf {
+pub fn expand_path(path: &std::path::Path) -> std::path::PathBuf {
     let s = path.to_string_lossy();
     if s.starts_with('~') {
         if let Some(home) = dirs_next::home_dir() {
@@ -107,5 +91,15 @@ mod tests {
         let p = expand_path(std::path::Path::new("~/foo/bar"));
         assert!(!p.to_string_lossy().starts_with('~'));
         assert!(p.to_string_lossy().ends_with("foo/bar"));
+    }
+
+    #[tokio::test]
+    async fn scan_repos_skips_missing_beads_dir() {
+        let repos = vec![RepoConfig {
+            name: "nonexistent".to_string(),
+            path: std::path::PathBuf::from("/tmp/no-such-repo"),
+        }];
+        let beads = scan_repos(&repos).await.unwrap();
+        assert!(beads.is_empty());
     }
 }

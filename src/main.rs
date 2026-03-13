@@ -36,6 +36,9 @@ enum Command {
     Dispatch {
         /// Bead ID to work on
         bead_id: String,
+        /// Repo path containing .beads/
+        #[arg(short, long, default_value = ".")]
+        repo: String,
         /// Use isolated git worktree
         #[arg(long, default_value_t = true)]
         isolate: bool,
@@ -58,7 +61,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Scan { config } => {
             let cfg = config::load(&config)?;
-            let beads = scanner::scan_repos(&cfg.repos)?;
+            let beads = scanner::scan_repos(&cfg.repos).await?;
             println!("Found {} beads across {} repos", beads.len(), cfg.repos.len());
             for b in &beads {
                 println!("  {} [{}] {} — {}", b.repo, b.status, b.id, b.title);
@@ -72,11 +75,11 @@ async fn main() -> Result<()> {
         }
         Command::Status => {
             let cfg = config::load("loom.toml")?;
-            let beads = scanner::scan_repos(&cfg.repos)?;
+            let beads = scanner::scan_repos(&cfg.repos).await?;
             scanner::print_status(&beads);
         }
-        Command::Dispatch { bead_id, isolate } => {
-            dispatch::run(&bead_id, isolate).await?;
+        Command::Dispatch { bead_id, repo, isolate } => {
+            dispatch::run(&bead_id, std::path::Path::new(&repo), isolate).await?;
         }
         Command::Serve { transport, port } => {
             todo!("MCP server on {transport}:{port}")
