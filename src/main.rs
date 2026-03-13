@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 mod bead;
 mod config;
 mod dispatch;
+mod dolt;
 mod linear;
 mod scanner;
 
