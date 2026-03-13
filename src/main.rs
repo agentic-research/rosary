@@ -9,6 +9,7 @@ mod linear;
 mod queue;
 mod reconcile;
 mod scanner;
+mod serve;
 mod verify;
 
 #[derive(Parser)]
@@ -106,9 +107,7 @@ async fn main() -> Result<()> {
             reconcile::run(&config, concurrency, interval, once, dry_run).await?;
         }
         Command::Serve { transport, port } => {
-            eprintln!("loom serve is not yet implemented (transport={transport}, port={port})");
-            eprintln!("Tracking: https://github.com/art-technologies/loom — see loom-ccq");
-            std::process::exit(1);
+            serve::run(&transport, port).await?;
         }
     }
 
