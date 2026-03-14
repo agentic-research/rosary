@@ -14,9 +14,12 @@ It finds issues, decides what to work on next, hands tasks to AI agents, checks 
 
 ## Quick start
 
-```
-cargo build
-cargo test
+```bash
+task build    # requires Task (taskfile.dev) — sets PKG_CONFIG_PATH for fuse-t
+task test     # 121 tests
+
+# Register a repo
+rsry enable ~/code/my-app
 
 # See what's out there
 rsry scan
@@ -31,6 +34,8 @@ rsry run --once --concurrency 3
 rsry run
 ```
 
+> **Note**: Use `task build` / `task test` instead of raw `cargo` — the Taskfile sets `PKG_CONFIG_PATH` for the fuse-t dependency via ley-line.
+
 ## Commands
 
 | Command | What it does |
@@ -39,9 +44,17 @@ rsry run
 | `rsry status` | Summary of what's open, ready, blocked |
 | `rsry dispatch <id>` | Hand one specific issue to an AI agent |
 | `rsry run` | The main loop — find work, do work, check work, repeat |
-| `rsry plan <ticket>` | Fetch a Linear ticket and display details (decomposition coming soon) |
-| `rsry sync` | List open Linear issues for your team (bidirectional sync coming soon) |
-| `rsry serve` | Expose rosary as an MCP tool server (stdio transport) |
+| `rsry run --provider gemini` | Use Gemini instead of Claude for dispatch |
+| `rsry enable [path]` | Register a repo in the global registry (`~/.rsry/repos.toml`) |
+| `rsry disable <name>` | Unregister a repo |
+| `rsry bead create <title>` | Create a new bead |
+| `rsry bead close <id>` | Close a bead |
+| `rsry bead list` | List open beads |
+| `rsry bead search <query>` | Search beads by title/description |
+| `rsry bead comment <id> <body>` | Add a comment to a bead |
+| `rsry plan <ticket>` | Fetch a Linear ticket |
+| `rsry sync` | List open Linear issues for your team |
+| `rsry serve` | Expose rosary as an MCP tool server (8 tools, stdio transport) |
 
 ## How the loop works
 
@@ -108,7 +121,7 @@ claude mcp add rosary -- /path/to/rsry serve --transport stdio
 rsry serve --transport http --port 8383
 ```
 
-This gives Claude access to `rsry_scan`, `rsry_status`, `rsry_list_beads`, and `rsry_run_once` — enabling the "agents orchestrating agents" pattern.
+This gives Claude access to 8 tools: `rsry_scan`, `rsry_status`, `rsry_list_beads`, `rsry_run_once`, `rsry_bead_create`, `rsry_bead_close`, `rsry_bead_comment`, `rsry_bead_search`.
 
 ## Linear integration
 
@@ -128,7 +141,11 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full technical picture 
 
 ## Build
 
+```bash
+task build     # debug build with fuse-t support
+task test      # 121 tests
+task lint      # clippy
+task all       # fmt + check + lint + test
 ```
-cargo build
-cargo test    # 66 tests
-```
+
+Pre-commit hooks enforce `cargo fmt` and `cargo clippy` on every commit.
