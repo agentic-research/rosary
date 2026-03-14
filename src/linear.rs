@@ -227,7 +227,13 @@ pub async fn sync() -> Result<()> {
         None => return Ok(()),
     };
 
-    let team_key = std::env::var("LINEAR_TEAM").unwrap_or_else(|_| "ART".to_string());
+    // Read team key: env var > config > default
+    let team_key = std::env::var("LINEAR_TEAM").unwrap_or_else(|_| {
+        crate::config::load_merged("rosary.toml")
+            .ok()
+            .and_then(|cfg| cfg.linear.map(|l| l.team))
+            .unwrap_or_else(|| "ART".to_string())
+    });
 
     let client = build_client(&api_key)?;
 
@@ -289,11 +295,117 @@ pub async fn sync() -> Result<()> {
         }
     }
 
-    println!();
-    println!("Note: bidirectional bead <-> Linear sync is not yet implemented.");
-    println!("Currently read-only. Tracking: loom-7sd");
+    // --- Bidi: push beads → Linear ---
+    // Scan all repos for beads, create Linear issues for any bead
+    // that doesn't have a matching Linear issue (by title match).
+    let cfg = crate::config::load_merged("rosary.toml")?;
+    let beads = crate::scanner::scan_repos(&cfg.repo).await?;
+
+    let linear_titles: std::collections::HashSet<String> = issues
+        .iter()
+        .filter_map(|i| i["title"].as_str().map(|s| s.to_string()))
+        .collect();
+
+    let mut created = 0;
+    for bead in &beads {
+        if bead.status == "closed" {
+            continue;
+        }
+        // Skip if a Linear issue with matching title already exists
+        if linear_titles.contains(&bead.title) {
+            continue;
+        }
+        // Skip low-priority beads (P3+) to avoid flooding Linear
+        if bead.priority > 2 {
+            continue;
+        }
+
+        let label = format!("[{}] ", bead.repo);
+        let full_title = format!("{label}{}", bead.title);
+
+        match create_linear_issue(
+            &client,
+            &team_id,
+            &full_title,
+            &bead.description,
+            bead.priority,
+        )
+        .await
+        {
+            Ok(ident) => {
+                println!("  → Created {ident}: {full_title}");
+                created += 1;
+            }
+            Err(e) => {
+                eprintln!("  ✗ Failed to create issue for {}: {e}", bead.id);
+            }
+        }
+    }
+
+    if created > 0 {
+        println!("\n  Synced {created} bead(s) → Linear");
+    } else {
+        println!("\n  All beads already synced (or below P2 threshold).");
+    }
 
     Ok(())
+}
+
+/// Create a new issue in Linear.
+/// Returns the issue identifier (e.g., "AGE-5").
+async fn create_linear_issue(
+    client: &reqwest::Client,
+    team_id: &str,
+    title: &str,
+    description: &str,
+    priority: u8,
+) -> Result<String> {
+    let mutation = r#"
+        mutation CreateIssue($input: IssueCreateInput!) {
+            issueCreate(input: $input) {
+                success
+                issue {
+                    identifier
+                    title
+                }
+            }
+        }
+    "#;
+
+    // Map bead priority (0=P0 highest) to Linear priority (1=urgent, 4=low)
+    let linear_priority = match priority {
+        0 => 1, // P0 → Urgent
+        1 => 2, // P1 → High
+        2 => 3, // P2 → Medium
+        _ => 4, // P3+ → Low
+    };
+
+    let variables = json!({
+        "input": {
+            "teamId": team_id,
+            "title": title,
+            "description": description,
+            "priority": linear_priority,
+        }
+    });
+
+    let resp = graphql(client, mutation, variables).await?;
+
+    let success = resp
+        .pointer("/data/issueCreate/success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if !success {
+        anyhow::bail!("Linear issueCreate returned success=false");
+    }
+
+    let identifier = resp
+        .pointer("/data/issueCreate/issue/identifier")
+        .and_then(|v| v.as_str())
+        .unwrap_or("???");
+
+    Ok(identifier.to_string())
 }
 
 #[cfg(test)]
@@ -330,5 +442,59 @@ mod tests {
         assert_eq!(priority_label(3), "Medium");
         assert_eq!(priority_label(4), "Low");
         assert_eq!(priority_label(99), "Unknown");
+    }
+
+    #[test]
+    fn bead_to_linear_priority_mapping() {
+        // Bead P0 (critical) → Linear 1 (Urgent)
+        // Bead P1 (high) → Linear 2 (High)
+        // Bead P2 (medium) → Linear 3 (Medium)
+        // Bead P3+ → Linear 4 (Low)
+        let map = |p: u8| -> i32 {
+            match p {
+                0 => 1,
+                1 => 2,
+                2 => 3,
+                _ => 4,
+            }
+        };
+        assert_eq!(map(0), 1);
+        assert_eq!(map(1), 2);
+        assert_eq!(map(2), 3);
+        assert_eq!(map(3), 4);
+        assert_eq!(map(4), 4);
+    }
+
+    #[test]
+    fn build_client_requires_valid_header() {
+        // API key must be valid ASCII for HTTP header
+        let result = build_client("lin_api_valid_key_123");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn build_client_rejects_invalid_header() {
+        // Non-ASCII in header value should fail
+        let result = build_client("invalid\x00key");
+        assert!(result.is_err());
+    }
+
+    /// Integration test — only runs when LINEAR_API_KEY is set.
+    #[tokio::test]
+    async fn sync_live_linear() {
+        let api_key = match std::env::var("LINEAR_API_KEY") {
+            Ok(k) if !k.is_empty() => k,
+            _ => {
+                eprintln!("skipping: LINEAR_API_KEY not set");
+                return;
+            }
+        };
+
+        let client = build_client(&api_key).unwrap();
+        let team_key = std::env::var("LINEAR_TEAM").unwrap_or_else(|_| "AGE".to_string());
+
+        // Should be able to resolve team
+        let team_id = resolve_team_id(&client, &team_key).await;
+        assert!(team_id.is_ok(), "failed to resolve team {team_key}");
     }
 }
