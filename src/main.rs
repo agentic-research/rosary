@@ -251,7 +251,7 @@ async fn main() -> Result<()> {
             linear::sync().await?;
         }
         Command::Status => {
-            let cfg = config::load_merged("rosary.toml")?;
+            let cfg = config::load_merged(&config::resolve_config_path())?;
             let beads = scanner::scan_repos(&cfg.repo).await?;
             scanner::print_status(&beads);
         }
