@@ -465,7 +465,7 @@ impl Reconciler {
     /// every 5 seconds until all finish, run verification, update bead status.
     async fn wait_and_verify(&mut self) -> Result<()> {
         let poll_interval = Duration::from_secs(5);
-        let timeout = Duration::from_secs(600); // 10 min max
+        let timeout = Duration::from_secs(1800); // 30 min max
         let start = std::time::Instant::now();
 
         while !self.active.is_empty() {
@@ -560,6 +560,24 @@ impl Reconciler {
         if let Some(tracker) = self.trackers.get_mut(bead_id) {
             tracker.consecutive_reverts = 0;
         }
+        self.cleanup_worktree(bead_id);
+    }
+
+    /// Remove the git worktree created for this bead.
+    fn cleanup_worktree(&self, bead_id: &str) {
+        let branch = format!("fix/{bead_id}");
+        // Best-effort cleanup — don't block on failure
+        let _ = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                &format!("../fix/{bead_id}"),
+            ])
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["branch", "-D", &branch])
+            .output();
     }
 
     /// Handle a verification failure. Returns true if deadlettered.
@@ -640,6 +658,7 @@ impl Reconciler {
             "[retry] {bead_id}: agent exited non-zero, retry #{} scheduled",
             tracker.retries
         );
+        self.cleanup_worktree(bead_id);
 
         false
     }
