@@ -31,6 +31,20 @@ pub struct LinearConfig {
     pub project: Option<String>,
 }
 
+/// Resolve config path: $RSRY_CONFIG → ~/.rsry/config.toml → ./rosary.toml
+pub fn resolve_config_path() -> String {
+    if let Ok(p) = std::env::var("RSRY_CONFIG") {
+        return p;
+    }
+    if let Some(home) = dirs_next::home_dir() {
+        let global = home.join(".rsry").join("config.toml");
+        if global.exists() {
+            return global.to_string_lossy().to_string();
+        }
+    }
+    "rosary.toml".to_string()
+}
+
 /// Load config from a specific file path.
 pub fn load(path: &str) -> Result<Config> {
     let expanded = shellexpand::tilde(path).to_string();

@@ -8,6 +8,8 @@ mod bead;
 mod config;
 mod dispatch;
 mod dolt;
+#[allow(dead_code)] // API surface for PM agent (loom-w8c.4); is_dominated_by used by reconciler
+mod epic;
 mod linear;
 #[allow(dead_code)]
 mod linear_tracker;
@@ -216,13 +218,22 @@ fn read_daemon_pid() -> Option<u32> {
     }
 }
 
+/// Resolve config path: if user passed "rosary.toml" (default), check global first.
+fn resolve_config(config: &str) -> String {
+    if config == "rosary.toml" {
+        config::resolve_config_path()
+    } else {
+        config.to_string()
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
         Command::Scan { config } => {
-            let cfg = config::load_merged(&config)?;
+            let cfg = config::load_merged(&resolve_config(&config))?;
             let beads = scanner::scan_repos(&cfg.repo).await?;
             println!(
                 "Found {} beads across {} repos",

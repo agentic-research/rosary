@@ -14,6 +14,7 @@ use crate::bead::BeadState;
 use crate::config::{self, RepoConfig};
 use crate::dispatch::{self, AgentHandle};
 use crate::dolt::{DoltClient, DoltConfig};
+use crate::epic;
 use crate::queue::{self, QueueEntry, WorkQueue};
 use crate::scanner;
 use crate::thread;
@@ -311,19 +312,18 @@ impl Reconciler {
                 continue;
             }
 
-            // Dedup: skip if too similar to an active or queued bead
-            let dominated = beads
+            // Dedup: skip if semantically dominated by an active or queued bead.
+            // Uses multi-signal similarity (title + description + scope prefix +
+            // sequential pattern) instead of plain Jaccard on titles.
+            let active_beads: Vec<&crate::bead::Bead> = beads
                 .iter()
                 .filter(|other| other.id != bead.id)
                 .filter(|other| {
                     self.active.contains_key(&other.id) || self.queue.contains(&other.id)
                 })
-                .any(|other| scanner::jaccard_similarity(&bead.title, &other.title) > 0.6);
-            if dominated {
-                eprintln!(
-                    "[dedup] skipping {} — similar to active/queued bead",
-                    bead.id
-                );
+                .collect();
+            if let Some(dominator) = epic::is_dominated_by(bead, &active_beads) {
+                eprintln!("[dedup] skipping {} — dominated by {dominator}", bead.id);
                 continue;
             }
 
