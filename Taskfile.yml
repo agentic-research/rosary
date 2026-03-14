@@ -46,6 +46,20 @@ tasks:
     cmds:
       - cargo fmt
 
+  install:
+    desc: Build release binary and install to ~/.local/bin
+    cmds:
+      - cargo build --release
+      - mkdir -p ~/.local/bin
+      - cp target/release/rsry ~/.local/bin/rsry
+      - echo "Installed rsry to ~/.local/bin/rsry"
+
+  e2e:
+    desc: End-to-end sandbox test (requires Dolt server in .beads/)
+    deps: [build]
+    cmds:
+      - ./scripts/e2e-sandbox.sh
+
   all:
     desc: fmt + check + lint + test
     cmds:

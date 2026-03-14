@@ -173,8 +173,8 @@ impl DoltClient {
         issue_type: &str,
     ) -> Result<()> {
         query(
-            r#"INSERT INTO issues (id, title, description, status, priority, issue_type, created_at, updated_at)
-               VALUES (?, ?, ?, 'open', ?, ?, NOW(), NOW())"#,
+            r#"INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_at, updated_at)
+               VALUES (?, ?, ?, '', '', '', 'open', ?, ?, NOW(), NOW())"#,
         )
         .bind(id)
         .bind(title)
