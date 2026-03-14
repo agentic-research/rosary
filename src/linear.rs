@@ -1,5 +1,8 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
+use std::collections::HashMap;
+
+use crate::bead::BeadState;
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 
@@ -217,6 +220,114 @@ async fn resolve_team_id(client: &reqwest::Client, team_key: &str) -> Result<Str
     )
 }
 
+/// Extract phase identifier from bead text (title or description).
+///
+/// Recognizes patterns like:
+/// - `phase:1`, `phase:2` (label-style, case-insensitive)
+/// - `Phase 1`, `Phase 2` (prose-style, case-insensitive)
+///
+/// The phase value must start with a digit (e.g., "1", "2", "3a").
+/// Label-style (`phase:N`) takes priority over prose-style (`Phase N`).
+///
+/// Returns the phase key (e.g., "1", "2") or None if no phase found.
+fn extract_phase(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+
+    // Try "phase:N" pattern (label-style) — highest priority
+    if let Some(idx) = lower.find("phase:") {
+        let after = &lower[idx + 6..];
+        if after.starts_with(|c: char| c.is_ascii_digit()) {
+            let phase_key: String = after.chars().take_while(|c| c.is_alphanumeric()).collect();
+            return Some(phase_key);
+        }
+    }
+
+    // Try "phase N" pattern (prose-style)
+    if let Some(idx) = lower.find("phase ") {
+        let after = &lower[idx + 6..];
+        if after.starts_with(|c: char| c.is_ascii_digit()) {
+            let phase_key: String = after.chars().take_while(|c| c.is_alphanumeric()).collect();
+            return Some(phase_key);
+        }
+    }
+
+    None
+}
+
+/// Look up a Linear project ID by name.
+///
+/// Uses exact-match filter to find the project. Returns None if not found.
+async fn resolve_project_id(
+    client: &reqwest::Client,
+    project_name: &str,
+) -> Result<Option<String>> {
+    let query = r#"
+        query FindProject($filter: ProjectFilter!) {
+            projects(filter: $filter) {
+                nodes {
+                    id
+                    name
+                }
+            }
+        }
+    "#;
+
+    let variables = json!({
+        "filter": {
+            "name": { "eq": project_name }
+        }
+    });
+
+    let resp = graphql(client, query, variables).await?;
+
+    let project_id = resp
+        .pointer("/data/projects/nodes/0/id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    Ok(project_id)
+}
+
+/// Resolve phase config to a Linear project ID for a given bead.
+///
+/// Checks bead title and description for phase patterns, then looks up
+/// the corresponding project in the phase mapping. Caches resolved project
+/// IDs to avoid redundant API calls.
+async fn resolve_phase_project_id(
+    client: &reqwest::Client,
+    bead: &crate::bead::Bead,
+    phase_map: &HashMap<String, String>,
+    project_cache: &mut HashMap<String, Option<String>>,
+) -> Result<Option<String>> {
+    if phase_map.is_empty() {
+        return Ok(None);
+    }
+
+    // Check title first, then description
+    let phase_key = extract_phase(&bead.title).or_else(|| extract_phase(&bead.description));
+
+    let Some(key) = phase_key else {
+        return Ok(None);
+    };
+
+    let Some(project_name) = phase_map.get(&key) else {
+        return Ok(None);
+    };
+
+    // Check cache first
+    if let Some(cached) = project_cache.get(project_name) {
+        return Ok(cached.clone());
+    }
+
+    // Resolve via API
+    let project_id = resolve_project_id(client, project_name).await?;
+    if project_id.is_none() {
+        eprintln!("  warning: Linear project '{project_name}' (phase {key}) not found");
+    }
+    project_cache.insert(project_name.clone(), project_id.clone());
+    Ok(project_id)
+}
+
 /// Connect to a repo's Dolt database via its .beads/ directory.
 async fn connect_repo_dolt(repo: &crate::config::RepoConfig) -> Result<crate::dolt::DoltClient> {
     let path = crate::scanner::expand_path(&repo.path);
@@ -308,6 +419,12 @@ pub async fn sync(dry_run: bool) -> Result<()> {
 
     // --- Build per-repo Dolt client map ---
     let cfg = crate::config::load_merged("rosary.toml")?;
+    let phase_map = cfg
+        .linear
+        .as_ref()
+        .map(|l| l.phases.clone())
+        .unwrap_or_default();
+    let mut project_cache: HashMap<String, Option<String>> = HashMap::new();
     let beads = crate::scanner::scan_repos(&cfg.repo).await?;
 
     let mut dolt_clients: std::collections::HashMap<String, crate::dolt::DoltClient> =
@@ -323,15 +440,19 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         }
     }
 
-    // Build Linear issue lookup: identifier → (title, description, url)
-    let linear_issues: Vec<(&str, &str, &str, &str)> = issues
+    // Build Linear issue lookup: identifier → (title, description, url, state)
+    let linear_issues: Vec<(&str, &str, &str, &str, &str)> = issues
         .iter()
         .filter_map(|i| {
             let ident = i["identifier"].as_str()?;
             let title = i["title"].as_str()?;
             let desc = i["description"].as_str().unwrap_or("");
             let url = i["url"].as_str().unwrap_or("");
-            Some((ident, title, desc, url))
+            let state = i
+                .pointer("/state/name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Todo");
+            Some((ident, title, desc, url, state))
         })
         .collect();
 
@@ -346,7 +467,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         let bead_tag = format!("<!-- bead:{} ", bead.id);
         let prefixed_title = format!("[{}] {}", bead.repo, bead.title);
 
-        let matched = linear_issues.iter().find(|(_, title, desc, _)| {
+        let matched = linear_issues.iter().find(|(_, title, desc, _, _)| {
             // Match by bead tag in description (strongest signal)
             desc.contains(&bead_tag)
                 // Or match by title
@@ -354,7 +475,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
                 || *title == bead.title
         });
 
-        if let Some((ident, _, _, _url)) = matched {
+        if let Some((ident, _, _, _url, _)) = matched {
             if dry_run {
                 println!("  [dry-run] would link {} → {ident}", bead.id);
                 linked += 1;
@@ -387,7 +508,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         let prefixed_title = format!("[{}] {}", bead.repo, bead.title);
         if linear_issues
             .iter()
-            .any(|(_, t, _, _)| *t == prefixed_title || *t == bead.title)
+            .any(|(_, t, _, _, _)| *t == prefixed_title || *t == bead.title)
         {
             continue;
         }
@@ -395,8 +516,29 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         let label = format!("[{}] ", bead.repo);
         let full_title = format!("{label}{}", bead.title);
 
+        // Derive perspective labels from bead owner (e.g., "dev-agent" → "perspective:dev")
+        let mut perspective_labels: Vec<String> = Vec::new();
+        if let Some(ref owner) = bead.owner
+            && let Some(perspective) = owner.strip_suffix("-agent")
+        {
+            perspective_labels.push(format!("perspective:{perspective}"));
+        }
+
+        // Resolve phase → project mapping (if configured)
+        let project_id =
+            resolve_phase_project_id(&client, bead, &phase_map, &mut project_cache).await?;
+
         if dry_run {
-            println!("  [dry-run] would create: {full_title}");
+            if let Some(ref pid) = project_id {
+                let phase_key =
+                    extract_phase(&bead.title).or_else(|| extract_phase(&bead.description));
+                println!(
+                    "  [dry-run] would create: {full_title} (phase {} → project {pid})",
+                    phase_key.unwrap_or_default()
+                );
+            } else {
+                println!("  [dry-run] would create: {full_title}");
+            }
             created += 1;
         } else {
             match create_linear_issue(
@@ -407,6 +549,8 @@ pub async fn sync(dry_run: bool) -> Result<()> {
                 bead.priority,
                 &bead.id,
                 &bead.repo,
+                &perspective_labels,
+                project_id.as_deref(),
             )
             .await
             {
@@ -447,7 +591,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
             // Only close issues that are still open in Linear
             if linear_issues
                 .iter()
-                .any(|(ident, _, _, _)| *ident == ext_ref)
+                .any(|(ident, _, _, _, _)| *ident == ext_ref)
             {
                 if dry_run {
                     println!("  [dry-run] would close {ext_ref} (bead {})", bead.id);
@@ -484,8 +628,69 @@ pub async fn sync(dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// Find an existing label by name in a team, or create one.
+/// Returns the Linear label ID.
+async fn find_or_create_label(
+    client: &reqwest::Client,
+    team_id: &str,
+    name: &str,
+) -> Result<String> {
+    // Query existing labels for the team
+    let query_str = r#"
+        query TeamLabels($teamId: String!) {
+            team(id: $teamId) {
+                labels { nodes { id name } }
+            }
+        }
+    "#;
+    let resp = graphql(client, query_str, json!({ "teamId": team_id })).await?;
+    let nodes = resp
+        .pointer("/data/team/labels/nodes")
+        .and_then(|v| v.as_array());
+
+    if let Some(nodes) = nodes {
+        for node in nodes {
+            if node["name"].as_str() == Some(name)
+                && let Some(id) = node["id"].as_str()
+            {
+                return Ok(id.to_string());
+            }
+        }
+    }
+
+    // Label doesn't exist — create it
+    let mutation = r#"
+        mutation CreateLabel($input: IssueLabelCreateInput!) {
+            issueLabelCreate(input: $input) {
+                success
+                issueLabel { id }
+            }
+        }
+    "#;
+    let variables = json!({
+        "input": {
+            "name": name,
+            "teamId": team_id,
+        }
+    });
+    let resp = graphql(client, mutation, variables).await?;
+    let success = resp
+        .pointer("/data/issueLabelCreate/success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !success {
+        anyhow::bail!("issueLabelCreate failed for '{name}'");
+    }
+    let label_id = resp
+        .pointer("/data/issueLabelCreate/issueLabel/id")
+        .and_then(|v| v.as_str())
+        .context("missing label ID in issueLabelCreate response")?;
+    Ok(label_id.to_string())
+}
+
 /// Create a new issue in Linear with bead ID tagged in description.
 /// Returns the issue identifier (e.g., "AGE-5").
+#[allow(clippy::too_many_arguments)]
 async fn create_linear_issue(
     client: &reqwest::Client,
     team_id: &str,
@@ -494,6 +699,8 @@ async fn create_linear_issue(
     priority: u8,
     bead_id: &str,
     repo_name: &str,
+    perspective_labels: &[String],
+    project_id: Option<&str>,
 ) -> Result<String> {
     // Tag the description with bead ID for bidirectional linkage
     let tagged_description = format!("{description}\n\n<!-- bead:{bead_id} repo:{repo_name} -->",);
@@ -517,14 +724,34 @@ async fn create_linear_issue(
         _ => 4, // P3+ → Low
     };
 
-    let variables = json!({
-        "input": {
-            "teamId": team_id,
-            "title": title,
-            "description": tagged_description,
-            "priority": linear_priority,
+    // Resolve perspective labels to Linear label IDs
+    let mut label_ids: Vec<String> = Vec::new();
+    for label_name in perspective_labels {
+        match find_or_create_label(client, team_id, label_name).await {
+            Ok(id) => label_ids.push(id),
+            Err(e) => {
+                eprintln!("  warning: could not resolve label '{label_name}': {e}");
+            }
         }
+    }
+
+    let mut input = json!({
+        "teamId": team_id,
+        "title": title,
+        "description": tagged_description,
+        "priority": linear_priority,
     });
+
+    if !label_ids.is_empty() {
+        input["labelIds"] = json!(label_ids);
+    }
+
+    // Attach to Linear project if phase mapping resolved
+    if let Some(pid) = project_id {
+        input["projectId"] = json!(pid);
+    }
+
+    let variables = json!({ "input": input });
 
     let resp = graphql(client, mutation, variables).await?;
 
@@ -596,17 +823,25 @@ async fn update_linear_issue_status(
         .and_then(|v| v.as_array())
         .context("fetching workflow states")?;
 
-    let target_type = match status {
-        "closed" => "completed",
-        "in_progress" => "started",
-        _ => "unstarted",
-    };
+    // Map rosary status to Linear state via type (stable) + name hint (refinement)
+    let bead_state = BeadState::from(status);
+    let (target_type, preferred_name) = bead_state.to_linear_type();
 
+    // Try preferred name within type first, fall back to any state with matching type
     let target_state = states
         .iter()
-        .find(|s| s["type"].as_str() == Some(target_type))
+        .find(|s| {
+            s["type"].as_str() == Some(target_type) && s["name"].as_str() == Some(preferred_name)
+        })
+        .or_else(|| {
+            states
+                .iter()
+                .find(|s| s["type"].as_str() == Some(target_type))
+        })
         .and_then(|s| s["id"].as_str())
-        .context("no matching workflow state")?;
+        .context(format!(
+            "no Linear state with type '{target_type}' for bead status '{status}'"
+        ))?;
 
     // Update the issue
     let mutation = r#"
@@ -701,6 +936,49 @@ mod tests {
         // Non-ASCII in header value should fail
         let result = build_client("invalid\x00key");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_phase_label_style() {
+        assert_eq!(extract_phase("phase:1 foundation"), Some("1".to_string()));
+        assert_eq!(extract_phase("phase:2"), Some("2".to_string()));
+        assert_eq!(extract_phase("phase:3a something"), Some("3a".to_string()));
+        assert_eq!(extract_phase("tags: phase:6 final"), Some("6".to_string()));
+    }
+
+    #[test]
+    fn extract_phase_prose_style() {
+        assert_eq!(extract_phase("Phase 1 foundation"), Some("1".to_string()));
+        assert_eq!(extract_phase("Phase 2"), Some("2".to_string()));
+        assert_eq!(
+            extract_phase("Implements Phase 3 requirements"),
+            Some("3".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_phase_case_insensitive() {
+        assert_eq!(extract_phase("PHASE:1"), Some("1".to_string()));
+        assert_eq!(extract_phase("Phase:2"), Some("2".to_string()));
+        assert_eq!(extract_phase("PHASE 3"), Some("3".to_string()));
+    }
+
+    #[test]
+    fn extract_phase_none_when_absent() {
+        assert_eq!(extract_phase("no phase here"), None);
+        assert_eq!(extract_phase("just a regular bead"), None);
+        assert_eq!(extract_phase(""), None);
+    }
+
+    #[test]
+    fn extract_phase_label_takes_priority_over_prose() {
+        // "phase:" label pattern is checked before "phase N" prose pattern
+        assert_eq!(
+            extract_phase("Phase 2 but also phase:1"),
+            Some("1".to_string())
+        );
+        // When only prose style exists, it works
+        assert_eq!(extract_phase("Phase 2 foundation"), Some("2".to_string()));
     }
 
     /// Integration test — only runs when LINEAR_API_KEY is set.

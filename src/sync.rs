@@ -154,13 +154,20 @@ pub async fn bidi_sync(
         }
 
         let label = format!("[{}] ", bead.repo);
+        let mut issue_labels = vec![bead.repo.clone()];
+        // Derive perspective label from bead owner (e.g., "dev-agent" → "perspective:dev")
+        if let Some(ref owner) = bead.owner
+            && let Some(perspective) = owner.strip_suffix("-agent")
+        {
+            issue_labels.push(format!("perspective:{perspective}"));
+        }
         let ext_issue = ExternalIssue {
             external_id: String::new(),
             title: format!("{label}{}", bead.title),
             description: bead.description.clone(),
             status: bead.status.clone(),
             priority: bead.priority,
-            labels: vec![bead.repo.clone()],
+            labels: issue_labels,
         };
 
         match tracker.create(&ext_issue).await {

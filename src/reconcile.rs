@@ -17,6 +17,7 @@ use crate::dolt::{DoltClient, DoltConfig};
 use crate::epic;
 use crate::queue::{self, QueueEntry, WorkQueue};
 use crate::scanner;
+use crate::sync::IssueTracker;
 use crate::thread;
 use crate::verify::{Verifier, VerifySummary};
 
@@ -75,6 +76,9 @@ pub struct Reconciler {
     dolt_clients: HashMap<String, DoltClient>,
     /// Resolved AI agent provider (claude, gemini, etc).
     provider: Box<dyn dispatch::AgentProvider>,
+    /// Optional external issue tracker (Linear, etc.) for status mirroring.
+    /// When set, persist_status also pushes state transitions to the tracker.
+    issue_tracker: Option<Box<dyn IssueTracker>>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -133,7 +137,15 @@ impl Reconciler {
             completed_work_dirs: HashMap::new(),
             dolt_clients: HashMap::new(),
             provider,
+            issue_tracker: None,
         }
+    }
+
+    /// Attach an external issue tracker for status mirroring.
+    /// When set, every bead state transition also updates the linked Linear issue.
+    #[allow(dead_code)] // API surface — called from main.rs when LINEAR_API_KEY is set
+    pub fn set_issue_tracker(&mut self, tracker: Box<dyn IssueTracker>) {
+        self.issue_tracker = Some(tracker);
     }
 
     /// Check if a bead was already closed by the dispatched agent via MCP.
@@ -598,7 +610,12 @@ impl Reconciler {
     }
 
     /// Update bead status in Dolt and log the transition. Best-effort.
+    /// Also mirrors the transition to the external issue tracker (Linear)
+    /// if the bead has an external_ref and a tracker is configured.
     async fn persist_status(&mut self, bead_id: &str, repo: &str, status: &str) {
+        // 1. Write to Dolt (source of truth) and fetch external_ref
+        let has_tracker = self.issue_tracker.is_some();
+        let mut external_ref: Option<String> = None;
         if let Some(client) = self.dolt_client(repo).await {
             if let Err(e) = client.update_status(bead_id, status).await {
                 eprintln!("[dolt] failed to update {bead_id} to {status}: {e}");
@@ -606,6 +623,25 @@ impl Reconciler {
             client
                 .log_event(bead_id, "state_change", &format!("→ {status}"))
                 .await;
+            if has_tracker {
+                external_ref = client.get_external_ref(bead_id).await.ok().flatten();
+            }
+        }
+
+        // 2. Mirror to external issue tracker (best-effort, never blocks)
+        // Pass bead status — the tracker handles mapping to its native states.
+        if let (Some(tracker), Some(ext_ref)) = (&self.issue_tracker, external_ref) {
+            if let Err(e) = tracker.update_status(&ext_ref, status).await {
+                eprintln!(
+                    "[{}] failed to mirror {bead_id} → {ext_ref}: {e}",
+                    tracker.name()
+                );
+            } else {
+                eprintln!(
+                    "[{}] mirrored {bead_id} → {ext_ref} ({status})",
+                    tracker.name()
+                );
+            }
         }
     }
 
@@ -741,6 +777,19 @@ pub async fn run(
 ) -> Result<()> {
     let cfg = config::load(config_path)?;
 
+    // Extract linear config before cfg.repo is moved
+    let linear_team = std::env::var("LINEAR_TEAM").unwrap_or_else(|_| {
+        cfg.linear
+            .as_ref()
+            .map(|l| l.team.clone())
+            .unwrap_or_else(|| "AGE".to_string())
+    });
+    let linear_state_overrides = cfg
+        .linear
+        .as_ref()
+        .map(|l| l.states.clone())
+        .unwrap_or_default();
+
     let reconciler_config = ReconcilerConfig {
         max_concurrent: concurrency,
         scan_interval: Duration::from_secs(interval),
@@ -753,6 +802,24 @@ pub async fn run(
     };
 
     let mut reconciler = Reconciler::new(reconciler_config);
+    if let Ok(api_key) = std::env::var("LINEAR_API_KEY") {
+        match crate::linear_tracker::LinearTracker::with_overrides(
+            &api_key,
+            &linear_team,
+            linear_state_overrides,
+        )
+        .await
+        {
+            Ok(tracker) => {
+                eprintln!("[linear] attached tracker for team {linear_team}");
+                reconciler.set_issue_tracker(Box::new(tracker));
+            }
+            Err(e) => {
+                eprintln!("[linear] failed to attach tracker: {e} (continuing without)");
+            }
+        }
+    }
+
     reconciler.run().await
 }
 
