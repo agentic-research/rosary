@@ -217,10 +217,19 @@ async fn resolve_team_id(client: &reqwest::Client, team_key: &str) -> Result<Str
     )
 }
 
+/// Connect to a repo's Dolt database via its .beads/ directory.
+async fn connect_repo_dolt(repo: &crate::config::RepoConfig) -> Result<crate::dolt::DoltClient> {
+    let path = crate::scanner::expand_path(&repo.path);
+    let beads_dir = path.join(".beads");
+    let config = crate::dolt::DoltConfig::from_beads_dir(&beads_dir)?;
+    crate::dolt::DoltClient::connect(&config).await
+}
+
 /// Bidirectional sync: beads <-> Linear.
 ///
-/// Currently fetches open issues from the configured team and prints a summary.
-/// Bidirectional sync is not yet implemented.
+/// 1. Link: match existing Linear issues to beads by title, store external_ref
+/// 2. Push: create Linear issues for unlinked beads, store external_ref
+/// 3. Close: update Linear issues for closed beads
 pub async fn sync() -> Result<()> {
     let api_key = match get_api_key() {
         Some(k) => k,
@@ -245,7 +254,7 @@ pub async fn sync() -> Result<()> {
             team(id: $teamId) {
                 name
                 key
-                issues(first: 50, filter: $filter) {
+                issues(first: 250, filter: $filter) {
                     nodes {
                         identifier
                         title
@@ -295,28 +304,73 @@ pub async fn sync() -> Result<()> {
         }
     }
 
-    // --- Bidi: push beads → Linear ---
-    // Scan all repos for beads, create Linear issues for any bead
-    // that doesn't have a matching Linear issue (by title match).
+    // --- Build per-repo Dolt client map ---
     let cfg = crate::config::load_merged("rosary.toml")?;
     let beads = crate::scanner::scan_repos(&cfg.repo).await?;
 
-    let linear_titles: std::collections::HashSet<String> = issues
+    let mut dolt_clients: std::collections::HashMap<String, crate::dolt::DoltClient> =
+        std::collections::HashMap::new();
+    for repo in &cfg.repo {
+        match connect_repo_dolt(repo).await {
+            Ok(dc) => {
+                dolt_clients.insert(repo.name.clone(), dc);
+            }
+            Err(e) => {
+                eprintln!("  warning: cannot connect to {} Dolt: {e}", repo.name);
+            }
+        }
+    }
+
+    // Build Linear issue lookup: identifier → title
+    let linear_issues: Vec<(&str, &str)> = issues
         .iter()
-        .filter_map(|i| i["title"].as_str().map(|s| s.to_string()))
+        .filter_map(|i| {
+            let ident = i["identifier"].as_str()?;
+            let title = i["title"].as_str()?;
+            Some((ident, title))
+        })
         .collect();
 
+    // --- LINK: match existing Linear issues to unlinked beads by title ---
+    let mut linked = 0;
+    for bead in &beads {
+        if bead.external_ref.is_some() {
+            continue;
+        }
+        // Linear issues are created with "[repo] title" format
+        let prefixed_title = format!("[{}] {}", bead.repo, bead.title);
+        if let Some((ident, _)) = linear_issues
+            .iter()
+            .find(|(_, t)| *t == prefixed_title || *t == bead.title)
+            && let Some(dc) = dolt_clients.get(&bead.repo)
+        {
+            if let Err(e) = dc.set_external_ref(&bead.id, ident).await {
+                eprintln!("  ✗ Failed to link {} → {ident}: {e}", bead.id);
+            } else {
+                println!("  ↔ Linked {} → {ident}", bead.id);
+                linked += 1;
+            }
+        }
+    }
+
+    // --- PUSH: create Linear issues for unlinked beads, store external_ref ---
     let mut created = 0;
     for bead in &beads {
+        if bead.external_ref.is_some() {
+            continue;
+        }
         if bead.status == "closed" {
             continue;
         }
-        // Skip if a Linear issue with matching title already exists
-        if linear_titles.contains(&bead.title) {
+        if bead.priority > 2 {
             continue;
         }
-        // Skip low-priority beads (P3+) to avoid flooding Linear
-        if bead.priority > 2 {
+        // Skip if we just linked it above (check by title match)
+        let prefixed_title = format!("[{}] {}", bead.repo, bead.title);
+        if linear_issues
+            .iter()
+            .any(|(_, t)| *t == prefixed_title || *t == bead.title)
+        {
             continue;
         }
 
@@ -335,6 +389,12 @@ pub async fn sync() -> Result<()> {
             Ok(ident) => {
                 println!("  → Created {ident}: {full_title}");
                 created += 1;
+                // Store external_ref back on the bead
+                if let Some(dc) = dolt_clients.get(&bead.repo)
+                    && let Err(e) = dc.set_external_ref(&bead.id, &ident).await
+                {
+                    eprintln!("  ✗ Failed to store external_ref for {}: {e}", bead.id);
+                }
             }
             Err(e) => {
                 eprintln!("  ✗ Failed to create issue for {}: {e}", bead.id);
@@ -342,10 +402,51 @@ pub async fn sync() -> Result<()> {
         }
     }
 
+    // --- CLOSE: update Linear issues for closed beads ---
+    let mut closed = 0;
+    for repo in &cfg.repo {
+        let Some(dc) = dolt_clients.get(&repo.name) else {
+            continue;
+        };
+        let closed_beads = match dc.list_closed_linked_beads(&repo.name).await {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!(
+                    "  warning: failed to query closed beads for {}: {e}",
+                    repo.name
+                );
+                continue;
+            }
+        };
+        for bead in &closed_beads {
+            let ext_ref = bead.external_ref.as_deref().unwrap_or_default();
+            // Only close issues that are still open in Linear
+            if linear_issues.iter().any(|(ident, _)| *ident == ext_ref) {
+                match update_linear_issue_status(&client, &team_id, ext_ref, "closed").await {
+                    Ok(()) => {
+                        println!("  ✓ Closed {ext_ref} (bead {})", bead.id);
+                        closed += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("  ✗ Failed to close {ext_ref}: {e}",);
+                    }
+                }
+            }
+        }
+    }
+
+    println!();
+    if linked > 0 {
+        println!("  Linked {linked} existing issue(s)");
+    }
     if created > 0 {
-        println!("\n  Synced {created} bead(s) → Linear");
-    } else {
-        println!("\n  All beads already synced (or below P2 threshold).");
+        println!("  Pushed {created} bead(s) → Linear");
+    }
+    if closed > 0 {
+        println!("  Closed {closed} Linear issue(s)");
+    }
+    if linked == 0 && created == 0 && closed == 0 {
+        println!("  Everything in sync.");
     }
 
     Ok(())
@@ -406,6 +507,93 @@ async fn create_linear_issue(
         .unwrap_or("???");
 
     Ok(identifier.to_string())
+}
+
+/// Update a Linear issue's workflow state.
+/// Maps rosary status ("closed", "in_progress", "open") to Linear state types.
+async fn update_linear_issue_status(
+    client: &reqwest::Client,
+    team_id: &str,
+    external_id: &str,
+    status: &str,
+) -> Result<()> {
+    // Find the issue's internal ID by identifier
+    let find_query = r#"
+        query FindIssue($filter: IssueFilter!) {
+            issues(filter: $filter, first: 1) {
+                nodes { id }
+            }
+        }
+    "#;
+
+    let parts: Vec<&str> = external_id.splitn(2, '-').collect();
+    let filter = if parts.len() == 2 {
+        if let Ok(num) = parts[1].parse::<i64>() {
+            json!({
+                "team": { "key": { "eq": parts[0] } },
+                "number": { "eq": num }
+            })
+        } else {
+            json!({ "identifier": { "eq": external_id } })
+        }
+    } else {
+        json!({ "identifier": { "eq": external_id } })
+    };
+
+    let resp = graphql(client, find_query, json!({ "filter": filter })).await?;
+    let issue_id = resp
+        .pointer("/data/issues/nodes/0/id")
+        .and_then(|v| v.as_str())
+        .context("issue not found in Linear")?;
+
+    // Find the target workflow state
+    let states_query = r#"
+        query TeamStates($teamId: String!) {
+            team(id: $teamId) {
+                states { nodes { id name type } }
+            }
+        }
+    "#;
+    let states_resp = graphql(client, states_query, json!({ "teamId": team_id })).await?;
+    let states = states_resp
+        .pointer("/data/team/states/nodes")
+        .and_then(|v| v.as_array())
+        .context("fetching workflow states")?;
+
+    let target_type = match status {
+        "closed" => "completed",
+        "in_progress" => "started",
+        _ => "unstarted",
+    };
+
+    let target_state = states
+        .iter()
+        .find(|s| s["type"].as_str() == Some(target_type))
+        .and_then(|s| s["id"].as_str())
+        .context("no matching workflow state")?;
+
+    // Update the issue
+    let mutation = r#"
+        mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+            issueUpdate(id: $id, input: $input) { success }
+        }
+    "#;
+    let resp = graphql(
+        client,
+        mutation,
+        json!({ "id": issue_id, "input": { "stateId": target_state } }),
+    )
+    .await?;
+
+    let success = resp
+        .pointer("/data/issueUpdate/success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !success {
+        anyhow::bail!("issueUpdate failed for {external_id}");
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

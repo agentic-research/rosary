@@ -86,13 +86,15 @@ pub struct IterationSummary {
     pub passed: usize,
     pub failed: usize,
     pub deadlettered: usize,
+    /// Beads closed by the agent via MCP (skipped verification).
+    pub agent_closed: usize,
 }
 
 impl std::fmt::Display for IterationSummary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "scanned={} triaged={} dispatched={} completed={} passed={} failed={} deadlettered={}",
+            "scanned={} triaged={} dispatched={} completed={} passed={} failed={} deadlettered={} agent_closed={}",
             self.scanned,
             self.triaged,
             self.dispatched,
@@ -100,6 +102,7 @@ impl std::fmt::Display for IterationSummary {
             self.passed,
             self.failed,
             self.deadlettered,
+            self.agent_closed,
         )
     }
 }
@@ -129,6 +132,25 @@ impl Reconciler {
             completed_work_dirs: HashMap::new(),
             dolt_clients: HashMap::new(),
             provider,
+        }
+    }
+
+    /// Check if a bead was already closed by the dispatched agent via MCP.
+    ///
+    /// This is the "agent-first" fast path: when agents self-close beads,
+    /// we skip the full verification pipeline (compile+test+lint+diff-sanity),
+    /// which is the main consumption throughput bottleneck.
+    async fn is_bead_agent_closed(&mut self, bead_id: &str, repo: &str) -> bool {
+        if let Some(client) = self.dolt_client(repo).await {
+            match client.get_status(bead_id).await {
+                Ok(Some(ref status)) if status == "closed" || status == "done" => {
+                    println!("[agent-closed] {bead_id} — skipping verification (agent-first)");
+                    true
+                }
+                _ => false,
+            }
+        } else {
+            false
         }
     }
 
@@ -211,6 +233,17 @@ impl Reconciler {
                 .get(bead_id.as_str())
                 .map(|t| t.repo.clone())
                 .unwrap_or_default();
+
+            // Agent-first fast path: if the agent already closed the bead via
+            // MCP, skip verification entirely. This is the main throughput win —
+            // verification (compile+test+lint) takes minutes per bead.
+            if self.is_bead_agent_closed(bead_id, &repo).await {
+                self.completed_work_dirs.remove(bead_id);
+                summary.agent_closed += 1;
+                summary.passed += 1;
+                self.on_pass(bead_id);
+                continue;
+            }
 
             if *exit_success {
                 let verify_result = self.verify_agent(bead_id);
@@ -502,6 +535,13 @@ impl Reconciler {
                     .map(|t| t.repo.clone())
                     .unwrap_or_default();
 
+                // Agent-first: skip verification if agent already closed the bead
+                if self.is_bead_agent_closed(bead_id, &repo).await {
+                    self.completed_work_dirs.remove(bead_id);
+                    self.on_pass(bead_id);
+                    continue;
+                }
+
                 if *exit_success {
                     let verify_result = self.verify_agent(bead_id);
                     match verify_result {
@@ -744,6 +784,7 @@ mod tests {
             passed: 1,
             failed: 0,
             deadlettered: 0,
+            agent_closed: 0,
         };
         let display = format!("{s}");
         assert!(display.contains("scanned=10"));

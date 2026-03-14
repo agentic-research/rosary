@@ -9,11 +9,15 @@ mod config;
 mod dispatch;
 mod dolt;
 mod linear;
+#[allow(dead_code)]
+mod linear_tracker;
 mod pool;
 mod queue;
 mod reconcile;
 mod scanner;
 mod serve;
+#[allow(dead_code)]
+mod sync;
 mod thread;
 mod vcs;
 mod verify;

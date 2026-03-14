@@ -259,6 +259,16 @@ impl DoltClient {
         Ok(())
     }
 
+    /// Get the current status of a bead by ID.
+    pub async fn get_status(&self, id: &str) -> Result<Option<String>> {
+        let row = query("SELECT status FROM issues WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .with_context(|| format!("querying status for {id}"))?;
+        Ok(row.map(|r| r.get("status")))
+    }
+
     /// Create a new bead (issue) in the database.
     pub async fn create_bead(
         &self,
@@ -324,6 +334,63 @@ impl DoltClient {
         .fetch_all(&self.pool)
         .await
         .with_context(|| format!("searching beads for '{query_str}'"))?;
+
+        let beads = rows
+            .iter()
+            .map(|row| Bead {
+                id: row.get("id"),
+                title: row.get("title"),
+                description: row.try_get("description").unwrap_or_default(),
+                status: row.get("status"),
+                priority: row.try_get::<i32, _>("priority").unwrap_or(2) as u8,
+                issue_type: row
+                    .try_get("issue_type")
+                    .unwrap_or_else(|_| "task".to_string()),
+                owner: row.try_get("assignee").ok(),
+                repo: repo_name.to_string(),
+                created_at: row.try_get("created_at").unwrap_or_default(),
+                updated_at: row.try_get("updated_at").unwrap_or_default(),
+                dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0) as u32,
+                dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
+                comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0) as u32,
+                branch: None,
+                pr_url: None,
+                jj_change_id: None,
+                external_ref: row.try_get("external_ref").ok(),
+            })
+            .collect();
+
+        Ok(beads)
+    }
+
+    #[allow(dead_code)] // API surface — used by sync module
+    /// Set the external_ref for a bead (e.g., Linear issue identifier like "AGE-5").
+    pub async fn set_external_ref(&self, id: &str, external_ref: &str) -> Result<()> {
+        query("UPDATE issues SET external_ref = ?, updated_at = NOW() WHERE id = ?")
+            .bind(external_ref)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("setting external_ref for {id}"))?;
+        Ok(())
+    }
+
+    #[allow(dead_code)] // Called from linear.rs sync() — clippy can't trace async
+    /// List closed beads that have an external_ref set.
+    /// Used by sync to propagate close status to external trackers.
+    pub async fn list_closed_linked_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
+        let rows = query(
+            r#"SELECT id, title, description, status, priority, issue_type,
+                      assignee, external_ref, created_at, updated_at,
+                      0 as dep_count, 0 as dependency_count, 0 as comment_count
+               FROM issues
+               WHERE status = 'closed' AND external_ref IS NOT NULL AND external_ref != ''
+               ORDER BY updated_at DESC
+               LIMIT 500"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("querying closed linked beads")?;
 
         let beads = rows
             .iter()
