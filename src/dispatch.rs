@@ -94,6 +94,8 @@ impl AgentProvider for ClaudeProvider {
                 prompt,
                 "--allowedTools",
                 permissions.claude_allowed_tools(),
+                "--append-system-prompt",
+                AGENT_SYSTEM_PROMPT,
                 "--output-format",
                 "json",
             ])
@@ -235,18 +237,37 @@ impl AgentHandle {
 /// Build the prompt for a bead.
 pub fn build_prompt(bead: &Bead) -> String {
     format!(
-        "Fix this issue. Make the minimal change needed, scoped to a single file.\n\
+        "Fix this issue. Make the minimal change needed.\n\
          \n\
          Title: {}\n\
          Description: {}\n\
          \n\
          After fixing:\n\
-         1. Run tests to verify\n\
+         1. Run tests via `task test` (not raw cargo/go test)\n\
          2. Create a commit with a descriptive message\n\
          3. Report what you changed",
         bead.title, bead.description
     )
 }
+
+/// System prompt appended to all dispatched agents.
+/// Tells agents about available MCP tools and workflow expectations.
+const AGENT_SYSTEM_PROMPT: &str = "\
+You are a rosary-dispatched agent working on a bead (work item).\n\
+\n\
+## Available Tools\n\
+- **mache MCP**: Use mcp__mache__* tools for structural code navigation \
+  (find_definition, find_callers, find_callees, search, get_overview). \
+  Prefer mache over grep for understanding code structure.\n\
+- **rsry MCP**: Use mcp__rsry__* tools for bead management \
+  (bead_create, bead_close, bead_comment, bead_search).\n\
+\n\
+## Workflow\n\
+- Use `task build` / `task test` instead of raw `cargo` or `go` commands\n\
+- Make minimal, focused changes\n\
+- Commit with descriptive messages\n\
+- Do NOT add co-author lines to commits\n\
+";
 
 /// Create a git worktree for isolated work. Returns the worktree path on success.
 async fn create_worktree(repo_path: &Path, bead_id: &str) -> Result<PathBuf, ()> {
@@ -487,6 +508,6 @@ mod tests {
         let prompt = build_prompt(&bead);
         assert!(prompt.contains("Fix the widget"));
         assert!(prompt.contains("The widget is broken"));
-        assert!(prompt.contains("Run tests to verify"));
+        assert!(prompt.contains("Run tests via"));
     }
 }
