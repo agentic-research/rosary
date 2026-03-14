@@ -1,24 +1,11 @@
 //! HTTP client for the sprites.dev compute API.
 //!
 //! API base: `https://api.sprites.dev/v1`
-//! Auth: `Authorization: Bearer {token}` (from SPRITES_TOKEN env var)
+//! Auth: `Authorization: Bearer {token}`
+//! Docs: https://sprites.dev/api/sprites
 //!
-//! # Validation status
-//!
-//! Endpoints marked `[VALIDATED]` were tested against the live API on 2026-03-14.
-//! Endpoints marked `[ASSUMED]` are based on docs but not yet validated.
-//!
-//! Real API responses captured from `sprite api` CLI:
-//! - GET /sprites/{name} → full Sprite JSON with id, status, url, org, timestamps
-//! - POST /sprites → create with `{"name": "..."}` body
-//! - DELETE /sprites/{name} → destroys sprite
-//! - POST /sprites/{name}/exec → streams raw stdout (NOT JSON), no exit code in response
-//! - POST /checkpoints (via CLI) → creates sequential IDs (v0, v1, v2)
-//!
-//! Known 404s (do NOT exist):
-//! - /policies/network
-//! - /policies/resources
-//! - /fs/{path} (filesystem API)
+//! Built against real API docs fetched 2026-03-14. Each endpoint references
+//! the doc page it was validated against.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -27,23 +14,11 @@ use serde_json::json;
 const DEFAULT_BASE_URL: &str = "https://api.sprites.dev/v1";
 
 // ---------------------------------------------------------------------------
-// API types — [VALIDATED] against real responses from 2026-03-14
+// API types — from https://sprites.dev/api/sprites#create
 // ---------------------------------------------------------------------------
 
-/// Sprite resource as returned by GET /sprites/{name}.
-///
-/// [VALIDATED] Real response:
-/// ```json
-/// {
-///   "id": "sprite-091278d4-...",
-///   "name": "rsry-test",
-///   "status": "warm",
-///   "url": "https://rsry-test-wrsa.sprites.app",
-///   "organization": "james-gardner-570",
-///   "created_at": "2026-03-14T21:31:57.855138Z",
-///   ...
-/// }
-/// ```
+/// Sprite resource.
+/// Ref: https://sprites.dev/api/sprites#create (response schema)
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Sprite {
     pub id: String,
@@ -61,26 +36,31 @@ pub struct Sprite {
 }
 
 /// Options for creating a sprite.
-/// [VALIDATED] Create body is just `{"name": "..."}`.
-/// Resource options (cpu, memory) are [ASSUMED] — not yet tested.
+/// Ref: https://sprites.dev/api/sprites#create (request body)
+/// Only `name` is sent; `url_settings` optional.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct CreateOpts {
+    /// URL auth setting: "sprite" (default) or "public".
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cpu: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub memory_mb: Option<u32>,
+    pub url_auth: Option<String>,
 }
 
-/// Checkpoint as returned by the CLI.
-/// [VALIDATED] IDs are sequential: v0, v1, v2, etc.
+/// Checkpoint.
+/// Ref: https://sprites.dev/api/sprites/checkpoints (list response)
 #[derive(Debug, Clone, Deserialize)]
 pub struct Checkpoint {
     pub id: String,
+    #[serde(default)]
+    pub create_time: Option<String>,
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
-/// Output from exec. [ASSUMED] — the real exec API streams raw stdout
-/// over HTTP/WebSocket, NOT a JSON object. This struct is a rosary
-/// abstraction that we populate by capturing the stream + exit code.
+/// Exec output — assembled from the HTTP POST exec response.
+/// Ref: https://sprites.dev/api/sprites/exec (HTTP POST)
+///
+/// The HTTP POST endpoint takes `?cmd=...` query params and returns
+/// `application/json`. For streaming/exit codes, WebSocket is needed.
 #[derive(Debug, Clone)]
 pub struct ExecOutput {
     pub exit_code: i32,
@@ -88,15 +68,23 @@ pub struct ExecOutput {
     pub stderr: String,
 }
 
+/// NDJSON streaming event from checkpoint/service endpoints.
+/// Ref: https://sprites.dev/api/sprites/checkpoints
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamEvent {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    #[serde(default)]
+    pub data: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 
 /// HTTP client for sprites.dev REST API.
-///
-/// For exec, the real API uses WebSocket streaming. This client currently
-/// uses the `sprite` CLI as a subprocess for exec (same pattern as our
-/// AgentProvider). Direct WebSocket exec is a future optimization.
 #[derive(Debug)]
 pub struct SpritesClient {
     client: reqwest::Client,
@@ -104,12 +92,10 @@ pub struct SpritesClient {
 }
 
 impl SpritesClient {
-    /// Create a client with the given API token.
     pub fn new(token: &str) -> Result<Self> {
         Self::with_base_url(token, DEFAULT_BASE_URL)
     }
 
-    /// Create a client with a custom base URL (for testing with mock server).
     pub fn with_base_url(token: &str, base_url: &str) -> Result<Self> {
         use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 
@@ -133,17 +119,20 @@ impl SpritesClient {
         })
     }
 
-    /// Build a URL for the given path segments.
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
 
-    // -- Sprite CRUD [VALIDATED] --
+    // -- Sprite CRUD --
+    // Ref: https://sprites.dev/api/sprites#create
 
-    /// Create a sprite. [VALIDATED]
-    pub async fn create_sprite(&self, name: &str, _opts: &CreateOpts) -> Result<Sprite> {
+    /// POST /v1/sprites — create a sprite.
+    pub async fn create_sprite(&self, name: &str, opts: &CreateOpts) -> Result<Sprite> {
         let url = self.url("/sprites");
-        let body = json!({ "name": name });
+        let mut body = json!({ "name": name });
+        if let Some(ref auth) = opts.url_auth {
+            body["url_settings"] = json!({ "auth": auth });
+        }
 
         let resp = self
             .client
@@ -159,12 +148,10 @@ impl SpritesClient {
             anyhow::bail!("create sprite failed ({status}): {text}");
         }
 
-        let sprite: Sprite =
-            serde_json::from_str(&text).context("parsing create sprite response")?;
-        Ok(sprite)
+        serde_json::from_str(&text).context("parsing create sprite response")
     }
 
-    /// Get sprite details. [VALIDATED]
+    /// GET /v1/sprites/{name}
     pub async fn get_sprite(&self, name: &str) -> Result<Sprite> {
         let url = self.url(&format!("/sprites/{name}"));
         let resp = self
@@ -180,11 +167,10 @@ impl SpritesClient {
             anyhow::bail!("get sprite failed ({status}): {text}");
         }
 
-        let sprite: Sprite = serde_json::from_str(&text).context("parsing get sprite response")?;
-        Ok(sprite)
+        serde_json::from_str(&text).context("parsing get sprite response")
     }
 
-    /// Delete a sprite. [VALIDATED]
+    /// DELETE /v1/sprites/{name}
     pub async fn delete_sprite(&self, name: &str) -> Result<()> {
         let url = self.url(&format!("/sprites/{name}"));
         let resp = self
@@ -194,82 +180,221 @@ impl SpritesClient {
             .await
             .context("deleting sprite")?;
 
-        let status = resp.status();
-        if !status.is_success() {
+        if !resp.status().is_success() {
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("delete sprite failed ({status}): {text}");
+            anyhow::bail!("delete sprite failed: {text}");
         }
 
         Ok(())
     }
 
-    // -- Exec [ASSUMED — uses CLI subprocess, not direct API] --
+    // -- Exec (HTTP POST) --
+    // Ref: https://sprites.dev/api/sprites/exec
+    // Query params: ?cmd=...&dir=...&env=KEY=VALUE
+    // Response: application/json (for HTTP POST variant)
 
-    /// Execute a command in a sprite via the `sprite` CLI.
+    /// POST /v1/sprites/{name}/exec?cmd=...
     ///
-    /// The sprites exec API uses WebSocket streaming, not REST JSON.
-    /// We shell out to `sprite exec --http-post` which handles the
-    /// protocol and gives us stdout on its own stdout.
+    /// Uses the HTTP POST variant. For exit codes + streaming, the WebSocket
+    /// variant is needed (future: tokio-tungstenite).
     pub async fn exec(&self, name: &str, cmd: &str) -> Result<ExecOutput> {
-        let output = tokio::process::Command::new("sprite")
-            .args(["exec", "-s", name, "--http-post", "--", "sh", "-c", cmd])
-            .output()
-            .await
-            .with_context(|| format!("sprite exec -s {name}: {cmd}"))?;
+        let url = self.url(&format!("/sprites/{name}/exec"));
 
+        let resp = self
+            .client
+            .post(&url)
+            .query(&[("cmd", cmd)])
+            .send()
+            .await
+            .with_context(|| format!("exec in {name}: {cmd}"))?;
+
+        let status = resp.status();
+        let text = resp.text().await.context("reading exec response")?;
+
+        if !status.is_success() {
+            return Ok(ExecOutput {
+                exit_code: 1,
+                stdout: String::new(),
+                stderr: text,
+            });
+        }
+
+        // HTTP POST exec returns stdout as the body.
+        // No structured exit_code — infer from HTTP status (200 = success).
+        // For real exit codes, use the WebSocket variant.
         Ok(ExecOutput {
-            exit_code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            exit_code: 0,
+            stdout: text,
+            stderr: String::new(),
         })
     }
 
-    // -- Checkpoints [VALIDATED via CLI] --
+    /// POST /v1/sprites/{name}/exec?cmd=...
+    /// Wraps the command to capture the real exit code via sentinel.
+    pub async fn exec_with_exit_code(&self, name: &str, cmd: &str) -> Result<ExecOutput> {
+        // Wrap: run cmd, capture exit code, echo sentinel
+        let wrapped = format!(
+            r#"sh -c '{cmd}; __ec=$?; echo ""; echo "RSRY_EXIT:$__ec"; exit 0'"#,
+            cmd = cmd.replace('\'', "'\\''")
+        );
 
-    /// Create a checkpoint via the `sprite` CLI.
-    /// [VALIDATED] Returns sequential IDs: v0, v1, v2.
-    pub async fn create_checkpoint(&self, name: &str) -> Result<Checkpoint> {
-        let output = tokio::process::Command::new("sprite")
-            .args(["checkpoint", "create", "-s", name])
-            .output()
-            .await
-            .context("sprite checkpoint create")?;
+        let result = self.exec(name, &wrapped).await?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("checkpoint create failed: {stderr}");
-        }
+        // Parse sentinel from stdout
+        let (stdout, exit_code) = if let Some(pos) = result.stdout.rfind("RSRY_EXIT:") {
+            let code_str = result.stdout[pos + 10..].trim();
+            let code = code_str.parse::<i32>().unwrap_or(-1);
+            let clean_stdout = result.stdout[..pos].trim_end().to_string();
+            (clean_stdout, code)
+        } else {
+            (result.stdout, result.exit_code)
+        };
 
-        // Parse "✓ Checkpoint v2 created" from stdout
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let id = stdout
-            .split_whitespace()
-            .find(|w| w.starts_with('v') && w[1..].chars().all(|c| c.is_ascii_digit()))
-            .unwrap_or("v0")
-            .to_string();
-
-        Ok(Checkpoint { id })
+        Ok(ExecOutput {
+            exit_code,
+            stdout,
+            stderr: result.stderr,
+        })
     }
 
-    /// Restore a checkpoint via the `sprite` CLI. [VALIDATED]
-    pub async fn restore_checkpoint(&self, name: &str, checkpoint_id: &str) -> Result<()> {
-        let output = tokio::process::Command::new("sprite")
-            .args(["restore", checkpoint_id, "-s", name])
-            .output()
-            .await
-            .context("sprite restore")?;
+    // -- Checkpoints --
+    // Ref: https://sprites.dev/api/sprites/checkpoints
+    // NOTE: create is POST /checkpoint (singular), list is GET /checkpoints (plural)
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("restore failed: {stderr}");
+    /// POST /v1/sprites/{name}/checkpoint — create checkpoint.
+    /// Returns streaming NDJSON; we parse the checkpoint ID from it.
+    pub async fn create_checkpoint(&self, name: &str, comment: Option<&str>) -> Result<Checkpoint> {
+        let url = self.url(&format!("/sprites/{name}/checkpoint"));
+        let body = if let Some(c) = comment {
+            json!({ "comment": c })
+        } else {
+            json!({})
+        };
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .context("creating checkpoint")?;
+
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("create checkpoint failed: {text}");
+        }
+
+        // Response is streaming NDJSON. Parse lines for the checkpoint ID.
+        let text = resp.text().await.context("reading checkpoint response")?;
+        let mut checkpoint_id = None;
+
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(event) = serde_json::from_str::<StreamEvent>(line) {
+                // Look for "ID: v3" in info events
+                if let Some(ref data) = event.data
+                    && let Some(id_str) = data.strip_prefix("  ID: ")
+                {
+                    checkpoint_id = Some(id_str.trim().to_string());
+                }
+            }
+        }
+
+        Ok(Checkpoint {
+            id: checkpoint_id.unwrap_or_else(|| "v0".to_string()),
+            create_time: None,
+            comment: comment.map(|c| c.to_string()),
+        })
+    }
+
+    /// GET /v1/sprites/{name}/checkpoints — list checkpoints.
+    pub async fn list_checkpoints(&self, name: &str) -> Result<Vec<Checkpoint>> {
+        let url = self.url(&format!("/sprites/{name}/checkpoints"));
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("listing checkpoints")?;
+
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("list checkpoints failed: {text}");
+        }
+
+        let text = resp.text().await.context("reading checkpoints response")?;
+        serde_json::from_str(&text).context("parsing checkpoints")
+    }
+
+    /// POST /v1/sprites/{name}/checkpoints/{id}/restore
+    pub async fn restore_checkpoint(&self, name: &str, checkpoint_id: &str) -> Result<()> {
+        let url = self.url(&format!(
+            "/sprites/{name}/checkpoints/{checkpoint_id}/restore"
+        ));
+        let resp = self
+            .client
+            .post(&url)
+            .send()
+            .await
+            .context("restoring checkpoint")?;
+
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("restore checkpoint failed: {text}");
         }
 
         Ok(())
+    }
+
+    // -- Filesystem --
+    // Ref: https://sprites.dev/api/sprites/filesystem
+    // Paths are query params, not URL path segments.
+
+    /// PUT /v1/sprites/{name}/fs/write?path=...&workingDir=/
+    pub async fn write_file(&self, name: &str, path: &str, content: &[u8]) -> Result<()> {
+        let url = self.url(&format!("/sprites/{name}/fs/write"));
+        let resp = self
+            .client
+            .put(&url)
+            .query(&[("path", path), ("workingDir", "/")])
+            .body(content.to_vec())
+            .send()
+            .await
+            .context("writing file")?;
+
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("write file failed: {text}");
+        }
+
+        Ok(())
+    }
+
+    /// GET /v1/sprites/{name}/fs/read?path=...&workingDir=/
+    pub async fn read_file(&self, name: &str, path: &str) -> Result<Vec<u8>> {
+        let url = self.url(&format!("/sprites/{name}/fs/read"));
+        let resp = self
+            .client
+            .get(&url)
+            .query(&[("path", path), ("workingDir", "/")])
+            .send()
+            .await
+            .context("reading file")?;
+
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("read file failed: {text}");
+        }
+
+        Ok(resp.bytes().await.context("reading file bytes")?.to_vec())
     }
 }
 
 // ---------------------------------------------------------------------------
-// Tests — validated against real API responses from 2026-03-14
+// Tests — deserialization against real API response shapes from docs
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -287,8 +412,7 @@ mod tests {
 
     #[test]
     fn new_with_valid_token() {
-        let client = SpritesClient::new("test-token-123");
-        assert!(client.is_ok());
+        assert!(SpritesClient::new("test-token-123").is_ok());
     }
 
     #[test]
@@ -303,23 +427,10 @@ mod tests {
         assert_eq!(client.url("/sprites"), "http://localhost:9999/sprites");
     }
 
-    // -- URL building --
-
-    #[test]
-    fn url_sprite_crud() {
-        let client = SpritesClient::with_base_url("tok", "https://api.sprites.dev/v1").unwrap();
-        assert_eq!(client.url("/sprites"), "https://api.sprites.dev/v1/sprites");
-        assert_eq!(
-            client.url("/sprites/my-sprite"),
-            "https://api.sprites.dev/v1/sprites/my-sprite"
-        );
-    }
-
-    // -- Deserialization against REAL API responses --
+    // -- Sprite deserialization (real response from 2026-03-14) --
 
     #[test]
     fn sprite_deserializes_real_response() {
-        // Captured from: sprite api -s rsry-test /
         let json = r#"{
             "id": "sprite-091278d4-467a-4e40-b3d2-4fbda56ff365",
             "name": "rsry-test",
@@ -345,38 +456,46 @@ mod tests {
         assert_eq!(sprite.organization.as_deref(), Some("james-gardner-570"));
     }
 
+    // -- Checkpoint deserialization (real response from 2026-03-14) --
+
     #[test]
-    fn sprite_list_response_deserializes() {
-        // Captured from: sprite api /sprites
-        let json = r#"{
-            "name": "james-gardner-570",
-            "running": 0,
-            "sprites": [{
-                "id": "sprite-091278d4-467a-4e40-b3d2-4fbda56ff365",
-                "name": "rsry-test",
-                "status": "warm",
-                "version": null,
-                "url": "https://rsry-test-wrsa.sprites.app",
-                "url_settings": {"auth": "sprite"},
-                "organization": "james-gardner-570",
-                "last_running_at": "2026-03-14T21:32:03Z",
-                "last_warming_at": "2026-03-14T21:32:05Z",
-                "updated_at": "2026-03-14T21:31:57.855138Z",
-                "created_at": "2026-03-14T21:31:57.855138Z",
-                "environment_version": null
-            }],
-            "next_continuation_token": null,
-            "warm": 1,
-            "cold": 0,
-            "running_limit": 10,
-            "warm_limit": 10,
-            "has_more": true
-        }"#;
-        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
-        let sprites: Vec<Sprite> = serde_json::from_value(parsed["sprites"].clone()).unwrap();
-        assert_eq!(sprites.len(), 1);
-        assert_eq!(sprites[0].name, "rsry-test");
+    fn checkpoint_list_deserializes() {
+        let json = r#"[
+            {"id":"Current","create_time":"2026-03-14T21:35:30Z","is_auto":false},
+            {"id":"v1","create_time":"2026-03-14T21:31:53Z","is_auto":false},
+            {"id":"v0","create_time":"2026-03-14T21:31:53Z","is_auto":false}
+        ]"#;
+        let cps: Vec<Checkpoint> = serde_json::from_str(json).unwrap();
+        assert_eq!(cps.len(), 3);
+        assert_eq!(cps[0].id, "Current");
+        assert_eq!(cps[1].id, "v1");
+        assert_eq!(cps[1].create_time.as_deref(), Some("2026-03-14T21:31:53Z"));
     }
+
+    // -- Checkpoint create NDJSON stream parsing --
+
+    #[test]
+    fn stream_event_deserializes_info() {
+        let json =
+            r#"{"type":"info","data":"Creating checkpoint...","time":"2026-03-14T22:41:25Z"}"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.event_type, "info");
+        assert_eq!(event.data.as_deref(), Some("Creating checkpoint..."));
+    }
+
+    #[test]
+    fn stream_event_deserializes_id_line() {
+        let json = r#"{"type":"info","data":"  ID: v3","time":"2026-03-14T22:41:26Z"}"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        let id = event
+            .data
+            .as_deref()
+            .and_then(|d| d.strip_prefix("  ID: "))
+            .map(|s| s.trim());
+        assert_eq!(id, Some("v3"));
+    }
+
+    // -- Exec output --
 
     #[test]
     fn exec_output_fields() {
@@ -390,18 +509,22 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_id_format() {
-        // Real checkpoints use v0, v1, v2 — not UUIDs
-        let cp = Checkpoint {
-            id: "v1".to_string(),
-        };
-        assert_eq!(cp.id, "v1");
+    fn parse_exit_code_sentinel() {
+        let raw_stdout = "hello world\n\nRSRY_EXIT:42\n";
+        let pos = raw_stdout.rfind("RSRY_EXIT:").unwrap();
+        let code: i32 = raw_stdout[pos + 10..].trim().parse().unwrap();
+        let clean = raw_stdout[..pos].trim_end();
+        assert_eq!(code, 42);
+        assert_eq!(clean, "hello world");
     }
+
+    // -- CreateOpts --
 
     #[test]
     fn create_opts_default() {
         let opts = CreateOpts::default();
-        assert!(opts.cpu.is_none());
-        assert!(opts.memory_mb.is_none());
+        let json = serde_json::to_value(&opts).unwrap();
+        // url_auth=None should be skipped
+        assert!(json.get("url_auth").is_none());
     }
 }

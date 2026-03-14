@@ -50,10 +50,7 @@ impl ComputeProvider for SpritesProvider {
     async fn provision(&self, opts: &ProvisionOpts) -> Result<ExecHandle> {
         let name = Self::sprite_name(&opts.bead_id);
 
-        let create_opts = CreateOpts {
-            cpu: opts.cpu,
-            memory_mb: opts.memory_mb,
-        };
+        let create_opts = CreateOpts::default();
 
         self.client
             .create_sprite(&name, &create_opts)
@@ -88,7 +85,7 @@ impl ComputeProvider for SpritesProvider {
 
         let output = self
             .client
-            .exec(&handle.id, &cmd_str)
+            .exec_with_exit_code(&handle.id, &cmd_str)
             .await
             .with_context(|| format!("exec in {}: {cmd_str}", handle.id))?;
 
@@ -112,7 +109,7 @@ impl ComputeProvider for SpritesProvider {
         }
         let cp = self
             .client
-            .create_checkpoint(&handle.id)
+            .create_checkpoint(&handle.id, Some("rosary auto-checkpoint"))
             .await
             .with_context(|| format!("checkpoint for {}", handle.id))?;
         Ok(Some(cp.id))
