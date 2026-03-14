@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use leyline_vcs::JjIntegration;
 
 /// Rosary state directory, default `~/.rsry/`.
 pub fn state_dir() -> Result<PathBuf> {
@@ -30,27 +31,11 @@ pub fn ensure_state_dir() -> Result<PathBuf> {
 
 /// Initialize a jj repo in the state directory if one doesn't exist.
 ///
-/// This is called once on first run. After that, the sidecar handles
-/// all versioning automatically.
+/// Uses leyline-vcs's JjIntegration (jj-lib native) instead of shelling
+/// out to the jj CLI. init_or_open handles both fresh init and re-open.
 pub fn init_jj(state_path: &Path) -> Result<()> {
-    let jj_dir = state_path.join(".jj");
-    if jj_dir.exists() {
-        return Ok(());
-    }
-
-    // Use jj CLI for init — simpler than jj-lib for one-time setup
-    let output = std::process::Command::new("jj")
-        .args(["init"])
-        .current_dir(state_path)
-        .output()
-        .context("running jj init (is jj installed?)")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("jj init failed: {stderr}");
-    }
-
-    eprintln!("[rsry] initialized jj repo at {}", state_path.display());
+    JjIntegration::init_or_open(state_path)
+        .with_context(|| format!("jj init_or_open at {}", state_path.display()))?;
     Ok(())
 }
 
@@ -59,8 +44,11 @@ pub fn init_jj(state_path: &Path) -> Result<()> {
 /// Called after state-changing operations (bead update, dispatch, etc).
 /// Failures are logged but don't propagate — state versioning must never
 /// block the hot path.
+///
+/// Still uses jj CLI (`jj status --quiet`) because JjIntegration::commit_snapshot()
+/// requires &dyn Graph which rosary doesn't implement — rosary stores plain files
+/// in ~/.rsry/, not a leyline graph. The CLI triggers jj's working-copy snapshot.
 pub fn snapshot(state_path: &Path) {
-    // jj auto-snapshots working copy changes, but we can force it
     match std::process::Command::new("jj")
         .args(["status", "--quiet"])
         .current_dir(state_path)
@@ -118,13 +106,21 @@ mod tests {
     }
 
     #[test]
-    fn init_jj_skips_if_exists() {
+    fn init_jj_creates_repo() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let jj_dir = tmp.path().join(".jj");
-        std::fs::create_dir_all(&jj_dir).unwrap();
+        assert!(!tmp.path().join(".jj").exists());
 
-        // Should be a no-op
-        let result = init_jj(tmp.path());
-        assert!(result.is_ok());
+        init_jj(tmp.path()).unwrap();
+        assert!(tmp.path().join(".jj").exists());
+    }
+
+    #[test]
+    fn init_jj_idempotent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // First call inits, second call opens — both succeed
+        init_jj(tmp.path()).unwrap();
+        init_jj(tmp.path()).unwrap();
+        assert!(tmp.path().join(".jj").exists());
     }
 }

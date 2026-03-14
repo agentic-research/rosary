@@ -29,7 +29,7 @@ pub trait AgentProvider: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// Default provider that shells out to the Claude Code CLI (`claude --print`).
+/// Provider that shells out to the Claude Code CLI (`claude --print`).
 pub struct ClaudeProvider;
 
 impl AgentProvider for ClaudeProvider {
@@ -49,6 +49,59 @@ impl AgentProvider for ClaudeProvider {
 
     fn name(&self) -> &str {
         "claude"
+    }
+}
+
+/// Provider that shells out to the Gemini CLI (`gemini -p`).
+///
+/// Gemini supports:
+/// - Headless mode: `-p "prompt"` (non-interactive)
+/// - JSON output: `-o json` for structured results
+/// - MCP servers: `--allowed-mcp-server-names`
+/// - Auto-approve: `--approval-mode yolo`
+/// - ACP mode: `--experimental-acp` (Agent Client Protocol)
+pub struct GeminiProvider {
+    /// Extra CLI args (e.g. `["--approval-mode", "yolo"]`).
+    pub extra_args: Vec<String>,
+}
+
+impl Default for GeminiProvider {
+    fn default() -> Self {
+        Self {
+            extra_args: Vec::new(),
+        }
+    }
+}
+
+impl AgentProvider for GeminiProvider {
+    fn spawn_agent(
+        &self,
+        prompt: &str,
+        work_dir: &Path,
+    ) -> Result<tokio::process::Child> {
+        let mut cmd = tokio::process::Command::new("gemini");
+        cmd.args(["-p", prompt, "-o", "json"]);
+        for arg in &self.extra_args {
+            cmd.arg(arg);
+        }
+        cmd.current_dir(work_dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("spawning gemini CLI in {}", work_dir.display()))
+    }
+
+    fn name(&self) -> &str {
+        "gemini"
+    }
+}
+
+/// Resolve a provider by name string (from config/CLI).
+pub fn provider_by_name(name: &str) -> Result<Box<dyn AgentProvider>> {
+    match name {
+        "claude" => Ok(Box::new(ClaudeProvider)),
+        "gemini" => Ok(Box::new(GeminiProvider::default())),
+        other => anyhow::bail!("unknown provider: {other} (available: claude, gemini)"),
     }
 }
 
@@ -215,6 +268,38 @@ mod tests {
     fn claude_provider_name() {
         let provider = ClaudeProvider;
         assert_eq!(provider.name(), "claude");
+    }
+
+    #[test]
+    fn gemini_provider_name() {
+        let provider = GeminiProvider::default();
+        assert_eq!(provider.name(), "gemini");
+    }
+
+    #[test]
+    fn gemini_provider_extra_args() {
+        let provider = GeminiProvider {
+            extra_args: vec!["--approval-mode".into(), "yolo".into()],
+        };
+        assert_eq!(provider.extra_args.len(), 2);
+        assert_eq!(provider.name(), "gemini");
+    }
+
+    #[test]
+    fn provider_by_name_claude() {
+        let p = provider_by_name("claude").unwrap();
+        assert_eq!(p.name(), "claude");
+    }
+
+    #[test]
+    fn provider_by_name_gemini() {
+        let p = provider_by_name("gemini").unwrap();
+        assert_eq!(p.name(), "gemini");
+    }
+
+    #[test]
+    fn provider_by_name_unknown() {
+        assert!(provider_by_name("copilot").is_err());
     }
 
     #[test]
