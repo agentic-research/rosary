@@ -1,12 +1,16 @@
 //! MCP server for rosary — exposes beads capabilities as tools over JSON-RPC.
 //!
-//! Implements the Model Context Protocol (MCP) over stdio transport.
-//! Reads line-delimited JSON-RPC from stdin, writes responses to stdout.
+//! Supports two transports:
+//! - **stdio**: line-delimited JSON-RPC over stdin/stdout (default)
+//! - **http**: MCP Streamable HTTP transport over a single `/mcp` endpoint
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashSet;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::RwLock;
 
 use crate::config;
 use crate::dolt::{DoltClient, DoltConfig};
@@ -623,15 +627,229 @@ async fn handle_tools_call(
 pub async fn run(transport: &str, port: u16) -> Result<()> {
     match transport {
         "stdio" => run_stdio(&crate::config::resolve_config_path()).await,
-        "http" => {
-            eprintln!("HTTP transport not yet implemented (port={port})");
-            eprintln!("Use --transport stdio for now");
-            std::process::exit(1);
-        }
+        "http" => run_http(&crate::config::resolve_config_path(), port).await,
         other => {
             anyhow::bail!("Unknown transport: {other}. Supported: stdio, http");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP transport (MCP Streamable HTTP)
+// ---------------------------------------------------------------------------
+
+/// Shared state for the HTTP transport.
+#[derive(Clone)]
+struct AppState {
+    pool: Arc<RepoPool>,
+    config_path: Arc<str>,
+    sessions: Arc<RwLock<HashSet<String>>>,
+}
+
+/// Validate Origin header to prevent DNS rebinding attacks.
+#[allow(clippy::result_large_err)]
+fn validate_origin(
+    headers: &axum::http::HeaderMap,
+) -> std::result::Result<(), axum::response::Response> {
+    use axum::response::IntoResponse;
+    if let Some(origin) = headers.get("origin") {
+        let o = origin.to_str().unwrap_or("");
+        let allowed = o.starts_with("http://localhost")
+            || o.starts_with("http://127.0.0.1")
+            || o.starts_with("https://localhost")
+            || o.starts_with("https://127.0.0.1");
+        if !allowed {
+            return Err((axum::http::StatusCode::FORBIDDEN, "Origin not allowed").into_response());
+        }
+    }
+    Ok(())
+}
+
+/// Validate Accept header includes both required MIME types.
+#[allow(clippy::result_large_err)]
+fn validate_accept(
+    headers: &axum::http::HeaderMap,
+) -> std::result::Result<(), axum::response::Response> {
+    use axum::response::IntoResponse;
+    let accept = headers
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !accept.contains("application/json") || !accept.contains("text/event-stream") {
+        return Err((
+            axum::http::StatusCode::NOT_ACCEPTABLE,
+            "Accept must include application/json and text/event-stream",
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
+/// Validate session ID is present and known.
+async fn validate_session(
+    headers: &axum::http::HeaderMap,
+    sessions: &RwLock<HashSet<String>>,
+) -> std::result::Result<(), axum::response::Response> {
+    use axum::response::IntoResponse;
+    let session_id = headers.get("mcp-session-id").and_then(|v| v.to_str().ok());
+    match session_id {
+        None => Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Missing Mcp-Session-Id header",
+        )
+            .into_response()),
+        Some(id) => {
+            if sessions.read().await.contains(id) {
+                Ok(())
+            } else {
+                Err((axum::http::StatusCode::NOT_FOUND, "Unknown session").into_response())
+            }
+        }
+    }
+}
+
+/// Build a JSON response with optional extra header.
+fn json_response(
+    status: axum::http::StatusCode,
+    response: &JsonRpcResponse,
+    extra_header: Option<(&str, &str)>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let body = serde_json::to_value(response).unwrap_or(Value::Null);
+    let mut resp = (status, axum::Json(body)).into_response();
+    if let Some((key, val)) = extra_header
+        && let (Ok(k), Ok(v)) = (
+            key.parse::<axum::http::header::HeaderName>(),
+            val.parse::<axum::http::header::HeaderValue>(),
+        )
+    {
+        resp.headers_mut().insert(k, v);
+    }
+    resp
+}
+
+/// POST /mcp — main JSON-RPC handler.
+async fn handle_mcp_post(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
+    body: String,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    if let Err(resp) = validate_origin(&headers) {
+        return resp;
+    }
+    if let Err(resp) = validate_accept(&headers) {
+        return resp;
+    }
+
+    let request: JsonRpcRequest = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            let err = JsonRpcResponse::error(Value::Null, -32700, format!("Parse error: {e}"));
+            return json_response(axum::http::StatusCode::OK, &err, None);
+        }
+    };
+
+    if request.jsonrpc != "2.0" {
+        if let Some(id) = request.id {
+            let resp = JsonRpcResponse::error(
+                id,
+                -32600,
+                "Invalid Request: jsonrpc must be \"2.0\"".into(),
+            );
+            return json_response(axum::http::StatusCode::OK, &resp, None);
+        }
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    }
+
+    // Notifications (no id) — accept silently
+    if request.id.is_none() {
+        return axum::http::StatusCode::ACCEPTED.into_response();
+    }
+
+    let id = request.id.unwrap();
+    let is_initialize = request.method == "initialize";
+
+    // Session validation (skip for initialize)
+    if !is_initialize && let Err(resp) = validate_session(&headers, &state.sessions).await {
+        return resp;
+    }
+
+    let response = match request.method.as_str() {
+        "initialize" => handle_initialize(id.clone()),
+        "tools/list" => handle_tools_list(id),
+        "tools/call" => {
+            handle_tools_call(id, &request.params, &state.config_path, &state.pool).await
+        }
+        _ => JsonRpcResponse::method_not_found(id, &request.method),
+    };
+
+    if is_initialize {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        state.sessions.write().await.insert(session_id.clone());
+        eprintln!("[rsry-mcp] new session: {session_id}");
+        return json_response(
+            axum::http::StatusCode::OK,
+            &response,
+            Some(("mcp-session-id", &session_id)),
+        );
+    }
+
+    json_response(axum::http::StatusCode::OK, &response, None)
+}
+
+/// GET /mcp — SSE stream for server→client notifications (v1: not supported).
+async fn handle_mcp_get() -> axum::http::StatusCode {
+    axum::http::StatusCode::METHOD_NOT_ALLOWED
+}
+
+/// DELETE /mcp — terminate session.
+async fn handle_mcp_delete(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> axum::http::StatusCode {
+    let session_id = headers.get("mcp-session-id").and_then(|v| v.to_str().ok());
+    match session_id {
+        Some(id) => {
+            if state.sessions.write().await.remove(id) {
+                eprintln!("[rsry-mcp] session terminated: {id}");
+                axum::http::StatusCode::OK
+            } else {
+                axum::http::StatusCode::NOT_FOUND
+            }
+        }
+        None => axum::http::StatusCode::BAD_REQUEST,
+    }
+}
+
+async fn run_http(config_path: &str, port: u16) -> Result<()> {
+    let pool = Arc::new(RepoPool::from_config(config_path).await?);
+    let state = AppState {
+        pool: pool.clone(),
+        config_path: Arc::from(config_path),
+        sessions: Arc::new(RwLock::new(HashSet::new())),
+    };
+
+    let app = axum::Router::new()
+        .route(
+            "/mcp",
+            axum::routing::post(handle_mcp_post)
+                .get(handle_mcp_get)
+                .delete(handle_mcp_delete),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    eprintln!(
+        "[rsry-mcp] HTTP server listening on http://127.0.0.1:{port}/mcp ({} repos: {})",
+        pool.len(),
+        pool.repo_names().join(", ")
+    );
+
+    axum::serve(listener, app).await?;
+    Ok(())
 }
 
 async fn run_stdio(config_path: &str) -> Result<()> {
@@ -837,5 +1055,163 @@ mod tests {
         assert_eq!(parsed["error"]["message"], "bad request");
         // result field should be absent
         assert!(parsed.get("result").is_none());
+    }
+
+    // --- HTTP transport tests ---
+
+    #[test]
+    fn validate_origin_allows_localhost() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("origin", "http://localhost:3000".parse().unwrap());
+        assert!(validate_origin(&headers).is_ok());
+
+        headers.insert("origin", "http://127.0.0.1:8080".parse().unwrap());
+        assert!(validate_origin(&headers).is_ok());
+    }
+
+    #[test]
+    fn validate_origin_rejects_external() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("origin", "http://evil.com".parse().unwrap());
+        assert!(validate_origin(&headers).is_err());
+    }
+
+    #[test]
+    fn validate_origin_allows_no_origin() {
+        let headers = axum::http::HeaderMap::new();
+        assert!(validate_origin(&headers).is_ok());
+    }
+
+    #[test]
+    fn validate_accept_requires_both_types() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "accept",
+            "application/json, text/event-stream".parse().unwrap(),
+        );
+        assert!(validate_accept(&headers).is_ok());
+
+        headers.insert("accept", "application/json".parse().unwrap());
+        assert!(validate_accept(&headers).is_err());
+
+        headers.insert("accept", "text/event-stream".parse().unwrap());
+        assert!(validate_accept(&headers).is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_session_rejects_missing() {
+        let sessions = RwLock::new(HashSet::new());
+        let headers = axum::http::HeaderMap::new();
+        assert!(validate_session(&headers, &sessions).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_session_rejects_unknown() {
+        let sessions = RwLock::new(HashSet::new());
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("mcp-session-id", "unknown-id".parse().unwrap());
+        assert!(validate_session(&headers, &sessions).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_session_accepts_known() {
+        let sessions = RwLock::new(HashSet::from(["abc-123".to_string()]));
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("mcp-session-id", "abc-123".parse().unwrap());
+        assert!(validate_session(&headers, &sessions).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn http_initialize_returns_session_id() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = AppState {
+            pool: Arc::new(RepoPool::empty()),
+            config_path: Arc::from("test.toml"),
+            sessions: Arc::new(RwLock::new(HashSet::new())),
+        };
+
+        let app = axum::Router::new()
+            .route("/mcp", axum::routing::post(handle_mcp_post))
+            .with_state(state.clone());
+
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        assert!(resp.headers().get("mcp-session-id").is_some());
+
+        let sessions = state.sessions.read().await;
+        assert_eq!(sessions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn http_tools_list_requires_session() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = AppState {
+            pool: Arc::new(RepoPool::empty()),
+            config_path: Arc::from("test.toml"),
+            sessions: Arc::new(RwLock::new(HashSet::new())),
+        };
+
+        let app = axum::Router::new()
+            .route("/mcp", axum::routing::post(handle_mcp_post))
+            .with_state(state);
+
+        let body = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        // No session ID → 400
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn http_delete_terminates_session() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = AppState {
+            pool: Arc::new(RepoPool::empty()),
+            config_path: Arc::from("test.toml"),
+            sessions: Arc::new(RwLock::new(HashSet::from(["sess-1".to_string()]))),
+        };
+
+        let app = axum::Router::new()
+            .route(
+                "/mcp",
+                axum::routing::post(handle_mcp_post).delete(handle_mcp_delete),
+            )
+            .with_state(state.clone());
+
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/mcp")
+            .header("mcp-session-id", "sess-1")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        assert!(state.sessions.read().await.is_empty());
     }
 }

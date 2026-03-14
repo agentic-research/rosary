@@ -19,6 +19,15 @@ pub struct RepoPool {
 }
 
 impl RepoPool {
+    /// Create an empty pool (for testing and HTTP server startup with no repos).
+    #[allow(dead_code)] // used in tests
+    pub fn empty() -> Self {
+        RepoPool {
+            clients: HashMap::new(),
+            paths: HashMap::new(),
+        }
+    }
+
     /// Create a pool and connect to all repos in the given config.
     /// Repos that fail to connect are logged and skipped (best-effort).
     pub async fn from_config(config_path: &str) -> Result<Self> {
