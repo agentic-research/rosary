@@ -16,7 +16,7 @@ It finds issues, decides what to work on next, hands tasks to AI agents, checks 
 
 ```bash
 task build    # requires Task (taskfile.dev) — sets PKG_CONFIG_PATH for fuse-t
-task test     # 129+ tests
+task test     # 271 tests
 
 # Register a repo
 rsry enable ~/code/my-app
@@ -139,6 +139,28 @@ rsry serve --transport http --port 8383
 | `rsry_dispatch` | Spawn agent for a specific bead |
 | `rsry_active` | Show running agent sessions |
 
+## Compute providers
+
+Rosary abstracts where agent code runs via pluggable `ComputeProvider`s. Local is the default (zero config). Sprites.dev is the first remote provider.
+
+```toml
+# rosary.toml or ~/.rsry/config.toml
+
+[compute]
+backend = "sprites"   # "local" (default) or "sprites"
+
+[compute.sprites]
+token_env = "SPRITES_TOKEN"
+checkpoint_on_complete = true
+```
+
+| Provider | What | Config |
+|----------|------|--------|
+| `local` | Host subprocess (default, zero config) | — |
+| `sprites` | [sprites.dev](https://sprites.dev) containers | `SPRITES_TOKEN` env var |
+
+Workspace isolation tries jj first, then git worktree, then in-place.
+
 ## Linear integration
 
 Configure in `~/.rsry/config.toml` (or override with env vars):
@@ -171,7 +193,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full technical picture 
 
 ```bash
 task build     # debug build with fuse-t support
-task test      # 121 tests
+task test      # 271 tests
 task lint      # clippy
 task all       # fmt + check + lint + test
 ```
