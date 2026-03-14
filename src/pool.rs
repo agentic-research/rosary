@@ -13,14 +13,11 @@ use crate::config;
 use crate::dolt::{DoltClient, DoltConfig};
 
 /// Long-lived pool of DoltClient connections keyed by repo name.
-/// Wired into serve.rs to replace per-call connect_dolt().
-#[allow(dead_code)] // Wiring into serve.rs run_stdio() is next
 pub struct RepoPool {
     clients: HashMap<String, DoltClient>,
     paths: HashMap<String, PathBuf>,
 }
 
-#[allow(dead_code)] // Wiring into serve.rs run_stdio() is next
 impl RepoPool {
     /// Create a pool and connect to all repos in the given config.
     /// Repos that fail to connect are logged and skipped (best-effort).
@@ -82,7 +79,8 @@ impl RepoPool {
         self.clients.len()
     }
 
-    /// Whether pool has no connections.
+    /// Whether pool has no connections (required by clippy alongside `len()`).
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.clients.is_empty()
     }
@@ -150,7 +148,9 @@ path = "/tmp/no-such-repo-xyz"
         let pool = RepoPool::from_config(config_path.to_str().unwrap())
             .await
             .unwrap();
-        assert!(pool.is_empty());
+        // The fake repo should not be connected (no .beads/ dir).
+        // Note: load_merged may connect real repos from ~/.rsry/config.toml.
+        assert!(pool.get("fake").is_none());
     }
 
     #[test]

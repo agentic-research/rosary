@@ -41,10 +41,11 @@ pub fn load(path: &str) -> Result<Config> {
     Ok(config)
 }
 
-/// Path to the global repos registry: `~/.rsry/repos.toml`.
+/// Path to the single global config: `~/.rsry/config.toml`.
+/// This is the ONE config file. Repos, linear settings, everything.
 pub fn global_registry_path() -> Result<PathBuf> {
     let home = dirs_next::home_dir().context("cannot determine home directory")?;
-    Ok(home.join(".rsry").join("repos.toml"))
+    Ok(home.join(".rsry").join("config.toml"))
 }
 
 /// Load the global registry, creating it if absent.

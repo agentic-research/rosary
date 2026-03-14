@@ -353,7 +353,6 @@ impl DoltClient {
         Ok(beads)
     }
 
-    #[allow(dead_code)] // Used by thread.rs for external_ref back-ref updates
     /// Execute a raw SQL statement. Best-effort, for operations not covered by typed methods.
     pub async fn execute_raw(&self, sql: &str) -> anyhow::Result<()> {
         query(sql)

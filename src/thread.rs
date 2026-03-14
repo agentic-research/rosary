@@ -3,8 +3,6 @@
 //! When a bead has an `external_ref` like "kiln:ll-packaging", the reconciler
 //! should ensure a mirror bead exists in the target repo with a back-reference.
 //! Status changes propagate bidirectionally on subsequent scans.
-#![allow(dead_code)] // Wired into reconcile.rs when cross-repo sync lands
-
 use crate::bead::Bead;
 use crate::dolt::DoltClient;
 use std::collections::HashMap;

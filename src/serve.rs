@@ -10,6 +10,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::config;
 use crate::dolt::{DoltClient, DoltConfig};
+use crate::pool::RepoPool;
 use crate::scanner;
 
 // ---------------------------------------------------------------------------
@@ -185,7 +186,7 @@ fn tool_definitions() -> Value {
 // Tool execution
 // ---------------------------------------------------------------------------
 
-async fn call_tool(name: &str, args: &Value, config_path: &str) -> Result<Value> {
+async fn call_tool(name: &str, args: &Value, config_path: &str, pool: &RepoPool) -> Result<Value> {
     match name {
         "rsry_scan" => tool_scan(config_path).await,
         "rsry_status" => tool_status(config_path).await,
@@ -203,10 +204,10 @@ async fn call_tool(name: &str, args: &Value, config_path: &str) -> Result<Value>
                 .unwrap_or(true);
             tool_run_once(config_path, dry_run).await
         }
-        "rsry_bead_create" => tool_bead_create(args).await,
-        "rsry_bead_close" => tool_bead_close(args).await,
-        "rsry_bead_comment" => tool_bead_comment(args).await,
-        "rsry_bead_search" => tool_bead_search(args).await,
+        "rsry_bead_create" => tool_bead_create(args, pool).await,
+        "rsry_bead_close" => tool_bead_close(args, pool).await,
+        "rsry_bead_comment" => tool_bead_comment(args, pool).await,
+        "rsry_bead_search" => tool_bead_search(args, pool).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
 }
@@ -291,13 +292,38 @@ async fn tool_run_once(config_path: &str, dry_run: bool) -> Result<Value> {
 // Bead CRUD helpers
 // ---------------------------------------------------------------------------
 
-/// Connect to the Dolt server for a given repo path.
-async fn connect_dolt(repo_path: &str) -> Result<DoltClient> {
+/// Get a DoltClient — try the pool first (by name then path), fall back to fresh connect.
+async fn get_client<'a>(repo_path: &str, pool: &'a RepoPool) -> Result<ClientRef<'a>> {
+    // Try by repo name (last path component)
+    let name = repo_name_from_path(repo_path);
+    if let Some(client) = pool.get(&name) {
+        return Ok(ClientRef::Pooled(client));
+    }
+    // Try by full path
+    if let Some((_name, client)) = pool.get_by_path(repo_path) {
+        return Ok(ClientRef::Pooled(client));
+    }
     let path = std::path::Path::new(repo_path);
     let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
     let beads_dir = root.join(".beads");
     let config = DoltConfig::from_beads_dir(&beads_dir)?;
-    DoltClient::connect(&config).await
+    let client = DoltClient::connect(&config).await?;
+    Ok(ClientRef::Owned(client))
+}
+
+enum ClientRef<'a> {
+    Pooled(&'a DoltClient),
+    Owned(DoltClient),
+}
+
+impl std::ops::Deref for ClientRef<'_> {
+    type Target = DoltClient;
+    fn deref(&self) -> &DoltClient {
+        match self {
+            ClientRef::Pooled(c) => c,
+            ClientRef::Owned(c) => c,
+        }
+    }
 }
 
 fn repo_name_from_path(repo_path: &str) -> String {
@@ -307,7 +333,7 @@ fn repo_name_from_path(repo_path: &str) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-async fn tool_bead_create(args: &Value) -> Result<Value> {
+async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
     let repo_path = args["repo_path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
@@ -318,7 +344,7 @@ async fn tool_bead_create(args: &Value) -> Result<Value> {
     let priority = args["priority"].as_u64().unwrap_or(2) as u8;
     let issue_type = args["issue_type"].as_str().unwrap_or("task");
 
-    let client = connect_dolt(repo_path).await?;
+    let client = get_client(repo_path, pool).await?;
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -332,7 +358,7 @@ async fn tool_bead_create(args: &Value) -> Result<Value> {
     Ok(json!({ "id": id, "title": title, "priority": priority }))
 }
 
-async fn tool_bead_close(args: &Value) -> Result<Value> {
+async fn tool_bead_close(args: &Value, pool: &RepoPool) -> Result<Value> {
     let repo_path = args["repo_path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
@@ -340,13 +366,13 @@ async fn tool_bead_close(args: &Value) -> Result<Value> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("id required"))?;
 
-    let client = connect_dolt(repo_path).await?;
+    let client = get_client(repo_path, pool).await?;
     client.close_bead(id).await?;
 
     Ok(json!({ "id": id, "status": "closed" }))
 }
 
-async fn tool_bead_comment(args: &Value) -> Result<Value> {
+async fn tool_bead_comment(args: &Value, pool: &RepoPool) -> Result<Value> {
     let repo_path = args["repo_path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
@@ -357,23 +383,23 @@ async fn tool_bead_comment(args: &Value) -> Result<Value> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("body required"))?;
 
-    let client = connect_dolt(repo_path).await?;
+    let client = get_client(repo_path, pool).await?;
     client.add_comment(id, body, "rsry-mcp").await?;
 
     Ok(json!({ "id": id, "comment_added": true }))
 }
 
-async fn tool_bead_search(args: &Value) -> Result<Value> {
+async fn tool_bead_search(args: &Value, pool: &RepoPool) -> Result<Value> {
     let repo_path = args["repo_path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
-    let query = args["query"]
+    let query_str = args["query"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("query required"))?;
 
-    let client = connect_dolt(repo_path).await?;
+    let client = get_client(repo_path, pool).await?;
     let repo_name = repo_name_from_path(repo_path);
-    let beads = client.search_beads(query, &repo_name).await?;
+    let beads = client.search_beads(query_str, &repo_name).await?;
 
     Ok(json!({ "count": beads.len(), "beads": beads }))
 }
@@ -402,12 +428,17 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
     JsonRpcResponse::success(id, tool_definitions())
 }
 
-async fn handle_tools_call(id: Value, params: &Value, config_path: &str) -> JsonRpcResponse {
+async fn handle_tools_call(
+    id: Value,
+    params: &Value,
+    config_path: &str,
+    pool: &RepoPool,
+) -> JsonRpcResponse {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
-    match call_tool(name, &args, config_path).await {
+    match call_tool(name, &args, config_path, pool).await {
         Ok(result) => JsonRpcResponse::success(
             id,
             json!({
@@ -473,7 +504,13 @@ async fn run_stdio(config_path: &str) -> Result<()> {
     let reader = BufReader::new(stdin);
     let mut lines = reader.lines();
 
-    eprintln!("[rsry-mcp] server started (stdio transport)");
+    // Create connection pool on startup — reused across all tool calls
+    let pool = RepoPool::from_config(config_path).await?;
+    eprintln!(
+        "[rsry-mcp] server started (stdio transport, {} repos: {})",
+        pool.len(),
+        pool.repo_names().join(", ")
+    );
 
     while let Some(line) = lines.next_line().await.context("reading stdin")? {
         let line = line.trim().to_string();
@@ -521,7 +558,7 @@ async fn run_stdio(config_path: &str) -> Result<()> {
         let response = match request.method.as_str() {
             "initialize" => handle_initialize(id),
             "tools/list" => handle_tools_list(id),
-            "tools/call" => handle_tools_call(id, &request.params, config_path).await,
+            "tools/call" => handle_tools_call(id, &request.params, config_path, &pool).await,
             _ => JsonRpcResponse::method_not_found(id, &request.method),
         };
 

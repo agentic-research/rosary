@@ -16,6 +16,7 @@ use crate::dispatch::{self, AgentHandle};
 use crate::dolt::{DoltClient, DoltConfig};
 use crate::queue::{self, QueueEntry, WorkQueue};
 use crate::scanner;
+use crate::thread;
 use crate::verify::{Verifier, VerifySummary};
 
 /// Configuration for the reconciliation loop.
@@ -167,6 +168,12 @@ impl Reconciler {
         // Phase 1: SCAN
         let beads = scanner::scan_repos(&self.config.repo).await?;
         summary.scanned = beads.len();
+
+        // Phase 1.5: CROSS-REPO SYNC — propagate external refs across repos
+        let ext_refs = thread::find_external_refs(&beads);
+        if !ext_refs.is_empty() {
+            thread::sync_external_refs(&ext_refs, &self.dolt_clients, &beads).await;
+        }
 
         // Phase 2: CHECK COMPLETED — poll active agents
         let completed = self.check_completed();
