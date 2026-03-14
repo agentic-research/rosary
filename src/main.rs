@@ -48,7 +48,11 @@ enum Command {
         ticket: String,
     },
     /// Bidirectional sync: beads ↔ Linear status
-    Sync,
+    Sync {
+        /// Preview changes without executing
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Show aggregated status across all repos
     Status,
     /// Dispatch a bead to a Claude Code agent in an isolated worktree
@@ -247,8 +251,8 @@ async fn main() -> Result<()> {
         Command::Plan { ticket } => {
             linear::plan(&ticket).await?;
         }
-        Command::Sync => {
-            linear::sync().await?;
+        Command::Sync { dry_run } => {
+            linear::sync(dry_run).await?;
         }
         Command::Status => {
             let cfg = config::load_merged(&config::resolve_config_path())?;

@@ -230,7 +230,7 @@ async fn connect_repo_dolt(repo: &crate::config::RepoConfig) -> Result<crate::do
 /// 1. Link: match existing Linear issues to beads by title, store external_ref
 /// 2. Push: create Linear issues for unlinked beads, store external_ref
 /// 3. Close: update Linear issues for closed beads
-pub async fn sync() -> Result<()> {
+pub async fn sync(dry_run: bool) -> Result<()> {
     let api_key = match get_api_key() {
         Some(k) => k,
         None => return Ok(()),
@@ -354,15 +354,19 @@ pub async fn sync() -> Result<()> {
                 || *title == bead.title
         });
 
-        if let Some((ident, _, _, _url)) = matched
-            && let Some(dc) = dolt_clients.get(&bead.repo)
-        {
-            if let Err(e) = dc.set_external_ref(&bead.id, ident).await {
-                eprintln!("  ✗ Failed to link {} → {ident}: {e}", bead.id);
-            } else {
-                println!("  ↔ Linked {} → {ident}", bead.id);
+        if let Some((ident, _, _, _url)) = matched {
+            if dry_run {
+                println!("  [dry-run] would link {} → {ident}", bead.id);
                 linked += 1;
                 linked_ids.insert(bead.id.clone());
+            } else if let Some(dc) = dolt_clients.get(&bead.repo) {
+                if let Err(e) = dc.set_external_ref(&bead.id, ident).await {
+                    eprintln!("  ✗ Failed to link {} → {ident}: {e}", bead.id);
+                } else {
+                    println!("  ↔ Linked {} → {ident}", bead.id);
+                    linked += 1;
+                    linked_ids.insert(bead.id.clone());
+                }
             }
         }
     }
@@ -391,29 +395,33 @@ pub async fn sync() -> Result<()> {
         let label = format!("[{}] ", bead.repo);
         let full_title = format!("{label}{}", bead.title);
 
-        match create_linear_issue(
-            &client,
-            &team_id,
-            &full_title,
-            &bead.description,
-            bead.priority,
-            &bead.id,
-            &bead.repo,
-        )
-        .await
-        {
-            Ok(ident) => {
-                println!("  → Created {ident}: {full_title}");
-                created += 1;
-                // Store external_ref back on the bead
-                if let Some(dc) = dolt_clients.get(&bead.repo)
-                    && let Err(e) = dc.set_external_ref(&bead.id, &ident).await
-                {
-                    eprintln!("  ✗ Failed to store external_ref for {}: {e}", bead.id);
+        if dry_run {
+            println!("  [dry-run] would create: {full_title}");
+            created += 1;
+        } else {
+            match create_linear_issue(
+                &client,
+                &team_id,
+                &full_title,
+                &bead.description,
+                bead.priority,
+                &bead.id,
+                &bead.repo,
+            )
+            .await
+            {
+                Ok(ident) => {
+                    println!("  → Created {ident}: {full_title}");
+                    created += 1;
+                    if let Some(dc) = dolt_clients.get(&bead.repo)
+                        && let Err(e) = dc.set_external_ref(&bead.id, &ident).await
+                    {
+                        eprintln!("  ✗ Failed to store external_ref for {}: {e}", bead.id);
+                    }
                 }
-            }
-            Err(e) => {
-                eprintln!("  ✗ Failed to create issue for {}: {e}", bead.id);
+                Err(e) => {
+                    eprintln!("  ✗ Failed to create issue for {}: {e}", bead.id);
+                }
             }
         }
     }
@@ -441,13 +449,18 @@ pub async fn sync() -> Result<()> {
                 .iter()
                 .any(|(ident, _, _, _)| *ident == ext_ref)
             {
-                match update_linear_issue_status(&client, &team_id, ext_ref, "closed").await {
-                    Ok(()) => {
-                        println!("  ✓ Closed {ext_ref} (bead {})", bead.id);
-                        closed += 1;
-                    }
-                    Err(e) => {
-                        eprintln!("  ✗ Failed to close {ext_ref}: {e}",);
+                if dry_run {
+                    println!("  [dry-run] would close {ext_ref} (bead {})", bead.id);
+                    closed += 1;
+                } else {
+                    match update_linear_issue_status(&client, &team_id, ext_ref, "closed").await {
+                        Ok(()) => {
+                            println!("  ✓ Closed {ext_ref} (bead {})", bead.id);
+                            closed += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("  ✗ Failed to close {ext_ref}: {e}",);
+                        }
                     }
                 }
             }
