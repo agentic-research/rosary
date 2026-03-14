@@ -1,4 +1,4 @@
-# rosary
+# 📿 rosary
 
 Rosary keeps track of work across multiple code repos and gets it done automatically.
 
