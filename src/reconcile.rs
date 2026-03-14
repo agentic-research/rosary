@@ -629,17 +629,16 @@ impl Reconciler {
         }
 
         // 2. Mirror to external issue tracker (best-effort, never blocks)
+        // Pass bead status — the tracker handles mapping to its native states.
         if let (Some(tracker), Some(ext_ref)) = (&self.issue_tracker, external_ref) {
-            let bead_state = BeadState::from(status);
-            let linear_state = bead_state.to_linear_state();
-            if let Err(e) = tracker.update_status(&ext_ref, linear_state).await {
+            if let Err(e) = tracker.update_status(&ext_ref, status).await {
                 eprintln!(
-                    "[{}] failed to mirror {bead_id} → {ext_ref} ({linear_state}): {e}",
+                    "[{}] failed to mirror {bead_id} → {ext_ref}: {e}",
                     tracker.name()
                 );
             } else {
                 eprintln!(
-                    "[{}] mirrored {bead_id} → {ext_ref} ({status} → {linear_state})",
+                    "[{}] mirrored {bead_id} → {ext_ref} ({status})",
                     tracker.name()
                 );
             }
@@ -778,13 +777,18 @@ pub async fn run(
 ) -> Result<()> {
     let cfg = config::load(config_path)?;
 
-    // Extract linear team before cfg.repo is moved
+    // Extract linear config before cfg.repo is moved
     let linear_team = std::env::var("LINEAR_TEAM").unwrap_or_else(|_| {
         cfg.linear
             .as_ref()
             .map(|l| l.team.clone())
             .unwrap_or_else(|| "AGE".to_string())
     });
+    let linear_state_overrides = cfg
+        .linear
+        .as_ref()
+        .map(|l| l.states.clone())
+        .unwrap_or_default();
 
     let reconciler_config = ReconcilerConfig {
         max_concurrent: concurrency,
@@ -799,7 +803,13 @@ pub async fn run(
 
     let mut reconciler = Reconciler::new(reconciler_config);
     if let Ok(api_key) = std::env::var("LINEAR_API_KEY") {
-        match crate::linear_tracker::LinearTracker::new(&api_key, &linear_team).await {
+        match crate::linear_tracker::LinearTracker::with_overrides(
+            &api_key,
+            &linear_team,
+            linear_state_overrides,
+        )
+        .await
+        {
             Ok(tracker) => {
                 eprintln!("[linear] attached tracker for team {linear_team}");
                 reconciler.set_issue_tracker(Box::new(tracker));

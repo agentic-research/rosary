@@ -325,15 +325,19 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         }
     }
 
-    // Build Linear issue lookup: identifier → (title, description, url)
-    let linear_issues: Vec<(&str, &str, &str, &str)> = issues
+    // Build Linear issue lookup: identifier → (title, description, url, state)
+    let linear_issues: Vec<(&str, &str, &str, &str, &str)> = issues
         .iter()
         .filter_map(|i| {
             let ident = i["identifier"].as_str()?;
             let title = i["title"].as_str()?;
             let desc = i["description"].as_str().unwrap_or("");
             let url = i["url"].as_str().unwrap_or("");
-            Some((ident, title, desc, url))
+            let state = i
+                .pointer("/state/name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Todo");
+            Some((ident, title, desc, url, state))
         })
         .collect();
 
@@ -348,7 +352,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         let bead_tag = format!("<!-- bead:{} ", bead.id);
         let prefixed_title = format!("[{}] {}", bead.repo, bead.title);
 
-        let matched = linear_issues.iter().find(|(_, title, desc, _)| {
+        let matched = linear_issues.iter().find(|(_, title, desc, _, _)| {
             // Match by bead tag in description (strongest signal)
             desc.contains(&bead_tag)
                 // Or match by title
@@ -356,7 +360,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
                 || *title == bead.title
         });
 
-        if let Some((ident, _, _, _url)) = matched {
+        if let Some((ident, _, _, _url, _)) = matched {
             if dry_run {
                 println!("  [dry-run] would link {} → {ident}", bead.id);
                 linked += 1;
@@ -389,7 +393,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         let prefixed_title = format!("[{}] {}", bead.repo, bead.title);
         if linear_issues
             .iter()
-            .any(|(_, t, _, _)| *t == prefixed_title || *t == bead.title)
+            .any(|(_, t, _, _, _)| *t == prefixed_title || *t == bead.title)
         {
             continue;
         }
@@ -449,7 +453,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
             // Only close issues that are still open in Linear
             if linear_issues
                 .iter()
-                .any(|(ident, _, _, _)| *ident == ext_ref)
+                .any(|(ident, _, _, _, _)| *ident == ext_ref)
             {
                 if dry_run {
                     println!("  [dry-run] would close {ext_ref} (bead {})", bead.id);
@@ -598,15 +602,25 @@ async fn update_linear_issue_status(
         .and_then(|v| v.as_array())
         .context("fetching workflow states")?;
 
-    // Map rosary status to Linear state name via BeadState
+    // Map rosary status to Linear state via type (stable) + name hint (refinement)
     let bead_state = BeadState::from(status);
-    let target_name = bead_state.to_linear_state();
+    let (target_type, preferred_name) = bead_state.to_linear_type();
 
+    // Try preferred name within type first, fall back to any state with matching type
     let target_state = states
         .iter()
-        .find(|s| s["name"].as_str() == Some(target_name))
+        .find(|s| {
+            s["type"].as_str() == Some(target_type) && s["name"].as_str() == Some(preferred_name)
+        })
+        .or_else(|| {
+            states
+                .iter()
+                .find(|s| s["type"].as_str() == Some(target_type))
+        })
         .and_then(|s| s["id"].as_str())
-        .context(format!("no Linear state matching '{target_name}'"))?;
+        .context(format!(
+            "no Linear state with type '{target_type}' for bead status '{status}'"
+        ))?;
 
     // Update the issue
     let mutation = r#"

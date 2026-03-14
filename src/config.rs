@@ -29,6 +29,12 @@ pub struct LinearConfig {
     pub team: String,
     /// Linear project name for cross-repo tracking
     pub project: Option<String>,
+    /// Optional bead status → Linear state name overrides.
+    /// Keys are bead statuses (open, dispatched, verifying, done, blocked).
+    /// Values are the Linear state names in your team's workflow.
+    /// Example: { dispatched = "Working", verifying = "Peer Review" }
+    #[serde(default)]
+    pub states: std::collections::HashMap<String, String>,
 }
 
 /// Resolve config path: $RSRY_CONFIG → ~/.rsry/config.toml → ./rosary.toml

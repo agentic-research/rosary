@@ -57,29 +57,38 @@ impl BeadState {
         self.valid_transitions().is_empty()
     }
 
-    /// Map bead state to the Linear workflow state name it should drive.
-    /// Returns the Linear state name (matches AGE team workflow states).
-    pub fn to_linear_state(self) -> &'static str {
+    /// Map bead state to a Linear state type + preferred name.
+    /// Returns (type, preferred_name) — the tracker resolves to an actual state ID.
+    /// Type is stable across all Linear teams; name is a hint for teams that have it.
+    pub fn to_linear_type(self) -> (&'static str, &'static str) {
         match self {
-            BeadState::Open | BeadState::Rejected | BeadState::Stale => "Todo",
-            BeadState::Queued => "Todo",
-            BeadState::Dispatched => "In Progress",
-            BeadState::Verifying => "In Review",
-            BeadState::Done => "Done",
-            BeadState::Blocked => "Backlog", // blocked needs human — park in backlog
+            BeadState::Open | BeadState::Rejected | BeadState::Stale => ("unstarted", "Todo"),
+            BeadState::Queued => ("unstarted", "Todo"),
+            BeadState::Dispatched => ("started", "In Progress"),
+            BeadState::Verifying => ("started", "In Review"),
+            BeadState::Done => ("completed", "Done"),
+            BeadState::Blocked => ("backlog", "Backlog"),
         }
     }
 
-    /// Map a Linear workflow state name to a BeadState.
-    /// This is the pull direction: Linear → bead.
-    pub fn from_linear_state(state_name: &str) -> Self {
-        match state_name.to_lowercase().as_str() {
-            "done" | "completed" | "closed" => BeadState::Done,
-            "canceled" | "cancelled" | "duplicate" => BeadState::Done,
-            "in progress" => BeadState::Dispatched,
-            "in review" => BeadState::Verifying,
-            "todo" => BeadState::Open,
+    /// Map a Linear state type to a BeadState.
+    /// Type-based mapping is stable across all Linear configurations.
+    /// Optional name hint refines within a type (e.g., "In Review" → Verifying
+    /// vs "In Progress" → Dispatched, both type=started).
+    pub fn from_linear_type(state_type: &str, state_name: &str) -> Self {
+        match state_type {
+            "completed" => BeadState::Done,
+            "canceled" => BeadState::Done,
+            "started" => {
+                // Refine by name within the "started" type
+                if state_name.to_lowercase().contains("review") {
+                    BeadState::Verifying
+                } else {
+                    BeadState::Dispatched
+                }
+            }
             "backlog" => BeadState::Open,
+            "unstarted" => BeadState::Open,
             _ => BeadState::Open,
         }
     }
@@ -335,31 +344,54 @@ mod tests {
     }
 
     #[test]
-    fn to_linear_state_mapping() {
-        assert_eq!(BeadState::Open.to_linear_state(), "Todo");
-        assert_eq!(BeadState::Queued.to_linear_state(), "Todo");
-        assert_eq!(BeadState::Dispatched.to_linear_state(), "In Progress");
-        assert_eq!(BeadState::Verifying.to_linear_state(), "In Review");
-        assert_eq!(BeadState::Done.to_linear_state(), "Done");
-        assert_eq!(BeadState::Blocked.to_linear_state(), "Backlog");
-        assert_eq!(BeadState::Rejected.to_linear_state(), "Todo");
-        assert_eq!(BeadState::Stale.to_linear_state(), "Todo");
+    fn to_linear_type_mapping() {
+        assert_eq!(BeadState::Open.to_linear_type(), ("unstarted", "Todo"));
+        assert_eq!(BeadState::Queued.to_linear_type(), ("unstarted", "Todo"));
+        assert_eq!(
+            BeadState::Dispatched.to_linear_type(),
+            ("started", "In Progress")
+        );
+        assert_eq!(
+            BeadState::Verifying.to_linear_type(),
+            ("started", "In Review")
+        );
+        assert_eq!(BeadState::Done.to_linear_type(), ("completed", "Done"));
+        assert_eq!(BeadState::Blocked.to_linear_type(), ("backlog", "Backlog"));
+        assert_eq!(BeadState::Rejected.to_linear_type(), ("unstarted", "Todo"));
+        assert_eq!(BeadState::Stale.to_linear_type(), ("unstarted", "Todo"));
     }
 
     #[test]
-    fn from_linear_state_mapping() {
-        assert_eq!(BeadState::from_linear_state("Done"), BeadState::Done);
-        assert_eq!(BeadState::from_linear_state("Canceled"), BeadState::Done);
+    fn from_linear_type_mapping() {
         assert_eq!(
-            BeadState::from_linear_state("In Progress"),
+            BeadState::from_linear_type("completed", "Done"),
+            BeadState::Done
+        );
+        assert_eq!(
+            BeadState::from_linear_type("canceled", "Canceled"),
+            BeadState::Done
+        );
+        assert_eq!(
+            BeadState::from_linear_type("started", "In Progress"),
             BeadState::Dispatched
         );
         assert_eq!(
-            BeadState::from_linear_state("In Review"),
+            BeadState::from_linear_type("started", "In Review"),
             BeadState::Verifying
         );
-        assert_eq!(BeadState::from_linear_state("Todo"), BeadState::Open);
-        assert_eq!(BeadState::from_linear_state("Backlog"), BeadState::Open);
+        // Custom name with "review" in it still maps to Verifying
+        assert_eq!(
+            BeadState::from_linear_type("started", "Code Review"),
+            BeadState::Verifying
+        );
+        assert_eq!(
+            BeadState::from_linear_type("unstarted", "Todo"),
+            BeadState::Open
+        );
+        assert_eq!(
+            BeadState::from_linear_type("backlog", "Icebox"),
+            BeadState::Open
+        );
     }
 
     #[test]
