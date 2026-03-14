@@ -283,7 +283,7 @@ async fn main() -> Result<()> {
                 interval
             };
             reconcile::run(
-                &config,
+                &resolve_config(&config),
                 concurrency,
                 interval,
                 once,
@@ -313,7 +313,7 @@ async fn main() -> Result<()> {
             let mut args = vec![
                 "run".to_string(),
                 "--config".to_string(),
-                config,
+                resolve_config(&config),
                 "--concurrency".to_string(),
                 concurrency.to_string(),
                 "--interval".to_string(),
