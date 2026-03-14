@@ -177,6 +177,28 @@ fn tool_definitions() -> Value {
                     },
                     "required": ["repo_path", "query"]
                 }
+            },
+            {
+                "name": "rsry_dispatch",
+                "description": "Dispatch an agent to work on a specific bead. Spawns a Claude/Gemini agent in the bead's repo with appropriate permissions.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "bead_id": { "type": "string", "description": "Bead ID to dispatch" },
+                        "repo_path": { "type": "string", "description": "Path to repo containing the bead" },
+                        "provider": { "type": "string", "description": "Agent provider (claude, gemini, acp)", "default": "claude" }
+                    },
+                    "required": ["bead_id", "repo_path"]
+                }
+            },
+            {
+                "name": "rsry_active",
+                "description": "Show currently running agent sessions with bead ID, repo, provider, elapsed time.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
             }
         ]
     })
@@ -208,6 +230,8 @@ async fn call_tool(name: &str, args: &Value, config_path: &str, pool: &RepoPool)
         "rsry_bead_close" => tool_bead_close(args, pool).await,
         "rsry_bead_comment" => tool_bead_comment(args, pool).await,
         "rsry_bead_search" => tool_bead_search(args, pool).await,
+        "rsry_dispatch" => tool_dispatch(args, config_path).await,
+        "rsry_active" => tool_active().await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
 }
@@ -429,6 +453,107 @@ async fn tool_bead_search(args: &Value, pool: &RepoPool) -> Result<Value> {
     Ok(json!({ "count": beads.len(), "beads": beads }))
 }
 
+async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    let provider_name = args["provider"].as_str().unwrap_or("claude");
+
+    // Find the bead
+    let path = std::path::Path::new(repo_path);
+    let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
+    let beads_dir = root.join(".beads");
+    let dolt_config = DoltConfig::from_beads_dir(&beads_dir)?;
+    let client = DoltClient::connect(&dolt_config).await?;
+
+    let repo_name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".into());
+
+    let bead = client
+        .get_bead(bead_id, &repo_name)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("bead {bead_id} not found"))?;
+
+    // Resolve provider and dispatch
+    let provider = crate::dispatch::provider_by_name(provider_name)?;
+    let handle =
+        crate::dispatch::spawn(&bead, &root, true, bead.generation(), provider.as_ref()).await?;
+
+    // Update status
+    let _ = client.update_status(bead_id, "dispatched").await;
+
+    Ok(json!({
+        "bead_id": bead_id,
+        "status": "dispatched",
+        "provider": provider_name,
+        "pid": handle.child.id(),
+        "work_dir": handle.work_dir.to_string_lossy(),
+    }))
+}
+
+async fn tool_active() -> Result<Value> {
+    // Read active sessions from the daemon's PID file + process list
+    // For now, scan for running claude/gemini -p processes
+    let output = tokio::process::Command::new("ps")
+        .args(["aux"])
+        .output()
+        .await?;
+
+    let ps_output = String::from_utf8_lossy(&output.stdout);
+    let agents: Vec<Value> = ps_output
+        .lines()
+        .filter(|line| line.contains("claude -p") || line.contains("gemini -p"))
+        .filter(|line| !line.contains("grep"))
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 11 {
+                return None;
+            }
+            let pid = parts[1];
+            let cpu = parts[2];
+            let mem = parts[3];
+            // Extract bead ID from the command line if present
+            let cmd = parts[10..].join(" ");
+            let bead_id = cmd
+                .find("Bead ID: ")
+                .map(|i| {
+                    cmd[i + 9..]
+                        .split('\n')
+                        .next()
+                        .unwrap_or("")
+                        .split("\\012")
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                })
+                .unwrap_or("unknown");
+            let provider = if cmd.contains("claude") {
+                "claude"
+            } else {
+                "gemini"
+            };
+
+            Some(json!({
+                "pid": pid,
+                "provider": provider,
+                "bead_id": bead_id,
+                "cpu": cpu,
+                "mem": mem,
+            }))
+        })
+        .collect();
+
+    Ok(json!({
+        "active": agents.len(),
+        "agents": agents,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Message handling
 // ---------------------------------------------------------------------------
@@ -592,10 +717,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_definitions_has_eight_tools() {
+    fn tool_definitions_has_ten_tools() {
         let defs = tool_definitions();
         let tools = defs["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), 10);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"rsry_scan"));
@@ -606,6 +731,8 @@ mod tests {
         assert!(names.contains(&"rsry_bead_close"));
         assert!(names.contains(&"rsry_bead_comment"));
         assert!(names.contains(&"rsry_bead_search"));
+        assert!(names.contains(&"rsry_dispatch"));
+        assert!(names.contains(&"rsry_active"));
     }
 
     #[test]
@@ -636,7 +763,7 @@ mod tests {
         let resp = handle_tools_list(json!(2));
         let result = resp.result.unwrap();
         assert!(result["tools"].is_array());
-        assert_eq!(result["tools"].as_array().unwrap().len(), 8);
+        assert_eq!(result["tools"].as_array().unwrap().len(), 10);
     }
 
     #[test]
