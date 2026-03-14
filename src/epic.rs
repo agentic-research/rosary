@@ -8,7 +8,7 @@
 //! Actions: group into epic with ordering, merge near-duplicates preserving
 //! context from both, suggest priority adjustments based on cluster.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::bead::Bead;
 use crate::scanner::jaccard_similarity;
@@ -56,14 +56,89 @@ pub enum ClusterAction {
 }
 
 // ---------------------------------------------------------------------------
+// Stopword filtering for dedup
+// ---------------------------------------------------------------------------
+
+/// Common action verbs and filler words that appear in many bead titles but
+/// carry no semantic signal for dedup purposes. Stripping these prevents
+/// false-positive clustering of unrelated refactoring beads that happen to
+/// share verbs like "fix", "add", "extract".
+const TITLE_STOPWORDS: &[&str] = &[
+    // action verbs
+    "fix",
+    "add",
+    "replace",
+    "extract",
+    "implement",
+    "remove",
+    "update",
+    "refactor",
+    "consolidate",
+    "move",
+    "rename",
+    "clean",
+    "cleanup",
+    "use",
+    "make",
+    "convert",
+    "change",
+    "improve",
+    "handle",
+    // articles / prepositions / conjunctions
+    "the",
+    "a",
+    "an",
+    "in",
+    "to",
+    "for",
+    "of",
+    "with",
+    "from",
+    "and",
+    "on",
+    "into",
+    "by",
+    "up",
+];
+
+/// Jaccard similarity with stopwords removed from both inputs.
+/// This avoids inflated scores when beads share only common verbs.
+fn jaccard_filtered(a: &str, b: &str) -> f64 {
+    let stops: HashSet<&str> = TITLE_STOPWORDS.iter().copied().collect();
+    let set_a: HashSet<String> = a
+        .split_whitespace()
+        .map(|w| w.to_lowercase())
+        .filter(|w| !stops.contains(w.as_str()))
+        .collect();
+    let set_b: HashSet<String> = b
+        .split_whitespace()
+        .map(|w| w.to_lowercase())
+        .filter(|w| !stops.contains(w.as_str()))
+        .collect();
+
+    if set_a.is_empty() && set_b.is_empty() {
+        return 0.0; // all-stopword titles are not similar
+    }
+
+    let intersection = set_a.intersection(&set_b).count() as f64;
+    let union = set_a.union(&set_b).count() as f64;
+
+    if union == 0.0 {
+        return 0.0;
+    }
+
+    intersection / union
+}
+
+// ---------------------------------------------------------------------------
 // Multi-signal similarity
 // ---------------------------------------------------------------------------
 
 /// Compute a combined similarity score between two beads using multiple signals.
 /// Returns a value between 0.0 and 1.0.
 fn combined_similarity(a: &Bead, b: &Bead) -> f64 {
-    // Signal 1: Title token overlap (Jaccard)
-    let title_sim = jaccard_similarity(&a.title, &b.title);
+    // Signal 1: Title token overlap (Jaccard with stopwords stripped)
+    let title_sim = jaccard_filtered(&a.title, &b.title);
 
     // Signal 2: Description token overlap
     let desc_sim = if a.description.is_empty() && b.description.is_empty() {
@@ -543,6 +618,65 @@ mod tests {
         assert!(
             sim >= CLUSTER_THRESHOLD,
             "shared scope should cluster: {sim}"
+        );
+    }
+
+    // --- jaccard_filtered ---
+
+    #[test]
+    fn jaccard_filtered_strips_common_verbs() {
+        // These titles share only refactoring verbs — should NOT be similar
+        let sim = jaccard_filtered("consolidate skip-dir handling", "extract toNodeID helper");
+        assert!(
+            sim < 0.2,
+            "titles sharing only stopwords should have near-zero sim: {sim}"
+        );
+    }
+
+    #[test]
+    fn jaccard_filtered_preserves_real_overlap() {
+        // These titles share meaningful tokens — should still be similar
+        let sim = jaccard_filtered(
+            "fix widget rendering bug",
+            "fix widget rendering in dark mode",
+        );
+        assert!(
+            sim > 0.3,
+            "titles with real content overlap should remain similar: {sim}"
+        );
+    }
+
+    #[test]
+    fn jaccard_filtered_all_stopwords_returns_zero() {
+        let sim = jaccard_filtered("fix add replace", "fix extract implement");
+        assert_eq!(sim, 0.0, "all-stopword titles should return 0.0");
+    }
+
+    // --- false-positive regression ---
+
+    #[test]
+    fn same_file_refactoring_beads_not_dominated() {
+        // Regression: beads referencing the same file with different refactoring
+        // work were incorrectly marked as duplicates because common verbs
+        // inflated Jaccard similarity past the 0.5 threshold.
+        let a = make_bead("a", "consolidate skip-dir handling in engine.go");
+        let b = make_bead("b", "extract toNodeID helper from engine.go");
+        let c = make_bead(
+            "c",
+            "replace linear scan with map lookup in engine.go dedup",
+        );
+
+        assert!(
+            is_dominated_by(&b, &[&a]).is_none(),
+            "extract toNodeID should not be dominated by consolidate skip-dir"
+        );
+        assert!(
+            is_dominated_by(&c, &[&a]).is_none(),
+            "linear scan dedup should not be dominated by consolidate skip-dir"
+        );
+        assert!(
+            is_dominated_by(&c, &[&b]).is_none(),
+            "linear scan dedup should not be dominated by extract toNodeID"
         );
     }
 
