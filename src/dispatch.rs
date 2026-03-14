@@ -37,11 +37,11 @@ impl PermissionProfile {
     /// Claude `--allowedTools` flag value.
     pub fn claude_allowed_tools(&self) -> &str {
         match self {
-            Self::ReadOnly => "Read,Glob,Grep",
+            Self::ReadOnly => "Read,Glob,Grep,mcp__mache__*,mcp__rsry__*",
             Self::Implement => {
-                "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git add *),Bash(git commit *),Bash(task *),Glob,Grep"
+                "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git add *),Bash(git commit *),Bash(task *),Glob,Grep,mcp__mache__*,mcp__rsry__*"
             }
-            Self::Plan => "Read,Glob,Grep,mcp__rsry__*",
+            Self::Plan => "Read,Glob,Grep,mcp__mache__*,mcp__rsry__*",
         }
     }
 
