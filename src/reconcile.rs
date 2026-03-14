@@ -142,6 +142,13 @@ impl Reconciler {
             println!("[reconcile] {summary}");
 
             if self.config.once {
+                if !self.active.is_empty() {
+                    println!(
+                        "[reconcile] waiting for {} active agent(s)...",
+                        self.active.len()
+                    );
+                    self.wait_and_verify().await?;
+                }
                 println!("[reconcile] single-pass mode, exiting");
                 break;
             }
@@ -423,6 +430,68 @@ impl Reconciler {
                 None
             }
         }
+    }
+
+    /// Wait for all active agents to complete, then verify their work.
+    ///
+    /// This is the "sub-loop" that closes the dispatch cycle: poll agents
+    /// every 5 seconds until all finish, run verification, update bead status.
+    async fn wait_and_verify(&mut self) -> Result<()> {
+        let poll_interval = Duration::from_secs(5);
+        let timeout = Duration::from_secs(600); // 10 min max
+        let start = std::time::Instant::now();
+
+        while !self.active.is_empty() {
+            if start.elapsed() > timeout {
+                eprintln!("[timeout] killing {} remaining agent(s)", self.active.len());
+                let ids: Vec<String> = self.active.keys().cloned().collect();
+                for id in &ids {
+                    if let Some(handle) = self.active.get_mut(id) {
+                        let _ = handle.kill();
+                    }
+                }
+            }
+
+            let completed = self.check_completed();
+            if completed.is_empty() {
+                tokio::time::sleep(poll_interval).await;
+                continue;
+            }
+
+            // Verify + update status for each completed agent
+            for (bead_id, exit_success) in &completed {
+                let repo = self
+                    .trackers
+                    .get(bead_id.as_str())
+                    .map(|t| t.repo.clone())
+                    .unwrap_or_default();
+
+                if *exit_success {
+                    let verify_result = self.verify_agent(bead_id);
+                    match verify_result {
+                        Some(vs) if vs.passed() => {
+                            self.on_pass(bead_id);
+                            self.persist_status(bead_id, &repo, "closed").await;
+                        }
+                        Some(vs) => {
+                            self.on_fail(bead_id, &vs);
+                            self.persist_status(bead_id, &repo, "open").await;
+                        }
+                        None => {
+                            // No verifier — treat as pass
+                            self.on_pass(bead_id);
+                            self.persist_status(bead_id, &repo, "closed").await;
+                        }
+                    }
+                } else {
+                    self.completed_work_dirs.remove(bead_id);
+                    self.on_fail_exit(bead_id);
+                    self.persist_status(bead_id, &repo, "open").await;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Get or lazily connect a DoltClient for a repo.
