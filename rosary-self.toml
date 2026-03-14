@@ -1,0 +1,6 @@
+# Minimal config for self-management testing
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+lang = "rust"
+self = true

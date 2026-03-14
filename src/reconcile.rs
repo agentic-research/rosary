@@ -236,6 +236,11 @@ impl Reconciler {
                 continue;
             }
 
+            // Skip epics — they're planning beads, not actionable work
+            if bead.issue_type == "epic" {
+                continue;
+            }
+
             // Dedup: skip if too similar to an active or queued bead
             let dominated = beads
                 .iter()
