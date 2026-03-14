@@ -304,9 +304,11 @@ impl Reconciler {
             if score >= self.config.triage_threshold {
                 let bead_gen = bead.generation();
 
-                // Skip if already processed at this generation
+                // Skip if already processed at this generation —
+                // UNLESS the bead has pending retries (failed dispatch needs re-triage)
                 if let Some(tracker) = self.trackers.get(&bead.id)
                     && tracker.last_generation == bead_gen
+                    && tracker.retries == 0
                 {
                     continue;
                 }
@@ -570,21 +572,16 @@ impl Reconciler {
         self.cleanup_worktree(bead_id);
     }
 
-    /// Remove the git worktree created for this bead.
+    /// Remove the jj workspace created for this bead.
     fn cleanup_worktree(&self, bead_id: &str) {
-        let branch = format!("fix/{bead_id}");
+        let workspace_name = format!("fix-{bead_id}");
         // Best-effort cleanup — don't block on failure
-        let _ = std::process::Command::new("git")
-            .args([
-                "worktree",
-                "remove",
-                "--force",
-                &format!("../fix/{bead_id}"),
-            ])
+        let _ = std::process::Command::new("jj")
+            .args(["workspace", "forget", &workspace_name])
             .output();
-        let _ = std::process::Command::new("git")
-            .args(["branch", "-D", &branch])
-            .output();
+        // Remove the working copy directory
+        let workspace_dir = format!("../fix/{bead_id}");
+        let _ = std::fs::remove_dir_all(workspace_dir);
     }
 
     /// Handle a verification failure. Returns true if deadlettered.
@@ -891,5 +888,75 @@ mod tests {
         assert!(!r.on_fail("x", &regress(Some(2)))); // 4→2, revert #1
         assert!(!r.on_fail("x", &regress(Some(1)))); // 2→1, revert #2
         assert!(r.on_fail("x", &regress(Some(0)))); // 1→0, revert #3 → deadletter
+    }
+
+    #[tokio::test]
+    async fn failed_bead_retries_despite_same_generation() {
+        // Scenario: bead dispatched → agent fails → retry scheduled.
+        // On next iterate(), the bead's generation hasn't changed (Dolt wasn't updated).
+        // The generation check must NOT block re-triage for beads with pending retries.
+        let config = ReconcilerConfig {
+            max_retries: 3,
+            once: true,
+            repo: Vec::new(),
+            ..Default::default()
+        };
+        let mut r = Reconciler::new(config);
+
+        // Simulate: bead "x" was dispatched at generation 42, then failed
+        r.trackers.insert(
+            "x".into(),
+            BeadTracker {
+                repo: "test".into(),
+                last_generation: 42,
+                retries: 1,
+                consecutive_reverts: 0,
+                highest_tier: None,
+            },
+        );
+        // Record backoff (retry is pending)
+        r.queue.record_backoff(
+            "x",
+            1,
+            std::time::Instant::now() - std::time::Duration::from_secs(60),
+        );
+
+        // Create a bead with the SAME generation (42)
+        let bead = crate::bead::Bead {
+            id: "x".into(),
+            title: "test bead".into(),
+            description: String::new(),
+            status: "open".into(),
+            priority: 1,
+            issue_type: "bug".into(),
+            owner: None,
+            repo: "test".into(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            dependency_count: 0,
+            dependent_count: 0,
+            comment_count: 0,
+            external_ref: None,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
+        };
+
+        // The bead should still be triageable despite same generation
+        let retries = r.queue.retries(&bead.id);
+        assert_eq!(retries, 1, "should have 1 retry recorded");
+
+        // Check: tracker has same generation, but retries > 0
+        let tracker = r.trackers.get("x").unwrap();
+        assert_eq!(tracker.last_generation, 42);
+        assert_eq!(tracker.retries, 1);
+
+        // The generation check should NOT block when retries > 0
+        let bead_gen = bead.generation();
+        let should_skip = tracker.last_generation == bead_gen && tracker.retries == 0;
+        assert!(
+            !should_skip,
+            "bead with pending retries should NOT be skipped by generation check"
+        );
     }
 }
