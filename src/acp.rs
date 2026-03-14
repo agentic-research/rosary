@@ -45,7 +45,76 @@ pub async fn spawn_acp_agent(
     })
 }
 
+use agent_client_protocol::{
+    Client, PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification,
+};
 use anyhow::Context as _;
+
+// ---------------------------------------------------------------------------
+// RosaryClient — implements ACP Client trait for autonomous permission handling
+// ---------------------------------------------------------------------------
+
+/// Rosary's ACP client implementation.
+///
+/// Auto-approves tool calls based on the `PermissionProfile` without user
+/// interaction. This is what makes dispatched agents autonomous — rosary
+/// decides what tools they can use based on the bead's issue type.
+#[allow(dead_code)]
+pub struct RosaryClient {
+    pub permissions: PermissionProfile,
+}
+
+#[async_trait::async_trait(?Send)]
+impl Client for RosaryClient {
+    async fn request_permission(
+        &self,
+        args: RequestPermissionRequest,
+    ) -> agent_client_protocol::Result<RequestPermissionResponse> {
+        // Tool name is in ToolCallUpdate.fields.title
+        let tool_name = args.tool_call.fields.title.as_deref().unwrap_or("");
+
+        if should_approve(tool_name, &self.permissions)
+            && let Some(allow_opt) = args
+                .options
+                .iter()
+                .find(|o| {
+                    matches!(
+                        o.kind,
+                        PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
+                    )
+                })
+                .map(|o| o.option_id.clone())
+        {
+            return Ok(RequestPermissionResponse::new(
+                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(allow_opt)),
+            ));
+        }
+
+        // Reject: find a reject option
+        if let Some(reject_opt) = args
+            .options
+            .iter()
+            .find(|o| matches!(o.kind, PermissionOptionKind::RejectOnce))
+            .map(|o| o.option_id.clone())
+        {
+            return Ok(RequestPermissionResponse::new(
+                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(reject_opt)),
+            ));
+        }
+
+        Ok(RequestPermissionResponse::new(
+            RequestPermissionOutcome::Cancelled,
+        ))
+    }
+
+    async fn session_notification(
+        &self,
+        _args: SessionNotification,
+    ) -> agent_client_protocol::Result<()> {
+        Ok(())
+    }
+}
 
 #[allow(dead_code)] // Wired when Client::request_permission is implemented
 /// Check whether a tool call should be auto-approved based on the permission profile.
@@ -145,13 +214,71 @@ mod tests {
         assert!(!should_approve("SendEmail", &p));
     }
 
-    // -- AcpHandle tests --
+    // -- RosaryClient tests --
 
-    #[test]
-    fn acp_handle_stores_permissions() {
-        // Can't actually spawn without a binary, but verify the struct works
-        let handle_fields_exist = std::mem::size_of::<AcpHandle>() > 0;
-        assert!(handle_fields_exist);
+    use agent_client_protocol::{
+        PermissionOption, PermissionOptionKind, ToolCallUpdate, ToolCallUpdateFields,
+    };
+
+    fn make_permission_request(tool_name: &str) -> (RequestPermissionRequest, String, String) {
+        let allow_id = "allow-once";
+        let reject_id = "reject-once";
+        let fields = ToolCallUpdateFields::new().title(tool_name);
+        let tool_call = ToolCallUpdate::new("call-1", fields);
+        let req = RequestPermissionRequest::new(
+            "test-session",
+            tool_call,
+            vec![
+                PermissionOption::new(allow_id, "Allow", PermissionOptionKind::AllowOnce),
+                PermissionOption::new(reject_id, "Reject", PermissionOptionKind::RejectOnce),
+            ],
+        );
+        (req, allow_id.to_string(), reject_id.to_string())
+    }
+
+    #[tokio::test]
+    async fn rosary_client_approves_allowed_tool() {
+        let client = RosaryClient {
+            permissions: PermissionProfile::Implement,
+        };
+        let (req, allow_id, _) = make_permission_request("Edit");
+        let resp = client.request_permission(req).await.unwrap();
+        match resp.outcome {
+            RequestPermissionOutcome::Selected(sel) => {
+                assert_eq!(sel.option_id.to_string(), allow_id);
+            }
+            other => panic!("expected Selected, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rosary_client_rejects_disallowed_tool() {
+        let client = RosaryClient {
+            permissions: PermissionProfile::ReadOnly,
+        };
+        let (req, _, reject_id) = make_permission_request("Edit");
+        let resp = client.request_permission(req).await.unwrap();
+        match resp.outcome {
+            RequestPermissionOutcome::Selected(sel) => {
+                assert_eq!(sel.option_id.to_string(), reject_id);
+            }
+            other => panic!("expected Selected(reject), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rosary_client_approves_mcp_tool() {
+        let client = RosaryClient {
+            permissions: PermissionProfile::Plan,
+        };
+        let (req, allow_id, _) = make_permission_request("mcp__rsry__bead_create");
+        let resp = client.request_permission(req).await.unwrap();
+        match resp.outcome {
+            RequestPermissionOutcome::Selected(sel) => {
+                assert_eq!(sel.option_id.to_string(), allow_id);
+            }
+            other => panic!("expected Selected(allow), got {other:?}"),
+        }
     }
 
     // -- spawn_acp_agent tests (require real binary, so gated) --
