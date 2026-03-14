@@ -14,22 +14,74 @@ use crate::bead::Bead;
 use crate::dolt::{DoltClient, DoltConfig};
 use crate::scanner::expand_path;
 
+/// Permission profile for dispatched agents.
+///
+/// Derived from bead metadata (issue_type or explicit field), not the provider.
+/// Each provider translates this to its own CLI flags.
+///
+/// Profiles are intentionally simple — 3 levels. Complex per-tool rules
+/// belong in a schema/config file, not in Rust match arms.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionProfile {
+    /// Read + analyze only. For review, survey, audit.
+    ReadOnly,
+    /// Read + edit + test + commit. For bug, task, feature.
+    Implement,
+    /// Bead/project management via MCP. For planning, triage.
+    Plan,
+}
+
+impl Default for PermissionProfile {
+    fn default() -> Self {
+        Self::Implement
+    }
+}
+
+impl PermissionProfile {
+    /// Claude `--allowedTools` flag value.
+    pub fn claude_allowed_tools(&self) -> &str {
+        match self {
+            Self::ReadOnly => "Read,Glob,Grep",
+            Self::Implement => "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git add *),Bash(git commit *),Bash(task *),Glob,Grep",
+            Self::Plan => "Read,Glob,Grep,mcp__rsry__*",
+        }
+    }
+
+    /// Gemini `--approval-mode` flag value.
+    pub fn gemini_approval_mode(&self) -> &str {
+        match self {
+            Self::ReadOnly => "plan",
+            Self::Implement => "auto_edit",
+            Self::Plan => "plan",
+        }
+    }
+}
+
 /// Trait for AI agent providers. Implementations handle spawning and
 /// communicating with different AI backends (Claude, Gemini, Codex, etc).
+///
+/// The `permissions` argument comes from the bead — the provider just
+/// translates it to CLI flags. This keeps schema/config decisions out
+/// of the provider code.
 pub trait AgentProvider: Send + Sync {
-    /// Spawn an agent process for the given prompt in the given directory.
-    /// Returns a handle to the running process.
+    /// Spawn an agent process with the given prompt, working directory,
+    /// and permission profile (derived from the bead).
     fn spawn_agent(
         &self,
         prompt: &str,
         work_dir: &Path,
+        permissions: &PermissionProfile,
     ) -> Result<tokio::process::Child>;
 
     /// Human-readable name of this provider.
     fn name(&self) -> &str;
 }
 
-/// Provider that shells out to the Claude Code CLI (`claude --print`).
+/// Provider that shells out to the Claude Code CLI (`claude -p`).
+///
+/// Uses `--allowedTools` with permission rule syntax to grant the agent
+/// the tools it needs without interactive prompts.
 pub struct ClaudeProvider;
 
 impl AgentProvider for ClaudeProvider {
@@ -37,9 +89,14 @@ impl AgentProvider for ClaudeProvider {
         &self,
         prompt: &str,
         work_dir: &Path,
+        permissions: &PermissionProfile,
     ) -> Result<tokio::process::Child> {
         tokio::process::Command::new("claude")
-            .args(["--print", prompt])
+            .args([
+                "-p", prompt,
+                "--allowedTools", permissions.claude_allowed_tools(),
+                "--output-format", "json",
+            ])
             .current_dir(work_dir)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -54,14 +111,9 @@ impl AgentProvider for ClaudeProvider {
 
 /// Provider that shells out to the Gemini CLI (`gemini -p`).
 ///
-/// Gemini supports:
-/// - Headless mode: `-p "prompt"` (non-interactive)
-/// - JSON output: `-o json` for structured results
-/// - MCP servers: `--allowed-mcp-server-names`
-/// - Auto-approve: `--approval-mode yolo`
-/// - ACP mode: `--experimental-acp` (Agent Client Protocol)
+/// Uses `--approval-mode` to control permission prompts.
 pub struct GeminiProvider {
-    /// Extra CLI args (e.g. `["--approval-mode", "yolo"]`).
+    /// Extra CLI args beyond permissions.
     pub extra_args: Vec<String>,
 }
 
@@ -78,9 +130,14 @@ impl AgentProvider for GeminiProvider {
         &self,
         prompt: &str,
         work_dir: &Path,
+        permissions: &PermissionProfile,
     ) -> Result<tokio::process::Child> {
         let mut cmd = tokio::process::Command::new("gemini");
-        cmd.args(["-p", prompt, "-o", "json"]);
+        cmd.args([
+            "-p", prompt,
+            "-o", "json",
+            "--approval-mode", permissions.gemini_approval_mode(),
+        ]);
         for arg in &self.extra_args {
             cmd.arg(arg);
         }
@@ -209,10 +266,19 @@ pub async fn spawn(
         path.clone()
     };
 
-    println!("Dispatching {} to {}...", bead.id, provider.name());
+    // Permissions come from the bead, not the provider.
+    // TODO: read from bead.permissions field or schema config once available.
+    // For now, derive from issue_type as a sensible default.
+    let permissions = match bead.issue_type.as_str() {
+        "review" | "survey" | "audit" => PermissionProfile::ReadOnly,
+        "epic" | "plan" | "triage" => PermissionProfile::Plan,
+        _ => PermissionProfile::Implement,
+    };
+
+    println!("Dispatching {} to {} (perms={:?})...", bead.id, provider.name(), permissions);
 
     let child = provider
-        .spawn_agent(&prompt, &work_dir)
+        .spawn_agent(&prompt, &work_dir, &permissions)
         .with_context(|| format!("spawning {} for {}", provider.name(), bead.id))?;
 
     Ok(AgentHandle {
@@ -300,6 +366,38 @@ mod tests {
     #[test]
     fn provider_by_name_unknown() {
         assert!(provider_by_name("copilot").is_err());
+    }
+
+    #[test]
+    fn permission_profile_from_issue_type() {
+        // bug/task/feature → Implement
+        assert_eq!(
+            PermissionProfile::Implement,
+            match "bug" { "review"|"survey"|"audit" => PermissionProfile::ReadOnly, "epic"|"plan"|"triage" => PermissionProfile::Plan, _ => PermissionProfile::Implement }
+        );
+        // review → ReadOnly
+        assert_eq!(
+            PermissionProfile::ReadOnly,
+            match "review" { "review"|"survey"|"audit" => PermissionProfile::ReadOnly, "epic"|"plan"|"triage" => PermissionProfile::Plan, _ => PermissionProfile::Implement }
+        );
+        // epic → Plan
+        assert_eq!(
+            PermissionProfile::Plan,
+            match "epic" { "review"|"survey"|"audit" => PermissionProfile::ReadOnly, "epic"|"plan"|"triage" => PermissionProfile::Plan, _ => PermissionProfile::Implement }
+        );
+    }
+
+    #[test]
+    fn permission_profile_claude_tools() {
+        assert!(PermissionProfile::Implement.claude_allowed_tools().contains("Edit"));
+        assert!(!PermissionProfile::ReadOnly.claude_allowed_tools().contains("Edit"));
+        assert!(PermissionProfile::Plan.claude_allowed_tools().contains("mcp__rsry__"));
+    }
+
+    #[test]
+    fn permission_profile_gemini_mode() {
+        assert_eq!(PermissionProfile::Implement.gemini_approval_mode(), "auto_edit");
+        assert_eq!(PermissionProfile::ReadOnly.gemini_approval_mode(), "plan");
     }
 
     #[test]
