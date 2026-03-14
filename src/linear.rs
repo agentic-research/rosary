@@ -258,8 +258,10 @@ pub async fn sync() -> Result<()> {
                     nodes {
                         identifier
                         title
+                        description
                         priority
                         state { name }
+                        url
                     }
                 }
             }
@@ -321,27 +323,38 @@ pub async fn sync() -> Result<()> {
         }
     }
 
-    // Build Linear issue lookup: identifier → title
-    let linear_issues: Vec<(&str, &str)> = issues
+    // Build Linear issue lookup: identifier → (title, description, url)
+    let linear_issues: Vec<(&str, &str, &str, &str)> = issues
         .iter()
         .filter_map(|i| {
             let ident = i["identifier"].as_str()?;
             let title = i["title"].as_str()?;
-            Some((ident, title))
+            let desc = i["description"].as_str().unwrap_or("");
+            let url = i["url"].as_str().unwrap_or("");
+            Some((ident, title, desc, url))
         })
         .collect();
 
-    // --- LINK: match existing Linear issues to unlinked beads by title ---
+    // --- LINK: match existing Linear issues to unlinked beads ---
+    // Match by: (1) bead tag in description, (2) title match
     let mut linked = 0;
+    let mut linked_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for bead in &beads {
         if bead.external_ref.is_some() {
             continue;
         }
-        // Linear issues are created with "[repo] title" format
+        let bead_tag = format!("<!-- bead:{} ", bead.id);
         let prefixed_title = format!("[{}] {}", bead.repo, bead.title);
-        if let Some((ident, _)) = linear_issues
-            .iter()
-            .find(|(_, t)| *t == prefixed_title || *t == bead.title)
+
+        let matched = linear_issues.iter().find(|(_, title, desc, _)| {
+            // Match by bead tag in description (strongest signal)
+            desc.contains(&bead_tag)
+                // Or match by title
+                || *title == prefixed_title
+                || *title == bead.title
+        });
+
+        if let Some((ident, _, _, _url)) = matched
             && let Some(dc) = dolt_clients.get(&bead.repo)
         {
             if let Err(e) = dc.set_external_ref(&bead.id, ident).await {
@@ -349,6 +362,7 @@ pub async fn sync() -> Result<()> {
             } else {
                 println!("  ↔ Linked {} → {ident}", bead.id);
                 linked += 1;
+                linked_ids.insert(bead.id.clone());
             }
         }
     }
@@ -356,7 +370,7 @@ pub async fn sync() -> Result<()> {
     // --- PUSH: create Linear issues for unlinked beads, store external_ref ---
     let mut created = 0;
     for bead in &beads {
-        if bead.external_ref.is_some() {
+        if bead.external_ref.is_some() || linked_ids.contains(&bead.id) {
             continue;
         }
         if bead.status == "closed" {
@@ -369,7 +383,7 @@ pub async fn sync() -> Result<()> {
         let prefixed_title = format!("[{}] {}", bead.repo, bead.title);
         if linear_issues
             .iter()
-            .any(|(_, t)| *t == prefixed_title || *t == bead.title)
+            .any(|(_, t, _, _)| *t == prefixed_title || *t == bead.title)
         {
             continue;
         }
@@ -383,6 +397,8 @@ pub async fn sync() -> Result<()> {
             &full_title,
             &bead.description,
             bead.priority,
+            &bead.id,
+            &bead.repo,
         )
         .await
         {
@@ -421,7 +437,10 @@ pub async fn sync() -> Result<()> {
         for bead in &closed_beads {
             let ext_ref = bead.external_ref.as_deref().unwrap_or_default();
             // Only close issues that are still open in Linear
-            if linear_issues.iter().any(|(ident, _)| *ident == ext_ref) {
+            if linear_issues
+                .iter()
+                .any(|(ident, _, _, _)| *ident == ext_ref)
+            {
                 match update_linear_issue_status(&client, &team_id, ext_ref, "closed").await {
                     Ok(()) => {
                         println!("  ✓ Closed {ext_ref} (bead {})", bead.id);
@@ -452,7 +471,7 @@ pub async fn sync() -> Result<()> {
     Ok(())
 }
 
-/// Create a new issue in Linear.
+/// Create a new issue in Linear with bead ID tagged in description.
 /// Returns the issue identifier (e.g., "AGE-5").
 async fn create_linear_issue(
     client: &reqwest::Client,
@@ -460,7 +479,11 @@ async fn create_linear_issue(
     title: &str,
     description: &str,
     priority: u8,
+    bead_id: &str,
+    repo_name: &str,
 ) -> Result<String> {
+    // Tag the description with bead ID for bidirectional linkage
+    let tagged_description = format!("{description}\n\n<!-- bead:{bead_id} repo:{repo_name} -->",);
     let mutation = r#"
         mutation CreateIssue($input: IssueCreateInput!) {
             issueCreate(input: $input) {
@@ -485,7 +508,7 @@ async fn create_linear_issue(
         "input": {
             "teamId": team_id,
             "title": title,
-            "description": description,
+            "description": tagged_description,
             "priority": linear_priority,
         }
     });
