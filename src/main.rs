@@ -135,6 +135,11 @@ enum BeadAction {
         /// Comment body
         body: String,
     },
+    /// Search beads by title/description
+    Search {
+        /// Search query
+        query: String,
+    },
 }
 
 /// Generate a bead ID from the current timestamp.
@@ -250,6 +255,17 @@ async fn main() -> Result<()> {
                 BeadAction::Comment { id, body } => {
                     client.add_comment(&id, &body, "rsry").await?;
                     println!("Added comment to {id}");
+                }
+                BeadAction::Search { query } => {
+                    let beads = client.search_beads(&query, &repo_name).await?;
+                    if beads.is_empty() {
+                        println!("No beads matching '{query}'");
+                    } else {
+                        for b in &beads {
+                            println!("  [P{}] {} — {}", b.priority, b.id, b.title);
+                        }
+                        println!("{} result(s)", beads.len());
+                    }
                 }
             }
         }
