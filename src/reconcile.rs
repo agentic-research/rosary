@@ -34,6 +34,8 @@ pub struct ReconcilerConfig {
     pub provider: String,
     /// Overnight mode: prefer small/mechanical beads agents can complete.
     pub overnight: bool,
+    /// Compute provider config (from [compute] in rosary.toml).
+    pub compute: Option<crate::config::ComputeConfig>,
 }
 
 impl Default for ReconcilerConfig {
@@ -48,6 +50,7 @@ impl Default for ReconcilerConfig {
             dry_run: false,
             provider: "claude".to_string(),
             overnight: false,
+            compute: None,
         }
     }
 }
@@ -72,6 +75,8 @@ pub struct Reconciler {
     repo_info: HashMap<String, (PathBuf, String)>,
     /// Stash work_dir + repo when agent completes so verify_agent can find it
     completed_work_dirs: HashMap<String, (PathBuf, String)>,
+    /// Stash workspaces from completed agents for checkpoint + teardown
+    completed_workspaces: HashMap<String, crate::workspace::Workspace>,
     /// Dolt clients keyed by repo name, lazily connected
     dolt_clients: HashMap<String, DoltClient>,
     /// Resolved AI agent provider (claude, gemini, etc).
@@ -79,6 +84,8 @@ pub struct Reconciler {
     /// Optional external issue tracker (Linear, etc.) for status mirroring.
     /// When set, persist_status also pushes state transitions to the tracker.
     issue_tracker: Option<Box<dyn IssueTracker>>,
+    /// Compute provider for workspace provisioning (local, sprites, etc).
+    compute: Box<dyn crate::backend::ComputeProvider>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -128,6 +135,24 @@ impl Reconciler {
             dispatch::provider_by_name("claude").unwrap()
         });
 
+        // Build compute provider from reconciler config's compute field.
+        // Default to LocalProvider if not specified.
+        let compute: Box<dyn crate::backend::ComputeProvider> =
+            if let Some(ref compute_cfg) = config.compute {
+                match compute_cfg.backend.as_str() {
+                    "sprites" => match build_sprites_provider(compute_cfg) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!("[reconcile] sprites provider failed ({e}), using local");
+                            Box::new(crate::backend::LocalProvider)
+                        }
+                    },
+                    _ => Box::new(crate::backend::LocalProvider),
+                }
+            } else {
+                Box::new(crate::backend::LocalProvider)
+            };
+
         Reconciler {
             config,
             queue: WorkQueue::new(),
@@ -135,9 +160,11 @@ impl Reconciler {
             trackers: HashMap::new(),
             repo_info,
             completed_work_dirs: HashMap::new(),
+            completed_workspaces: HashMap::new(),
             dolt_clients: HashMap::new(),
             provider,
             issue_tracker: None,
+            compute,
         }
     }
 
@@ -476,12 +503,16 @@ impl Reconciler {
             }
 
             if done {
-                let handle = self.active.remove(&bead_id).unwrap();
+                let mut handle = self.active.remove(&bead_id).unwrap();
                 let repo = self
                     .trackers
                     .get(&bead_id)
                     .map(|t| t.repo.clone())
                     .unwrap_or_default();
+                // Stash workspace for checkpoint + teardown
+                if let Some(ws) = handle.workspace.take() {
+                    self.completed_workspaces.insert(bead_id.clone(), ws);
+                }
                 self.completed_work_dirs
                     .insert(bead_id.clone(), (handle.work_dir, repo));
                 completed.push((bead_id, success));
@@ -651,26 +682,65 @@ impl Reconciler {
         if let Some(tracker) = self.trackers.get_mut(bead_id) {
             tracker.consecutive_reverts = 0;
         }
-        self.cleanup_worktree(bead_id);
+        self.cleanup_workspace(bead_id);
     }
 
     /// Clean up the workspace for a completed bead.
     ///
-    /// Uses Workspace::teardown if available (handles jj/git/none),
-    /// falls back to legacy jj cleanup for handles without a workspace.
-    fn cleanup_worktree(&self, bead_id: &str) {
-        // Legacy cleanup path — still needed for handles created before
-        // the Workspace refactor (or if workspace was already consumed).
-        let workspace_name = format!("fix-{bead_id}");
-        let _ = std::process::Command::new("jj")
-            .args(["workspace", "forget", &workspace_name])
-            .output();
-        let workspace_dir = format!("../fix/{bead_id}");
-        let _ = std::fs::remove_dir_all(&workspace_dir);
-        // Also try git worktree cleanup (workspace may have used git)
-        let _ = std::process::Command::new("git")
-            .args(["worktree", "remove", &workspace_dir, "--force"])
-            .output();
+    /// If we have a Workspace from the agent handle, use its teardown
+    /// (handles jj/git/none + compute provider cleanup). Otherwise
+    /// fall back to legacy VCS cleanup.
+    fn cleanup_workspace(&mut self, bead_id: &str) {
+        if let Some(ws) = self.completed_workspaces.remove(bead_id) {
+            // Workspace handles its own VCS cleanup synchronously in drop,
+            // but compute teardown is async — fire and forget.
+            let compute_name = self.compute.name().to_string();
+            eprintln!(
+                "[cleanup] {bead_id} workspace (vcs={:?}, compute={compute_name})",
+                ws.vcs
+            );
+            // VCS cleanup is synchronous — do it now
+            match ws.vcs {
+                crate::workspace::VcsKind::Jj => {
+                    let workspace_name = format!("fix-{bead_id}");
+                    let _ = std::process::Command::new("jj")
+                        .args(["workspace", "forget", &workspace_name])
+                        .current_dir(&ws.repo_path)
+                        .output();
+                    let workspace_dir = ws.repo_path.join(format!("../fix/{bead_id}"));
+                    let _ = std::fs::remove_dir_all(workspace_dir);
+                }
+                crate::workspace::VcsKind::Git => {
+                    let workspace_dir = ws.repo_path.join(format!("../fix/{bead_id}"));
+                    let _ = std::process::Command::new("git")
+                        .args([
+                            "worktree",
+                            "remove",
+                            &workspace_dir.to_string_lossy(),
+                            "--force",
+                        ])
+                        .current_dir(&ws.repo_path)
+                        .output();
+                    let branch_name = format!("fix/{bead_id}");
+                    let _ = std::process::Command::new("git")
+                        .args(["branch", "-D", &branch_name])
+                        .current_dir(&ws.repo_path)
+                        .output();
+                }
+                crate::workspace::VcsKind::None => {}
+            }
+        } else {
+            // Legacy fallback — no workspace available
+            let workspace_name = format!("fix-{bead_id}");
+            let _ = std::process::Command::new("jj")
+                .args(["workspace", "forget", &workspace_name])
+                .output();
+            let workspace_dir = format!("../fix/{bead_id}");
+            let _ = std::fs::remove_dir_all(&workspace_dir);
+            let _ = std::process::Command::new("git")
+                .args(["worktree", "remove", &workspace_dir, "--force"])
+                .output();
+        }
     }
 
     /// Handle a verification failure. Returns true if deadlettered.
@@ -751,10 +821,35 @@ impl Reconciler {
             "[retry] {bead_id}: agent exited non-zero, retry #{} scheduled",
             tracker.retries
         );
-        self.cleanup_worktree(bead_id);
+        self.cleanup_workspace(bead_id);
 
         false
     }
+}
+
+/// Build a SpritesProvider from compute config.
+fn build_sprites_provider(
+    compute_cfg: &crate::config::ComputeConfig,
+) -> anyhow::Result<Box<dyn crate::backend::ComputeProvider>> {
+    let sprites_cfg = compute_cfg
+        .sprites
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("[compute.sprites] section required"))?;
+
+    let token = std::env::var(&sprites_cfg.token_env)
+        .map_err(|_| anyhow::anyhow!("set ${} for sprites backend", sprites_cfg.token_env))?;
+
+    let client = if let Some(ref base_url) = sprites_cfg.base_url {
+        crate::sprites::SpritesClient::with_base_url(&token, base_url)?
+    } else {
+        crate::sprites::SpritesClient::new(&token)?
+    };
+
+    let provider = crate::sprites_provider::SpritesProvider::new(client)
+        .with_network_allowlist(sprites_cfg.network_allowlist.clone())
+        .with_checkpoints(sprites_cfg.checkpoint_on_complete);
+
+    Ok(Box::new(provider))
 }
 
 /// Detect language from repo contents.
@@ -805,6 +900,7 @@ pub async fn run(
         dry_run,
         provider: provider.to_string(),
         overnight,
+        compute: cfg.compute,
         ..Default::default()
     };
 
