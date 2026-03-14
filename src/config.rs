@@ -26,8 +26,10 @@ pub struct RepoConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinearConfig {
-    /// Linear team key (e.g., "ART")
+    /// Linear team key (e.g., "AGE")
     pub team: String,
+    /// Linear API key (alternative to LINEAR_API_KEY env var)
+    pub api_key: Option<String>,
     /// Linear project name for cross-repo tracking
     pub project: Option<String>,
     /// Optional bead status → Linear state name overrides.

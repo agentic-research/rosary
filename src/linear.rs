@@ -54,15 +54,24 @@ async fn graphql(client: &reqwest::Client, query: &str, variables: Value) -> Res
 
 /// Read LINEAR_API_KEY from the environment. Returns None (with a helpful message) if unset.
 fn get_api_key() -> Option<String> {
-    match std::env::var("LINEAR_API_KEY") {
-        Ok(key) if !key.is_empty() => Some(key),
-        _ => {
-            eprintln!("LINEAR_API_KEY is not set.");
-            eprintln!("Get your API key from: https://linear.app/settings/api");
-            eprintln!("Then: export LINEAR_API_KEY=lin_api_...");
-            None
-        }
+    // 1. Env var (highest priority)
+    if let Ok(key) = std::env::var("LINEAR_API_KEY")
+        && !key.is_empty()
+    {
+        return Some(key);
     }
+    // 2. Config file
+    if let Ok(cfg) = crate::config::load_merged("rosary.toml")
+        && let Some(linear) = &cfg.linear
+        && let Some(ref key) = linear.api_key
+        && !key.is_empty()
+    {
+        return Some(key.clone());
+    }
+    eprintln!(
+        "LINEAR_API_KEY not set. Add to ~/.rsry/config.toml under [linear] or export LINEAR_API_KEY=lin_api_..."
+    );
+    None
 }
 
 /// Parse a Linear issue identifier from either a bare ID ("ART-123") or a URL.
@@ -382,7 +391,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
     let variables = json!({
         "teamId": team_id,
         "filter": {
-            "state": { "type": { "in": ["started", "unstarted"] } }
+            "state": { "type": { "in": ["started", "unstarted", "backlog"] } }
         }
     });
 
