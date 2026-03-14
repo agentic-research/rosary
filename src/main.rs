@@ -143,14 +143,13 @@ enum BeadAction {
 }
 
 /// Generate a bead ID from the current timestamp.
-/// Format: `rsry-{first 3 chars of hex(timestamp_millis)}`.
+/// Format: `rsry-{lower 6 hex chars of millis}` (~16M values before collision).
 fn generate_bead_id() -> String {
     let millis = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .expect("system clock before UNIX epoch")
         .as_millis();
-    let hex = format!("{millis:x}");
-    format!("rsry-{}", &hex[..3])
+    format!("rsry-{:06x}", millis & 0xffffff)
 }
 
 #[tokio::main]
@@ -312,9 +311,9 @@ mod tests {
             id.starts_with("rsry-"),
             "id should start with 'rsry-': {id}"
         );
-        // Suffix must be exactly 3 hex characters
+        // Suffix must be exactly 6 hex characters
         let suffix = &id["rsry-".len()..];
-        assert_eq!(suffix.len(), 3, "suffix should be 3 chars: {suffix}");
+        assert_eq!(suffix.len(), 6, "suffix should be 6 chars: {suffix}");
         assert!(
             suffix.chars().all(|c| c.is_ascii_hexdigit()),
             "suffix should be hex: {suffix}"

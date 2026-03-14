@@ -323,7 +323,7 @@ async fn tool_bead_create(args: &Value) -> Result<Value> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let id = format!("rsry-{:x}", millis & 0xfff);
+    let id = format!("rsry-{:06x}", millis & 0xffffff);
 
     client
         .create_bead(&id, title, description, priority, issue_type)
