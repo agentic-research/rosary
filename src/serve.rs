@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::config;
+use crate::dolt::{DoltClient, DoltConfig};
 use crate::scanner;
 
 // ---------------------------------------------------------------------------
@@ -123,6 +124,58 @@ fn tool_definitions() -> Value {
                     },
                     "required": []
                 }
+            },
+            {
+                "name": "rsry_bead_create",
+                "description": "Create a new bead (work item) in a repo's Dolt database.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "title": { "type": "string", "description": "Bead title" },
+                        "description": { "type": "string", "description": "Bead description", "default": "" },
+                        "priority": { "type": "integer", "description": "Priority 0-3 (0=P0 highest)", "default": 2 },
+                        "issue_type": { "type": "string", "description": "Issue type (bug, task, feature, review, epic)", "default": "task" }
+                    },
+                    "required": ["repo_path", "title"]
+                }
+            },
+            {
+                "name": "rsry_bead_close",
+                "description": "Close a bead by ID.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "id": { "type": "string", "description": "Bead ID to close" }
+                    },
+                    "required": ["repo_path", "id"]
+                }
+            },
+            {
+                "name": "rsry_bead_comment",
+                "description": "Add a comment to a bead.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "id": { "type": "string", "description": "Bead ID" },
+                        "body": { "type": "string", "description": "Comment text" }
+                    },
+                    "required": ["repo_path", "id", "body"]
+                }
+            },
+            {
+                "name": "rsry_bead_search",
+                "description": "Search beads by title/description substring.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "query": { "type": "string", "description": "Search query" }
+                    },
+                    "required": ["repo_path", "query"]
+                }
             }
         ]
     })
@@ -150,6 +203,10 @@ async fn call_tool(name: &str, args: &Value, config_path: &str) -> Result<Value>
                 .unwrap_or(true);
             tool_run_once(config_path, dry_run).await
         }
+        "rsry_bead_create" => tool_bead_create(args).await,
+        "rsry_bead_close" => tool_bead_close(args).await,
+        "rsry_bead_comment" => tool_bead_comment(args).await,
+        "rsry_bead_search" => tool_bead_search(args).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
 }
@@ -228,6 +285,97 @@ async fn tool_run_once(config_path: &str, dry_run: bool) -> Result<Value> {
         "deadlettered": summary.deadlettered,
         "dry_run": dry_run,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Bead CRUD helpers
+// ---------------------------------------------------------------------------
+
+/// Connect to the Dolt server for a given repo path.
+async fn connect_dolt(repo_path: &str) -> Result<DoltClient> {
+    let path = std::path::Path::new(repo_path);
+    let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
+    let beads_dir = root.join(".beads");
+    let config = DoltConfig::from_beads_dir(&beads_dir)?;
+    DoltClient::connect(&config).await
+}
+
+fn repo_name_from_path(repo_path: &str) -> String {
+    std::path::Path::new(repo_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".into())
+}
+
+async fn tool_bead_create(args: &Value) -> Result<Value> {
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    let title = args["title"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("title required"))?;
+    let description = args["description"].as_str().unwrap_or("");
+    let priority = args["priority"].as_u64().unwrap_or(2) as u8;
+    let issue_type = args["issue_type"].as_str().unwrap_or("task");
+
+    let client = connect_dolt(repo_path).await?;
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let id = format!("rsry-{:x}", millis & 0xfff);
+
+    client
+        .create_bead(&id, title, description, priority, issue_type)
+        .await?;
+
+    Ok(json!({ "id": id, "title": title, "priority": priority }))
+}
+
+async fn tool_bead_close(args: &Value) -> Result<Value> {
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    let id = args["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("id required"))?;
+
+    let client = connect_dolt(repo_path).await?;
+    client.close_bead(id).await?;
+
+    Ok(json!({ "id": id, "status": "closed" }))
+}
+
+async fn tool_bead_comment(args: &Value) -> Result<Value> {
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    let id = args["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("id required"))?;
+    let body = args["body"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("body required"))?;
+
+    let client = connect_dolt(repo_path).await?;
+    client.add_comment(id, body, "rsry-mcp").await?;
+
+    Ok(json!({ "id": id, "comment_added": true }))
+}
+
+async fn tool_bead_search(args: &Value) -> Result<Value> {
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    let query = args["query"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("query required"))?;
+
+    let client = connect_dolt(repo_path).await?;
+    let repo_name = repo_name_from_path(repo_path);
+    let beads = client.search_beads(query, &repo_name).await?;
+
+    Ok(json!({ "count": beads.len(), "beads": beads }))
 }
 
 // ---------------------------------------------------------------------------
@@ -382,16 +530,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_definitions_has_four_tools() {
+    fn tool_definitions_has_eight_tools() {
         let defs = tool_definitions();
         let tools = defs["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 8);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"rsry_scan"));
         assert!(names.contains(&"rsry_status"));
         assert!(names.contains(&"rsry_list_beads"));
         assert!(names.contains(&"rsry_run_once"));
+        assert!(names.contains(&"rsry_bead_create"));
+        assert!(names.contains(&"rsry_bead_close"));
+        assert!(names.contains(&"rsry_bead_comment"));
+        assert!(names.contains(&"rsry_bead_search"));
     }
 
     #[test]
@@ -422,7 +574,23 @@ mod tests {
         let resp = handle_tools_list(json!(2));
         let result = resp.result.unwrap();
         assert!(result["tools"].is_array());
-        assert_eq!(result["tools"].as_array().unwrap().len(), 4);
+        assert_eq!(result["tools"].as_array().unwrap().len(), 8);
+    }
+
+    #[test]
+    fn bead_crud_tools_have_repo_path() {
+        let defs = tool_definitions();
+        let tools = defs["tools"].as_array().unwrap();
+        for tool in tools {
+            let name = tool["name"].as_str().unwrap();
+            if name.starts_with("rsry_bead_") {
+                let props = &tool["inputSchema"]["properties"];
+                assert!(
+                    props.get("repo_path").is_some(),
+                    "{name} missing repo_path parameter"
+                );
+            }
+        }
     }
 
     #[test]

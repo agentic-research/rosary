@@ -103,6 +103,25 @@ pub fn jaccard_similarity(a: &str, b: &str) -> f64 {
     intersection / union
 }
 
+#[allow(dead_code)] // Used by reconciler dedup + future /btw skill
+/// Find beads with titles similar to the given title.
+///
+/// Returns a vec of (bead_id, similarity_score) for beads above the threshold.
+/// Used by the reconciler for dedup and by the `/btw` skill for pre-creation checks.
+pub fn find_similar_beads(title: &str, existing: &[Bead], threshold: f64) -> Vec<(String, f64)> {
+    existing
+        .iter()
+        .filter_map(|b| {
+            let score = jaccard_similarity(title, &b.title);
+            if score >= threshold {
+                Some((b.id.clone(), score))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +210,59 @@ mod tests {
     #[test]
     fn jaccard_empty_strings() {
         assert!((jaccard_similarity("", "") - 1.0).abs() < f64::EPSILON);
+    }
+
+    fn make_bead(id: &str, title: &str) -> Bead {
+        Bead {
+            id: id.to_string(),
+            title: title.to_string(),
+            description: String::new(),
+            status: "open".to_string(),
+            priority: 2,
+            issue_type: "task".to_string(),
+            owner: None,
+            repo: "test".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            dependency_count: 0,
+            dependent_count: 0,
+            comment_count: 0,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
+        }
+    }
+
+    #[test]
+    fn find_similar_exact_match() {
+        let existing = vec![make_bead("a", "fix the widget bug")];
+        let results = find_similar_beads("fix the widget bug", &existing, 0.6);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "a");
+        assert!((results[0].1 - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn find_similar_no_match() {
+        let existing = vec![make_bead("a", "add new feature")];
+        let results = find_similar_beads("fix the widget bug", &existing, 0.6);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn find_similar_partial_match() {
+        let existing = vec![
+            make_bead("a", "fix the widget bug"),
+            make_bead("b", "fix the gadget bug"),
+            make_bead("c", "completely unrelated task"),
+        ];
+        let results = find_similar_beads("fix the widget bug", &existing, 0.6);
+        assert_eq!(results.len(), 2); // a (exact) + b (0.6)
+    }
+
+    #[test]
+    fn find_similar_empty_existing() {
+        let results = find_similar_beads("anything", &[], 0.6);
+        assert!(results.is_empty());
     }
 }
