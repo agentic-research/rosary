@@ -29,6 +29,10 @@ pub fn find_external_refs(beads: &[Bead]) -> Vec<ExternalRef> {
     beads
         .iter()
         .filter_map(|bead| {
+            // Skip xref mirrors to prevent infinite recursion
+            if bead.id.starts_with("xref-") {
+                return None;
+            }
             let ext_ref = bead.external_ref.as_deref()?;
             let (target_repo, label) = ext_ref.split_once(':')?;
             Some(ExternalRef {
