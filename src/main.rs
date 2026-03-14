@@ -52,7 +52,7 @@ enum Command {
         /// Repo path containing .beads/
         #[arg(short, long, default_value = ".")]
         repo: String,
-        /// Use isolated git worktree
+        /// Use isolated jj workspace
         #[arg(long, default_value_t = true)]
         isolate: bool,
     },

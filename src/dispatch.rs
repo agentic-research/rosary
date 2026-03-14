@@ -269,18 +269,21 @@ You are a rosary-dispatched agent working on a bead (work item).\n\
 - Do NOT add co-author lines to commits\n\
 ";
 
-/// Create a git worktree for isolated work. Returns the worktree path on success.
+/// Create a jj workspace for isolated work. Returns the workspace path on success.
+///
+/// Uses `jj workspace add` for zero-cost isolation with shared object store
+/// instead of git worktrees.
 async fn create_worktree(repo_path: &Path, bead_id: &str) -> Result<PathBuf, ()> {
-    let branch_name = format!("fix/{bead_id}");
-    let worktree_path = repo_path.join(format!("../{branch_name}"));
+    let workspace_name = format!("fix-{bead_id}");
+    let workspace_path = repo_path.join(format!("../fix/{bead_id}"));
 
-    let output = tokio::process::Command::new("git")
+    let output = tokio::process::Command::new("jj")
         .args([
-            "worktree",
+            "workspace",
             "add",
-            "-b",
-            &branch_name,
-            &worktree_path.to_string_lossy(),
+            &workspace_path.to_string_lossy(),
+            "--name",
+            &workspace_name,
         ])
         .current_dir(repo_path)
         .output()
@@ -288,8 +291,8 @@ async fn create_worktree(repo_path: &Path, bead_id: &str) -> Result<PathBuf, ()>
 
     match output {
         Ok(o) if o.status.success() => {
-            println!("Created worktree: {}", worktree_path.display());
-            Ok(worktree_path)
+            println!("Created workspace: {}", workspace_path.display());
+            Ok(workspace_path)
         }
         _ => Err(()),
     }
