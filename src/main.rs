@@ -80,6 +80,17 @@ enum Command {
         #[arg(long, default_value = "8383")]
         port: u16,
     },
+    /// Register current repo (or path) in the global registry (~/.rsry/repos.toml)
+    Enable {
+        /// Path to repo root (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: String,
+    },
+    /// Unregister a repo from the global registry by name or path
+    Disable {
+        /// Repo name or path to remove
+        name_or_path: String,
+    },
     /// Manage beads directly
     Bead {
         #[command(subcommand)]
@@ -139,7 +150,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Scan { config } => {
-            let cfg = config::load(&config)?;
+            let cfg = config::load_merged(&config)?;
             let beads = scanner::scan_repos(&cfg.repo).await?;
             println!("Found {} beads across {} repos", beads.len(), cfg.repo.len());
             for b in &beads {
@@ -153,7 +164,7 @@ async fn main() -> Result<()> {
             linear::sync().await?;
         }
         Command::Status => {
-            let cfg = config::load("rosary.toml")?;
+            let cfg = config::load_merged("rosary.toml")?;
             let beads = scanner::scan_repos(&cfg.repo).await?;
             scanner::print_status(&beads);
         }
@@ -165,6 +176,16 @@ async fn main() -> Result<()> {
         }
         Command::Serve { transport, port } => {
             serve::run(&transport, port).await?;
+        }
+        Command::Enable { path } => {
+            let entry = config::enable_repo(Path::new(&path))?;
+            println!("Enabled: {} ({})", entry.name, entry.path.display());
+        }
+        Command::Disable { name_or_path } => {
+            match config::disable_repo(&name_or_path)? {
+                Some(name) => println!("Disabled: {name}"),
+                None => println!("Not found: {name_or_path}"),
+            }
         }
         Command::Bead { action, repo } => {
             let beads_dir = Path::new(&repo).join(".beads");
