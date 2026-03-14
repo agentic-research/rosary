@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+use crate::bead::BeadState;
+
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 
 /// Build a reqwest client with the Linear API key in the Authorization header.
@@ -596,17 +598,15 @@ async fn update_linear_issue_status(
         .and_then(|v| v.as_array())
         .context("fetching workflow states")?;
 
-    let target_type = match status {
-        "closed" => "completed",
-        "in_progress" => "started",
-        _ => "unstarted",
-    };
+    // Map rosary status to Linear state name via BeadState
+    let bead_state = BeadState::from(status);
+    let target_name = bead_state.to_linear_state();
 
     let target_state = states
         .iter()
-        .find(|s| s["type"].as_str() == Some(target_type))
+        .find(|s| s["name"].as_str() == Some(target_name))
         .and_then(|s| s["id"].as_str())
-        .context("no matching workflow state")?;
+        .context(format!("no Linear state matching '{target_name}'"))?;
 
     // Update the issue
     let mutation = r#"

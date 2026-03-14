@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+use crate::bead::BeadState;
 use crate::sync::{ExternalIssue, IssueTracker};
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
@@ -81,12 +82,14 @@ async fn resolve_team_id(client: &reqwest::Client, team_key: &str) -> Result<Str
     anyhow::bail!("team '{team_key}' not found")
 }
 
-/// Map Linear workflow state name to rosary status.
+/// Map Linear workflow state name to rosary status string.
+/// Delegates to BeadState::from_linear_state for the canonical mapping.
 fn map_linear_status(state_name: &str) -> &'static str {
-    match state_name.to_lowercase().as_str() {
-        "done" | "completed" | "closed" | "cancelled" | "canceled" => "closed",
-        "in progress" | "in review" | "started" => "in_progress",
-        _ => "open", // Todo, Backlog, Triage, etc.
+    match BeadState::from_linear_state(state_name) {
+        BeadState::Done => "closed",
+        BeadState::Dispatched => "in_progress",
+        BeadState::Verifying => "verifying",
+        _ => "open",
     }
 }
 
@@ -250,19 +253,15 @@ impl IssueTracker for LinearTracker {
             .and_then(|v| v.as_array())
             .context("fetching workflow states")?;
 
-        // Map rosary status to Linear state type
-        let target_type = match status {
-            "closed" => "completed",
-            "in_progress" => "started",
-            "blocked" => "started", // Linear has no "blocked" — use started
-            _ => "unstarted",
-        };
+        // Map rosary status to Linear state name via BeadState
+        let bead_state = BeadState::from(status);
+        let target_name = bead_state.to_linear_state();
 
         let target_state = states
             .iter()
-            .find(|s| s["type"].as_str() == Some(target_type))
+            .find(|s| s["name"].as_str() == Some(target_name))
             .and_then(|s| s["id"].as_str())
-            .context("no matching workflow state")?;
+            .context(format!("no Linear state matching '{target_name}'"))?;
 
         // Update the issue
         let mutation = r#"
@@ -307,8 +306,12 @@ mod tests {
     #[test]
     fn map_status_in_progress() {
         assert_eq!(map_linear_status("In Progress"), "in_progress");
-        assert_eq!(map_linear_status("In Review"), "in_progress");
-        assert_eq!(map_linear_status("Started"), "in_progress");
+        assert_eq!(map_linear_status("Started"), "open"); // unmapped Linear state
+    }
+
+    #[test]
+    fn map_status_in_review() {
+        assert_eq!(map_linear_status("In Review"), "verifying");
     }
 
     #[test]

@@ -17,6 +17,7 @@ use crate::dolt::{DoltClient, DoltConfig};
 use crate::epic;
 use crate::queue::{self, QueueEntry, WorkQueue};
 use crate::scanner;
+use crate::sync::IssueTracker;
 use crate::thread;
 use crate::verify::{Verifier, VerifySummary};
 
@@ -75,6 +76,9 @@ pub struct Reconciler {
     dolt_clients: HashMap<String, DoltClient>,
     /// Resolved AI agent provider (claude, gemini, etc).
     provider: Box<dyn dispatch::AgentProvider>,
+    /// Optional external issue tracker (Linear, etc.) for status mirroring.
+    /// When set, persist_status also pushes state transitions to the tracker.
+    issue_tracker: Option<Box<dyn IssueTracker>>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -133,7 +137,15 @@ impl Reconciler {
             completed_work_dirs: HashMap::new(),
             dolt_clients: HashMap::new(),
             provider,
+            issue_tracker: None,
         }
+    }
+
+    /// Attach an external issue tracker for status mirroring.
+    /// When set, every bead state transition also updates the linked Linear issue.
+    #[allow(dead_code)] // API surface — called from main.rs when LINEAR_API_KEY is set
+    pub fn set_issue_tracker(&mut self, tracker: Box<dyn IssueTracker>) {
+        self.issue_tracker = Some(tracker);
     }
 
     /// Check if a bead was already closed by the dispatched agent via MCP.
@@ -598,7 +610,12 @@ impl Reconciler {
     }
 
     /// Update bead status in Dolt and log the transition. Best-effort.
+    /// Also mirrors the transition to the external issue tracker (Linear)
+    /// if the bead has an external_ref and a tracker is configured.
     async fn persist_status(&mut self, bead_id: &str, repo: &str, status: &str) {
+        // 1. Write to Dolt (source of truth) and fetch external_ref
+        let has_tracker = self.issue_tracker.is_some();
+        let mut external_ref: Option<String> = None;
         if let Some(client) = self.dolt_client(repo).await {
             if let Err(e) = client.update_status(bead_id, status).await {
                 eprintln!("[dolt] failed to update {bead_id} to {status}: {e}");
@@ -606,6 +623,26 @@ impl Reconciler {
             client
                 .log_event(bead_id, "state_change", &format!("→ {status}"))
                 .await;
+            if has_tracker {
+                external_ref = client.get_external_ref(bead_id).await.ok().flatten();
+            }
+        }
+
+        // 2. Mirror to external issue tracker (best-effort, never blocks)
+        if let (Some(tracker), Some(ext_ref)) = (&self.issue_tracker, external_ref) {
+            let bead_state = BeadState::from(status);
+            let linear_state = bead_state.to_linear_state();
+            if let Err(e) = tracker.update_status(&ext_ref, linear_state).await {
+                eprintln!(
+                    "[{}] failed to mirror {bead_id} → {ext_ref} ({linear_state}): {e}",
+                    tracker.name()
+                );
+            } else {
+                eprintln!(
+                    "[{}] mirrored {bead_id} → {ext_ref} ({status} → {linear_state})",
+                    tracker.name()
+                );
+            }
         }
     }
 

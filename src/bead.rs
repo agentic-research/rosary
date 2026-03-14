@@ -56,6 +56,33 @@ impl BeadState {
     pub fn is_terminal(self) -> bool {
         self.valid_transitions().is_empty()
     }
+
+    /// Map bead state to the Linear workflow state name it should drive.
+    /// Returns the Linear state name (matches AGE team workflow states).
+    pub fn to_linear_state(self) -> &'static str {
+        match self {
+            BeadState::Open | BeadState::Rejected | BeadState::Stale => "Todo",
+            BeadState::Queued => "Todo",
+            BeadState::Dispatched => "In Progress",
+            BeadState::Verifying => "In Review",
+            BeadState::Done => "Done",
+            BeadState::Blocked => "Backlog", // blocked needs human — park in backlog
+        }
+    }
+
+    /// Map a Linear workflow state name to a BeadState.
+    /// This is the pull direction: Linear → bead.
+    pub fn from_linear_state(state_name: &str) -> Self {
+        match state_name.to_lowercase().as_str() {
+            "done" | "completed" | "closed" => BeadState::Done,
+            "canceled" | "cancelled" | "duplicate" => BeadState::Done,
+            "in progress" => BeadState::Dispatched,
+            "in review" => BeadState::Verifying,
+            "todo" => BeadState::Open,
+            "backlog" => BeadState::Open,
+            _ => BeadState::Open,
+        }
+    }
 }
 
 impl fmt::Display for BeadState {
@@ -305,6 +332,34 @@ mod tests {
         assert!(!BeadState::Rejected.can_transition_to(BeadState::Done));
 
         assert!(BeadState::Done.is_terminal());
+    }
+
+    #[test]
+    fn to_linear_state_mapping() {
+        assert_eq!(BeadState::Open.to_linear_state(), "Todo");
+        assert_eq!(BeadState::Queued.to_linear_state(), "Todo");
+        assert_eq!(BeadState::Dispatched.to_linear_state(), "In Progress");
+        assert_eq!(BeadState::Verifying.to_linear_state(), "In Review");
+        assert_eq!(BeadState::Done.to_linear_state(), "Done");
+        assert_eq!(BeadState::Blocked.to_linear_state(), "Backlog");
+        assert_eq!(BeadState::Rejected.to_linear_state(), "Todo");
+        assert_eq!(BeadState::Stale.to_linear_state(), "Todo");
+    }
+
+    #[test]
+    fn from_linear_state_mapping() {
+        assert_eq!(BeadState::from_linear_state("Done"), BeadState::Done);
+        assert_eq!(BeadState::from_linear_state("Canceled"), BeadState::Done);
+        assert_eq!(
+            BeadState::from_linear_state("In Progress"),
+            BeadState::Dispatched
+        );
+        assert_eq!(
+            BeadState::from_linear_state("In Review"),
+            BeadState::Verifying
+        );
+        assert_eq!(BeadState::from_linear_state("Todo"), BeadState::Open);
+        assert_eq!(BeadState::from_linear_state("Backlog"), BeadState::Open);
     }
 
     #[test]
