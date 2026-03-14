@@ -265,7 +265,7 @@ async fn tool_run_once(config_path: &str, dry_run: bool) -> Result<Value> {
     let cfg = config::load(config_path)?;
 
     let reconciler_config = ReconcilerConfig {
-        max_concurrent: 3,
+        max_concurrent: 5,
         scan_interval: Duration::from_secs(30),
         repo: cfg.repo,
         once: true,

@@ -38,7 +38,7 @@ pub struct ReconcilerConfig {
 impl Default for ReconcilerConfig {
     fn default() -> Self {
         ReconcilerConfig {
-            max_concurrent: 3,
+            max_concurrent: 5,
             scan_interval: Duration::from_secs(30),
             max_retries: 5,
             triage_threshold: 0.3,
@@ -224,72 +224,7 @@ impl Reconciler {
         let completed = self.check_completed();
         summary.completed = completed.len();
 
-        // Phase 3: VERIFY completed agents
-        // Collect (bead_id, repo, new_status) for Dolt persistence after processing.
-        let mut status_updates: Vec<(String, String, String)> = Vec::new();
-
-        for (bead_id, exit_success) in &completed {
-            let repo = self
-                .trackers
-                .get(bead_id.as_str())
-                .map(|t| t.repo.clone())
-                .unwrap_or_default();
-
-            // Agent-first fast path: if the agent already closed the bead via
-            // MCP, skip verification entirely. This is the main throughput win —
-            // verification (compile+test+lint) takes minutes per bead.
-            if self.is_bead_agent_closed(bead_id, &repo).await {
-                self.completed_work_dirs.remove(bead_id);
-                summary.agent_closed += 1;
-                summary.passed += 1;
-                self.on_pass(bead_id);
-                continue;
-            }
-
-            if *exit_success {
-                let verify_result = self.verify_agent(bead_id);
-                match verify_result {
-                    Some(vs) if vs.passed() => {
-                        summary.passed += 1;
-                        self.on_pass(bead_id);
-                        status_updates.push((bead_id.clone(), repo, "closed".into()));
-                    }
-                    Some(vs) => {
-                        summary.failed += 1;
-                        let deadlettered = self.on_fail(bead_id, &vs);
-                        if deadlettered {
-                            summary.deadlettered += 1;
-                            status_updates.push((bead_id.clone(), repo, "blocked".into()));
-                        } else {
-                            status_updates.push((bead_id.clone(), repo, "open".into()));
-                        }
-                    }
-                    None => {
-                        // No verifier available (unknown repo) — treat as pass
-                        summary.passed += 1;
-                        self.on_pass(bead_id);
-                        status_updates.push((bead_id.clone(), repo, "closed".into()));
-                    }
-                }
-            } else {
-                self.completed_work_dirs.remove(bead_id);
-                summary.failed += 1;
-                let deadlettered = self.on_fail_exit(bead_id);
-                if deadlettered {
-                    summary.deadlettered += 1;
-                    status_updates.push((bead_id.clone(), repo, "blocked".into()));
-                } else {
-                    status_updates.push((bead_id.clone(), repo, "open".into()));
-                }
-            }
-        }
-
-        // Persist state transitions to Dolt (best-effort)
-        for (bead_id, repo, status) in &status_updates {
-            self.persist_status(bead_id, repo, status).await;
-        }
-
-        // Phase 4: TRIAGE — score open beads, enqueue above threshold
+        // Phase 3: TRIAGE — score open beads, enqueue above threshold
         let now = chrono::Utc::now();
         for bead in &beads {
             if bead.state() != BeadState::Open {
@@ -363,7 +298,10 @@ impl Reconciler {
             }
         }
 
-        // Phase 5: DISPATCH — dequeue and spawn agents
+        // Phase 4: DISPATCH — fill free slots before verification
+        // Dispatch runs BEFORE verify so new agents start working while the
+        // reconciler spends time on verification (compile+test+lint = minutes).
+        // This keeps all concurrency slots utilized instead of idling during verify.
         let dispatch_now = Instant::now();
         while self.active.len() < self.config.max_concurrent {
             let Some(entry) = self.queue.dequeue(dispatch_now) else {
@@ -426,6 +364,71 @@ impl Reconciler {
                     }
                 }
             }
+        }
+
+        // Phase 5: VERIFY completed agents
+        // Runs after dispatch so new agents execute in parallel with verification.
+        let mut status_updates: Vec<(String, String, String)> = Vec::new();
+
+        for (bead_id, exit_success) in &completed {
+            let repo = self
+                .trackers
+                .get(bead_id.as_str())
+                .map(|t| t.repo.clone())
+                .unwrap_or_default();
+
+            // Agent-first fast path: if the agent already closed the bead via
+            // MCP, skip verification entirely. This is the main throughput win —
+            // verification (compile+test+lint) takes minutes per bead.
+            if self.is_bead_agent_closed(bead_id, &repo).await {
+                self.completed_work_dirs.remove(bead_id);
+                summary.agent_closed += 1;
+                summary.passed += 1;
+                self.on_pass(bead_id);
+                continue;
+            }
+
+            if *exit_success {
+                let verify_result = self.verify_agent(bead_id);
+                match verify_result {
+                    Some(vs) if vs.passed() => {
+                        summary.passed += 1;
+                        self.on_pass(bead_id);
+                        status_updates.push((bead_id.clone(), repo, "closed".into()));
+                    }
+                    Some(vs) => {
+                        summary.failed += 1;
+                        let deadlettered = self.on_fail(bead_id, &vs);
+                        if deadlettered {
+                            summary.deadlettered += 1;
+                            status_updates.push((bead_id.clone(), repo, "blocked".into()));
+                        } else {
+                            status_updates.push((bead_id.clone(), repo, "open".into()));
+                        }
+                    }
+                    None => {
+                        // No verifier available (unknown repo) — treat as pass
+                        summary.passed += 1;
+                        self.on_pass(bead_id);
+                        status_updates.push((bead_id.clone(), repo, "closed".into()));
+                    }
+                }
+            } else {
+                self.completed_work_dirs.remove(bead_id);
+                summary.failed += 1;
+                let deadlettered = self.on_fail_exit(bead_id);
+                if deadlettered {
+                    summary.deadlettered += 1;
+                    status_updates.push((bead_id.clone(), repo, "blocked".into()));
+                } else {
+                    status_updates.push((bead_id.clone(), repo, "open".into()));
+                }
+            }
+        }
+
+        // Persist state transitions to Dolt (best-effort)
+        for (bead_id, repo, status) in &status_updates {
+            self.persist_status(bead_id, repo, status).await;
         }
 
         Ok(summary)
@@ -797,7 +800,7 @@ mod tests {
     #[test]
     fn reconciler_config_defaults() {
         let cfg = ReconcilerConfig::default();
-        assert_eq!(cfg.max_concurrent, 3);
+        assert_eq!(cfg.max_concurrent, 5);
         assert_eq!(cfg.scan_interval, Duration::from_secs(30));
         assert_eq!(cfg.max_retries, 5);
         assert!(!cfg.once);
