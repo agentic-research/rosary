@@ -17,18 +17,29 @@ pub struct DoltConfig {
     pub host: String,
     pub port: u16,
     pub database: String,
+    /// Path to the .beads/ directory (for auto-start + state files).
+    pub beads_dir: std::path::PathBuf,
 }
 
 impl DoltConfig {
+    /// Path to the Dolt database directory.
+    pub fn dolt_dir(&self) -> std::path::PathBuf {
+        self.beads_dir.join("dolt").join(&self.database)
+    }
+
     /// Discover connection details from a repo's `.beads/` directory.
     pub fn from_beads_dir(beads_dir: &Path) -> Result<Self> {
         let port_file = beads_dir.join("dolt-server.port");
-        let port_str = std::fs::read_to_string(&port_file)
-            .with_context(|| format!("reading {}", port_file.display()))?;
-        let port: u16 = port_str
-            .trim()
-            .parse()
-            .with_context(|| format!("parsing port from {}", port_file.display()))?;
+        let port: u16 = if port_file.exists() {
+            let port_str = std::fs::read_to_string(&port_file)
+                .with_context(|| format!("reading {}", port_file.display()))?;
+            port_str
+                .trim()
+                .parse()
+                .with_context(|| format!("parsing port from {}", port_file.display()))?
+        } else {
+            0 // No server running — connect() will auto-start
+        };
 
         let meta_file = beads_dir.join("metadata.json");
         let database = if meta_file.exists() {
@@ -48,6 +59,7 @@ impl DoltConfig {
             host: "127.0.0.1".to_string(),
             port,
             database,
+            beads_dir: beads_dir.to_path_buf(),
         })
     }
 
@@ -63,15 +75,93 @@ pub struct DoltClient {
 }
 
 impl DoltClient {
-    /// Connect to a Dolt server with a 3-second timeout.
+    /// Connect to a Dolt server, auto-starting if not running.
+    ///
+    /// Follows the same pattern as beads' `EnsureRunning()`:
+    /// 1. Try connecting (3s timeout)
+    /// 2. If fails, start `dolt sql-server` from the db directory
+    /// 3. Wait for it to accept connections
+    /// 4. Retry the MySQL connection
     pub async fn connect(config: &DoltConfig) -> Result<Self> {
-        let pool = tokio::time::timeout(
+        // Fast path — server already running
+        if let Ok(Ok(pool)) = tokio::time::timeout(
             std::time::Duration::from_secs(3),
             MySqlPool::connect(&config.url()),
         )
         .await
-        .with_context(|| format!("timeout connecting to Dolt at {}", config.url()))?
-        .with_context(|| format!("connecting to Dolt at {}", config.url()))?;
+        {
+            return Ok(DoltClient { pool });
+        }
+
+        // Server not running — auto-start from the dolt data directory
+        let dolt_dir = config.dolt_dir();
+        if !dolt_dir.exists() {
+            anyhow::bail!("Dolt database directory not found: {}", dolt_dir.display());
+        }
+
+        eprintln!(
+            "[dolt] auto-starting server for {} on port {}...",
+            config.database, config.port
+        );
+
+        // Allocate ephemeral port if configured port is 0
+        let port = if config.port == 0 {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").context("allocating ephemeral port")?;
+            let port = listener.local_addr()?.port();
+            drop(listener);
+            port
+        } else {
+            config.port
+        };
+
+        // Start dolt sql-server as detached process
+        let mut cmd = tokio::process::Command::new("dolt");
+        cmd.args(["sql-server", "-H", "127.0.0.1", "-P", &port.to_string()]);
+        cmd.current_dir(&dolt_dir);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+
+        let child = cmd.spawn().with_context(|| {
+            format!(
+                "starting dolt sql-server in {} (is dolt installed?)",
+                dolt_dir.display()
+            )
+        })?;
+
+        // Write PID + port files so bd/rsry can find this server later
+        let beads_dir = dolt_dir.parent().unwrap_or(&dolt_dir);
+        let _ = std::fs::write(
+            beads_dir.join("dolt-server.pid"),
+            child.id().unwrap_or(0).to_string(),
+        );
+        let _ = std::fs::write(beads_dir.join("dolt-server.port"), port.to_string());
+
+        // Wait for server to accept connections (up to 10s)
+        let addr = format!("127.0.0.1:{port}");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if tokio::time::Instant::now() > deadline {
+                anyhow::bail!(
+                    "dolt sql-server started but not accepting connections on port {port}"
+                );
+            }
+            if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        // Connect via MySQL
+        let url = format!("mysql://root@127.0.0.1:{port}/{}", config.database);
+        let pool =
+            tokio::time::timeout(std::time::Duration::from_secs(5), MySqlPool::connect(&url))
+                .await
+                .with_context(|| format!("timeout connecting after auto-start on port {port}"))?
+                .with_context(|| format!("connecting to Dolt at {url}"))?;
+
+        eprintln!("[dolt] server started on port {port}");
         Ok(DoltClient { pool })
     }
 
@@ -321,10 +411,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_dolt_config_no_port_file_errors() {
+    fn parse_dolt_config_no_port_file_returns_port_zero() {
         let dir = TempDir::new().unwrap();
-        let result = DoltConfig::from_beads_dir(dir.path());
-        assert!(result.is_err());
+        let config = DoltConfig::from_beads_dir(dir.path()).unwrap();
+        assert_eq!(config.port, 0); // No server — auto-start will handle it
     }
 
     #[test]
