@@ -654,16 +654,23 @@ impl Reconciler {
         self.cleanup_worktree(bead_id);
     }
 
-    /// Remove the jj workspace created for this bead.
+    /// Clean up the workspace for a completed bead.
+    ///
+    /// Uses Workspace::teardown if available (handles jj/git/none),
+    /// falls back to legacy jj cleanup for handles without a workspace.
     fn cleanup_worktree(&self, bead_id: &str) {
+        // Legacy cleanup path — still needed for handles created before
+        // the Workspace refactor (or if workspace was already consumed).
         let workspace_name = format!("fix-{bead_id}");
-        // Best-effort cleanup — don't block on failure
         let _ = std::process::Command::new("jj")
             .args(["workspace", "forget", &workspace_name])
             .output();
-        // Remove the working copy directory
         let workspace_dir = format!("../fix/{bead_id}");
-        let _ = std::fs::remove_dir_all(workspace_dir);
+        let _ = std::fs::remove_dir_all(&workspace_dir);
+        // Also try git worktree cleanup (workspace may have used git)
+        let _ = std::process::Command::new("git")
+            .args(["worktree", "remove", &workspace_dir, "--force"])
+            .output();
     }
 
     /// Handle a verification failure. Returns true if deadlettered.

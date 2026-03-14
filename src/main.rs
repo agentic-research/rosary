@@ -29,6 +29,8 @@ mod sync;
 mod thread;
 mod vcs;
 mod verify;
+#[allow(dead_code)] // API surface — replaces dispatch.rs worktree logic
+mod workspace;
 
 #[derive(Parser)]
 #[command(
