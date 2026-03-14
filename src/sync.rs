@@ -90,13 +90,29 @@ pub async fn bidi_sync(
         .collect();
 
     // --- PULL: external → bead ---
-    // Create beads for external issues that have no linked bead
+    // Create beads for external issues that have no linked bead.
+    // If a bead already exists (title match), link it via external_ref.
     for ext in &external {
         if bead_by_ext_ref.contains_key(ext.external_id.as_str()) {
             continue; // already linked
         }
-        // Check title match as fallback dedup
-        if beads.iter().any(|b| b.title == ext.title) {
+        // Check title match as fallback dedup — and link if found
+        let title_match = beads
+            .iter()
+            .find(|b| b.title == ext.title || ext.title == format!("[{}] {}", b.repo, b.title));
+        if let Some(matched) = title_match {
+            if matched.external_ref.is_none() {
+                if let Err(e) = client.set_external_ref(&matched.id, &ext.external_id).await {
+                    eprintln!(
+                        "[sync] link error {} → {}: {e}",
+                        matched.id, ext.external_id
+                    );
+                    result.errors += 1;
+                } else {
+                    eprintln!("[sync] linked {} → {}", matched.id, ext.external_id);
+                    result.reconciled += 1;
+                }
+            }
             continue;
         }
 
@@ -150,6 +166,10 @@ pub async fn bidi_sync(
         match tracker.create(&ext_issue).await {
             Ok(ext_id) => {
                 eprintln!("[sync] pushed {} → {ext_id}", bead.id);
+                // Store external_ref back on the bead so future syncs can reconcile
+                if let Err(e) = client.set_external_ref(&bead.id, &ext_id).await {
+                    eprintln!("[sync] failed to store external_ref for {}: {e}", bead.id);
+                }
                 result.pushed += 1;
             }
             Err(e) => {
@@ -159,18 +179,44 @@ pub async fn bidi_sync(
         }
     }
 
-    // --- RECONCILE: status sync for linked beads ---
+    // --- RECONCILE: bidirectional status sync for linked beads ---
     for bead in beads {
         let Some(ext_ref) = bead.external_ref.as_deref() else {
             continue;
         };
         let Some(ext) = ext_by_id.get(ext_ref) else {
-            continue; // external issue not in current fetch (maybe closed)
+            // External issue not in open list — may already be closed externally.
+            // If bead is still open, mark it closed to match.
+            if bead.status != "closed" {
+                if let Err(e) = client.update_status(&bead.id, "closed").await {
+                    eprintln!("[sync] reconcile error for {}: {e}", bead.id);
+                    result.errors += 1;
+                } else {
+                    eprintln!(
+                        "[sync] reconciled {} ({} → closed, external gone)",
+                        bead.id, bead.status
+                    );
+                    result.reconciled += 1;
+                }
+            }
+            continue;
         };
 
-        // Map external status to rosary status
         let ext_status = &ext.status;
-        if *ext_status != bead.status {
+        if *ext_status == bead.status {
+            continue;
+        }
+
+        if bead.status == "closed" {
+            // Bead closed locally — push closure to external tracker
+            if let Err(e) = tracker.update_status(ext_ref, &bead.status).await {
+                eprintln!("[sync] reconcile error pushing close for {}: {e}", bead.id);
+                result.errors += 1;
+            } else {
+                eprintln!("[sync] reconciled {} (closed → external)", bead.id);
+                result.reconciled += 1;
+            }
+        } else {
             // External changed — update bead
             if let Err(e) = client.update_status(&bead.id, ext_status).await {
                 eprintln!("[sync] reconcile error for {}: {e}", bead.id);
