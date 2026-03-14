@@ -1,15 +1,15 @@
 //! SpritesProvider — `ComputeProvider` impl backed by sprites.dev.
 //!
 //! Lifecycle mapping:
-//!   provision → POST /sprites (create container + set policies)
-//!   exec      → POST /sprites/{name}/exec
-//!   checkpoint → POST /sprites/{name}/checkpoints
+//!   provision → POST /sprites (create container)
+//!   exec      → `sprite exec` CLI (WebSocket streaming under the hood)
+//!   checkpoint → `sprite checkpoint create` CLI (sequential v0/v1/v2 IDs)
 //!   destroy   → DELETE /sprites/{name}
 
 use anyhow::{Context, Result};
 
 use crate::backend::{ComputeProvider, ExecHandle, ExecResult, ProvisionOpts};
-use crate::sprites::{CreateOpts, ResourcePolicy, SpritesClient};
+use crate::sprites::{CreateOpts, SpritesClient};
 
 /// Compute provider that runs agents inside sprites.dev containers.
 pub struct SpritesProvider {
@@ -60,27 +60,9 @@ impl ComputeProvider for SpritesProvider {
             .await
             .with_context(|| format!("provisioning sprite {name}"))?;
 
-        // Set resource policy if specified
-        if opts.cpu.is_some() || opts.memory_mb.is_some() {
-            let policy = ResourcePolicy {
-                cpu: opts.cpu,
-                memory_mb: opts.memory_mb,
-            };
-            if let Err(e) = self.client.set_resource_policy(&name, &policy).await {
-                eprintln!("[sprites] warning: resource policy for {name}: {e}");
-            }
-        }
-
-        // Set network policy — merge opts allowlist with provider defaults
-        let mut domains = self.network_allowlist.clone();
-        domains.extend(opts.network_allowlist.iter().cloned());
-        if !domains.is_empty() {
-            domains.sort();
-            domains.dedup();
-            if let Err(e) = self.client.set_network_policy(&name, &domains).await {
-                eprintln!("[sprites] warning: network policy for {name}: {e}");
-            }
-        }
+        // NOTE: resource and network policies are not yet available via the
+        // sprites.dev API (endpoints returned 404 during validation 2026-03-14).
+        // When the API adds these, wire them here.
 
         Ok(ExecHandle {
             id: name,
