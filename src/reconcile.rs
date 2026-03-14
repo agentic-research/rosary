@@ -778,6 +778,14 @@ pub async fn run(
 ) -> Result<()> {
     let cfg = config::load(config_path)?;
 
+    // Extract linear team before cfg.repo is moved
+    let linear_team = std::env::var("LINEAR_TEAM").unwrap_or_else(|_| {
+        cfg.linear
+            .as_ref()
+            .map(|l| l.team.clone())
+            .unwrap_or_else(|| "AGE".to_string())
+    });
+
     let reconciler_config = ReconcilerConfig {
         max_concurrent: concurrency,
         scan_interval: Duration::from_secs(interval),
@@ -790,6 +798,18 @@ pub async fn run(
     };
 
     let mut reconciler = Reconciler::new(reconciler_config);
+    if let Ok(api_key) = std::env::var("LINEAR_API_KEY") {
+        match crate::linear_tracker::LinearTracker::new(&api_key, &linear_team).await {
+            Ok(tracker) => {
+                eprintln!("[linear] attached tracker for team {linear_team}");
+                reconciler.set_issue_tracker(Box::new(tracker));
+            }
+            Err(e) => {
+                eprintln!("[linear] failed to attach tracker: {e} (continuing without)");
+            }
+        }
+    }
+
     reconciler.run().await
 }
 
