@@ -323,7 +323,10 @@ impl Reconciler {
                 })
                 .collect();
             if let Some(dominator) = epic::is_dominated_by(bead, &active_beads) {
-                eprintln!("[dedup] skipping {} — dominated by {dominator}", bead.id);
+                eprintln!(
+                    "[dedup] skipping {} — too similar to active {dominator}",
+                    bead.id
+                );
                 continue;
             }
 
