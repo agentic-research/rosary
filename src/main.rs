@@ -201,8 +201,17 @@ async fn main() -> Result<()> {
             provider,
             overnight,
         } => {
-            let concurrency = if overnight { 1 } else { concurrency };
-            let interval = if overnight { 120 } else { interval };
+            // --overnight sets defaults, but explicit --concurrency/--interval override
+            let concurrency = if overnight && concurrency == 3 {
+                1
+            } else {
+                concurrency
+            };
+            let interval = if overnight && interval == 30 {
+                120
+            } else {
+                interval
+            };
             reconcile::run(
                 &config,
                 concurrency,
