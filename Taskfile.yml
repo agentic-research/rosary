@@ -55,6 +55,19 @@ tasks:
       - codesign -s - --force --deep --entitlements entitlements.plist ~/.local/bin/rsry
       - echo "Installed rsry to ~/.local/bin/rsry (codesigned)"
 
+  overnight:
+    desc: Start overnight loop (concurrency=1, bugs first, caffeinate)
+    deps: [install]
+    cmds:
+      - |
+        caffeinate -dims &
+        echo "Caffeinate PID: $!"
+        nohup rsry run --config rosary-self.toml --overnight > /tmp/rsry-overnight.log 2>&1 &
+        echo "Rosary PID: $!"
+        echo "Log: /tmp/rsry-overnight.log"
+        echo "Stop: kill $(cat /tmp/rsry-overnight.pid 2>/dev/null || echo $!)"
+        tail -f /tmp/rsry-overnight.log
+
   e2e:
     desc: End-to-end sandbox test (requires Dolt server in .beads/)
     deps: [build]

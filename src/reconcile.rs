@@ -30,6 +30,8 @@ pub struct ReconcilerConfig {
     pub dry_run: bool,
     /// AI provider name (e.g. "claude", "gemini"). Default "claude".
     pub provider: String,
+    /// Overnight mode: prefer small/mechanical beads agents can complete.
+    pub overnight: bool,
 }
 
 impl Default for ReconcilerConfig {
@@ -43,6 +45,7 @@ impl Default for ReconcilerConfig {
             once: false,
             dry_run: false,
             provider: "claude".to_string(),
+            overnight: false,
         }
     }
 }
@@ -292,7 +295,11 @@ impl Reconciler {
             }
 
             let retries = self.queue.retries(&bead.id);
-            let score = queue::triage_score(bead, retries, now);
+            let score = if self.config.overnight {
+                queue::triage_score_overnight(bead, retries, now)
+            } else {
+                queue::triage_score(bead, retries, now)
+            };
 
             if score >= self.config.triage_threshold {
                 let bead_gen = bead.generation();
@@ -687,6 +694,7 @@ pub async fn run(
     once: bool,
     dry_run: bool,
     provider: &str,
+    overnight: bool,
 ) -> Result<()> {
     let cfg = config::load(config_path)?;
 
@@ -697,6 +705,7 @@ pub async fn run(
         once,
         dry_run,
         provider: provider.to_string(),
+        overnight,
         ..Default::default()
     };
 

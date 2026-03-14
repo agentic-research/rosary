@@ -76,6 +76,9 @@ enum Command {
         /// AI provider to use for dispatch (claude, gemini)
         #[arg(long, default_value = "claude")]
         provider: String,
+        /// Overnight mode: prefer small/mechanical beads, concurrency=1, interval=120s
+        #[arg(long)]
+        overnight: bool,
     },
     /// Start MCP server exposing rosary as tools
     Serve {
@@ -196,8 +199,20 @@ async fn main() -> Result<()> {
             once,
             dry_run,
             provider,
+            overnight,
         } => {
-            reconcile::run(&config, concurrency, interval, once, dry_run, &provider).await?;
+            let concurrency = if overnight { 1 } else { concurrency };
+            let interval = if overnight { 120 } else { interval };
+            reconcile::run(
+                &config,
+                concurrency,
+                interval,
+                once,
+                dry_run,
+                &provider,
+                overnight,
+            )
+            .await?;
         }
         Command::Serve { transport, port } => {
             serve::run(&transport, port).await?;

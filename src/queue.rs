@@ -199,6 +199,29 @@ pub fn triage_score(bead: &Bead, retries: u32, now: chrono::DateTime<chrono::Utc
     0.4 * priority_score + 0.3 * dependency_score + 0.2 * age_score + 0.1 * retry_penalty
 }
 
+/// Overnight triage: prefer small/mechanical beads that agents can complete.
+/// Boosts bugs and chores, penalizes features/epics/design.
+pub fn triage_score_overnight(
+    bead: &Bead,
+    retries: u32,
+    now: chrono::DateTime<chrono::Utc>,
+) -> f64 {
+    let base = triage_score(bead, retries, now);
+
+    // Issue type modifier: agents handle bugs/chores well, struggle with design
+    let type_modifier = match bead.issue_type.as_str() {
+        "bug" => 0.3,
+        "chore" => 0.25,
+        "task" => 0.1,
+        "feature" => -0.1,
+        "epic" => -0.5, // should be filtered anyway, but safety
+        "design" | "research" | "review" => -0.3,
+        _ => 0.0,
+    };
+
+    (base + type_modifier).clamp(0.0, 1.0)
+}
+
 /// Check whether a bead's priority passes the severity floor.
 ///
 /// Priority numbering: 0 = P0 (highest urgency), 3 = P3 (lowest).
@@ -482,5 +505,45 @@ mod tests {
     fn work_queue_default_min_priority() {
         let q = WorkQueue::new();
         assert_eq!(q.min_priority, 2, "default min_priority should be 2");
+    }
+
+    #[test]
+    fn overnight_score_prefers_bugs_over_features() {
+        let now = chrono::Utc::now();
+        let bug = Bead {
+            issue_type: "bug".to_string(),
+            ..make_bead("bug-1", 1, 0, "2026-03-13T00:00:00Z")
+        };
+        let feature = Bead {
+            issue_type: "feature".to_string(),
+            ..make_bead("feat-1", 1, 0, "2026-03-13T00:00:00Z")
+        };
+
+        let bug_score = triage_score_overnight(&bug, 0, now);
+        let feat_score = triage_score_overnight(&feature, 0, now);
+        assert!(
+            bug_score > feat_score,
+            "overnight should prefer bug ({bug_score}) over feature ({feat_score})"
+        );
+    }
+
+    #[test]
+    fn overnight_score_penalizes_epics() {
+        let now = chrono::Utc::now();
+        let task = Bead {
+            issue_type: "task".to_string(),
+            ..make_bead("task-1", 2, 0, "2026-03-13T00:00:00Z")
+        };
+        let epic = Bead {
+            issue_type: "epic".to_string(),
+            ..make_bead("epic-1", 2, 0, "2026-03-13T00:00:00Z")
+        };
+
+        let task_score = triage_score_overnight(&task, 0, now);
+        let epic_score = triage_score_overnight(&epic, 0, now);
+        assert!(
+            task_score > epic_score,
+            "overnight should prefer task ({task_score}) over epic ({epic_score})"
+        );
     }
 }
