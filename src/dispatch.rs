@@ -235,18 +235,29 @@ impl AgentHandle {
 }
 
 /// Build the prompt for a bead.
-pub fn build_prompt(bead: &Bead) -> String {
+///
+/// Includes the bead ID and repo path so the agent can self-manage its
+/// lifecycle via MCP tools (comment, close). This is critical for
+/// consumption throughput — agents that close their own beads don't
+/// block on the reconciler's verify-then-close cycle.
+pub fn build_prompt(bead: &Bead, repo_path: &str) -> String {
     format!(
         "Fix this issue. Make the minimal change needed.\n\
          \n\
-         Title: {}\n\
-         Description: {}\n\
+         Bead ID: {bead_id}\n\
+         Repo: {repo}\n\
+         Title: {title}\n\
+         Description: {desc}\n\
          \n\
          After fixing:\n\
          1. Run tests via `task test` (not raw cargo/go test)\n\
          2. Create a commit with a descriptive message\n\
-         3. Report what you changed",
-        bead.title, bead.description
+         3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"{repo}\" and id=\"{bead_id}\"\n\
+         4. Report what you changed",
+        bead_id = bead.id,
+        repo = repo_path,
+        title = bead.title,
+        desc = bead.description,
     )
 }
 
@@ -267,6 +278,12 @@ You are a rosary-dispatched agent working on a bead (work item).\n\
 - Make minimal, focused changes\n\
 - Commit with descriptive messages\n\
 - Do NOT add co-author lines to commits\n\
+\n\
+## Bead Lifecycle (IMPORTANT)\n\
+Your prompt includes a Bead ID and Repo path. You MUST manage the bead:\n\
+1. **Comment** progress via mcp__rsry__rsry_bead_comment as you work\n\
+2. **Close** the bead via mcp__rsry__rsry_bead_close when done (after tests pass and commit is made)\n\
+3. If you cannot fix the issue, comment explaining why — do NOT close it\n\
 ";
 
 /// Create a jj workspace for isolated work. Returns the workspace path on success.
@@ -310,7 +327,7 @@ pub async fn spawn(
     provider: &dyn AgentProvider,
 ) -> Result<AgentHandle> {
     let path = expand_path(repo_path);
-    let prompt = build_prompt(bead);
+    let prompt = build_prompt(bead, &path.display().to_string());
 
     let work_dir = if isolate {
         create_worktree(&path, &bead.id).await.unwrap_or_else(|()| {
@@ -509,9 +526,18 @@ mod tests {
             external_ref: None,
         };
 
-        let prompt = build_prompt(&bead);
+        let prompt = build_prompt(&bead, "/tmp/test-repo");
         assert!(prompt.contains("Fix the widget"));
         assert!(prompt.contains("The widget is broken"));
         assert!(prompt.contains("Run tests via"));
+        assert!(prompt.contains("test-1"), "prompt should include bead ID");
+        assert!(
+            prompt.contains("/tmp/test-repo"),
+            "prompt should include repo path"
+        );
+        assert!(
+            prompt.contains("rsry_bead_close"),
+            "prompt should instruct agent to close bead"
+        );
     }
 }

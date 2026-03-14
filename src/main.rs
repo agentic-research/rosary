@@ -80,6 +80,28 @@ enum Command {
         #[arg(long)]
         overnight: bool,
     },
+    /// Start the reconciliation daemon in the background
+    Start {
+        /// Config file listing repos
+        #[arg(short, long, default_value = "rosary.toml")]
+        config: String,
+        /// Max concurrent agents
+        #[arg(long, default_value_t = 3)]
+        concurrency: usize,
+        /// Seconds between scan iterations
+        #[arg(long, default_value_t = 30)]
+        interval: u64,
+        /// AI provider (claude, gemini)
+        #[arg(long, default_value = "claude")]
+        provider: String,
+        /// Overnight mode
+        #[arg(long)]
+        overnight: bool,
+    },
+    /// Stop the running daemon
+    Stop,
+    /// Tail the daemon log
+    Logs,
     /// Start MCP server exposing rosary as tools
     Serve {
         /// Transport: stdio or http
@@ -157,6 +179,39 @@ fn generate_bead_id() -> String {
     format!("rsry-{:06x}", millis & 0xffffff)
 }
 
+fn daemon_pid_path() -> PathBuf {
+    dirs_next::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".rsry")
+        .join("rsry.pid")
+}
+
+fn daemon_log_path() -> PathBuf {
+    dirs_next::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".rsry")
+        .join("rsry.log")
+}
+
+fn read_daemon_pid() -> Option<u32> {
+    let path = daemon_pid_path();
+    let content = std::fs::read_to_string(&path).ok()?;
+    let pid: u32 = content.trim().parse().ok()?;
+    // Check if process is alive via kill -0
+    let status = std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    if status.success() {
+        Some(pid)
+    } else {
+        let _ = std::fs::remove_file(&path);
+        None
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -222,6 +277,72 @@ async fn main() -> Result<()> {
                 overnight,
             )
             .await?;
+        }
+        Command::Start {
+            config,
+            concurrency,
+            interval,
+            provider,
+            overnight,
+        } => {
+            if let Some(pid) = read_daemon_pid() {
+                println!("Daemon already running (PID {pid})");
+                return Ok(());
+            }
+
+            let log_path = daemon_log_path();
+            if let Some(parent) = log_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            let mut args = vec![
+                "run".to_string(),
+                "--config".to_string(),
+                config,
+                "--concurrency".to_string(),
+                concurrency.to_string(),
+                "--interval".to_string(),
+                interval.to_string(),
+                "--provider".to_string(),
+                provider,
+            ];
+            if overnight {
+                args.push("--overnight".to_string());
+            }
+
+            let log_file = std::fs::File::create(&log_path)?;
+            let child = std::process::Command::new(std::env::current_exe()?)
+                .args(&args)
+                .stdout(log_file.try_clone()?)
+                .stderr(log_file)
+                .stdin(std::process::Stdio::null())
+                .spawn()?;
+
+            let pid = child.id();
+            std::fs::write(daemon_pid_path(), pid.to_string())?;
+            println!("Daemon started (PID {pid}), log: {}", log_path.display());
+        }
+        Command::Stop => {
+            if let Some(pid) = read_daemon_pid() {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+                let _ = std::fs::remove_file(daemon_pid_path());
+                println!("Stopped daemon (PID {pid})");
+            } else {
+                println!("No daemon running");
+            }
+        }
+        Command::Logs => {
+            let log_path = daemon_log_path();
+            if log_path.exists() {
+                let status = std::process::Command::new("tail")
+                    .args(["-f", &log_path.to_string_lossy()])
+                    .status()?;
+                std::process::exit(status.code().unwrap_or(1));
+            } else {
+                println!("No log file at {}", log_path.display());
+            }
         }
         Command::Serve { transport, port } => {
             serve::run(&transport, port).await?;
