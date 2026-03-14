@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,7 +35,12 @@ pub struct LinearConfig {
     /// Values are the Linear state names in your team's workflow.
     /// Example: { dispatched = "Working", verifying = "Peer Review" }
     #[serde(default)]
-    pub states: std::collections::HashMap<String, String>,
+    pub states: HashMap<String, String>,
+    /// Phase-to-Linear-project mapping (e.g., "1" → "Phase 1: Foundation")
+    /// Beads with "phase:N" or "Phase N" in their description get assigned
+    /// to the corresponding Linear project.
+    #[serde(default)]
+    pub phases: HashMap<String, String>,
 }
 
 /// Resolve config path: $RSRY_CONFIG → ~/.rsry/config.toml → ./rosary.toml
@@ -229,6 +235,46 @@ project = "Platform"
         assert_eq!(config.repo[1].name, "rosary");
         assert!(config.repo[1].self_managed);
         assert_eq!(config.linear.unwrap().team, "ART");
+    }
+
+    #[test]
+    fn parse_toml_config_with_phases() {
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[linear]
+team = "ART"
+
+[linear.phases]
+"1" = "Phase 1: Foundation"
+"2" = "Phase 2: Sync"
+"3" = "Phase 3: Dispatch"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let linear = config.linear.unwrap();
+        assert_eq!(linear.team, "ART");
+        assert_eq!(linear.phases.len(), 3);
+        assert_eq!(linear.phases.get("1").unwrap(), "Phase 1: Foundation");
+        assert_eq!(linear.phases.get("2").unwrap(), "Phase 2: Sync");
+        assert_eq!(linear.phases.get("3").unwrap(), "Phase 3: Dispatch");
+    }
+
+    #[test]
+    fn parse_toml_config_phases_default_empty() {
+        // Backward compat: phases is optional and defaults to empty
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[linear]
+team = "ART"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let linear = config.linear.unwrap();
+        assert!(linear.phases.is_empty());
     }
 
     #[test]

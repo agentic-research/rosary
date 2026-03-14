@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 
 use crate::bead::BeadState;
 
@@ -219,6 +220,114 @@ async fn resolve_team_id(client: &reqwest::Client, team_key: &str) -> Result<Str
     )
 }
 
+/// Extract phase identifier from bead text (title or description).
+///
+/// Recognizes patterns like:
+/// - `phase:1`, `phase:2` (label-style, case-insensitive)
+/// - `Phase 1`, `Phase 2` (prose-style, case-insensitive)
+///
+/// The phase value must start with a digit (e.g., "1", "2", "3a").
+/// Label-style (`phase:N`) takes priority over prose-style (`Phase N`).
+///
+/// Returns the phase key (e.g., "1", "2") or None if no phase found.
+fn extract_phase(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+
+    // Try "phase:N" pattern (label-style) — highest priority
+    if let Some(idx) = lower.find("phase:") {
+        let after = &lower[idx + 6..];
+        if after.starts_with(|c: char| c.is_ascii_digit()) {
+            let phase_key: String = after.chars().take_while(|c| c.is_alphanumeric()).collect();
+            return Some(phase_key);
+        }
+    }
+
+    // Try "phase N" pattern (prose-style)
+    if let Some(idx) = lower.find("phase ") {
+        let after = &lower[idx + 6..];
+        if after.starts_with(|c: char| c.is_ascii_digit()) {
+            let phase_key: String = after.chars().take_while(|c| c.is_alphanumeric()).collect();
+            return Some(phase_key);
+        }
+    }
+
+    None
+}
+
+/// Look up a Linear project ID by name.
+///
+/// Uses exact-match filter to find the project. Returns None if not found.
+async fn resolve_project_id(
+    client: &reqwest::Client,
+    project_name: &str,
+) -> Result<Option<String>> {
+    let query = r#"
+        query FindProject($filter: ProjectFilter!) {
+            projects(filter: $filter) {
+                nodes {
+                    id
+                    name
+                }
+            }
+        }
+    "#;
+
+    let variables = json!({
+        "filter": {
+            "name": { "eq": project_name }
+        }
+    });
+
+    let resp = graphql(client, query, variables).await?;
+
+    let project_id = resp
+        .pointer("/data/projects/nodes/0/id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    Ok(project_id)
+}
+
+/// Resolve phase config to a Linear project ID for a given bead.
+///
+/// Checks bead title and description for phase patterns, then looks up
+/// the corresponding project in the phase mapping. Caches resolved project
+/// IDs to avoid redundant API calls.
+async fn resolve_phase_project_id(
+    client: &reqwest::Client,
+    bead: &crate::bead::Bead,
+    phase_map: &HashMap<String, String>,
+    project_cache: &mut HashMap<String, Option<String>>,
+) -> Result<Option<String>> {
+    if phase_map.is_empty() {
+        return Ok(None);
+    }
+
+    // Check title first, then description
+    let phase_key = extract_phase(&bead.title).or_else(|| extract_phase(&bead.description));
+
+    let Some(key) = phase_key else {
+        return Ok(None);
+    };
+
+    let Some(project_name) = phase_map.get(&key) else {
+        return Ok(None);
+    };
+
+    // Check cache first
+    if let Some(cached) = project_cache.get(project_name) {
+        return Ok(cached.clone());
+    }
+
+    // Resolve via API
+    let project_id = resolve_project_id(client, project_name).await?;
+    if project_id.is_none() {
+        eprintln!("  warning: Linear project '{project_name}' (phase {key}) not found");
+    }
+    project_cache.insert(project_name.clone(), project_id.clone());
+    Ok(project_id)
+}
+
 /// Connect to a repo's Dolt database via its .beads/ directory.
 async fn connect_repo_dolt(repo: &crate::config::RepoConfig) -> Result<crate::dolt::DoltClient> {
     let path = crate::scanner::expand_path(&repo.path);
@@ -310,6 +419,12 @@ pub async fn sync(dry_run: bool) -> Result<()> {
 
     // --- Build per-repo Dolt client map ---
     let cfg = crate::config::load_merged("rosary.toml")?;
+    let phase_map = cfg
+        .linear
+        .as_ref()
+        .map(|l| l.phases.clone())
+        .unwrap_or_default();
+    let mut project_cache: HashMap<String, Option<String>> = HashMap::new();
     let beads = crate::scanner::scan_repos(&cfg.repo).await?;
 
     let mut dolt_clients: std::collections::HashMap<String, crate::dolt::DoltClient> =
@@ -409,8 +524,21 @@ pub async fn sync(dry_run: bool) -> Result<()> {
             perspective_labels.push(format!("perspective:{perspective}"));
         }
 
+        // Resolve phase → project mapping (if configured)
+        let project_id =
+            resolve_phase_project_id(&client, bead, &phase_map, &mut project_cache).await?;
+
         if dry_run {
-            println!("  [dry-run] would create: {full_title}");
+            if let Some(ref pid) = project_id {
+                let phase_key =
+                    extract_phase(&bead.title).or_else(|| extract_phase(&bead.description));
+                println!(
+                    "  [dry-run] would create: {full_title} (phase {} → project {pid})",
+                    phase_key.unwrap_or_default()
+                );
+            } else {
+                println!("  [dry-run] would create: {full_title}");
+            }
             created += 1;
         } else {
             match create_linear_issue(
@@ -422,6 +550,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
                 &bead.id,
                 &bead.repo,
                 &perspective_labels,
+                project_id.as_deref(),
             )
             .await
             {
@@ -571,6 +700,7 @@ async fn create_linear_issue(
     bead_id: &str,
     repo_name: &str,
     perspective_labels: &[String],
+    project_id: Option<&str>,
 ) -> Result<String> {
     // Tag the description with bead ID for bidirectional linkage
     let tagged_description = format!("{description}\n\n<!-- bead:{bead_id} repo:{repo_name} -->",);
@@ -614,6 +744,11 @@ async fn create_linear_issue(
 
     if !label_ids.is_empty() {
         input["labelIds"] = json!(label_ids);
+    }
+
+    // Attach to Linear project if phase mapping resolved
+    if let Some(pid) = project_id {
+        input["projectId"] = json!(pid);
     }
 
     let variables = json!({ "input": input });
@@ -801,6 +936,49 @@ mod tests {
         // Non-ASCII in header value should fail
         let result = build_client("invalid\x00key");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_phase_label_style() {
+        assert_eq!(extract_phase("phase:1 foundation"), Some("1".to_string()));
+        assert_eq!(extract_phase("phase:2"), Some("2".to_string()));
+        assert_eq!(extract_phase("phase:3a something"), Some("3a".to_string()));
+        assert_eq!(extract_phase("tags: phase:6 final"), Some("6".to_string()));
+    }
+
+    #[test]
+    fn extract_phase_prose_style() {
+        assert_eq!(extract_phase("Phase 1 foundation"), Some("1".to_string()));
+        assert_eq!(extract_phase("Phase 2"), Some("2".to_string()));
+        assert_eq!(
+            extract_phase("Implements Phase 3 requirements"),
+            Some("3".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_phase_case_insensitive() {
+        assert_eq!(extract_phase("PHASE:1"), Some("1".to_string()));
+        assert_eq!(extract_phase("Phase:2"), Some("2".to_string()));
+        assert_eq!(extract_phase("PHASE 3"), Some("3".to_string()));
+    }
+
+    #[test]
+    fn extract_phase_none_when_absent() {
+        assert_eq!(extract_phase("no phase here"), None);
+        assert_eq!(extract_phase("just a regular bead"), None);
+        assert_eq!(extract_phase(""), None);
+    }
+
+    #[test]
+    fn extract_phase_label_takes_priority_over_prose() {
+        // "phase:" label pattern is checked before "phase N" prose pattern
+        assert_eq!(
+            extract_phase("Phase 2 but also phase:1"),
+            Some("1".to_string())
+        );
+        // When only prose style exists, it works
+        assert_eq!(extract_phase("Phase 2 foundation"), Some("2".to_string()));
     }
 
     /// Integration test — only runs when LINEAR_API_KEY is set.
