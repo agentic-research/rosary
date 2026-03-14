@@ -305,7 +305,7 @@ impl DoltClient {
 
     /// Add a comment to an issue.
     pub async fn add_comment(&self, issue_id: &str, body: &str, author: &str) -> Result<()> {
-        query("INSERT INTO comments (issue_id, body, author, created_at) VALUES (?, ?, ?, NOW())")
+        query("INSERT INTO comments (issue_id, text, author, created_at) VALUES (?, ?, ?, NOW())")
             .bind(issue_id)
             .bind(body)
             .bind(author)

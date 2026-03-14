@@ -305,7 +305,32 @@ async fn get_client<'a>(repo_path: &str, pool: &'a RepoPool) -> Result<ClientRef
     }
     let path = std::path::Path::new(repo_path);
     let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
-    let beads_dir = root.join(".beads");
+    // Worktrees (e.g. .claude/worktrees/X) don't have .beads/ — resolve via git
+    let beads_dir = if root.join(".beads").exists() {
+        root.join(".beads")
+    } else {
+        // Try to find the main worktree's .beads/ via git commondir
+        let git_common = std::process::Command::new("git")
+            .args(["rev-parse", "--git-common-dir"])
+            .current_dir(&root)
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    String::from_utf8(o.stdout).ok()
+                } else {
+                    None
+                }
+            })
+            .map(|s| std::path::PathBuf::from(s.trim()));
+        if let Some(common) = git_common {
+            // git common dir is .git in main worktree — parent is repo root
+            let main_root = common.parent().unwrap_or(&root);
+            main_root.join(".beads")
+        } else {
+            root.join(".beads")
+        }
+    };
     let config = DoltConfig::from_beads_dir(&beads_dir)?;
     let client = DoltClient::connect(&config).await?;
     Ok(ClientRef::Owned(client))
