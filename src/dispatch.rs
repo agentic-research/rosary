@@ -149,12 +149,52 @@ impl AgentProvider for GeminiProvider {
     }
 }
 
+/// Provider that spawns an ACP-compatible agent binary.
+///
+/// The binary must implement the Agent Client Protocol (JSON-RPC over stdio).
+/// Permission handling happens via `RosaryClient::request_permission()` in
+/// the ACP session, not via CLI flags.
+///
+/// Example binaries: `claude-agent-acp` (npm), custom ACP agents.
+pub struct AcpCliProvider {
+    /// Path or name of the ACP agent binary.
+    pub binary: String,
+}
+
+impl AgentProvider for AcpCliProvider {
+    fn spawn_agent(
+        &self,
+        _prompt: &str,
+        work_dir: &Path,
+        _permissions: &PermissionProfile,
+    ) -> Result<tokio::process::Child> {
+        // ACP agents are spawned as subprocesses with stdio piped.
+        // The prompt and permissions are sent via ACP protocol (JSON-RPC),
+        // not CLI args. The caller must establish a ClientSideConnection
+        // after spawning and use Agent::prompt() to send the task.
+        tokio::process::Command::new(&self.binary)
+            .current_dir(work_dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("spawning ACP agent: {}", self.binary))
+    }
+
+    fn name(&self) -> &str {
+        "acp"
+    }
+}
+
 /// Resolve a provider by name string (from config/CLI).
 pub fn provider_by_name(name: &str) -> Result<Box<dyn AgentProvider>> {
     match name {
         "claude" => Ok(Box::new(ClaudeProvider)),
         "gemini" => Ok(Box::new(GeminiProvider::default())),
-        other => anyhow::bail!("unknown provider: {other} (available: claude, gemini)"),
+        "acp" => Ok(Box::new(AcpCliProvider {
+            binary: "claude-agent-acp".to_string(),
+        })),
+        other => anyhow::bail!("unknown provider: {other} (available: claude, gemini, acp)"),
     }
 }
 
