@@ -236,6 +236,12 @@ impl Bead {
     pub fn is_ready(&self) -> bool {
         self.status == "open" && self.dependency_count == 0
     }
+
+    /// A bead is blocked if it has unresolved dependencies OR its status is explicitly "blocked".
+    /// This is the single definition — used by both status counts and list filtering.
+    pub fn is_blocked(&self) -> bool {
+        self.status == "blocked" || (self.status == "open" && self.dependency_count > 0)
+    }
 }
 
 impl fmt::Display for Bead {

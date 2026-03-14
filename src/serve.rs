@@ -258,10 +258,7 @@ async fn tool_status(config_path: &str) -> Result<Value> {
 
     let open = beads.iter().filter(|b| b.status == "open").count();
     let in_progress = beads.iter().filter(|b| b.status == "in_progress").count();
-    let blocked = beads
-        .iter()
-        .filter(|b| b.dependency_count > 0 && b.status == "open")
-        .count();
+    let blocked = beads.iter().filter(|b| b.is_blocked()).count();
     let ready = beads.iter().filter(|b| b.is_ready()).count();
     let total = beads.len();
 
@@ -279,6 +276,8 @@ async fn tool_list_beads(config_path: &str, status: Option<&str>) -> Result<Valu
     let beads = scanner::scan_repos(&cfg.repo).await?;
 
     let filtered: Vec<_> = match status {
+        Some("blocked") => beads.into_iter().filter(|b| b.is_blocked()).collect(),
+        Some("ready") => beads.into_iter().filter(|b| b.is_ready()).collect(),
         Some(s) => beads.into_iter().filter(|b| b.status == s).collect(),
         None => beads,
     };
