@@ -63,11 +63,15 @@ pub struct DoltClient {
 }
 
 impl DoltClient {
-    /// Connect to a Dolt server.
+    /// Connect to a Dolt server with a 3-second timeout.
     pub async fn connect(config: &DoltConfig) -> Result<Self> {
-        let pool = MySqlPool::connect(&config.url())
-            .await
-            .with_context(|| format!("connecting to Dolt at {}", config.url()))?;
+        let pool = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            MySqlPool::connect(&config.url()),
+        )
+        .await
+        .with_context(|| format!("timeout connecting to Dolt at {}", config.url()))?
+        .with_context(|| format!("connecting to Dolt at {}", config.url()))?;
         Ok(DoltClient { pool })
     }
 
