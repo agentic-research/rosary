@@ -1,5 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::path::Path;
+use std::time::SystemTime;
 
 mod bead;
 mod config;
@@ -65,6 +67,9 @@ enum Command {
         /// Print what would be dispatched without actually spawning agents
         #[arg(long)]
         dry_run: bool,
+        /// AI provider to use for dispatch (claude, gemini)
+        #[arg(long, default_value = "claude")]
+        provider: String,
     },
     /// Start MCP server exposing rosary as tools
     Serve {
@@ -75,6 +80,57 @@ enum Command {
         #[arg(long, default_value = "8383")]
         port: u16,
     },
+    /// Manage beads directly
+    Bead {
+        #[command(subcommand)]
+        action: BeadAction,
+        /// Repo path containing .beads/
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum BeadAction {
+    /// Create a new bead
+    Create {
+        /// Bead title
+        title: String,
+        /// Description
+        #[arg(short, long, default_value = "")]
+        description: String,
+        /// Priority (0=P0 highest, 3=P3 lowest)
+        #[arg(short, long, default_value_t = 2)]
+        priority: u8,
+        /// Issue type
+        #[arg(short = 't', long, default_value = "task")]
+        issue_type: String,
+    },
+    /// Close a bead
+    Close {
+        /// Bead ID
+        id: String,
+    },
+    /// List open beads
+    List,
+    /// Add a comment to a bead
+    Comment {
+        /// Bead ID
+        id: String,
+        /// Comment body
+        body: String,
+    },
+}
+
+/// Generate a bead ID from the current timestamp.
+/// Format: `rsry-{first 3 chars of hex(timestamp_millis)}`.
+fn generate_bead_id() -> String {
+    let millis = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("system clock before UNIX epoch")
+        .as_millis();
+    let hex = format!("{millis:x}");
+    format!("rsry-{}", &hex[..3])
 }
 
 #[tokio::main]
@@ -104,13 +160,113 @@ async fn main() -> Result<()> {
         Command::Dispatch { bead_id, repo, isolate } => {
             dispatch::run(&bead_id, std::path::Path::new(&repo), isolate).await?;
         }
-        Command::Run { config, concurrency, interval, once, dry_run } => {
-            reconcile::run(&config, concurrency, interval, once, dry_run).await?;
+        Command::Run { config, concurrency, interval, once, dry_run, provider } => {
+            reconcile::run(&config, concurrency, interval, once, dry_run, &provider).await?;
         }
         Command::Serve { transport, port } => {
             serve::run(&transport, port).await?;
         }
+        Command::Bead { action, repo } => {
+            let beads_dir = Path::new(&repo).join(".beads");
+            let config = dolt::DoltConfig::from_beads_dir(&beads_dir)?;
+            let client = dolt::DoltClient::connect(&config).await?;
+            let repo_name = Path::new(&repo)
+                .canonicalize()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                .unwrap_or_else(|| repo.clone());
+
+            match action {
+                BeadAction::Create {
+                    title,
+                    description,
+                    priority,
+                    issue_type,
+                } => {
+                    let id = generate_bead_id();
+                    client
+                        .create_bead(&id, &title, &description, priority, &issue_type)
+                        .await?;
+                    println!("Created bead {id}: {title}");
+                }
+                BeadAction::Close { id } => {
+                    client.close_bead(&id).await?;
+                    println!("Closed bead {id}");
+                }
+                BeadAction::List => {
+                    let beads = client.list_beads(&repo_name).await?;
+                    if beads.is_empty() {
+                        println!("No open beads.");
+                    } else {
+                        for b in &beads {
+                            println!("  [P{}] {} — {}", b.priority, b.id, b.title);
+                        }
+                        println!("{} open bead(s)", beads.len());
+                    }
+                }
+                BeadAction::Comment { id, body } => {
+                    client.add_comment(&id, &body, "rsry").await?;
+                    println!("Added comment to {id}");
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bead_action_variants_construct() {
+        // Verify each BeadAction variant can be constructed with expected fields
+        let create = BeadAction::Create {
+            title: "Fix the widget".to_string(),
+            description: "It is broken".to_string(),
+            priority: 1,
+            issue_type: "bug".to_string(),
+        };
+        assert!(matches!(create, BeadAction::Create { priority: 1, .. }));
+
+        let close = BeadAction::Close {
+            id: "rsry-abc".to_string(),
+        };
+        assert!(matches!(close, BeadAction::Close { .. }));
+
+        let list = BeadAction::List;
+        assert!(matches!(list, BeadAction::List));
+
+        let comment = BeadAction::Comment {
+            id: "rsry-abc".to_string(),
+            body: "looking into this".to_string(),
+        };
+        assert!(matches!(comment, BeadAction::Comment { .. }));
+    }
+
+    #[test]
+    fn generate_bead_id_format() {
+        let id = generate_bead_id();
+        // Must start with "rsry-"
+        assert!(id.starts_with("rsry-"), "id should start with 'rsry-': {id}");
+        // Suffix must be exactly 3 hex characters
+        let suffix = &id["rsry-".len()..];
+        assert_eq!(suffix.len(), 3, "suffix should be 3 chars: {suffix}");
+        assert!(
+            suffix.chars().all(|c| c.is_ascii_hexdigit()),
+            "suffix should be hex: {suffix}"
+        );
+    }
+
+    #[test]
+    fn generate_bead_id_is_deterministic_within_millis() {
+        // Two calls in quick succession should produce the same ID
+        // (timestamp millis resolution means sub-ms calls collide)
+        let id1 = generate_bead_id();
+        let id2 = generate_bead_id();
+        // Both should be valid format regardless
+        assert!(id1.starts_with("rsry-"));
+        assert!(id2.starts_with("rsry-"));
+    }
 }

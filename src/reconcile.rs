@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::bead::BeadState;
 use crate::config::{self, RepoConfig};
-use crate::dispatch::{self, AgentHandle, ClaudeProvider};
+use crate::dispatch::{self, AgentHandle};
 use crate::dolt::{DoltClient, DoltConfig};
 use crate::queue::{self, QueueEntry, WorkQueue};
 use crate::scanner;
@@ -27,6 +27,8 @@ pub struct ReconcilerConfig {
     pub repo: Vec<RepoConfig>,
     pub once: bool,
     pub dry_run: bool,
+    /// AI provider name (e.g. "claude", "gemini"). Default "claude".
+    pub provider: String,
 }
 
 impl Default for ReconcilerConfig {
@@ -39,6 +41,7 @@ impl Default for ReconcilerConfig {
             repo: Vec::new(),
             once: false,
             dry_run: false,
+            provider: "claude".to_string(),
         }
     }
 }
@@ -65,6 +68,8 @@ pub struct Reconciler {
     completed_work_dirs: HashMap<String, (PathBuf, String)>,
     /// Dolt clients keyed by repo name, lazily connected
     dolt_clients: HashMap<String, DoltClient>,
+    /// Resolved AI agent provider (claude, gemini, etc).
+    provider: Box<dyn dispatch::AgentProvider>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -106,6 +111,12 @@ impl Reconciler {
             repo_info.insert(repo.name.clone(), (path, lang));
         }
 
+        let provider = dispatch::provider_by_name(&config.provider)
+            .unwrap_or_else(|e| {
+                eprintln!("[reconcile] {e}, falling back to claude");
+                dispatch::provider_by_name("claude").unwrap()
+            });
+
         Reconciler {
             config,
             queue: WorkQueue::new(),
@@ -114,6 +125,7 @@ impl Reconciler {
             repo_info,
             completed_work_dirs: HashMap::new(),
             dolt_clients: HashMap::new(),
+            provider,
         }
     }
 
@@ -218,6 +230,23 @@ impl Reconciler {
                 continue;
             }
 
+            // Severity floor: skip beads below minimum priority level
+            if !queue::passes_severity_floor(bead, self.queue.min_priority) {
+                continue;
+            }
+
+            // Dedup: skip if too similar to an active or queued bead
+            let dominated = beads.iter()
+                .filter(|other| other.id != bead.id)
+                .filter(|other| self.active.contains_key(&other.id) || self.queue.contains(&other.id))
+                .any(|other| {
+                    scanner::jaccard_similarity(&bead.title, &other.title) > 0.6
+                });
+            if dominated {
+                eprintln!("[dedup] skipping {} — similar to active/queued bead", bead.id);
+                continue;
+            }
+
             let retries = self.queue.retries(&bead.id);
             let score = queue::triage_score(bead, retries, now);
 
@@ -266,13 +295,20 @@ impl Reconciler {
             let repo_path = self.repo_info.get(&entry.repo).map(|(p, _)| p.clone());
 
             if let (Some(bead), Some(path)) = (bead, repo_path) {
-                match dispatch::spawn(bead, &path, true, entry.generation, &ClaudeProvider).await {
+                match dispatch::spawn(bead, &path, true, entry.generation, self.provider.as_ref()).await {
                     Ok(handle) => {
                         println!(
-                            "[dispatch] {} (gen={}, retries={})",
-                            entry.bead_id, entry.generation, entry.retries
+                            "[dispatch] {} (gen={}, retries={}, provider={})",
+                            entry.bead_id, entry.generation, entry.retries, self.provider.name()
                         );
                         self.persist_status(&entry.bead_id, &entry.repo, "dispatched").await;
+
+                        // Record the dispatch branch
+                        let branch = format!("fix/{}", entry.bead_id);
+                        if let Some(client) = self.dolt_client(&entry.repo).await {
+                            client.log_event(&entry.bead_id, "dispatch_branch", &branch).await;
+                        }
+
                         self.active.insert(entry.bead_id.clone(), handle);
                         let tracker = self.trackers
                             .entry(entry.bead_id.clone())
@@ -503,6 +539,7 @@ pub async fn run(
     interval: u64,
     once: bool,
     dry_run: bool,
+    provider: &str,
 ) -> Result<()> {
     let cfg = config::load(config_path)?;
 
@@ -512,6 +549,7 @@ pub async fn run(
         repo: cfg.repo,
         once,
         dry_run,
+        provider: provider.to_string(),
         ..Default::default()
     };
 
@@ -567,6 +605,40 @@ mod tests {
         assert_eq!(cfg.max_retries, 5);
         assert!(!cfg.once);
         assert!(!cfg.dry_run);
+        assert_eq!(cfg.provider, "claude");
+    }
+
+    #[test]
+    fn severity_floor_blocks_p3_with_min_priority_2() {
+        // A P3 bead should not pass the severity floor when min_priority=2.
+        // This tests the integration point: queue::passes_severity_floor is
+        // called in iterate() with self.queue.min_priority (default=2).
+        let bead = crate::bead::Bead {
+            id: "test-p3".into(),
+            title: "low priority task".into(),
+            description: String::new(),
+            status: "open".into(),
+            priority: 3,
+            issue_type: "task".into(),
+            owner: None,
+            repo: "test".into(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            dependency_count: 0,
+            dependent_count: 0,
+            comment_count: 0,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
+        };
+
+        let config = ReconcilerConfig::default();
+        let r = Reconciler::new(config);
+        // Default min_priority is 2, so P3 (priority=3) should be blocked
+        assert!(
+            !queue::passes_severity_floor(&bead, r.queue.min_priority),
+            "P3 bead should not pass severity floor with min_priority=2"
+        );
     }
 
     #[tokio::test]
