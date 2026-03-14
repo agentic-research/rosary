@@ -438,10 +438,24 @@ async fn handle_tools_call(id: Value, params: &Value, config_path: &str) -> Json
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Resolve config path: $RSRY_CONFIG → ~/.rsry/config.toml → ./rosary.toml
+fn resolve_config_path() -> String {
+    if let Ok(p) = std::env::var("RSRY_CONFIG") {
+        return p;
+    }
+    if let Some(home) = dirs_next::home_dir() {
+        let global = home.join(".rsry").join("config.toml");
+        if global.exists() {
+            return global.to_string_lossy().to_string();
+        }
+    }
+    "rosary.toml".to_string()
+}
+
 /// Run the MCP server.
 pub async fn run(transport: &str, port: u16) -> Result<()> {
     match transport {
-        "stdio" => run_stdio("rosary.toml").await,
+        "stdio" => run_stdio(&resolve_config_path()).await,
         "http" => {
             eprintln!("HTTP transport not yet implemented (port={port})");
             eprintln!("Use --transport stdio for now");
