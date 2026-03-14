@@ -82,6 +82,30 @@ pub fn expand_path(path: &std::path::Path) -> std::path::PathBuf {
     path.to_path_buf()
 }
 
+/// Jaccard similarity between two strings, tokenized by whitespace.
+///
+/// Returns a value between 0.0 (no overlap) and 1.0 (identical token sets).
+/// Used for deduplication: if two bead titles have high similarity, one is
+/// likely a duplicate of the other.
+pub fn jaccard_similarity(a: &str, b: &str) -> f64 {
+    use std::collections::HashSet;
+    let set_a: HashSet<&str> = a.split_whitespace().collect();
+    let set_b: HashSet<&str> = b.split_whitespace().collect();
+
+    if set_a.is_empty() && set_b.is_empty() {
+        return 1.0;
+    }
+
+    let intersection = set_a.intersection(&set_b).count() as f64;
+    let union = set_a.union(&set_b).count() as f64;
+
+    if union == 0.0 {
+        return 0.0;
+    }
+
+    intersection / union
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +172,27 @@ mod tests {
             assert!(!b.id.is_empty());
             assert!(!b.title.is_empty());
         }
+    }
+
+    #[test]
+    fn jaccard_identical_strings() {
+        assert!((jaccard_similarity("fix the bug", "fix the bug") - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn jaccard_disjoint_strings() {
+        assert!((jaccard_similarity("fix the bug", "add new feature")).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn jaccard_partial_overlap() {
+        let sim = jaccard_similarity("fix the widget bug", "fix the gadget bug");
+        // intersection: {fix, the, bug} = 3, union: {fix, the, widget, bug, gadget} = 5
+        assert!((sim - 0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn jaccard_empty_strings() {
+        assert!((jaccard_similarity("", "") - 1.0).abs() < f64::EPSILON);
     }
 }
