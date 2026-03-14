@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+mod acp;
 mod bead;
 mod config;
 mod dispatch;
