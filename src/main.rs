@@ -9,10 +9,12 @@ mod config;
 mod dispatch;
 mod dolt;
 mod linear;
+mod pool;
 mod queue;
 mod reconcile;
 mod scanner;
 mod serve;
+mod thread;
 mod vcs;
 mod verify;
 

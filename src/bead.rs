@@ -114,6 +114,9 @@ pub struct Bead {
     pub pr_url: Option<String>,
     /// jj change ID (immutable, preferred over branch for jj workflows).
     pub jj_change_id: Option<String>,
+    /// External reference for cross-repo tracking (e.g., "kiln:ll-packaging").
+    /// Format: "repo_name:label" — repo_name maps to a repo in rosary.toml.
+    pub external_ref: Option<String>,
 }
 
 impl Bead {
@@ -185,6 +188,10 @@ impl Bead {
                 .map(|s| s.to_string()),
             jj_change_id: value
                 .get("jj_change_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            external_ref: value
+                .get("external_ref")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
         })

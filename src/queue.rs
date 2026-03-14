@@ -230,6 +230,7 @@ mod tests {
             branch: None,
             pr_url: None,
             jj_change_id: None,
+            external_ref: None,
         }
     }
 

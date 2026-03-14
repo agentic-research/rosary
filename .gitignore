@@ -6,3 +6,13 @@
 
 # Local beads backups
 backups/
+
+# CRUMB - personal memory (not tracked)
+.crumb/
+
+# Dolt server runtime files
+dolt-server.lock
+dolt-server.log
+dolt-server.pid
+dolt-server.port
+dolt/

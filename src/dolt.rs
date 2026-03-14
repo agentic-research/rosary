@@ -169,7 +169,7 @@ impl DoltClient {
     pub async fn list_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
         let rows = query(
             r#"SELECT id, title, description, status, priority, issue_type,
-                      assignee, created_at, updated_at,
+                      assignee, external_ref, created_at, updated_at,
                       (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
                       (SELECT COUNT(*) FROM dependencies d WHERE d.issue_id = i.id) as dependency_count,
                       (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
@@ -202,6 +202,7 @@ impl DoltClient {
                 branch: None,
                 pr_url: None,
                 jj_change_id: None,
+                external_ref: row.try_get("external_ref").ok(),
             })
             .collect();
 
@@ -212,7 +213,7 @@ impl DoltClient {
     pub async fn get_bead(&self, id: &str, repo_name: &str) -> Result<Option<Bead>> {
         let row = query(
             r#"SELECT id, title, description, status, priority, issue_type,
-                      assignee, created_at, updated_at,
+                      assignee, external_ref, created_at, updated_at,
                       (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
                       (SELECT COUNT(*) FROM dependencies d WHERE d.issue_id = i.id) as dependency_count,
                       (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
@@ -240,6 +241,7 @@ impl DoltClient {
             dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0) as u32,
             dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
             comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0) as u32,
+            external_ref: row.try_get("external_ref").ok(),
             branch: None,
             pr_url: None,
             jj_change_id: None,
@@ -309,7 +311,7 @@ impl DoltClient {
         let pattern = format!("%{query_str}%");
         let rows = query(
             r#"SELECT id, title, description, status, priority, issue_type,
-                      assignee, created_at, updated_at,
+                      assignee, external_ref, created_at, updated_at,
                       (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
                       (SELECT COUNT(*) FROM dependencies d WHERE d.issue_id = i.id) as dependency_count,
                       (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
@@ -344,10 +346,21 @@ impl DoltClient {
                 branch: None,
                 pr_url: None,
                 jj_change_id: None,
+                external_ref: row.try_get("external_ref").ok(),
             })
             .collect();
 
         Ok(beads)
+    }
+
+    #[allow(dead_code)] // Used by thread.rs for external_ref back-ref updates
+    /// Execute a raw SQL statement. Best-effort, for operations not covered by typed methods.
+    pub async fn execute_raw(&self, sql: &str) -> anyhow::Result<()> {
+        query(sql)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("executing raw SQL: {}", &sql[..sql.len().min(80)]))?;
+        Ok(())
     }
 
     /// Log an event to the events table for audit trail.
