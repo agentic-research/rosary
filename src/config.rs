@@ -46,9 +46,9 @@ pub struct LinearConfig {
     /// to the corresponding Linear project.
     #[serde(default)]
     pub phases: HashMap<String, String>,
-    /// Env var name holding the webhook signing secret for Linear webhooks.
+    /// Webhook signing secret (alternative to LINEAR_WEBHOOK_SECRET env var)
     #[serde(default)]
-    pub webhook_secret_env: Option<String>,
+    pub webhook_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -468,7 +468,7 @@ path = "~/remotes/art/rosary"
 
 [linear]
 team = "ART"
-webhook_secret_env = "LINEAR_WEBHOOK_SECRET"
+webhook_secret = "lin_wh_test_secret"
 
 [http]
 port = 9090
@@ -484,10 +484,7 @@ tunnel_id = "tun-789"
         let config: Config = toml::from_str(toml).unwrap();
 
         let linear = config.linear.unwrap();
-        assert_eq!(
-            linear.webhook_secret_env.as_deref(),
-            Some("LINEAR_WEBHOOK_SECRET")
-        );
+        assert_eq!(linear.webhook_secret.as_deref(), Some("lin_wh_test_secret"));
 
         let http = config.http.unwrap();
         assert_eq!(http.port, 9090);
@@ -553,7 +550,7 @@ team = "ART"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.http.is_none());
-        assert!(config.linear.unwrap().webhook_secret_env.is_none());
+        assert!(config.linear.unwrap().webhook_secret.is_none());
     }
 
     #[test]
