@@ -113,6 +113,8 @@ impl Verifier {
             max_lines: 500,
         }));
 
+        tiers.push(Box::new(ReviewCheck));
+
         Verifier::new(tiers)
     }
 
@@ -215,6 +217,87 @@ impl VerifyTier for ShellCheck {
             )))
         }
     }
+}
+
+/// Tier 5: AI agent review of the diff.
+/// Dispatches staging-agent to adversarially review code quality and test validity.
+/// Runs only after all other tiers pass (pipeline short-circuits on failure).
+pub struct ReviewCheck;
+
+impl VerifyTier for ReviewCheck {
+    fn name(&self) -> &str {
+        "review"
+    }
+
+    fn check(&self, work_dir: &Path) -> Result<VerifyResult> {
+        let diff_output = std::process::Command::new("git")
+            .args(["diff", "HEAD~1..HEAD"])
+            .current_dir(work_dir)
+            .output()?;
+
+        if !diff_output.status.success() || diff_output.stdout.is_empty() {
+            return Ok(VerifyResult::Pass);
+        }
+
+        let diff = String::from_utf8_lossy(&diff_output.stdout);
+
+        let prompt = format!(
+            "You are the staging-agent reviewing an agent's commit.\n\
+             Your mission: adversarially examine whether tests actually validate behavior.\n\
+             Key question: if the production code were replaced with a no-op, would tests fail?\n\
+             \n\
+             Review this diff:\n\
+             \n\
+             <diff>\n{diff}\n</diff>\n\
+             \n\
+             Respond with exactly one verdict on the FIRST line:\n\
+             VERDICT: approve\n\
+             VERDICT: request-changes\n\
+             VERDICT: reject\n\
+             \n\
+             Then briefly explain your reasoning."
+        );
+
+        let output = match std::process::Command::new("claude")
+            .args(["-p", &prompt, "--allowedTools", "Read,Glob,Grep"])
+            .current_dir(work_dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("[verify] warning: 'claude' not found, skipping review");
+                return Ok(VerifyResult::Pass);
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        if !output.status.success() {
+            eprintln!("[verify] warning: review agent exited non-zero, skipping");
+            return Ok(VerifyResult::Pass);
+        }
+
+        let response = String::from_utf8_lossy(&output.stdout);
+        Ok(parse_review_verdict(&response))
+    }
+}
+
+/// Parse the staging-agent's review verdict from its output.
+pub fn parse_review_verdict(output: &str) -> VerifyResult {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(verdict) = trimmed.strip_prefix("VERDICT:") {
+            return match verdict.trim().to_lowercase().as_str() {
+                "approve" => VerifyResult::Pass,
+                "request-changes" => VerifyResult::Partial("review: request-changes".into()),
+                "reject" => VerifyResult::Fail("review: rejected".into()),
+                other => VerifyResult::Partial(format!("review: unknown verdict '{other}'")),
+            };
+        }
+    }
+    // No verdict found — don't block on unparseable output
+    VerifyResult::Partial("review: no verdict in response".into())
 }
 
 /// Tier 4: Is the diff reasonable?
@@ -466,12 +549,56 @@ mod tests {
     #[test]
     fn for_language_builds_correct_tiers() {
         let rust_v = Verifier::for_language("rust");
-        assert_eq!(rust_v.tiers.len(), 5); // commit, compile, test, lint, diff-sanity
+        assert_eq!(rust_v.tiers.len(), 6); // commit, compile, test, lint, diff-sanity, review
 
         let go_v = Verifier::for_language("go");
-        assert_eq!(go_v.tiers.len(), 5);
+        assert_eq!(go_v.tiers.len(), 6);
 
         let unknown_v = Verifier::for_language("brainfuck");
-        assert_eq!(unknown_v.tiers.len(), 2); // commit, diff-sanity
+        assert_eq!(unknown_v.tiers.len(), 3); // commit, diff-sanity, review
+    }
+
+    #[test]
+    fn review_verdict_approve() {
+        let output = "VERDICT: approve\nLooks good, tests validate real behavior.";
+        assert_eq!(parse_review_verdict(output), VerifyResult::Pass);
+    }
+
+    #[test]
+    fn review_verdict_reject() {
+        let output = "VERDICT: reject\nTests only assert on mocked values.";
+        assert!(matches!(
+            parse_review_verdict(output),
+            VerifyResult::Fail(_)
+        ));
+    }
+
+    #[test]
+    fn review_verdict_request_changes() {
+        let output = "VERDICT: request-changes\nMissing edge case coverage.";
+        assert!(matches!(
+            parse_review_verdict(output),
+            VerifyResult::Partial(_)
+        ));
+    }
+
+    #[test]
+    fn review_verdict_missing() {
+        let output = "The code looks fine but I forgot to include a verdict.";
+        assert!(matches!(
+            parse_review_verdict(output),
+            VerifyResult::Partial(_)
+        ));
+    }
+
+    #[test]
+    fn review_verdict_case_insensitive() {
+        assert_eq!(parse_review_verdict("VERDICT: APPROVE"), VerifyResult::Pass);
+        assert_eq!(parse_review_verdict("VERDICT: Approve"), VerifyResult::Pass);
+    }
+
+    #[test]
+    fn review_check_tier_name() {
+        assert_eq!(ReviewCheck.name(), "review");
     }
 }
