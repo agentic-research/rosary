@@ -142,6 +142,7 @@ impl Reconciler {
             println!("[reconcile] {summary}");
 
             if self.config.once {
+                println!("[reconcile] active agents: {}", self.active.len());
                 if !self.active.is_empty() {
                     println!(
                         "[reconcile] waiting for {} active agent(s)...",
