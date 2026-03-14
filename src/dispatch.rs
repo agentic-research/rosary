@@ -39,7 +39,7 @@ impl PermissionProfile {
         match self {
             Self::ReadOnly => "Read,Glob,Grep,mcp__mache__*,mcp__rsry__*",
             Self::Implement => {
-                "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git add *),Bash(git commit *),Bash(task *),Glob,Grep,mcp__mache__*,mcp__rsry__*"
+                "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git *),Bash(task *),Glob,Grep,mcp__mache__*,mcp__rsry__*"
             }
             Self::Plan => "Read,Glob,Grep,mcp__mache__*,mcp__rsry__*",
         }
