@@ -401,6 +401,14 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         let label = format!("[{}] ", bead.repo);
         let full_title = format!("{label}{}", bead.title);
 
+        // Derive perspective labels from bead owner (e.g., "dev-agent" → "perspective:dev")
+        let mut perspective_labels: Vec<String> = Vec::new();
+        if let Some(ref owner) = bead.owner
+            && let Some(perspective) = owner.strip_suffix("-agent")
+        {
+            perspective_labels.push(format!("perspective:{perspective}"));
+        }
+
         if dry_run {
             println!("  [dry-run] would create: {full_title}");
             created += 1;
@@ -413,6 +421,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
                 bead.priority,
                 &bead.id,
                 &bead.repo,
+                &perspective_labels,
             )
             .await
             {
@@ -490,8 +499,69 @@ pub async fn sync(dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// Find an existing label by name in a team, or create one.
+/// Returns the Linear label ID.
+async fn find_or_create_label(
+    client: &reqwest::Client,
+    team_id: &str,
+    name: &str,
+) -> Result<String> {
+    // Query existing labels for the team
+    let query_str = r#"
+        query TeamLabels($teamId: String!) {
+            team(id: $teamId) {
+                labels { nodes { id name } }
+            }
+        }
+    "#;
+    let resp = graphql(client, query_str, json!({ "teamId": team_id })).await?;
+    let nodes = resp
+        .pointer("/data/team/labels/nodes")
+        .and_then(|v| v.as_array());
+
+    if let Some(nodes) = nodes {
+        for node in nodes {
+            if node["name"].as_str() == Some(name)
+                && let Some(id) = node["id"].as_str()
+            {
+                return Ok(id.to_string());
+            }
+        }
+    }
+
+    // Label doesn't exist — create it
+    let mutation = r#"
+        mutation CreateLabel($input: IssueLabelCreateInput!) {
+            issueLabelCreate(input: $input) {
+                success
+                issueLabel { id }
+            }
+        }
+    "#;
+    let variables = json!({
+        "input": {
+            "name": name,
+            "teamId": team_id,
+        }
+    });
+    let resp = graphql(client, mutation, variables).await?;
+    let success = resp
+        .pointer("/data/issueLabelCreate/success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !success {
+        anyhow::bail!("issueLabelCreate failed for '{name}'");
+    }
+    let label_id = resp
+        .pointer("/data/issueLabelCreate/issueLabel/id")
+        .and_then(|v| v.as_str())
+        .context("missing label ID in issueLabelCreate response")?;
+    Ok(label_id.to_string())
+}
+
 /// Create a new issue in Linear with bead ID tagged in description.
 /// Returns the issue identifier (e.g., "AGE-5").
+#[allow(clippy::too_many_arguments)]
 async fn create_linear_issue(
     client: &reqwest::Client,
     team_id: &str,
@@ -500,6 +570,7 @@ async fn create_linear_issue(
     priority: u8,
     bead_id: &str,
     repo_name: &str,
+    perspective_labels: &[String],
 ) -> Result<String> {
     // Tag the description with bead ID for bidirectional linkage
     let tagged_description = format!("{description}\n\n<!-- bead:{bead_id} repo:{repo_name} -->",);
@@ -523,14 +594,29 @@ async fn create_linear_issue(
         _ => 4, // P3+ → Low
     };
 
-    let variables = json!({
-        "input": {
-            "teamId": team_id,
-            "title": title,
-            "description": tagged_description,
-            "priority": linear_priority,
+    // Resolve perspective labels to Linear label IDs
+    let mut label_ids: Vec<String> = Vec::new();
+    for label_name in perspective_labels {
+        match find_or_create_label(client, team_id, label_name).await {
+            Ok(id) => label_ids.push(id),
+            Err(e) => {
+                eprintln!("  warning: could not resolve label '{label_name}': {e}");
+            }
         }
+    }
+
+    let mut input = json!({
+        "teamId": team_id,
+        "title": title,
+        "description": tagged_description,
+        "priority": linear_priority,
     });
+
+    if !label_ids.is_empty() {
+        input["labelIds"] = json!(label_ids);
+    }
+
+    let variables = json!({ "input": input });
 
     let resp = graphql(client, mutation, variables).await?;
 

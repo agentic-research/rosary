@@ -63,6 +63,63 @@ impl LinearTracker {
         })
     }
 
+    /// Find an existing label by name in the team, or create one.
+    /// Returns the Linear label ID.
+    async fn find_or_create_label(&self, name: &str) -> Result<String> {
+        // Query existing labels for the team
+        let query_str = r#"
+            query TeamLabels($teamId: String!) {
+                team(id: $teamId) {
+                    labels { nodes { id name } }
+                }
+            }
+        "#;
+        let resp = graphql(&self.client, query_str, json!({ "teamId": self.team_id })).await?;
+        let nodes = resp
+            .pointer("/data/team/labels/nodes")
+            .and_then(|v| v.as_array());
+
+        // Check if label already exists
+        if let Some(nodes) = nodes {
+            for node in nodes {
+                if node["name"].as_str() == Some(name)
+                    && let Some(id) = node["id"].as_str()
+                {
+                    return Ok(id.to_string());
+                }
+            }
+        }
+
+        // Label doesn't exist — create it
+        let mutation = r#"
+            mutation CreateLabel($input: IssueLabelCreateInput!) {
+                issueLabelCreate(input: $input) {
+                    success
+                    issueLabel { id }
+                }
+            }
+        "#;
+        let variables = json!({
+            "input": {
+                "name": name,
+                "teamId": self.team_id,
+            }
+        });
+        let resp = graphql(&self.client, mutation, variables).await?;
+        let success = resp
+            .pointer("/data/issueLabelCreate/success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !success {
+            anyhow::bail!("issueLabelCreate failed for '{name}'");
+        }
+        let label_id = resp
+            .pointer("/data/issueLabelCreate/issueLabel/id")
+            .and_then(|v| v.as_str())
+            .context("missing label ID in issueLabelCreate response")?;
+        Ok(label_id.to_string())
+    }
+
     /// Resolve a BeadState to a Linear state ID.
     /// Priority: config override → name match → type match.
     fn resolve_state_id(&self, bead_state: BeadState) -> Option<&str> {
@@ -265,14 +322,31 @@ impl IssueTracker for LinearTracker {
             }
         "#;
 
-        let variables = json!({
-            "input": {
-                "teamId": self.team_id,
-                "title": issue.title,
-                "description": issue.description,
-                "priority": to_linear_priority(issue.priority),
+        // Resolve label IDs for any perspective labels
+        let mut label_ids: Vec<String> = Vec::new();
+        for label_name in &issue.labels {
+            if label_name.starts_with("perspective:") {
+                match self.find_or_create_label(label_name).await {
+                    Ok(id) => label_ids.push(id),
+                    Err(e) => {
+                        eprintln!("[linear] warning: could not resolve label '{label_name}': {e}");
+                    }
+                }
             }
+        }
+
+        let mut input = json!({
+            "teamId": self.team_id,
+            "title": issue.title,
+            "description": issue.description,
+            "priority": to_linear_priority(issue.priority),
         });
+
+        if !label_ids.is_empty() {
+            input["labelIds"] = json!(label_ids);
+        }
+
+        let variables = json!({ "input": input });
 
         let resp = graphql(&self.client, mutation, variables).await?;
         let success = resp
