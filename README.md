@@ -16,7 +16,7 @@ It finds issues, decides what to work on next, hands tasks to AI agents, checks 
 
 ```bash
 task build    # requires Task (taskfile.dev) — sets PKG_CONFIG_PATH for fuse-t
-task test     # 121 tests
+task test     # 129+ tests
 
 # Register a repo
 rsry enable ~/code/my-app
@@ -134,6 +134,14 @@ export LINEAR_TEAM=ART           # optional, defaults to ART
 rsry plan ART-123                # fetch ticket details
 rsry sync                        # list open issues for team
 ```
+
+## Cross-repo tracking
+
+Beads can reference work in other repos via `external_ref` (e.g., `kiln:ll-packaging`). During each reconciliation loop, rosary syncs these references — creating mirror beads in target repos and propagating status changes bidirectionally. This is the "thread" that strings beads across repos.
+
+## Wasteland federation
+
+Rosary can publish beads to the [Wasteland](https://github.com/steveyegge/gastown) wanted board. The `rosary-crypto` crate encrypts private fields (description, notes, design) via ChaCha20-Poly1305 while leaving public fields (title, status, priority) in cleartext. The pipeline: local beads → selective encryption → public GitHub repo → DoltHub wl-commons.
 
 ## Architecture
 

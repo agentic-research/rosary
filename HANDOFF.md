@@ -7,7 +7,8 @@
 - **Migrated** 3x `KNOWN_ISSUES.md` files to beads (validated each against code, 2 items were already fixed, deleted the files)
 - **Scanned** `_agent_log/*.md` files for remaining work items, created beads for valid ones
 - **Scaffolded rosary** (Rust project, formerly "loom") -- compiles, 66 tests passing
-- **Rosary modules**: `main.rs` (CLI), `bead.rs` (state machine), `config.rs` (TOML), `scanner.rs` (multi-repo scan via Dolt), `linear.rs` (GraphQL client), `dispatch.rs` (agent spawning), `reconcile.rs` (reconciliation loop), `verify.rs` (tiered checks), `queue.rs` (priority queue), `serve.rs` (MCP server), `dolt.rs` (MySQL client)
+- **Rosary modules**: `main.rs` (CLI), `bead.rs` (state machine), `config.rs` (TOML), `scanner.rs` (multi-repo scan via Dolt), `linear.rs` (GraphQL client), `dispatch.rs` (agent spawning), `reconcile.rs` (reconciliation loop), `verify.rs` (tiered checks), `queue.rs` (priority queue), `serve.rs` (MCP server), `dolt.rs` (MySQL client), `acp.rs` (Agent Client Protocol), `pool.rs` (RepoPool connections), `thread.rs` (cross-repo external_ref sync), `vcs.rs` (jj state versioning via leyline-vcs)
+- **Workspace crate**: `crates/crypto/` (`rosary-crypto` — ChaCha20-Poly1305 selective field encryption for Wasteland federation)
 
 ## Architecture Decisions
 

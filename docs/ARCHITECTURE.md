@@ -97,6 +97,10 @@ graph LR
         config["config.rs<br/>(TOML loader)"]
         linear["linear.rs<br/>(Linear GraphQL)"]
         serve["serve.rs<br/>(MCP server)"]
+        acp["acp.rs<br/>(Agent Client Protocol)"]
+        pool["pool.rs<br/>(RepoPool connections)"]
+        thread["thread.rs<br/>(cross-repo sync)"]
+        vcs["vcs.rs<br/>(jj state versioning)"]
     end
 
     main --> reconcile
@@ -117,6 +121,12 @@ graph LR
 
     main --> config
     reconcile --> config
+    reconcile --> thread
+    thread --> dolt
+    serve --> pool
+    pool --> dolt
+    main --> vcs
+    dispatch --> acp
 ```
 
 ## Triage Scoring
@@ -254,11 +264,10 @@ lang = "go"
 graph TB
     subgraph "Planned"
         SDK["Agent SDK<br/>(replace CLI)"]
-        LIN["Linear Sync<br/>(bidirectional)"]
         LEY["ley-line Integration<br/>(tree-sitter, embeddings)"]
         JJD["jj Dispatch<br/>(workspaces)"]
-        EVT["Event Bus<br/>(UDS, ADR-010)"]
-        BEAD["Bead Management<br/>(rsry bead create/close)"]
+        EVT["Event Bus<br/>(UDS)"]
+        WL["Wasteland GHA<br/>(publish to wanted board)"]
     end
 
     subgraph "Implemented"
@@ -267,14 +276,35 @@ graph TB
         DIS["Dispatcher"]
         VER["Verifier"]
         QUE["Queue"]
-        MCP["MCP Server"]
+        MCP["MCP Server + RepoPool"]
         LINR["Linear Client"]
+        BEAD["Bead Management"]
+        THR["Cross-repo Threads"]
+        CRYPTO["rosary-crypto<br/>(ChaCha20-Poly1305)"]
+        VCS["VCS (jj via leyline)"]
     end
 
     REC --> SDK
-    REC --> LIN
     VER --> LEY
     DIS --> JJD
     REC --> EVT
-    REC --> BEAD
+    THR --> WL
+    CRYPTO --> WL
 ```
+
+## Cross-Repo Bead Tracking
+
+Beads can reference work in other repos via `external_ref` (format: `repo_name:label`). The reconciler's `thread.rs` module handles this:
+
+1. **Parse** — after scan, find all beads with `external_ref` set
+2. **Mirror** — if the target repo (from rosary.toml) doesn't have a corresponding bead, create one with a back-reference
+3. **Sync** — on subsequent scans, propagate status changes from source to mirror (source wins on drift)
+
+## Selective Field Encryption (rosary-crypto)
+
+The `crates/crypto/` workspace member provides ChaCha20-Poly1305 AEAD encryption for bead fields destined for public publication (Wasteland wanted board, public GitHub repos):
+
+- **Public fields** (cleartext): id, title, status, priority, issue_type, timestamps, counts
+- **Private fields** (encrypted): description, owner, branch, pr_url, design, notes, acceptance_criteria
+- **Nonce derivation**: SHA-256(bead_id || field_name)[0..12] — deterministic per field per bead
+- **Wasteland mapping**: `bead_to_wanted()` converts a rosary bead to the MVR `wanted` table schema
