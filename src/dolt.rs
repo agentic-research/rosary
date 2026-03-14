@@ -131,7 +131,7 @@ impl DoltClient {
         })?;
 
         // Write PID + port files so bd/rsry can find this server later
-        let beads_dir = dolt_dir.parent().unwrap_or(&dolt_dir);
+        let beads_dir = &config.beads_dir;
         let _ = std::fs::write(
             beads_dir.join("dolt-server.pid"),
             child.id().unwrap_or(0).to_string(),
