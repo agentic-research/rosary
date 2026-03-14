@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 mod bead;
@@ -188,13 +188,16 @@ async fn main() -> Result<()> {
             }
         }
         Command::Bead { action, repo } => {
-            let beads_dir = Path::new(&repo).join(".beads");
-            let config = dolt::DoltConfig::from_beads_dir(&beads_dir)?;
-            let client = dolt::DoltClient::connect(&config).await?;
-            let repo_name = Path::new(&repo)
-                .canonicalize()
+            // Walk up to find repo root (like uv's pyproject.toml discovery)
+            let repo_root = Path::new(&repo).canonicalize()
                 .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                .and_then(|p| config::discover_repo_root(&p))
+                .unwrap_or_else(|| PathBuf::from(&repo));
+            let beads_dir = repo_root.join(".beads");
+            let dolt_config = dolt::DoltConfig::from_beads_dir(&beads_dir)?;
+            let client = dolt::DoltClient::connect(&dolt_config).await?;
+            let repo_name = repo_root.file_name()
+                .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| repo.clone());
 
             match action {

@@ -77,10 +77,40 @@ fn save_global(config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Walk up the directory tree from `start` to find a repo root.
+///
+/// Looks for markers in order: `.beads/`, `.git/`, `.jj/`, `Cargo.toml`,
+/// `go.mod`, `package.json`, `pyproject.toml`. Returns the first directory
+/// that contains any marker. Like uv's pyproject.toml discovery.
+pub fn discover_repo_root(start: &Path) -> Option<PathBuf> {
+    const MARKERS: &[&str] = &[
+        ".beads", ".git", ".jj",
+        "Cargo.toml", "go.mod", "package.json", "pyproject.toml",
+    ];
+
+    let mut current = start.to_path_buf();
+    loop {
+        for marker in MARKERS {
+            if current.join(marker).exists() {
+                return Some(current);
+            }
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
 /// Register a repo in the global registry. Idempotent — updates path if name exists.
+///
+/// Walks up from `repo_path` to discover the repo root (like uv's
+/// pyproject.toml discovery). This means `rsry enable` works from
+/// any subdirectory.
 pub fn enable_repo(repo_path: &Path) -> Result<RepoConfig> {
-    let abs = repo_path.canonicalize()
+    let start = repo_path.canonicalize()
         .with_context(|| format!("resolving {}", repo_path.display()))?;
+    let abs = discover_repo_root(&start)
+        .unwrap_or(start);
 
     let name = abs.file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -236,6 +266,57 @@ path = "~/remotes/art/mache"
         let result = load_merged("/nonexistent/rosary.toml");
         // Should not error — returns global (or empty)
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn discover_repo_root_finds_git() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("myrepo");
+        let subdir = root.join("src").join("deep");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+
+        let found = discover_repo_root(&subdir);
+        assert_eq!(found, Some(root));
+    }
+
+    #[test]
+    fn discover_repo_root_finds_beads() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("myrepo");
+        let subdir = root.join("internal").join("graph");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::create_dir_all(root.join(".beads")).unwrap();
+
+        let found = discover_repo_root(&subdir);
+        // .beads is checked before .git, so it should find the root
+        assert_eq!(found, Some(root));
+    }
+
+    #[test]
+    fn discover_repo_root_finds_cargo_toml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("myrepo");
+        let subdir = root.join("src");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]").unwrap();
+
+        let found = discover_repo_root(&subdir);
+        assert_eq!(found, Some(root));
+    }
+
+    #[test]
+    fn discover_repo_root_none_at_filesystem_root() {
+        // A path with no markers should return None (eventually hits /)
+        let tmp = tempfile::TempDir::new().unwrap();
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let found = discover_repo_root(&empty);
+        // Could find a .git somewhere up the tree on the host, so just
+        // verify it doesn't panic. If tmp is truly isolated, it's None.
+        // Either way, the function terminates.
+        let _ = found;
     }
 
     #[test]
