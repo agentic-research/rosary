@@ -72,27 +72,27 @@ if [ -z "$PORT" ]; then
     exit 0
 fi
 
-# Note: -r is a global flag on the bead subcommand, goes before the action
-REPO_FLAG="-r $PROJECT_DIR"
+# Run bead commands from the repo dir so -r defaults to "." (avoids clap global arg issue)
+cd "$PROJECT_DIR"
 
 # Create
-OUTPUT=$("$RSRY" bead $REPO_FLAG create "E2E sandbox test $(date +%s)" 2>&1) || fail "bead create errored: $OUTPUT"
+OUTPUT=$("$RSRY" bead create "E2E sandbox test $(date +%s)" 2>&1) || fail "bead create errored: $OUTPUT"
 echo "$OUTPUT" | grep -q "Created" || fail "bead create output missing 'Created': $OUTPUT"
 # Extract the generated ID
 CREATED_ID=$(echo "$OUTPUT" | grep -oE 'rsry-[0-9a-f]+')
 pass "bead create ($CREATED_ID)"
 
 # List
-"$RSRY" bead $REPO_FLAG list 2>&1 | grep -q "E2E sandbox" || fail "created bead not in list"
+"$RSRY" bead list 2>&1 | grep -q "E2E sandbox" || fail "created bead not in list"
 pass "bead list"
 
 # Search
-"$RSRY" bead $REPO_FLAG search "E2E sandbox" 2>&1 | grep -q "E2E sandbox" || fail "bead search failed"
+"$RSRY" bead search "E2E sandbox" 2>&1 | grep -q "E2E sandbox" || fail "bead search failed"
 pass "bead search"
 
 # Close (use the generated ID)
 if [ -n "$CREATED_ID" ]; then
-    "$RSRY" bead $REPO_FLAG close "$CREATED_ID" 2>&1 | grep -q "Closed" || skip "bead close (may need real ID)"
+    "$RSRY" bead close "$CREATED_ID" 2>&1 | grep -q "Closed" || skip "bead close (may need real ID)"
     pass "bead close"
 else
     skip "bead close (couldn't extract ID)"

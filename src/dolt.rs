@@ -260,7 +260,7 @@ impl DoltClient {
     /// Best-effort: logs warning on failure rather than propagating error.
     pub async fn log_event(&self, issue_id: &str, event_type: &str, detail: &str) {
         let result = query(
-            "INSERT INTO events (issue_id, event_type, detail, created_at) VALUES (?, ?, ?, NOW())",
+            "INSERT INTO events (issue_id, event_type, actor, comment, created_at) VALUES (?, ?, 'rosary', ?, NOW())",
         )
         .bind(issue_id)
         .bind(event_type)
