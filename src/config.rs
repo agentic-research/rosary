@@ -72,8 +72,7 @@ fn save_global(config: &Config) -> Result<()> {
             .with_context(|| format!("creating {}", parent.display()))?;
     }
     let content = toml::to_string_pretty(config).context("serializing config")?;
-    std::fs::write(&path, content)
-        .with_context(|| format!("writing {}", path.display()))?;
+    std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
@@ -84,8 +83,13 @@ fn save_global(config: &Config) -> Result<()> {
 /// that contains any marker. Like uv's pyproject.toml discovery.
 pub fn discover_repo_root(start: &Path) -> Option<PathBuf> {
     const MARKERS: &[&str] = &[
-        ".beads", ".git", ".jj",
-        "Cargo.toml", "go.mod", "package.json", "pyproject.toml",
+        ".beads",
+        ".git",
+        ".jj",
+        "Cargo.toml",
+        "go.mod",
+        "package.json",
+        "pyproject.toml",
     ];
 
     let mut current = start.to_path_buf();
@@ -107,12 +111,13 @@ pub fn discover_repo_root(start: &Path) -> Option<PathBuf> {
 /// pyproject.toml discovery). This means `rsry enable` works from
 /// any subdirectory.
 pub fn enable_repo(repo_path: &Path) -> Result<RepoConfig> {
-    let start = repo_path.canonicalize()
+    let start = repo_path
+        .canonicalize()
         .with_context(|| format!("resolving {}", repo_path.display()))?;
-    let abs = discover_repo_root(&start)
-        .unwrap_or(start);
+    let abs = discover_repo_root(&start).unwrap_or(start);
 
-    let name = abs.file_name()
+    let name = abs
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unnamed".into());
 
@@ -141,9 +146,9 @@ pub fn disable_repo(name_or_path: &str) -> Result<Option<String>> {
     let mut config = load_global()?;
     let before = config.repo.len();
 
-    config.repo.retain(|r| {
-        r.name != name_or_path && r.path.to_string_lossy() != name_or_path
-    });
+    config
+        .repo
+        .retain(|r| r.name != name_or_path && r.path.to_string_lossy() != name_or_path);
 
     if config.repo.len() == before {
         return Ok(None);

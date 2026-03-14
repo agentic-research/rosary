@@ -57,10 +57,7 @@ pub fn print_status(beads: &[Bead]) {
     if ready > 0 {
         println!("Ready to work:");
         for b in beads.iter().filter(|b| b.is_ready()).take(10) {
-            println!(
-                "  {} [P{}] {} — {}",
-                b.repo, b.priority, b.id, b.title
-            );
+            println!("  {} [P{}] {} — {}", b.repo, b.priority, b.id, b.title);
         }
     }
 }

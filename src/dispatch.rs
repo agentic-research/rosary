@@ -21,21 +21,16 @@ use crate::scanner::expand_path;
 ///
 /// Profiles are intentionally simple — 3 levels. Complex per-tool rules
 /// belong in a schema/config file, not in Rust match arms.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionProfile {
     /// Read + analyze only. For review, survey, audit.
     ReadOnly,
     /// Read + edit + test + commit. For bug, task, feature.
+    #[default]
     Implement,
     /// Bead/project management via MCP. For planning, triage.
     Plan,
-}
-
-impl Default for PermissionProfile {
-    fn default() -> Self {
-        Self::Implement
-    }
 }
 
 impl PermissionProfile {
@@ -43,7 +38,9 @@ impl PermissionProfile {
     pub fn claude_allowed_tools(&self) -> &str {
         match self {
             Self::ReadOnly => "Read,Glob,Grep",
-            Self::Implement => "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git add *),Bash(git commit *),Bash(task *),Glob,Grep",
+            Self::Implement => {
+                "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git add *),Bash(git commit *),Bash(task *),Glob,Grep"
+            }
             Self::Plan => "Read,Glob,Grep,mcp__rsry__*",
         }
     }
@@ -93,9 +90,12 @@ impl AgentProvider for ClaudeProvider {
     ) -> Result<tokio::process::Child> {
         tokio::process::Command::new("claude")
             .args([
-                "-p", prompt,
-                "--allowedTools", permissions.claude_allowed_tools(),
-                "--output-format", "json",
+                "-p",
+                prompt,
+                "--allowedTools",
+                permissions.claude_allowed_tools(),
+                "--output-format",
+                "json",
             ])
             .current_dir(work_dir)
             .stdout(std::process::Stdio::piped())
@@ -112,17 +112,10 @@ impl AgentProvider for ClaudeProvider {
 /// Provider that shells out to the Gemini CLI (`gemini -p`).
 ///
 /// Uses `--approval-mode` to control permission prompts.
+#[derive(Default)]
 pub struct GeminiProvider {
     /// Extra CLI args beyond permissions.
     pub extra_args: Vec<String>,
-}
-
-impl Default for GeminiProvider {
-    fn default() -> Self {
-        Self {
-            extra_args: Vec::new(),
-        }
-    }
 }
 
 impl AgentProvider for GeminiProvider {
@@ -134,9 +127,12 @@ impl AgentProvider for GeminiProvider {
     ) -> Result<tokio::process::Child> {
         let mut cmd = tokio::process::Command::new("gemini");
         cmd.args([
-            "-p", prompt,
-            "-o", "json",
-            "--approval-mode", permissions.gemini_approval_mode(),
+            "-p",
+            prompt,
+            "-o",
+            "json",
+            "--approval-mode",
+            permissions.gemini_approval_mode(),
         ]);
         for arg in &self.extra_args {
             cmd.arg(arg);
@@ -213,10 +209,7 @@ pub fn build_prompt(bead: &Bead) -> String {
 }
 
 /// Create a git worktree for isolated work. Returns the worktree path on success.
-async fn create_worktree(
-    repo_path: &Path,
-    bead_id: &str,
-) -> Result<PathBuf, ()> {
+async fn create_worktree(repo_path: &Path, bead_id: &str) -> Result<PathBuf, ()> {
     let branch_name = format!("fix/{bead_id}");
     let worktree_path = repo_path.join(format!("../{branch_name}"));
 
@@ -256,12 +249,10 @@ pub async fn spawn(
     let prompt = build_prompt(bead);
 
     let work_dir = if isolate {
-        create_worktree(&path, &bead.id)
-            .await
-            .unwrap_or_else(|()| {
-                eprintln!("warning: worktree creation failed, running in-place");
-                path.clone()
-            })
+        create_worktree(&path, &bead.id).await.unwrap_or_else(|()| {
+            eprintln!("warning: worktree creation failed, running in-place");
+            path.clone()
+        })
     } else {
         path.clone()
     };
@@ -275,7 +266,12 @@ pub async fn spawn(
         _ => PermissionProfile::Implement,
     };
 
-    println!("Dispatching {} to {} (perms={:?})...", bead.id, provider.name(), permissions);
+    println!(
+        "Dispatching {} to {} (perms={:?})...",
+        bead.id,
+        provider.name(),
+        permissions
+    );
 
     let child = provider
         .spawn_agent(&prompt, &work_dir, &permissions)
@@ -373,30 +369,57 @@ mod tests {
         // bug/task/feature → Implement
         assert_eq!(
             PermissionProfile::Implement,
-            match "bug" { "review"|"survey"|"audit" => PermissionProfile::ReadOnly, "epic"|"plan"|"triage" => PermissionProfile::Plan, _ => PermissionProfile::Implement }
+            match "bug" {
+                "review" | "survey" | "audit" => PermissionProfile::ReadOnly,
+                "epic" | "plan" | "triage" => PermissionProfile::Plan,
+                _ => PermissionProfile::Implement,
+            }
         );
         // review → ReadOnly
         assert_eq!(
             PermissionProfile::ReadOnly,
-            match "review" { "review"|"survey"|"audit" => PermissionProfile::ReadOnly, "epic"|"plan"|"triage" => PermissionProfile::Plan, _ => PermissionProfile::Implement }
+            match "review" {
+                "review" | "survey" | "audit" => PermissionProfile::ReadOnly,
+                "epic" | "plan" | "triage" => PermissionProfile::Plan,
+                _ => PermissionProfile::Implement,
+            }
         );
         // epic → Plan
         assert_eq!(
             PermissionProfile::Plan,
-            match "epic" { "review"|"survey"|"audit" => PermissionProfile::ReadOnly, "epic"|"plan"|"triage" => PermissionProfile::Plan, _ => PermissionProfile::Implement }
+            match "epic" {
+                "review" | "survey" | "audit" => PermissionProfile::ReadOnly,
+                "epic" | "plan" | "triage" => PermissionProfile::Plan,
+                _ => PermissionProfile::Implement,
+            }
         );
     }
 
     #[test]
     fn permission_profile_claude_tools() {
-        assert!(PermissionProfile::Implement.claude_allowed_tools().contains("Edit"));
-        assert!(!PermissionProfile::ReadOnly.claude_allowed_tools().contains("Edit"));
-        assert!(PermissionProfile::Plan.claude_allowed_tools().contains("mcp__rsry__"));
+        assert!(
+            PermissionProfile::Implement
+                .claude_allowed_tools()
+                .contains("Edit")
+        );
+        assert!(
+            !PermissionProfile::ReadOnly
+                .claude_allowed_tools()
+                .contains("Edit")
+        );
+        assert!(
+            PermissionProfile::Plan
+                .claude_allowed_tools()
+                .contains("mcp__rsry__")
+        );
     }
 
     #[test]
     fn permission_profile_gemini_mode() {
-        assert_eq!(PermissionProfile::Implement.gemini_approval_mode(), "auto_edit");
+        assert_eq!(
+            PermissionProfile::Implement.gemini_approval_mode(),
+            "auto_edit"
+        );
         assert_eq!(PermissionProfile::ReadOnly.gemini_approval_mode(), "plan");
     }
 

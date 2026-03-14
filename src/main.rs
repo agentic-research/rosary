@@ -16,7 +16,10 @@ mod vcs;
 mod verify;
 
 #[derive(Parser)]
-#[command(name = "rsry", about = "Strings beads, repos, and review layers into coordinated work")]
+#[command(
+    name = "rsry",
+    about = "Strings beads, repos, and review layers into coordinated work"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -152,7 +155,11 @@ async fn main() -> Result<()> {
         Command::Scan { config } => {
             let cfg = config::load_merged(&config)?;
             let beads = scanner::scan_repos(&cfg.repo).await?;
-            println!("Found {} beads across {} repos", beads.len(), cfg.repo.len());
+            println!(
+                "Found {} beads across {} repos",
+                beads.len(),
+                cfg.repo.len()
+            );
             for b in &beads {
                 println!("  {} [{}] {} — {}", b.repo, b.status, b.id, b.title);
             }
@@ -168,10 +175,21 @@ async fn main() -> Result<()> {
             let beads = scanner::scan_repos(&cfg.repo).await?;
             scanner::print_status(&beads);
         }
-        Command::Dispatch { bead_id, repo, isolate } => {
+        Command::Dispatch {
+            bead_id,
+            repo,
+            isolate,
+        } => {
             dispatch::run(&bead_id, std::path::Path::new(&repo), isolate).await?;
         }
-        Command::Run { config, concurrency, interval, once, dry_run, provider } => {
+        Command::Run {
+            config,
+            concurrency,
+            interval,
+            once,
+            dry_run,
+            provider,
+        } => {
             reconcile::run(&config, concurrency, interval, once, dry_run, &provider).await?;
         }
         Command::Serve { transport, port } => {
@@ -181,22 +199,22 @@ async fn main() -> Result<()> {
             let entry = config::enable_repo(Path::new(&path))?;
             println!("Enabled: {} ({})", entry.name, entry.path.display());
         }
-        Command::Disable { name_or_path } => {
-            match config::disable_repo(&name_or_path)? {
-                Some(name) => println!("Disabled: {name}"),
-                None => println!("Not found: {name_or_path}"),
-            }
-        }
+        Command::Disable { name_or_path } => match config::disable_repo(&name_or_path)? {
+            Some(name) => println!("Disabled: {name}"),
+            None => println!("Not found: {name_or_path}"),
+        },
         Command::Bead { action, repo } => {
             // Walk up to find repo root (like uv's pyproject.toml discovery)
-            let repo_root = Path::new(&repo).canonicalize()
+            let repo_root = Path::new(&repo)
+                .canonicalize()
                 .ok()
                 .and_then(|p| config::discover_repo_root(&p))
                 .unwrap_or_else(|| PathBuf::from(&repo));
             let beads_dir = repo_root.join(".beads");
             let dolt_config = dolt::DoltConfig::from_beads_dir(&beads_dir)?;
             let client = dolt::DoltClient::connect(&dolt_config).await?;
-            let repo_name = repo_root.file_name()
+            let repo_name = repo_root
+                .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| repo.clone());
 
@@ -273,7 +291,10 @@ mod tests {
     fn generate_bead_id_format() {
         let id = generate_bead_id();
         // Must start with "rsry-"
-        assert!(id.starts_with("rsry-"), "id should start with 'rsry-': {id}");
+        assert!(
+            id.starts_with("rsry-"),
+            "id should start with 'rsry-': {id}"
+        );
         // Suffix must be exactly 3 hex characters
         let suffix = &id["rsry-".len()..];
         assert_eq!(suffix.len(), 3, "suffix should be 3 chars: {suffix}");

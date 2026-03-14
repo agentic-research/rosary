@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use leyline_vcs::JjIntegration;
 
+#[allow(dead_code)] // API surface — wired when main.rs calls ensure_state_dir on startup
 /// Rosary state directory, default `~/.rsry/`.
 pub fn state_dir() -> Result<PathBuf> {
     let home = dirs_next::home_dir().context("cannot determine home directory")?;
@@ -19,6 +20,7 @@ pub fn state_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+#[allow(dead_code)]
 /// Ensure the state directory exists and is initialized.
 pub fn ensure_state_dir() -> Result<PathBuf> {
     let dir = state_dir()?;
@@ -29,6 +31,7 @@ pub fn ensure_state_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+#[allow(dead_code)]
 /// Initialize a jj repo in the state directory if one doesn't exist.
 ///
 /// Uses leyline-vcs's JjIntegration (jj-lib native) instead of shelling
@@ -39,6 +42,7 @@ pub fn init_jj(state_path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 /// Snapshot current state to jj. Non-blocking best-effort.
 ///
 /// Called after state-changing operations (bead update, dispatch, etc).
@@ -65,6 +69,7 @@ pub fn snapshot(state_path: &Path) {
     }
 }
 
+#[allow(dead_code)]
 /// Push state to a remote. Best-effort.
 ///
 /// Called periodically or on graceful shutdown.

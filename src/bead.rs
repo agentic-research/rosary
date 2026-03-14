@@ -150,10 +150,7 @@ impl Bead {
                 .and_then(|v| v.as_str())
                 .unwrap_or("open")
                 .to_string(),
-            priority: value
-                .get("priority")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(2) as u8,
+            priority: value.get("priority").and_then(|v| v.as_u64()).unwrap_or(2) as u8,
             issue_type: value
                 .get("issue_type")
                 .and_then(|v| v.as_str())
@@ -200,13 +197,7 @@ impl Bead {
 
 impl fmt::Display for Bead {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[{}] {} ({})",
-            self.id,
-            self.title,
-            self.status,
-        )?;
+        write!(f, "[{}] {} ({})", self.id, self.title, self.status,)?;
         if let Some(ref branch) = self.branch {
             write!(f, " branch={branch}")?;
         }

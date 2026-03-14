@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::config;
@@ -168,10 +168,7 @@ async fn tool_status(config_path: &str) -> Result<Value> {
     let beads = scanner::scan_repos(&cfg.repo).await?;
 
     let open = beads.iter().filter(|b| b.status == "open").count();
-    let in_progress = beads
-        .iter()
-        .filter(|b| b.status == "in_progress")
-        .count();
+    let in_progress = beads.iter().filter(|b| b.status == "in_progress").count();
     let blocked = beads
         .iter()
         .filter(|b| b.dependency_count > 0 && b.status == "open")
@@ -258,10 +255,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
 }
 
 async fn handle_tools_call(id: Value, params: &Value, config_path: &str) -> JsonRpcResponse {
-    let name = params
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
@@ -328,11 +322,8 @@ async fn run_stdio(config_path: &str) -> Result<()> {
         let request: JsonRpcRequest = match serde_json::from_str(&line) {
             Ok(r) => r,
             Err(e) => {
-                let err_resp = JsonRpcResponse::error(
-                    Value::Null,
-                    -32700,
-                    format!("Parse error: {e}"),
-                );
+                let err_resp =
+                    JsonRpcResponse::error(Value::Null, -32700, format!("Parse error: {e}"));
                 let mut out = serde_json::to_string(&err_resp)?;
                 out.push('\n');
                 stdout.write_all(out.as_bytes()).await?;
@@ -396,10 +387,7 @@ mod tests {
         let tools = defs["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 4);
 
-        let names: Vec<&str> = tools
-            .iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"rsry_scan"));
         assert!(names.contains(&"rsry_status"));
         assert!(names.contains(&"rsry_list_beads"));
@@ -442,7 +430,13 @@ mod tests {
         let resp = JsonRpcResponse::method_not_found(json!(99), "bogus/method");
         assert!(resp.error.is_some());
         assert_eq!(resp.error.as_ref().unwrap().code, -32601);
-        assert!(resp.error.as_ref().unwrap().message.contains("bogus/method"));
+        assert!(
+            resp.error
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("bogus/method")
+        );
         assert!(resp.result.is_none());
     }
 

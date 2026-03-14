@@ -53,10 +53,7 @@ impl DoltConfig {
 
     /// Build a MySQL connection URL.
     pub fn url(&self) -> String {
-        format!(
-            "mysql://root@{}:{}/{}",
-            self.host, self.port, self.database
-        )
+        format!("mysql://root@{}:{}/{}", self.host, self.port, self.database)
     }
 }
 
@@ -97,29 +94,17 @@ impl DoltClient {
                 title: row.get("title"),
                 description: row.try_get("description").unwrap_or_default(),
                 status: row.get("status"),
-                priority: row
-                    .try_get::<i32, _>("priority")
-                    .unwrap_or(2) as u8,
+                priority: row.try_get::<i32, _>("priority").unwrap_or(2) as u8,
                 issue_type: row
                     .try_get("issue_type")
                     .unwrap_or_else(|_| "task".to_string()),
                 owner: row.try_get("assignee").ok(),
                 repo: repo_name.to_string(),
-                created_at: row
-                    .try_get("created_at")
-                    .unwrap_or_default(),
-                updated_at: row
-                    .try_get("updated_at")
-                    .unwrap_or_default(),
-                dependency_count: row
-                    .try_get::<i64, _>("dependency_count")
-                    .unwrap_or(0) as u32,
-                dependent_count: row
-                    .try_get::<i64, _>("dep_count")
-                    .unwrap_or(0) as u32,
-                comment_count: row
-                    .try_get::<i64, _>("comment_count")
-                    .unwrap_or(0) as u32,
+                created_at: row.try_get("created_at").unwrap_or_default(),
+                updated_at: row.try_get("updated_at").unwrap_or_default(),
+                dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0) as u32,
+                dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
+                comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0) as u32,
                 branch: None,
                 pr_url: None,
                 jj_change_id: None,
@@ -150,9 +135,7 @@ impl DoltClient {
             title: row.get("title"),
             description: row.try_get("description").unwrap_or_default(),
             status: row.get("status"),
-            priority: row
-                .try_get::<i32, _>("priority")
-                .unwrap_or(2) as u8,
+            priority: row.try_get::<i32, _>("priority").unwrap_or(2) as u8,
             issue_type: row
                 .try_get("issue_type")
                 .unwrap_or_else(|_| "task".to_string()),
@@ -160,18 +143,12 @@ impl DoltClient {
             repo: repo_name.to_string(),
             created_at: row.try_get("created_at").unwrap_or_default(),
             updated_at: row.try_get("updated_at").unwrap_or_default(),
-            dependency_count: row
-                .try_get::<i64, _>("dependency_count")
-                .unwrap_or(0) as u32,
-            dependent_count: row
-                .try_get::<i64, _>("dep_count")
-                .unwrap_or(0) as u32,
-            comment_count: row
-                .try_get::<i64, _>("comment_count")
-                .unwrap_or(0) as u32,
-                branch: None,
-                pr_url: None,
-                jj_change_id: None,
+            dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0) as u32,
+            dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
+            comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0) as u32,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
         }))
     }
 
@@ -222,18 +199,17 @@ impl DoltClient {
 
     /// Add a comment to an issue.
     pub async fn add_comment(&self, issue_id: &str, body: &str, author: &str) -> Result<()> {
-        query(
-            "INSERT INTO comments (issue_id, body, author, created_at) VALUES (?, ?, ?, NOW())",
-        )
-        .bind(issue_id)
-        .bind(body)
-        .bind(author)
-        .execute(&self.pool)
-        .await
-        .with_context(|| format!("adding comment to {issue_id}"))?;
+        query("INSERT INTO comments (issue_id, body, author, created_at) VALUES (?, ?, ?, NOW())")
+            .bind(issue_id)
+            .bind(body)
+            .bind(author)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("adding comment to {issue_id}"))?;
         Ok(())
     }
 
+    #[allow(dead_code)] // API surface for rsry bead search
     /// Search beads by title or description substring match.
     pub async fn search_beads(&self, query_str: &str, repo_name: &str) -> Result<Vec<Bead>> {
         let pattern = format!("%{query_str}%");
@@ -260,29 +236,17 @@ impl DoltClient {
                 title: row.get("title"),
                 description: row.try_get("description").unwrap_or_default(),
                 status: row.get("status"),
-                priority: row
-                    .try_get::<i32, _>("priority")
-                    .unwrap_or(2) as u8,
+                priority: row.try_get::<i32, _>("priority").unwrap_or(2) as u8,
                 issue_type: row
                     .try_get("issue_type")
                     .unwrap_or_else(|_| "task".to_string()),
                 owner: row.try_get("assignee").ok(),
                 repo: repo_name.to_string(),
-                created_at: row
-                    .try_get("created_at")
-                    .unwrap_or_default(),
-                updated_at: row
-                    .try_get("updated_at")
-                    .unwrap_or_default(),
-                dependency_count: row
-                    .try_get::<i64, _>("dependency_count")
-                    .unwrap_or(0) as u32,
-                dependent_count: row
-                    .try_get::<i64, _>("dep_count")
-                    .unwrap_or(0) as u32,
-                comment_count: row
-                    .try_get::<i64, _>("comment_count")
-                    .unwrap_or(0) as u32,
+                created_at: row.try_get("created_at").unwrap_or_default(),
+                updated_at: row.try_get("updated_at").unwrap_or_default(),
+                dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0) as u32,
+                dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
+                comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0) as u32,
                 branch: None,
                 pr_url: None,
                 jj_change_id: None,
@@ -433,12 +397,23 @@ mod tests {
         let config = DoltConfig::from_beads_dir(Path::new(&beads_dir)).unwrap();
         let client = DoltClient::connect(&config).await.unwrap();
 
-        let test_id = format!("test-crud-{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+        let test_id = format!(
+            "test-crud-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        );
 
         // Create
         client
-            .create_bead(&test_id, "Test CRUD bead", "Integration test description", 2, "task")
+            .create_bead(
+                &test_id,
+                "Test CRUD bead",
+                "Integration test description",
+                2,
+                "task",
+            )
             .await
             .unwrap();
 
@@ -451,7 +426,10 @@ mod tests {
 
         // Search
         let results = client.search_beads("CRUD bead", "test").await.unwrap();
-        assert!(results.iter().any(|b| b.id == test_id), "search should find created bead");
+        assert!(
+            results.iter().any(|b| b.id == test_id),
+            "search should find created bead"
+        );
 
         // Add comment
         client

@@ -111,11 +111,10 @@ impl Reconciler {
             repo_info.insert(repo.name.clone(), (path, lang));
         }
 
-        let provider = dispatch::provider_by_name(&config.provider)
-            .unwrap_or_else(|e| {
-                eprintln!("[reconcile] {e}, falling back to claude");
-                dispatch::provider_by_name("claude").unwrap()
-            });
+        let provider = dispatch::provider_by_name(&config.provider).unwrap_or_else(|e| {
+            eprintln!("[reconcile] {e}, falling back to claude");
+            dispatch::provider_by_name("claude").unwrap()
+        });
 
         Reconciler {
             config,
@@ -170,7 +169,9 @@ impl Reconciler {
         let mut status_updates: Vec<(String, String, String)> = Vec::new();
 
         for (bead_id, exit_success) in &completed {
-            let repo = self.trackers.get(bead_id.as_str())
+            let repo = self
+                .trackers
+                .get(bead_id.as_str())
                 .map(|t| t.repo.clone())
                 .unwrap_or_default();
 
@@ -236,14 +237,18 @@ impl Reconciler {
             }
 
             // Dedup: skip if too similar to an active or queued bead
-            let dominated = beads.iter()
+            let dominated = beads
+                .iter()
                 .filter(|other| other.id != bead.id)
-                .filter(|other| self.active.contains_key(&other.id) || self.queue.contains(&other.id))
-                .any(|other| {
-                    scanner::jaccard_similarity(&bead.title, &other.title) > 0.6
-                });
+                .filter(|other| {
+                    self.active.contains_key(&other.id) || self.queue.contains(&other.id)
+                })
+                .any(|other| scanner::jaccard_similarity(&bead.title, &other.title) > 0.6);
             if dominated {
-                eprintln!("[dedup] skipping {} — similar to active/queued bead", bead.id);
+                eprintln!(
+                    "[dedup] skipping {} — similar to active/queued bead",
+                    bead.id
+                );
                 continue;
             }
 
@@ -295,30 +300,39 @@ impl Reconciler {
             let repo_path = self.repo_info.get(&entry.repo).map(|(p, _)| p.clone());
 
             if let (Some(bead), Some(path)) = (bead, repo_path) {
-                match dispatch::spawn(bead, &path, true, entry.generation, self.provider.as_ref()).await {
+                match dispatch::spawn(bead, &path, true, entry.generation, self.provider.as_ref())
+                    .await
+                {
                     Ok(handle) => {
                         println!(
                             "[dispatch] {} (gen={}, retries={}, provider={})",
-                            entry.bead_id, entry.generation, entry.retries, self.provider.name()
+                            entry.bead_id,
+                            entry.generation,
+                            entry.retries,
+                            self.provider.name()
                         );
-                        self.persist_status(&entry.bead_id, &entry.repo, "dispatched").await;
+                        self.persist_status(&entry.bead_id, &entry.repo, "dispatched")
+                            .await;
 
                         // Record the dispatch branch
                         let branch = format!("fix/{}", entry.bead_id);
                         if let Some(client) = self.dolt_client(&entry.repo).await {
-                            client.log_event(&entry.bead_id, "dispatch_branch", &branch).await;
+                            client
+                                .log_event(&entry.bead_id, "dispatch_branch", &branch)
+                                .await;
                         }
 
                         self.active.insert(entry.bead_id.clone(), handle);
-                        let tracker = self.trackers
-                            .entry(entry.bead_id.clone())
-                            .or_insert(BeadTracker {
-                                repo: entry.repo.clone(),
-                                last_generation: entry.generation,
-                                retries: entry.retries,
-                                consecutive_reverts: 0,
-                                highest_tier: None,
-                            });
+                        let tracker =
+                            self.trackers
+                                .entry(entry.bead_id.clone())
+                                .or_insert(BeadTracker {
+                                    repo: entry.repo.clone(),
+                                    last_generation: entry.generation,
+                                    retries: entry.retries,
+                                    consecutive_reverts: 0,
+                                    highest_tier: None,
+                                });
                         tracker.last_generation = entry.generation;
                         tracker.repo = entry.repo.clone();
                         summary.dispatched += 1;
@@ -364,10 +378,13 @@ impl Reconciler {
 
             if done {
                 let handle = self.active.remove(&bead_id).unwrap();
-                let repo = self.trackers.get(&bead_id)
+                let repo = self
+                    .trackers
+                    .get(&bead_id)
                     .map(|t| t.repo.clone())
                     .unwrap_or_default();
-                self.completed_work_dirs.insert(bead_id.clone(), (handle.work_dir, repo));
+                self.completed_work_dirs
+                    .insert(bead_id.clone(), (handle.work_dir, repo));
                 completed.push((bead_id, success));
             }
         }
@@ -380,7 +397,9 @@ impl Reconciler {
         let (work_dir, repo) = self.completed_work_dirs.remove(bead_id)?;
 
         // Look up language for this repo
-        let lang = self.repo_info.get(&repo)
+        let lang = self
+            .repo_info
+            .get(&repo)
             .map(|(_, l)| l.as_str())
             .unwrap_or("unknown");
 
@@ -428,7 +447,9 @@ impl Reconciler {
             if let Err(e) = client.update_status(bead_id, status).await {
                 eprintln!("[dolt] failed to update {bead_id} to {status}: {e}");
             }
-            client.log_event(bead_id, "state_change", &format!("→ {status}")).await;
+            client
+                .log_event(bead_id, "state_change", &format!("→ {status}"))
+                .await;
         }
     }
 
@@ -442,13 +463,16 @@ impl Reconciler {
 
     /// Handle a verification failure. Returns true if deadlettered.
     fn on_fail(&mut self, bead_id: &str, summary: &VerifySummary) -> bool {
-        let tracker = self.trackers.entry(bead_id.to_string()).or_insert(BeadTracker {
-            repo: String::new(),
-            last_generation: 0,
-            retries: 0,
-            consecutive_reverts: 0,
-            highest_tier: None,
-        });
+        let tracker = self
+            .trackers
+            .entry(bead_id.to_string())
+            .or_insert(BeadTracker {
+                repo: String::new(),
+                last_generation: 0,
+                retries: 0,
+                consecutive_reverts: 0,
+                highest_tier: None,
+            });
 
         // Check for revert (regression from previous best)
         if let (Some(prev), Some(curr)) = (tracker.highest_tier, summary.highest_passing_tier) {
@@ -489,13 +513,16 @@ impl Reconciler {
 
     /// Handle agent exit failure (non-zero exit). Returns true if deadlettered.
     fn on_fail_exit(&mut self, bead_id: &str) -> bool {
-        let tracker = self.trackers.entry(bead_id.to_string()).or_insert(BeadTracker {
-            repo: String::new(),
-            last_generation: 0,
-            retries: 0,
-            consecutive_reverts: 0,
-            highest_tier: None,
-        });
+        let tracker = self
+            .trackers
+            .entry(bead_id.to_string())
+            .or_insert(BeadTracker {
+                repo: String::new(),
+                last_generation: 0,
+                retries: 0,
+                consecutive_reverts: 0,
+                highest_tier: None,
+            });
         tracker.retries += 1;
 
         if tracker.retries >= self.config.max_retries {
@@ -694,7 +721,7 @@ mod tests {
         // Retries increment: 1, 2, 3 — deadletter at 3 == max_retries
         assert!(!r.on_fail_exit("x")); // retries=1
         assert!(!r.on_fail_exit("x")); // retries=2
-        assert!(r.on_fail_exit("x"));  // retries=3 == max, deadletter
+        assert!(r.on_fail_exit("x")); // retries=3 == max, deadletter
     }
 
     #[test]
@@ -733,6 +760,6 @@ mod tests {
 
         assert!(!r.on_fail("x", &regress(Some(2)))); // 4→2, revert #1
         assert!(!r.on_fail("x", &regress(Some(1)))); // 2→1, revert #2
-        assert!(r.on_fail("x", &regress(Some(0))));  // 1→0, revert #3 → deadletter
+        assert!(r.on_fail("x", &regress(Some(0)))); // 1→0, revert #3 → deadletter
     }
 }

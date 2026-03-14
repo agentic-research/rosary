@@ -1,0 +1,38 @@
+repos:
+  # Basic file hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: mixed-line-ending
+
+  # Rust-specific checks (all use locally installed tools)
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: bash -c 'cd "$(git rev-parse --show-toplevel)" && cargo fmt -- --check'
+        language: system
+        files: \.rs$
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: bash -c 'ROOT="$(git rev-parse --show-toplevel)" && cd "$ROOT" && PKG_CONFIG_PATH="${LEY_LINE_DIR:-$ROOT/../ley-line}/rs/pkgconfig" cargo clippy --all-targets -- -D warnings'
+        language: system
+        files: \.rs$
+        pass_filenames: false
+
+      - id: cargo-test
+        name: cargo test
+        entry: bash -c 'ROOT="$(git rev-parse --show-toplevel)" && cd "$ROOT" && PKG_CONFIG_PATH="${LEY_LINE_DIR:-$ROOT/../ley-line}/rs/pkgconfig" cargo test --quiet'
+        language: system
+        files: \.rs$
+        pass_filenames: false
+        stages: [pre-push]

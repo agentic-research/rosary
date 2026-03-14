@@ -148,9 +148,7 @@ impl WorkQueue {
 
     /// Check if a bead has exceeded max retries.
     pub fn is_deadlettered(&self, bead_id: &str) -> bool {
-        self.backoff
-            .get(bead_id)
-            .is_some_and(|s| s.exceeded_max())
+        self.backoff.get(bead_id).is_some_and(|s| s.exceeded_max())
     }
 
     /// Get retry count for a bead.
@@ -191,11 +189,7 @@ impl WorkQueue {
 pub fn triage_score(bead: &Bead, retries: u32, now: chrono::DateTime<chrono::Utc>) -> f64 {
     let priority_score = 1.0 - (bead.priority as f64 / 5.0);
 
-    let dependency_score = if bead.dependency_count == 0 {
-        1.0
-    } else {
-        0.0
-    };
+    let dependency_score = if bead.dependency_count == 0 { 1.0 } else { 0.0 };
 
     let age_hours = (now - bead.created_at).num_hours().max(0) as f64;
     let age_score = (age_hours / 168.0).min(1.0); // 168h = 1 week
@@ -404,7 +398,10 @@ mod tests {
 
         let s0 = triage_score(&bead, 0, now);
         let s3 = triage_score(&bead, 3, now);
-        assert!(s0 > s3, "0 retries should score higher than 3: {s0} vs {s3}");
+        assert!(
+            s0 > s3,
+            "0 retries should score higher than 3: {s0} vs {s3}"
+        );
     }
 
     #[test]
@@ -474,7 +471,10 @@ mod tests {
         // confirming that age alone cannot bypass the floor.
         let now = chrono::Utc::now();
         let score = triage_score(&bead, 0, now);
-        assert!(score > 0.0, "old bead has positive triage score ({score}) but floor still blocks it");
+        assert!(
+            score > 0.0,
+            "old bead has positive triage score ({score}) but floor still blocks it"
+        );
     }
 
     #[test]

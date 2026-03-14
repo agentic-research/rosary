@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 
 /// Build a reqwest client with the Linear API key in the Authorization header.
 fn build_client(api_key: &str) -> Result<reqwest::Client> {
-    use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+    use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, HeaderValue::from_str(api_key)?);
@@ -31,7 +31,10 @@ async fn graphql(client: &reqwest::Client, query: &str, variables: Value) -> Res
         .context("failed to reach Linear API")?;
 
     let status = resp.status();
-    let text = resp.text().await.context("failed to read Linear response body")?;
+    let text = resp
+        .text()
+        .await
+        .context("failed to read Linear response body")?;
 
     if !status.is_success() {
         anyhow::bail!("Linear API returned {status}: {text}");
@@ -142,7 +145,10 @@ pub async fn plan(ticket: &str) -> Result<()> {
 
     let title = issue["title"].as_str().unwrap_or("(untitled)");
     let ident = issue["identifier"].as_str().unwrap_or("???");
-    let state = issue.pointer("/state/name").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let state = issue
+        .pointer("/state/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
     let priority = issue["priority"].as_i64().unwrap_or(0);
     let description = issue["description"].as_str().unwrap_or("(no description)");
 
@@ -274,7 +280,10 @@ pub async fn sync() -> Result<()> {
         for issue in issues {
             let ident = issue["identifier"].as_str().unwrap_or("???");
             let title = issue["title"].as_str().unwrap_or("(untitled)");
-            let state = issue.pointer("/state/name").and_then(|v| v.as_str()).unwrap_or("?");
+            let state = issue
+                .pointer("/state/name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let priority = issue["priority"].as_i64().unwrap_or(0);
             println!("  {ident}  [{state}]  P{priority}  {title}");
         }

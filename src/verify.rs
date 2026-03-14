@@ -87,7 +87,11 @@ impl Verifier {
                 )));
             }
             "go" => {
-                tiers.push(Box::new(ShellCheck::new("compile", "go", &["vet", "./..."])));
+                tiers.push(Box::new(ShellCheck::new(
+                    "compile",
+                    "go",
+                    &["vet", "./..."],
+                )));
                 tiers.push(Box::new(ShellCheck::new(
                     "test",
                     "go",
@@ -404,7 +408,7 @@ mod tests {
             .unwrap();
 
         let check = DiffSanityCheck {
-            max_files: 2,  // Trigger
+            max_files: 2, // Trigger
             max_lines: 500,
         };
         let result = check.check(dir.path()).unwrap();
