@@ -1,3 +1,4 @@
+# Rosary — autonomous work orchestrator
 [package]
 name = "rosary"
 version = "0.1.0"
