@@ -29,8 +29,14 @@ leyline-vcs = { git = "https://github.com/agentic-research/ley-line", default-fe
 agent-client-protocol = "0.10.2"
 async-trait = "0.1.89"
 libc = "0.2"
+axum = "0.8"
+uuid = { version = "1", features = ["v4"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+tower = { version = "0.5", features = ["util"] }

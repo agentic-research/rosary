@@ -388,6 +388,19 @@ impl DoltClient {
         Ok(())
     }
 
+    /// Find a bead by its external_ref (e.g., "AGE-5").
+    /// Returns the bead ID if found. Used by the webhook handler to map
+    /// Linear issue identifiers back to local beads.
+    #[allow(dead_code)] // Called from serve.rs webhook handler
+    pub async fn find_by_external_ref(&self, external_ref: &str) -> Result<Option<String>> {
+        let row = query("SELECT id FROM issues WHERE external_ref = ?")
+            .bind(external_ref)
+            .fetch_optional(&self.pool)
+            .await
+            .with_context(|| format!("finding bead by external_ref {external_ref}"))?;
+        Ok(row.map(|r| r.get("id")))
+    }
+
     #[allow(dead_code)] // Called from linear.rs sync() — clippy can't trace async
     /// List closed beads that have an external_ref set.
     /// Used by sync to propagate close status to external trackers.

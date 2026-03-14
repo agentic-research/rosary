@@ -11,6 +11,9 @@ pub struct Config {
     pub linear: Option<LinearConfig>,
     /// Compute provider configuration.
     pub compute: Option<ComputeConfig>,
+    /// HTTP server + tunnel configuration.
+    #[serde(default)]
+    pub http: Option<HttpConfig>,
 }
 
 /// Compute provider selection + backend-specific settings.
@@ -90,6 +93,49 @@ pub struct LinearConfig {
     /// to the corresponding Linear project.
     #[serde(default)]
     pub phases: HashMap<String, String>,
+    /// Env var name holding the webhook signing secret for Linear webhooks.
+    #[serde(default)]
+    pub webhook_secret_env: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpConfig {
+    /// Port the HTTP server listens on.
+    #[serde(default = "default_http_port")]
+    pub port: u16,
+    /// Optional tunnel configuration for exposing the server publicly.
+    #[serde(default)]
+    pub tunnel: Option<TunnelConfig>,
+}
+
+fn default_http_port() -> u16 {
+    8383
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TunnelConfig {
+    /// Tunnel provider name (e.g., "cloudflare").
+    #[serde(default = "default_tunnel_provider")]
+    pub provider: String,
+    /// Custom domain — omit for random *.trycloudflare.com.
+    #[serde(default)]
+    pub domain: Option<String>,
+    /// Cloudflare account ID.
+    #[serde(default)]
+    pub account_id: Option<String>,
+    /// Cloudflare zone ID.
+    #[serde(default)]
+    pub zone_id: Option<String>,
+    /// Env var name holding the API token for the tunnel provider.
+    #[serde(default)]
+    pub token_env: Option<String>,
+    /// Tunnel ID — persisted after first creation.
+    #[serde(default)]
+    pub tunnel_id: Option<String>,
+}
+
+fn default_tunnel_provider() -> String {
+    "cloudflare".to_string()
 }
 
 /// Resolve config path: $RSRY_CONFIG → ~/.rsry/config.toml → ./rosary.toml
@@ -132,6 +178,7 @@ pub fn load_global() -> Result<Config> {
             repo: Vec::new(),
             linear: None,
             compute: None,
+            http: None,
         });
     }
     let content = std::fs::read_to_string(&path)
@@ -404,6 +451,7 @@ path = "~/remotes/art/mache"
             repo: vec![entry],
             linear: None,
             compute: None,
+            http: None,
         };
         std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
         let content = toml::to_string_pretty(&config).unwrap();
@@ -496,6 +544,7 @@ path = "~/remotes/art/mache"
             }],
             linear: None,
             compute: None,
+            http: None,
         };
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: Config = toml::from_str(&serialized).unwrap();
@@ -606,6 +655,7 @@ path = "/tmp/test"
             repo: vec![],
             linear: None,
             compute: None,
+            http: None,
         };
         let provider = compute_provider_from_config(&config).unwrap();
         assert_eq!(provider.name(), "local");
@@ -620,6 +670,7 @@ path = "/tmp/test"
                 backend: "local".into(),
                 sprites: None,
             }),
+            http: None,
         };
         let provider = compute_provider_from_config(&config).unwrap();
         assert_eq!(provider.name(), "local");
@@ -634,6 +685,7 @@ path = "/tmp/test"
                 backend: "sprites".into(),
                 sprites: None,
             }),
+            http: None,
         };
         let result = compute_provider_from_config(&config);
         let err = result.err().unwrap();
@@ -657,6 +709,7 @@ path = "/tmp/test"
                     fallback_to_local: true,
                 }),
             }),
+            http: None,
         };
         let result = compute_provider_from_config(&config);
         let err = result.err().unwrap();
@@ -672,9 +725,120 @@ path = "/tmp/test"
                 backend: "k8s".into(),
                 sprites: None,
             }),
+            http: None,
         };
         let result = compute_provider_from_config(&config);
         let err = result.err().unwrap();
         assert!(err.to_string().contains("k8s"));
+    }
+
+    #[test]
+    fn parse_toml_http_and_tunnel() {
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[linear]
+team = "ART"
+webhook_secret_env = "LINEAR_WEBHOOK_SECRET"
+
+[http]
+port = 9090
+
+[http.tunnel]
+provider = "cloudflare"
+domain = "webhooks.example.com"
+account_id = "abc123"
+zone_id = "zone456"
+token_env = "CF_API_TOKEN"
+tunnel_id = "tun-789"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        let linear = config.linear.unwrap();
+        assert_eq!(
+            linear.webhook_secret_env.as_deref(),
+            Some("LINEAR_WEBHOOK_SECRET")
+        );
+
+        let http = config.http.unwrap();
+        assert_eq!(http.port, 9090);
+
+        let tunnel = http.tunnel.unwrap();
+        assert_eq!(tunnel.provider, "cloudflare");
+        assert_eq!(tunnel.domain.as_deref(), Some("webhooks.example.com"));
+        assert_eq!(tunnel.account_id.as_deref(), Some("abc123"));
+        assert_eq!(tunnel.zone_id.as_deref(), Some("zone456"));
+        assert_eq!(tunnel.token_env.as_deref(), Some("CF_API_TOKEN"));
+        assert_eq!(tunnel.tunnel_id.as_deref(), Some("tun-789"));
+    }
+
+    #[test]
+    fn parse_toml_http_defaults() {
+        // Minimal [http] section — port defaults to 8383, no tunnel
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[http]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let http = config.http.unwrap();
+        assert_eq!(http.port, 8383);
+        assert!(http.tunnel.is_none());
+    }
+
+    #[test]
+    fn parse_toml_tunnel_defaults() {
+        // Minimal tunnel — provider defaults to "cloudflare", all optionals None
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[http]
+port = 8383
+
+[http.tunnel]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let tunnel = config.http.unwrap().tunnel.unwrap();
+        assert_eq!(tunnel.provider, "cloudflare");
+        assert!(tunnel.domain.is_none());
+        assert!(tunnel.account_id.is_none());
+        assert!(tunnel.zone_id.is_none());
+        assert!(tunnel.token_env.is_none());
+        assert!(tunnel.tunnel_id.is_none());
+    }
+
+    #[test]
+    fn parse_toml_backward_compat_no_http() {
+        // Old configs without [http] still parse fine
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[linear]
+team = "ART"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.http.is_none());
+        assert!(config.linear.unwrap().webhook_secret_env.is_none());
+    }
+
+    #[test]
+    fn parse_toml_backward_compat_empty() {
+        // Completely empty config (just repos) still works
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.http.is_none());
+        assert!(config.linear.is_none());
     }
 }

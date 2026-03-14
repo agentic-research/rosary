@@ -19,6 +19,15 @@ pub struct RepoPool {
 }
 
 impl RepoPool {
+    /// Create an empty pool (for testing and HTTP server startup with no repos).
+    #[allow(dead_code)] // used in tests
+    pub fn empty() -> Self {
+        RepoPool {
+            clients: HashMap::new(),
+            paths: HashMap::new(),
+        }
+    }
+
     /// Create a pool and connect to all repos in the given config.
     /// Repos that fail to connect are logged and skipped (best-effort).
     pub async fn from_config(config_path: &str) -> Result<Self> {
@@ -88,6 +97,12 @@ impl RepoPool {
     /// List connected repo names.
     pub fn repo_names(&self) -> Vec<&str> {
         self.clients.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Iterate over all (repo_name, client) pairs. Used by webhook handler.
+    #[allow(dead_code)]
+    pub fn iter_clients(&self) -> impl Iterator<Item = (&str, &DoltClient)> {
+        self.clients.iter().map(|(k, v)| (k.as_str(), v))
     }
 }
 

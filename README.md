@@ -111,28 +111,48 @@ Rosary is configured to scan its own repo (`self = true` in rosary.toml). The go
 
 ## MCP server
 
-Expose rosary as tools inside Claude Code:
+Rosary exposes 10 tools via MCP (stdio and HTTP transports):
 
 ```bash
-# Register rosary as an MCP server (one-time)
-claude mcp add rosary -- /path/to/rsry serve --transport stdio
+# Claude Code (one-time setup)
+claude mcp add -s user rsry -- /path/to/rsry serve --transport stdio
 
-# Or with HTTP transport
+# Gemini CLI (one-time setup)
+gemini mcp add rsry -s user /path/to/rsry serve --transport stdio --trust
+
+# HTTP transport (for webhooks, remote access, MCP Connector)
 rsry serve --transport http --port 8383
 ```
 
-This gives Claude access to 8 tools: `rsry_scan`, `rsry_status`, `rsry_list_beads`, `rsry_run_once`, `rsry_bead_create`, `rsry_bead_close`, `rsry_bead_comment`, `rsry_bead_search`.
+**10 MCP tools:**
+
+| Tool | Purpose |
+|------|---------|
+| `rsry_scan` | List beads across all repos |
+| `rsry_status` | Bead counts (open/ready/blocked) |
+| `rsry_list_beads` | List with optional status filter |
+| `rsry_run_once` | Single reconcile pass (dry_run default) |
+| `rsry_bead_create` | Create a bead |
+| `rsry_bead_close` | Close a bead |
+| `rsry_bead_comment` | Add comment to a bead |
+| `rsry_bead_search` | Search by title/description |
+| `rsry_dispatch` | Spawn agent for a specific bead |
+| `rsry_active` | Show running agent sessions |
 
 ## Linear integration
 
-Requires `LINEAR_API_KEY` (get one at https://linear.app/settings/api):
+Configure in `~/.rsry/config.toml` (or override with env vars):
+
+```toml
+[linear]
+team = "AGE"
+api_key = "lin_api_..."   # or set LINEAR_API_KEY env var
+```
 
 ```bash
-export LINEAR_API_KEY=lin_api_...
-export LINEAR_TEAM=ART           # optional, defaults to ART
-
-rsry plan ART-123                # fetch ticket details
-rsry sync                        # list open issues for team
+rsry plan AGE-123              # fetch ticket details
+rsry sync --dry-run            # preview what would sync
+rsry sync                      # bidirectional sync (link + push + close)
 ```
 
 ## Cross-repo tracking
