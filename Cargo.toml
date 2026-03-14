@@ -1,4 +1,7 @@
 # Rosary — autonomous work orchestrator
+[workspace]
+members = [".", "crates/crypto"]
+
 [package]
 name = "rosary"
 version = "0.1.0"
