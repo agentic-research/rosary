@@ -16,3 +16,5 @@ dolt-server.log
 dolt-server.pid
 dolt-server.port
 dolt/
+.envrc
+.env
