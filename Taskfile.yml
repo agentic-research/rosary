@@ -47,12 +47,13 @@ tasks:
       - cargo fmt
 
   install:
-    desc: Build release binary and install to ~/.local/bin
+    desc: Build, codesign, and install rsry to ~/.local/bin
     cmds:
       - cargo build --release
       - mkdir -p ~/.local/bin
       - cp target/release/rsry ~/.local/bin/rsry
-      - echo "Installed rsry to ~/.local/bin/rsry"
+      - codesign -s - --force --deep --entitlements entitlements.plist ~/.local/bin/rsry
+      - echo "Installed rsry to ~/.local/bin/rsry (codesigned)"
 
   e2e:
     desc: End-to-end sandbox test (requires Dolt server in .beads/)
