@@ -129,6 +129,22 @@ impl Reconciler {
         }
     }
 
+    /// Reset beads stuck at 'dispatched' from a previous run.
+    /// On startup, any bead with status=dispatched has no running agent
+    /// (the reconciler that dispatched it is dead). Reset to open.
+    async fn recover_stuck_beads(&mut self) {
+        let beads = match scanner::scan_repos(&self.config.repo).await {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        for bead in &beads {
+            if bead.status == "dispatched" {
+                eprintln!("[recover] resetting stuck bead {} to open", bead.id);
+                self.persist_status(&bead.id, &bead.repo, "open").await;
+            }
+        }
+    }
+
     /// Run the reconciliation loop.
     pub async fn run(&mut self) -> Result<()> {
         println!(
@@ -137,6 +153,9 @@ impl Reconciler {
             self.config.scan_interval.as_secs(),
             self.config.dry_run,
         );
+
+        // Recover beads stuck at 'dispatched' from previous crashed run
+        self.recover_stuck_beads().await;
 
         loop {
             let summary = self.iterate().await?;

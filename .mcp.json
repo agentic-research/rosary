@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "rsry": {
+      "type": "stdio",
+      "command": "rsry",
+      "args": ["serve", "--transport", "stdio"],
+      "env": {}
+    }
+  }
+}
