@@ -4,6 +4,10 @@ config :conductor,
   rsry_url: "http://127.0.0.1:8383/mcp",
   scan_interval_ms: 30_000,
   agent_timeout_ms: 10 * 60_000,
-  max_concurrent: 3
+  max_concurrent: 3,
+  # :acp = ACP protocol via claude-agent-acp (needs ANTHROPIC_API_KEY)
+  # :cli = claude -p fallback (uses Claude Code OAuth, no API key needed)
+  dispatch_mode: :cli,
+  agent_provider: "claude"
 
 import_config "#{config_env()}.exs"

@@ -371,8 +371,52 @@ defmodule Conductor.AgentWorker do
 
   defp start_agent_process(pipeline, state) do
     case spawn_fn() do
-      nil -> start_acp_process(pipeline, state)
-      fun when is_function(fun) -> fun.(pipeline)
+      nil ->
+        mode = Application.get_env(:conductor, :dispatch_mode, :acp)
+
+        case mode do
+          :acp -> start_acp_process(pipeline, state)
+          :cli -> start_cli_process(pipeline, state)
+        end
+
+      fun when is_function(fun) ->
+        fun.(pipeline)
+    end
+  end
+
+  # Fallback: claude -p via Port. No ACP protocol, just fire-and-forget.
+  # Uses Claude Code's built-in OAuth auth — no API key needed.
+  # MCP servers available. Exit code only (no mid-execution feedback).
+  defp start_cli_process(pipeline, state) do
+    agent = Pipeline.current_agent(pipeline)
+    bead_id = pipeline.bead_id
+    repo = pipeline.repo
+    prompt = build_prompt(pipeline, state)
+
+    binary =
+      case Application.get_env(:conductor, :agent_provider, "claude") do
+        "gemini" -> "gemini"
+        _ -> "claude"
+      end
+
+    try do
+      port =
+        Port.open(
+          {:spawn_executable, System.find_executable(binary)},
+          [
+            :binary,
+            :exit_status,
+            {:line, 65_536},
+            args: ["-p", prompt, "--output-format", "json"],
+            cd: to_charlist(repo)
+          ]
+        )
+
+      {:os_pid, os_pid} = Port.info(port, :os_pid)
+      Logger.info("[worker] #{bead_id}: spawned #{agent} via CLI (#{binary} -p, pid=#{os_pid})")
+      {:ok, port, os_pid}
+    rescue
+      e -> {:error, Exception.message(e)}
     end
   end
 

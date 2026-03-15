@@ -29,3 +29,6 @@ _push_fix.*
 .fix-beads.py
 _fix_stale_servers.py
 _beads_clone/
+
+# Experiments (local only)
+experiments/
