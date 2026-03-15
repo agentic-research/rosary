@@ -21,7 +21,11 @@ dolt/
 
 # Agent workspace directories
 .rsry-workspaces/
+
+# Claude Code runtime artifacts (keep .claude/settings.json etc)
 .claude/worktrees/
+.claude/scheduled_tasks.lock
+.claude/projects/
 
 # Stale scripts from agent runs
 .tmp-*
