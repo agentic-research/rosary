@@ -53,6 +53,12 @@ pub struct PipelineState {
     pub pipeline_phase: u8,
     /// Current agent name (e.g. "dev-agent").
     pub pipeline_agent: String,
+    /// Sub-state within the current phase. Eliminates ambiguity during recovery:
+    /// - pending: phase selected, not yet dispatched
+    /// - executing: agent spawned and running
+    /// - completed: agent exited, verification passed
+    /// - failed: agent exited, verification failed or timeout
+    pub phase_status: String,
     pub retries: u32,
     pub consecutive_reverts: u32,
     pub highest_verify_tier: Option<u8>,
@@ -467,6 +473,7 @@ mod tests {
             bead_ref: bead.clone(),
             pipeline_phase: 0,
             pipeline_agent: "dev-agent".into(),
+            phase_status: "executing".into(),
             retries: 0,
             consecutive_reverts: 0,
             highest_verify_tier: None,

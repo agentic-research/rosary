@@ -169,6 +169,7 @@ impl DoltBackend {
                 bead_id VARCHAR(128) NOT NULL,
                 pipeline_phase TINYINT UNSIGNED NOT NULL DEFAULT 0,
                 pipeline_agent VARCHAR(64) NOT NULL,
+                phase_status VARCHAR(32) NOT NULL DEFAULT 'pending',
                 retries INT UNSIGNED NOT NULL DEFAULT 0,
                 consecutive_reverts INT UNSIGNED NOT NULL DEFAULT 0,
                 highest_verify_tier TINYINT UNSIGNED,
@@ -380,13 +381,14 @@ impl DispatchStore for DoltBackend {
 
         query(
             "INSERT INTO pipeline_state
-               (repo, bead_id, pipeline_phase, pipeline_agent, retries,
-                consecutive_reverts, highest_verify_tier, last_generation,
+               (repo, bead_id, pipeline_phase, pipeline_agent, phase_status,
+                retries, consecutive_reverts, highest_verify_tier, last_generation,
                 backoff_until, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
              ON DUPLICATE KEY UPDATE
                pipeline_phase = VALUES(pipeline_phase),
                pipeline_agent = VALUES(pipeline_agent),
+               phase_status = VALUES(phase_status),
                retries = VALUES(retries),
                consecutive_reverts = VALUES(consecutive_reverts),
                highest_verify_tier = VALUES(highest_verify_tier),
@@ -398,6 +400,7 @@ impl DispatchStore for DoltBackend {
         .bind(&state.bead_ref.bead_id)
         .bind(state.pipeline_phase)
         .bind(&state.pipeline_agent)
+        .bind(&state.phase_status)
         .bind(state.retries)
         .bind(state.consecutive_reverts)
         .bind(state.highest_verify_tier)
@@ -416,8 +419,8 @@ impl DispatchStore for DoltBackend {
 
     async fn get_pipeline(&self, bead: &BeadRef) -> Result<Option<PipelineState>> {
         let row = query(
-            "SELECT repo, bead_id, pipeline_phase, pipeline_agent, retries,
-                    consecutive_reverts, highest_verify_tier, last_generation, backoff_until
+            "SELECT repo, bead_id, pipeline_phase, pipeline_agent, phase_status,
+                    retries, consecutive_reverts, highest_verify_tier, last_generation, backoff_until
              FROM pipeline_state WHERE repo = ? AND bead_id = ?",
         )
         .bind(&bead.repo)
@@ -431,8 +434,8 @@ impl DispatchStore for DoltBackend {
 
     async fn list_active_pipelines(&self) -> Result<Vec<PipelineState>> {
         let rows = query(
-            "SELECT repo, bead_id, pipeline_phase, pipeline_agent, retries,
-                    consecutive_reverts, highest_verify_tier, last_generation, backoff_until
+            "SELECT repo, bead_id, pipeline_phase, pipeline_agent, phase_status,
+                    retries, consecutive_reverts, highest_verify_tier, last_generation, backoff_until
              FROM pipeline_state",
         )
         .fetch_all(&self.pool)
@@ -596,6 +599,9 @@ fn row_to_pipeline_state(r: &sqlx_mysql::MySqlRow) -> PipelineState {
         },
         pipeline_phase: r.try_get::<u8, _>("pipeline_phase").unwrap_or(0),
         pipeline_agent: r.get("pipeline_agent"),
+        phase_status: r
+            .try_get("phase_status")
+            .unwrap_or_else(|_| "pending".to_string()),
         retries: r.try_get::<u32, _>("retries").unwrap_or(0),
         consecutive_reverts: r.try_get::<u32, _>("consecutive_reverts").unwrap_or(0),
         highest_verify_tier: r.try_get::<u8, _>("highest_verify_tier").ok(),
@@ -745,6 +751,7 @@ mod tests {
             bead_ref: bead.clone(),
             pipeline_phase: 0,
             pipeline_agent: "dev-agent".into(),
+            phase_status: "executing".into(),
             retries: 0,
             consecutive_reverts: 0,
             highest_verify_tier: None,
