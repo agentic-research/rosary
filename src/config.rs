@@ -9,9 +9,56 @@ pub struct Config {
     #[serde(alias = "repos")]
     pub repo: Vec<RepoConfig>,
     pub linear: Option<LinearConfig>,
+    /// Compute provider configuration.
+    pub compute: Option<ComputeConfig>,
     /// HTTP server + tunnel configuration.
     #[serde(default)]
     pub http: Option<HttpConfig>,
+}
+
+/// Compute provider selection + backend-specific settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputeConfig {
+    /// Provider name: "local" (default), "sprites".
+    #[serde(default = "default_compute_backend")]
+    pub backend: String,
+    /// Sprites-specific settings (only read when backend = "sprites").
+    pub sprites: Option<SpritesConfig>,
+}
+
+fn default_compute_backend() -> String {
+    "local".to_string()
+}
+
+/// Configuration for the sprites.dev compute provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpritesConfig {
+    /// Env var name holding the API token (default: "SPRITES_TOKEN").
+    #[serde(default = "default_sprites_token_env")]
+    pub token_env: String,
+    /// Base URL override (for testing/self-hosted).
+    pub base_url: Option<String>,
+    /// Default CPU cores.
+    pub cpu: Option<u32>,
+    /// Default memory in MB.
+    pub memory_mb: Option<u32>,
+    /// Network egress allowlist (domains).
+    #[serde(default)]
+    pub network_allowlist: Vec<String>,
+    /// Create checkpoint on agent completion.
+    #[serde(default)]
+    pub checkpoint_on_complete: bool,
+    /// Fall back to local execution if sprite provisioning fails.
+    #[serde(default = "default_true")]
+    pub fallback_to_local: bool,
+}
+
+fn default_sprites_token_env() -> String {
+    "SPRITES_TOKEN".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +177,7 @@ pub fn load_global() -> Result<Config> {
         return Ok(Config {
             repo: Vec::new(),
             linear: None,
+            compute: None,
             http: None,
         });
     }
@@ -254,6 +302,49 @@ pub fn load_merged(local_path: &str) -> Result<Config> {
     Ok(merged)
 }
 
+/// Build a `ComputeProvider` from config.
+///
+/// Returns `LocalProvider` when no `[compute]` section or `backend = "local"`.
+/// Returns `SpritesProvider` when `backend = "sprites"` and token is available.
+#[allow(dead_code)] // Wired in rsry-e608bb (reconciler integration)
+pub fn compute_provider_from_config(
+    config: &Config,
+) -> Result<Box<dyn crate::backend::ComputeProvider>> {
+    let Some(compute) = &config.compute else {
+        return Ok(Box::new(crate::backend::LocalProvider));
+    };
+
+    match compute.backend.as_str() {
+        "local" | "" => Ok(Box::new(crate::backend::LocalProvider)),
+        "sprites" => {
+            let sprites_cfg = compute
+                .sprites
+                .as_ref()
+                .context("backend = \"sprites\" requires [compute.sprites] section")?;
+
+            let token = std::env::var(&sprites_cfg.token_env).with_context(|| {
+                format!(
+                    "sprites API token: set ${} or change compute.sprites.token_env",
+                    sprites_cfg.token_env
+                )
+            })?;
+
+            let client = if let Some(ref base_url) = sprites_cfg.base_url {
+                crate::sprites::SpritesClient::with_base_url(&token, base_url)?
+            } else {
+                crate::sprites::SpritesClient::new(&token)?
+            };
+
+            let provider = crate::sprites_provider::SpritesProvider::new(client)
+                .with_network_allowlist(sprites_cfg.network_allowlist.clone())
+                .with_checkpoints(sprites_cfg.checkpoint_on_complete);
+
+            Ok(Box::new(provider))
+        }
+        other => anyhow::bail!("unknown compute backend: \"{other}\" (available: local, sprites)"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +450,7 @@ path = "~/remotes/art/mache"
         let config = Config {
             repo: vec![entry],
             linear: None,
+            compute: None,
             http: None,
         };
         std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
@@ -451,12 +543,193 @@ path = "~/remotes/art/mache"
                 self_managed: false,
             }],
             linear: None,
+            compute: None,
             http: None,
         };
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: Config = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.repo[0].name, "test");
         assert_eq!(deserialized.repo[0].path, PathBuf::from("/tmp/test"));
+    }
+
+    #[test]
+    fn parse_compute_section_sprites() {
+        let toml = r#"
+[[repo]]
+name = "test"
+path = "/tmp/test"
+
+[compute]
+backend = "sprites"
+
+[compute.sprites]
+token_env = "MY_TOKEN"
+cpu = 4
+memory_mb = 8192
+network_allowlist = ["api.github.com", "api.linear.app"]
+checkpoint_on_complete = true
+fallback_to_local = false
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let compute = config.compute.unwrap();
+        assert_eq!(compute.backend, "sprites");
+
+        let sprites = compute.sprites.unwrap();
+        assert_eq!(sprites.token_env, "MY_TOKEN");
+        assert_eq!(sprites.cpu, Some(4));
+        assert_eq!(sprites.memory_mb, Some(8192));
+        assert_eq!(sprites.network_allowlist.len(), 2);
+        assert!(sprites.checkpoint_on_complete);
+        assert!(!sprites.fallback_to_local);
+    }
+
+    #[test]
+    fn parse_compute_section_local() {
+        let toml = r#"
+[[repo]]
+name = "test"
+path = "/tmp/test"
+
+[compute]
+backend = "local"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let compute = config.compute.unwrap();
+        assert_eq!(compute.backend, "local");
+        assert!(compute.sprites.is_none());
+    }
+
+    #[test]
+    fn parse_no_compute_section() {
+        let toml = r#"
+[[repo]]
+name = "test"
+path = "/tmp/test"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.compute.is_none());
+    }
+
+    #[test]
+    fn sprites_config_defaults() {
+        let toml = r#"
+[[repo]]
+name = "test"
+path = "/tmp/test"
+
+[compute]
+backend = "sprites"
+
+[compute.sprites]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let sprites = config.compute.unwrap().sprites.unwrap();
+        assert_eq!(sprites.token_env, "SPRITES_TOKEN");
+        assert!(sprites.base_url.is_none());
+        assert!(sprites.cpu.is_none());
+        assert!(sprites.memory_mb.is_none());
+        assert!(sprites.network_allowlist.is_empty());
+        assert!(!sprites.checkpoint_on_complete);
+        assert!(sprites.fallback_to_local); // default true
+    }
+
+    #[test]
+    fn compute_config_backend_defaults_to_local() {
+        let toml = r#"
+[[repo]]
+name = "test"
+path = "/tmp/test"
+
+[compute]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let compute = config.compute.unwrap();
+        assert_eq!(compute.backend, "local");
+    }
+
+    // -- compute_provider_from_config tests --
+
+    #[test]
+    fn provider_from_config_no_compute() {
+        let config = Config {
+            repo: vec![],
+            linear: None,
+            compute: None,
+            http: None,
+        };
+        let provider = compute_provider_from_config(&config).unwrap();
+        assert_eq!(provider.name(), "local");
+    }
+
+    #[test]
+    fn provider_from_config_local_explicit() {
+        let config = Config {
+            repo: vec![],
+            linear: None,
+            compute: Some(ComputeConfig {
+                backend: "local".into(),
+                sprites: None,
+            }),
+            http: None,
+        };
+        let provider = compute_provider_from_config(&config).unwrap();
+        assert_eq!(provider.name(), "local");
+    }
+
+    #[test]
+    fn provider_from_config_sprites_missing_section() {
+        let config = Config {
+            repo: vec![],
+            linear: None,
+            compute: Some(ComputeConfig {
+                backend: "sprites".into(),
+                sprites: None,
+            }),
+            http: None,
+        };
+        let result = compute_provider_from_config(&config);
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("[compute.sprites]"));
+    }
+
+    #[test]
+    fn provider_from_config_sprites_missing_token() {
+        let config = Config {
+            repo: vec![],
+            linear: None,
+            compute: Some(ComputeConfig {
+                backend: "sprites".into(),
+                sprites: Some(SpritesConfig {
+                    token_env: "NONEXISTENT_TOKEN_ENV_VAR_XYZ".into(),
+                    base_url: None,
+                    cpu: None,
+                    memory_mb: None,
+                    network_allowlist: vec![],
+                    checkpoint_on_complete: false,
+                    fallback_to_local: true,
+                }),
+            }),
+            http: None,
+        };
+        let result = compute_provider_from_config(&config);
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("NONEXISTENT_TOKEN_ENV_VAR_XYZ"));
+    }
+
+    #[test]
+    fn provider_from_config_unknown_backend() {
+        let config = Config {
+            repo: vec![],
+            linear: None,
+            compute: Some(ComputeConfig {
+                backend: "k8s".into(),
+                sprites: None,
+            }),
+            http: None,
+        };
+        let result = compute_provider_from_config(&config);
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("k8s"));
     }
 
     #[test]

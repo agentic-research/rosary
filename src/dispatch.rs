@@ -209,6 +209,9 @@ pub struct AgentHandle {
     pub child: tokio::process::Child,
     pub work_dir: PathBuf,
     pub started_at: chrono::DateTime<chrono::Utc>,
+    /// Workspace for this agent — owns the VCS isolation lifecycle.
+    #[allow(dead_code)] // consumed by reconciler teardown path
+    pub workspace: Option<crate::workspace::Workspace>,
 }
 
 impl AgentHandle {
@@ -286,39 +289,13 @@ Your prompt includes a Bead ID and Repo path. You MUST manage the bead:\n\
 3. If you cannot fix the issue, comment explaining why — do NOT close it\n\
 ";
 
-/// Create a jj workspace for isolated work. Returns the workspace path on success.
-///
-/// Uses `jj workspace add` for zero-cost isolation with shared object store
-/// instead of git worktrees.
-async fn create_worktree(repo_path: &Path, bead_id: &str) -> Result<PathBuf, ()> {
-    let workspace_name = format!("fix-{bead_id}");
-    let workspace_path = repo_path.join(format!("../fix/{bead_id}"));
-
-    let output = tokio::process::Command::new("jj")
-        .args([
-            "workspace",
-            "add",
-            &workspace_path.to_string_lossy(),
-            "--name",
-            &workspace_name,
-        ])
-        .current_dir(repo_path)
-        .output()
-        .await;
-
-    match output {
-        Ok(o) if o.status.success() => {
-            println!("Created workspace: {}", workspace_path.display());
-            Ok(workspace_path)
-        }
-        _ => Err(()),
-    }
-}
-
 /// Spawn an AI agent for a bead. Returns a handle without waiting.
 ///
 /// This is the async entry point for the reconciliation loop.
 /// The `provider` argument controls which AI backend is used.
+///
+/// Isolation uses `Workspace` which tries jj first, git worktree second,
+/// then falls back to in-place if neither is available.
 pub async fn spawn(
     bead: &Bead,
     repo_path: &Path,
@@ -327,16 +304,17 @@ pub async fn spawn(
     provider: &dyn AgentProvider,
 ) -> Result<AgentHandle> {
     let path = expand_path(repo_path);
-    let prompt = build_prompt(bead, &path.display().to_string());
+    let repo_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
 
-    let work_dir = if isolate {
-        create_worktree(&path, &bead.id).await.unwrap_or_else(|()| {
-            eprintln!("warning: worktree creation failed, running in-place");
-            path.clone()
-        })
-    } else {
-        path.clone()
-    };
+    let workspace = crate::workspace::Workspace::create(&bead.id, &repo_name, &path, isolate)
+        .await
+        .with_context(|| format!("creating workspace for {}", bead.id))?;
+
+    let work_dir = workspace.work_dir.clone();
+    let prompt = build_prompt(bead, &path.display().to_string());
 
     // Permissions come from the bead, not the provider.
     // TODO: read from bead.permissions field or schema config once available.
@@ -364,6 +342,7 @@ pub async fn spawn(
         child,
         work_dir,
         started_at: chrono::Utc::now(),
+        workspace: Some(workspace),
     })
 }
 

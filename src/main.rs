@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 mod acp;
+#[allow(dead_code)] // API surface — wired in rsry-e608bb (reconciler integration)
+mod backend;
 mod bead;
 mod config;
 mod dispatch;
@@ -18,11 +20,17 @@ mod queue;
 mod reconcile;
 mod scanner;
 mod serve;
+#[allow(dead_code)] // API surface — wired in rsry-e599fb (SpritesProvider)
+mod sprites;
+#[allow(dead_code)] // API surface — wired in rsry-e608bb (reconciler integration)
+mod sprites_provider;
 #[allow(dead_code)]
 mod sync;
 mod thread;
 mod vcs;
 mod verify;
+#[allow(dead_code)] // API surface — replaces dispatch.rs worktree logic
+mod workspace;
 
 #[derive(Parser)]
 #[command(

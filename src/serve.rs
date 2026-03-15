@@ -300,6 +300,7 @@ async fn tool_run_once(config_path: &str, dry_run: bool) -> Result<Value> {
         repo: cfg.repo,
         once: true,
         dry_run,
+        compute: cfg.compute,
         ..Default::default()
     };
 

@@ -34,6 +34,8 @@ pub struct ReconcilerConfig {
     pub provider: String,
     /// Overnight mode: prefer small/mechanical beads agents can complete.
     pub overnight: bool,
+    /// Compute provider config (from [compute] in rosary.toml).
+    pub compute: Option<crate::config::ComputeConfig>,
 }
 
 impl Default for ReconcilerConfig {
@@ -48,6 +50,7 @@ impl Default for ReconcilerConfig {
             dry_run: false,
             provider: "claude".to_string(),
             overnight: false,
+            compute: None,
         }
     }
 }
@@ -72,6 +75,8 @@ pub struct Reconciler {
     repo_info: HashMap<String, (PathBuf, String)>,
     /// Stash work_dir + repo when agent completes so verify_agent can find it
     completed_work_dirs: HashMap<String, (PathBuf, String)>,
+    /// Stash workspaces from completed agents for checkpoint + teardown
+    completed_workspaces: HashMap<String, crate::workspace::Workspace>,
     /// Dolt clients keyed by repo name, lazily connected
     dolt_clients: HashMap<String, DoltClient>,
     /// Resolved AI agent provider (claude, gemini, etc).
@@ -79,6 +84,8 @@ pub struct Reconciler {
     /// Optional external issue tracker (Linear, etc.) for status mirroring.
     /// When set, persist_status also pushes state transitions to the tracker.
     issue_tracker: Option<Box<dyn IssueTracker>>,
+    /// Compute provider for workspace provisioning (local, sprites, etc).
+    compute: Box<dyn crate::backend::ComputeProvider>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -128,6 +135,24 @@ impl Reconciler {
             dispatch::provider_by_name("claude").unwrap()
         });
 
+        // Build compute provider from config, fall back to local on failure.
+        let compute: Box<dyn crate::backend::ComputeProvider> = {
+            // Temporarily build a Config with just the compute field for the factory.
+            let tmp_cfg = crate::config::Config {
+                repo: vec![],
+                linear: None,
+                compute: config.compute.clone(),
+                http: None,
+            };
+            match crate::config::compute_provider_from_config(&tmp_cfg) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("[reconcile] compute provider failed ({e}), using local");
+                    Box::new(crate::backend::LocalProvider)
+                }
+            }
+        };
+
         Reconciler {
             config,
             queue: WorkQueue::new(),
@@ -135,9 +160,11 @@ impl Reconciler {
             trackers: HashMap::new(),
             repo_info,
             completed_work_dirs: HashMap::new(),
+            completed_workspaces: HashMap::new(),
             dolt_clients: HashMap::new(),
             provider,
             issue_tracker: None,
+            compute,
         }
     }
 
@@ -476,12 +503,16 @@ impl Reconciler {
             }
 
             if done {
-                let handle = self.active.remove(&bead_id).unwrap();
+                let mut handle = self.active.remove(&bead_id).unwrap();
                 let repo = self
                     .trackers
                     .get(&bead_id)
                     .map(|t| t.repo.clone())
                     .unwrap_or_default();
+                // Stash workspace for checkpoint + teardown
+                if let Some(ws) = handle.workspace.take() {
+                    self.completed_workspaces.insert(bead_id.clone(), ws);
+                }
                 self.completed_work_dirs
                     .insert(bead_id.clone(), (handle.work_dir, repo));
                 completed.push((bead_id, success));
@@ -651,19 +682,32 @@ impl Reconciler {
         if let Some(tracker) = self.trackers.get_mut(bead_id) {
             tracker.consecutive_reverts = 0;
         }
-        self.cleanup_worktree(bead_id);
+        self.cleanup_workspace(bead_id);
     }
 
-    /// Remove the jj workspace created for this bead.
-    fn cleanup_worktree(&self, bead_id: &str) {
-        let workspace_name = format!("fix-{bead_id}");
-        // Best-effort cleanup — don't block on failure
-        let _ = std::process::Command::new("jj")
-            .args(["workspace", "forget", &workspace_name])
-            .output();
-        // Remove the working copy directory
-        let workspace_dir = format!("../fix/{bead_id}");
-        let _ = std::fs::remove_dir_all(workspace_dir);
+    /// Clean up the workspace for a completed bead.
+    /// Delegates to workspace.rs cleanup functions to avoid duplication.
+    fn cleanup_workspace(&mut self, bead_id: &str) {
+        if let Some(ws) = self.completed_workspaces.remove(bead_id) {
+            eprintln!(
+                "[cleanup] {bead_id} workspace (vcs={:?}, compute={})",
+                ws.vcs,
+                self.compute.name()
+            );
+            match ws.vcs {
+                crate::workspace::VcsKind::Jj => {
+                    crate::workspace::cleanup_jj_workspace(&ws.repo_path, bead_id);
+                }
+                crate::workspace::VcsKind::Git => {
+                    crate::workspace::cleanup_git_worktree(&ws.repo_path, bead_id);
+                }
+                crate::workspace::VcsKind::None => {}
+            }
+        } else {
+            // Legacy fallback — try both VCS types
+            crate::workspace::cleanup_jj_workspace(std::path::Path::new("."), bead_id);
+            crate::workspace::cleanup_git_worktree(std::path::Path::new("."), bead_id);
+        }
     }
 
     /// Handle a verification failure. Returns true if deadlettered.
@@ -744,7 +788,7 @@ impl Reconciler {
             "[retry] {bead_id}: agent exited non-zero, retry #{} scheduled",
             tracker.retries
         );
-        self.cleanup_worktree(bead_id);
+        self.cleanup_workspace(bead_id);
 
         false
     }
@@ -798,6 +842,7 @@ pub async fn run(
         dry_run,
         provider: provider.to_string(),
         overnight,
+        compute: cfg.compute,
         ..Default::default()
     };
 
