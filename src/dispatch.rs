@@ -438,6 +438,37 @@ pub fn build_system_prompt(agent_name: Option<&str>, agents_dir: Option<&Path>) 
     parts.join("\n")
 }
 
+// ---------------------------------------------------------------------------
+// Agent pipeline — phase progression
+// ---------------------------------------------------------------------------
+
+/// The agent pipeline for a given issue type.
+pub fn agent_pipeline(issue_type: &str) -> &'static [&'static str] {
+    match issue_type {
+        "bug" => &["dev-agent", "staging-agent"],
+        "feature" => &["dev-agent", "staging-agent", "prod-agent"],
+        "task" | "chore" => &["dev-agent"],
+        "review" => &["staging-agent"],
+        "epic" | "design" | "research" => &["pm-agent"],
+        _ => &["dev-agent"],
+    }
+}
+
+/// The default (first) agent for a given issue type.
+pub fn default_agent(issue_type: &str) -> &'static str {
+    agent_pipeline(issue_type)
+        .first()
+        .copied()
+        .unwrap_or("dev-agent")
+}
+
+/// The next agent in the pipeline after `current`, or None if done.
+pub fn next_agent(issue_type: &str, current: &str) -> Option<&'static str> {
+    let pipeline = agent_pipeline(issue_type);
+    let idx = pipeline.iter().position(|&a| a == current)?;
+    pipeline.get(idx + 1).copied()
+}
+
 /// Resolve agents_dir from config by finding the self-managed repo.
 pub fn resolve_agents_dir() -> Option<PathBuf> {
     let cfg = crate::config::load_global().ok()?;
@@ -680,6 +711,8 @@ mod tests {
             pr_url: None,
             jj_change_id: None,
             external_ref: None,
+            files: Vec::new(),
+            test_files: Vec::new(),
         };
 
         let prompt = build_prompt(&bead, "/tmp/test-repo");
@@ -855,5 +888,40 @@ mod tests {
         assert!(prompt.contains("rosary-dispatched agent"));
         assert!(prompt.contains("Golden Rules"));
         assert!(!prompt.contains("Agent Perspective"));
+    }
+
+    #[test]
+    fn pipeline_bug() {
+        assert_eq!(agent_pipeline("bug"), &["dev-agent", "staging-agent"]);
+    }
+
+    #[test]
+    fn pipeline_feature() {
+        assert_eq!(
+            agent_pipeline("feature"),
+            &["dev-agent", "staging-agent", "prod-agent"]
+        );
+    }
+
+    #[test]
+    fn pipeline_task() {
+        assert_eq!(agent_pipeline("task"), &["dev-agent"]);
+    }
+
+    #[test]
+    fn default_agent_maps_issue_type() {
+        assert_eq!(default_agent("bug"), "dev-agent");
+        assert_eq!(default_agent("review"), "staging-agent");
+        assert_eq!(default_agent("epic"), "pm-agent");
+        assert_eq!(default_agent("xyz"), "dev-agent");
+    }
+
+    #[test]
+    fn next_agent_advances() {
+        assert_eq!(next_agent("bug", "dev-agent"), Some("staging-agent"));
+        assert_eq!(next_agent("bug", "staging-agent"), None);
+        assert_eq!(next_agent("feature", "staging-agent"), Some("prod-agent"));
+        assert_eq!(next_agent("task", "dev-agent"), None);
+        assert_eq!(next_agent("bug", "unknown"), None);
     }
 }

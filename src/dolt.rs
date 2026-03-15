@@ -203,6 +203,8 @@ impl DoltClient {
                 pr_url: None,
                 jj_change_id: None,
                 external_ref: row.try_get("external_ref").ok(),
+                files: Vec::new(),
+                test_files: Vec::new(),
             })
             .collect();
 
@@ -245,6 +247,8 @@ impl DoltClient {
             branch: None,
             pr_url: None,
             jj_change_id: None,
+            files: Vec::new(),
+            test_files: Vec::new(),
         }))
     }
 
@@ -256,6 +260,17 @@ impl DoltClient {
             .execute(&self.pool)
             .await
             .with_context(|| format!("updating status for {id}"))?;
+        Ok(())
+    }
+
+    /// Update a bead's assignee (owner).
+    pub async fn set_assignee(&self, id: &str, assignee: &str) -> Result<()> {
+        query("UPDATE issues SET assignee = ?, updated_at = NOW() WHERE id = ?")
+            .bind(assignee)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("setting assignee for {id}"))?;
         Ok(())
     }
 
@@ -290,6 +305,21 @@ impl DoltClient {
         .execute(&self.pool)
         .await
         .with_context(|| format!("creating bead {id}"))?;
+        Ok(())
+    }
+
+    /// Set files and test_files on a bead. Stored as JSON in the notes column.
+    pub async fn set_files(&self, id: &str, files: &[String], test_files: &[String]) -> Result<()> {
+        let file_json = serde_json::json!({
+            "files": files,
+            "test_files": test_files,
+        });
+        query("UPDATE issues SET notes = ?, updated_at = NOW() WHERE id = ?")
+            .bind(file_json.to_string())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("setting files for {id}"))?;
         Ok(())
     }
 
@@ -357,6 +387,8 @@ impl DoltClient {
                 pr_url: None,
                 jj_change_id: None,
                 external_ref: row.try_get("external_ref").ok(),
+                files: Vec::new(),
+                test_files: Vec::new(),
             })
             .collect();
 
@@ -440,6 +472,8 @@ impl DoltClient {
                 pr_url: None,
                 jj_change_id: None,
                 external_ref: row.try_get("external_ref").ok(),
+                files: Vec::new(),
+                test_files: Vec::new(),
             })
             .collect();
 

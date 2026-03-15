@@ -143,7 +143,10 @@ fn tool_definitions() -> Value {
                         "title": { "type": "string", "description": "Bead title" },
                         "description": { "type": "string", "description": "Bead description", "default": "" },
                         "priority": { "type": "integer", "description": "Priority 0-3 (0=P0 highest)", "default": 2 },
-                        "issue_type": { "type": "string", "description": "Issue type (bug, task, feature, review, epic)", "default": "task" }
+                        "issue_type": { "type": "string", "description": "Issue type (bug, task, feature, review, epic)", "default": "task" },
+                        "owner": { "type": "string", "description": "Agent owner (dev-agent, staging-agent, etc.). Auto-assigned from issue_type if omitted." },
+                        "files": { "type": "array", "items": { "type": "string" }, "description": "Source files this bead touches (scopes agent dispatch)" },
+                        "test_files": { "type": "array", "items": { "type": "string" }, "description": "Test files to validate the change" }
                     },
                     "required": ["repo_path", "title"]
                 }
@@ -413,19 +416,25 @@ async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
     let description = args["description"].as_str().unwrap_or("");
     let priority = args["priority"].as_u64().unwrap_or(2) as u8;
     let issue_type = args["issue_type"].as_str().unwrap_or("task");
+    let owner = args
+        .get("owner")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| crate::dispatch::default_agent(issue_type));
 
     let client = get_client(repo_path, pool).await?;
+    let repo_name = repo_name_from_path(repo_path);
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let id = format!("rsry-{:06x}", millis & 0xffffff);
+    let id = format!("{repo_name}-{:06x}", millis & 0xffffff);
 
     client
         .create_bead(&id, title, description, priority, issue_type)
         .await?;
+    client.set_assignee(&id, owner).await?;
 
-    Ok(json!({ "id": id, "title": title, "priority": priority }))
+    Ok(json!({ "id": id, "title": title, "priority": priority, "owner": owner }))
 }
 
 async fn tool_bead_close(args: &Value, pool: &RepoPool) -> Result<Value> {
@@ -539,6 +548,8 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
 
     Ok(json!({
         "bead_id": bead_id,
+        "title": bead.title,
+        "external_ref": bead.external_ref,
         "status": "dispatched",
         "provider": provider_name,
         "agent": agent_label,

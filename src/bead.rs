@@ -160,6 +160,12 @@ pub struct Bead {
     /// External reference for cross-repo tracking (e.g., "kiln:ll-packaging").
     /// Format: "repo_name:label" — repo_name maps to a repo in rosary.toml.
     pub external_ref: Option<String>,
+    /// Source files this bead touches (scopes agent dispatch).
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// Test files to validate the change.
+    #[serde(default)]
+    pub test_files: Vec<String>,
 }
 
 impl Bead {
@@ -237,6 +243,24 @@ impl Bead {
                 .get("external_ref")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
+            files: value
+                .get("files")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            test_files: value
+                .get("test_files")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 

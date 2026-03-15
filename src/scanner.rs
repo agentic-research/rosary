@@ -200,6 +200,8 @@ mod tests {
             pr_url: None,
             jj_change_id: None,
             external_ref: None,
+            files: Vec::new(),
+            test_files: Vec::new(),
         }
     }
 

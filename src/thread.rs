@@ -152,6 +152,8 @@ mod tests {
             pr_url: None,
             jj_change_id: None,
             external_ref: ext_ref.map(|s| s.to_string()),
+            files: Vec::new(),
+            test_files: Vec::new(),
         }
     }
 

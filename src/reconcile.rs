@@ -284,6 +284,24 @@ impl Reconciler {
             thread::sync_external_refs(&ext_refs, &self.dolt_clients, &beads).await;
         }
 
+        // Phase 1.75: AUTO-ASSIGN — set owner on beads without one
+        for bead in &beads {
+            if bead.owner.is_some() || bead.status == "closed" || bead.status == "done" {
+                continue;
+            }
+            let agent = dispatch::default_agent(&bead.issue_type);
+            if let Some(client) = self.dolt_client(&bead.repo).await {
+                if let Err(e) = client.set_assignee(&bead.id, agent).await {
+                    eprintln!("[assign] failed for {}: {e}", bead.id);
+                } else {
+                    eprintln!(
+                        "[assign] {} → {} (issue_type={})",
+                        bead.id, agent, bead.issue_type
+                    );
+                }
+            }
+        }
+
         // Phase 2: CHECK COMPLETED — poll active agents
         let completed = self.check_completed();
         summary.completed = completed.len();
@@ -442,6 +460,7 @@ impl Reconciler {
         // Phase 5: VERIFY completed agents
         // Runs after dispatch so new agents execute in parallel with verification.
         let mut status_updates: Vec<(String, String, String)> = Vec::new();
+        let mut phase_advances: Vec<(String, String, String)> = Vec::new();
 
         for (bead_id, exit_success) in &completed {
             let repo = self
@@ -449,6 +468,11 @@ impl Reconciler {
                 .get(bead_id.as_str())
                 .map(|t| t.repo.clone())
                 .unwrap_or_default();
+
+            let bead_info = beads
+                .iter()
+                .find(|b| b.id == *bead_id)
+                .map(|b| (b.issue_type.clone(), b.owner.clone()));
 
             // Agent-first fast path: if the agent already closed the bead via
             // MCP, skip verification entirely. This is the main throughput win —
@@ -458,6 +482,12 @@ impl Reconciler {
                 summary.agent_closed += 1;
                 summary.passed += 1;
                 self.on_pass(bead_id);
+
+                if let Some((ref issue_type, Some(ref current_agent))) = bead_info
+                    && let Some(next) = dispatch::next_agent(issue_type, current_agent)
+                {
+                    phase_advances.push((bead_id.clone(), repo.clone(), next.to_string()));
+                }
                 continue;
             }
 
@@ -467,7 +497,20 @@ impl Reconciler {
                     Some(vs) if vs.passed() => {
                         summary.passed += 1;
                         self.on_pass(bead_id);
-                        status_updates.push((bead_id.clone(), repo, "closed".into()));
+
+                        if let Some((ref issue_type, Some(ref current_agent))) = bead_info {
+                            if let Some(next) = dispatch::next_agent(issue_type, current_agent) {
+                                phase_advances.push((
+                                    bead_id.clone(),
+                                    repo.clone(),
+                                    next.to_string(),
+                                ));
+                            } else {
+                                status_updates.push((bead_id.clone(), repo, "closed".into()));
+                            }
+                        } else {
+                            status_updates.push((bead_id.clone(), repo, "closed".into()));
+                        }
                     }
                     Some(vs) => {
                         summary.failed += 1;
@@ -480,10 +523,22 @@ impl Reconciler {
                         }
                     }
                     None => {
-                        // No verifier available (unknown repo) — treat as pass
                         summary.passed += 1;
                         self.on_pass(bead_id);
-                        status_updates.push((bead_id.clone(), repo, "closed".into()));
+
+                        if let Some((ref issue_type, Some(ref current_agent))) = bead_info {
+                            if let Some(next) = dispatch::next_agent(issue_type, current_agent) {
+                                phase_advances.push((
+                                    bead_id.clone(),
+                                    repo.clone(),
+                                    next.to_string(),
+                                ));
+                            } else {
+                                status_updates.push((bead_id.clone(), repo, "closed".into()));
+                            }
+                        } else {
+                            status_updates.push((bead_id.clone(), repo, "closed".into()));
+                        }
                     }
                 }
             } else {
@@ -502,6 +557,21 @@ impl Reconciler {
         // Persist state transitions to Dolt (best-effort)
         for (bead_id, repo, status) in &status_updates {
             self.persist_status(bead_id, repo, status).await;
+        }
+
+        // Phase advancement: update owner + reopen for next agent
+        for (bead_id, repo, next_agent) in &phase_advances {
+            if let Some(client) = self.dolt_client(repo).await {
+                client
+                    .log_event(bead_id, "phase_complete", &format!("→ {next_agent}"))
+                    .await;
+                if let Err(e) = client.set_assignee(bead_id, next_agent).await {
+                    eprintln!("[phase] failed to advance {bead_id}: {e}");
+                } else {
+                    println!("[phase] {bead_id} → {next_agent}");
+                }
+            }
+            self.persist_status(bead_id, repo, "open").await;
         }
 
         Ok(summary)
@@ -1045,6 +1115,8 @@ mod tests {
             pr_url: None,
             jj_change_id: None,
             external_ref: None,
+            files: Vec::new(),
+            test_files: Vec::new(),
         };
 
         let config = ReconcilerConfig::default();
@@ -1198,6 +1270,8 @@ mod tests {
             dependent_count: 0,
             comment_count: 0,
             external_ref: None,
+            files: Vec::new(),
+            test_files: Vec::new(),
             branch: None,
             pr_url: None,
             jj_change_id: None,

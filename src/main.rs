@@ -191,6 +191,12 @@ enum BeadAction {
         /// Issue type
         #[arg(short = 't', long, default_value = "task")]
         issue_type: String,
+        /// Source files this bead touches (comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        files: Vec<String>,
+        /// Test files to validate the change (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        test_files: Vec<String>,
     },
     /// Close a bead
     Close {
@@ -213,14 +219,14 @@ enum BeadAction {
     },
 }
 
-/// Generate a bead ID from the current timestamp.
-/// Format: `rsry-{lower 6 hex chars of millis}` (~16M values before collision).
-fn generate_bead_id() -> String {
+/// Generate a bead ID from the current timestamp with a repo-specific prefix.
+/// Format: `{prefix}-{lower 6 hex chars of millis}` (~16M values before collision).
+fn generate_bead_id(prefix: &str) -> String {
     let millis = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .expect("system clock before UNIX epoch")
         .as_millis();
-    format!("rsry-{:06x}", millis & 0xffffff)
+    format!("{prefix}-{:06x}", millis & 0xffffff)
 }
 
 fn daemon_pid_path() -> PathBuf {
@@ -486,11 +492,15 @@ async fn main() -> Result<()> {
                 let beads_dir = repo_root.join(".beads");
                 let dolt_config = dolt::DoltConfig::from_beads_dir(&beads_dir)?;
                 let client = dolt::DoltClient::connect(&dolt_config).await?;
+                let decompose_repo_name = repo_root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| repo.clone());
 
                 let mut created = 0;
                 for thread in &decade.threads {
                     for spec in &thread.beads {
-                        let id = generate_bead_id();
+                        let id = generate_bead_id(&decompose_repo_name);
                         client
                             .create_bead(
                                 &id,
@@ -533,11 +543,16 @@ async fn main() -> Result<()> {
                     description,
                     priority,
                     issue_type,
+                    files,
+                    test_files,
                 } => {
-                    let id = generate_bead_id();
+                    let id = generate_bead_id(&repo_name);
                     client
                         .create_bead(&id, &title, &description, priority, &issue_type)
                         .await?;
+                    if !files.is_empty() || !test_files.is_empty() {
+                        client.set_files(&id, &files, &test_files).await?;
+                    }
                     cli::bead_created(&id, &title);
                 }
                 BeadAction::Close { id } => {
@@ -575,6 +590,8 @@ mod tests {
             description: "It is broken".to_string(),
             priority: 1,
             issue_type: "bug".to_string(),
+            files: vec!["src/widget.rs".to_string()],
+            test_files: vec![],
         };
         assert!(matches!(create, BeadAction::Create { priority: 1, .. }));
 
@@ -594,15 +611,14 @@ mod tests {
     }
 
     #[test]
-    fn generate_bead_id_format() {
-        let id = generate_bead_id();
-        // Must start with "rsry-"
+    fn generate_bead_id_uses_repo_prefix() {
+        let id = generate_bead_id("mache");
         assert!(
-            id.starts_with("rsry-"),
-            "id should start with 'rsry-': {id}"
+            id.starts_with("mache-"),
+            "id should start with 'mache-': {id}"
         );
         // Suffix must be exactly 6 hex characters
-        let suffix = &id["rsry-".len()..];
+        let suffix = &id["mache-".len()..];
         assert_eq!(suffix.len(), 6, "suffix should be 6 chars: {suffix}");
         assert!(
             suffix.chars().all(|c| c.is_ascii_hexdigit()),
@@ -611,13 +627,10 @@ mod tests {
     }
 
     #[test]
-    fn generate_bead_id_is_deterministic_within_millis() {
-        // Two calls in quick succession should produce the same ID
-        // (timestamp millis resolution means sub-ms calls collide)
-        let id1 = generate_bead_id();
-        let id2 = generate_bead_id();
-        // Both should be valid format regardless
-        assert!(id1.starts_with("rsry-"));
-        assert!(id2.starts_with("rsry-"));
+    fn generate_bead_id_different_repos() {
+        let id1 = generate_bead_id("rosary");
+        let id2 = generate_bead_id("mache");
+        assert!(id1.starts_with("rosary-"));
+        assert!(id2.starts_with("mache-"));
     }
 }
