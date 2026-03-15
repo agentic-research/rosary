@@ -38,37 +38,6 @@ async fn read_beads(beads_dir: &std::path::Path, repo_name: &str) -> Result<Vec<
     client.list_beads(repo_name).await
 }
 
-pub fn print_status(beads: &[Bead]) {
-    let open = beads.iter().filter(|b| b.status == "open").count();
-    let in_progress = beads.iter().filter(|b| b.status == "in_progress").count();
-    let blocked = beads
-        .iter()
-        .filter(|b| b.dependency_count > 0 && b.status == "open")
-        .count();
-    let ready = beads.iter().filter(|b| b.is_ready()).count();
-
-    println!("Across {} repos:", count_repos(beads));
-    println!("  Open:        {open}");
-    println!("  Ready:       {ready}");
-    println!("  In Progress: {in_progress}");
-    println!("  Blocked:     {blocked}");
-    println!();
-
-    if ready > 0 {
-        println!("Ready to work:");
-        for b in beads.iter().filter(|b| b.is_ready()).take(10) {
-            println!("  {} [P{}] {} — {}", b.repo, b.priority, b.id, b.title);
-        }
-    }
-}
-
-fn count_repos(beads: &[Bead]) -> usize {
-    let mut repos: Vec<&str> = beads.iter().map(|b| b.repo.as_str()).collect();
-    repos.sort();
-    repos.dedup();
-    repos.len()
-}
-
 pub fn expand_path(path: &std::path::Path) -> std::path::PathBuf {
     let s = path.to_string_lossy();
     if s.starts_with('~')

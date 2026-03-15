@@ -7,6 +7,7 @@ mod acp;
 #[allow(dead_code)] // API surface — wired in rsry-e608bb (reconciler integration)
 mod backend;
 mod bead;
+mod cli;
 mod config;
 mod dispatch;
 mod dolt;
@@ -50,6 +51,9 @@ enum Command {
         /// Config file listing repos to scan
         #[arg(short, long, default_value = "rosary.toml")]
         config: String,
+        /// Filter to specific repos (comma-separated)
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// Decompose a Linear ticket into repo-scoped beads (top-down planning)
     Plan {
@@ -61,9 +65,16 @@ enum Command {
         /// Preview changes without executing
         #[arg(long)]
         dry_run: bool,
+        /// Filter to specific repos (comma-separated)
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// Show aggregated status across all repos
-    Status,
+    Status {
+        /// Filter to specific repos (comma-separated)
+        #[arg(long)]
+        repo: Option<String>,
+    },
     /// Dispatch a bead to a Claude Code agent in an isolated worktree
     Dispatch {
         /// Bead ID to work on
@@ -254,33 +265,57 @@ fn resolve_config(config: &str) -> String {
     }
 }
 
+/// Parse a comma-separated repo filter into a set of repo names.
+fn parse_repo_filter(filter: &Option<String>) -> Option<Vec<String>> {
+    filter.as_ref().map(|f| {
+        f.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    })
+}
+
+/// Filter repo configs to only those matching the filter.
+fn filter_repos(
+    repos: &[config::RepoConfig],
+    filter: &Option<Vec<String>>,
+) -> Vec<config::RepoConfig> {
+    match filter {
+        Some(names) => repos
+            .iter()
+            .filter(|r| names.contains(&r.name))
+            .cloned()
+            .collect(),
+        None => repos.to_vec(),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Scan { config } => {
+        Command::Scan { config, repo } => {
             let cfg = config::load_merged(&resolve_config(&config))?;
-            let beads = scanner::scan_repos(&cfg.repo).await?;
-            println!(
-                "Found {} beads across {} repos",
-                beads.len(),
-                cfg.repo.len()
-            );
-            for b in &beads {
-                println!("  {} [{}] {} — {}", b.repo, b.status, b.id, b.title);
-            }
+            let repo_filter = parse_repo_filter(&repo);
+            let repos = filter_repos(&cfg.repo, &repo_filter);
+            let beads = scanner::scan_repos(&repos).await?;
+            cli::scan_summary(&beads);
         }
         Command::Plan { ticket } => {
             linear::plan(&ticket).await?;
         }
-        Command::Sync { dry_run } => {
-            linear::sync(dry_run).await?;
+        Command::Sync { dry_run, repo } => {
+            let repo_filter = parse_repo_filter(&repo);
+            linear::sync(dry_run, repo_filter.as_deref()).await?;
         }
-        Command::Status => {
+        Command::Status { repo } => {
             let cfg = config::load_merged(&config::resolve_config_path())?;
-            let beads = scanner::scan_repos(&cfg.repo).await?;
-            scanner::print_status(&beads);
+            let repo_filter = parse_repo_filter(&repo);
+            let repos = filter_repos(&cfg.repo, &repo_filter);
+            let beads = scanner::scan_repos(&repos).await?;
+            cli::print_status_summary(&beads);
+            cli::print_ready_beads(&beads, 10);
         }
         Command::Dispatch {
             bead_id,
@@ -328,7 +363,7 @@ async fn main() -> Result<()> {
             overnight,
         } => {
             if let Some(pid) = read_daemon_pid() {
-                println!("Daemon already running (PID {pid})");
+                cli::daemon_already_running(pid);
                 return Ok(());
             }
 
@@ -362,7 +397,7 @@ async fn main() -> Result<()> {
 
             let pid = child.id();
             std::fs::write(daemon_pid_path(), pid.to_string())?;
-            println!("Daemon started (PID {pid}), log: {}", log_path.display());
+            cli::daemon_started(pid, &log_path.to_string_lossy());
         }
         Command::Stop => {
             if let Some(pid) = read_daemon_pid() {
@@ -370,7 +405,7 @@ async fn main() -> Result<()> {
                     libc::kill(pid as i32, libc::SIGTERM);
                 }
                 let _ = std::fs::remove_file(daemon_pid_path());
-                println!("Stopped daemon (PID {pid})");
+                cli::daemon_stopped(pid);
             } else {
                 println!("No daemon running");
             }
@@ -391,10 +426,10 @@ async fn main() -> Result<()> {
         }
         Command::Enable { path } => {
             let entry = config::enable_repo(Path::new(&path))?;
-            println!("Enabled: {} ({})", entry.name, entry.path.display());
+            cli::repo_enabled(&entry.name, &entry.path.to_string_lossy());
         }
         Command::Disable { name_or_path } => match config::disable_repo(&name_or_path)? {
-            Some(name) => println!("Disabled: {name}"),
+            Some(name) => cli::repo_disabled(&name),
             None => println!("Not found: {name_or_path}"),
         },
         Command::Decompose {
@@ -421,22 +456,24 @@ async fn main() -> Result<()> {
 
             let decade = bdr::thread::build_decade(&path, &adr_title, &atoms);
 
-            println!("Decade: {} ({})", decade.title, decade.id);
-            println!("Status: {:?}", decade.status);
-            println!("Threads: {}", decade.threads.len());
+            cli::decompose_decade(
+                &decade.title,
+                &decade.id,
+                &format!("{:?}", decade.status),
+                decade.threads.len(),
+            );
             for thread in &decade.threads {
-                println!("\n  {} ({} beads)", thread.name, thread.beads.len());
+                cli::decompose_thread(&thread.name, thread.beads.len());
                 for bead_spec in &thread.beads {
-                    println!(
-                        "    [{}] {} ({}, P{})",
-                        bead_spec.channel,
-                        bead_spec.title,
-                        bead_spec.issue_type,
-                        bead_spec.priority
+                    cli::decompose_bead(
+                        &bead_spec.channel.to_string(),
+                        &bead_spec.title,
+                        &bead_spec.issue_type,
+                        bead_spec.priority,
                     );
                 }
                 if !thread.cross_repo_refs.is_empty() {
-                    println!("    refs: {}", thread.cross_repo_refs.join(", "));
+                    cli::decompose_refs(&thread.cross_repo_refs);
                 }
             }
 
@@ -466,9 +503,13 @@ async fn main() -> Result<()> {
                         created += 1;
                     }
                 }
-                println!("\nCreated {created} beads in {}", repo_root.display());
+                cli::decompose_summary(created, &repo_root.to_string_lossy());
             } else {
-                println!("\n(dry run — no beads created)");
+                println!();
+                println!(
+                    "  {}",
+                    owo_colors::OwoColorize::dimmed(&"(dry run — no beads created)")
+                );
             }
         }
         Command::Bead { action, repo } => {
@@ -497,37 +538,23 @@ async fn main() -> Result<()> {
                     client
                         .create_bead(&id, &title, &description, priority, &issue_type)
                         .await?;
-                    println!("Created bead {id}: {title}");
+                    cli::bead_created(&id, &title);
                 }
                 BeadAction::Close { id } => {
                     client.close_bead(&id).await?;
-                    println!("Closed bead {id}");
+                    cli::bead_closed(&id);
                 }
                 BeadAction::List => {
                     let beads = client.list_beads(&repo_name).await?;
-                    if beads.is_empty() {
-                        println!("No open beads.");
-                    } else {
-                        for b in &beads {
-                            println!("  [P{}] {} — {}", b.priority, b.id, b.title);
-                        }
-                        println!("{} open bead(s)", beads.len());
-                    }
+                    cli::bead_list(&beads);
                 }
                 BeadAction::Comment { id, body } => {
                     client.add_comment(&id, &body, "rsry").await?;
-                    println!("Added comment to {id}");
+                    cli::bead_commented(&id);
                 }
                 BeadAction::Search { query } => {
                     let beads = client.search_beads(&query, &repo_name).await?;
-                    if beads.is_empty() {
-                        println!("No beads matching '{query}'");
-                    } else {
-                        for b in &beads {
-                            println!("  [P{}] {} — {}", b.priority, b.id, b.title);
-                        }
-                        println!("{} result(s)", beads.len());
-                    }
+                    cli::bead_search_results(&beads, &query);
                 }
             }
         }
