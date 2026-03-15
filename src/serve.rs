@@ -548,6 +548,8 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
             pid: handle.pid(),
             work_dir: handle.work_dir.to_string_lossy().to_string(),
             started_at: chrono::Utc::now(),
+            title: bead.title.clone(),
+            agent: agent_label.to_string(),
         })
         .ok();
 
@@ -571,6 +573,8 @@ async fn tool_active() -> Result<Value> {
         .map(|s| {
             json!({
                 "bead_id": s.bead_id,
+                "title": s.title,
+                "agent": s.agent,
                 "repo": s.repo,
                 "provider": s.provider,
                 "pid": s.pid,

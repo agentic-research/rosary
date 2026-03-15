@@ -16,6 +16,10 @@ pub struct SessionEntry {
     pub pid: Option<u32>,
     pub work_dir: String,
     pub started_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub agent: String,
 }
 
 /// File-based session registry at `~/.rsry/sessions.json`.
@@ -106,6 +110,8 @@ mod tests {
             pid: Some(std::process::id()), // current process — alive
             work_dir: "/tmp/test".into(),
             started_at: chrono::Utc::now(),
+            title: String::new(),
+            agent: String::new(),
         });
         assert_eq!(reg.active().len(), 1);
         assert_eq!(reg.active()[0].bead_id, "rsry-abc");
@@ -121,6 +127,8 @@ mod tests {
             pid: Some(1),
             work_dir: "/tmp/test".into(),
             started_at: chrono::Utc::now(),
+            title: String::new(),
+            agent: String::new(),
         });
         reg.sessions.retain(|s| s.bead_id != "rsry-abc");
         assert!(reg.active().is_empty());
@@ -147,6 +155,8 @@ mod tests {
                 pid: Some(42),
                 work_dir: "/tmp/test".into(),
                 started_at: chrono::Utc::now(),
+                title: "Test bead".into(),
+                agent: "dev-agent".into(),
             }],
         };
         let json = serde_json::to_string(&reg).unwrap();
