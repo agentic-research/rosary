@@ -35,14 +35,20 @@ defmodule Conductor do
 
   alias Conductor.{AgentSupervisor, Orchestrator, Pipeline, RsryClient}
 
-  @doc "Current status: connected?, active agents, etc."
+  @doc "Current status: connected?, active agents, orchestrator state."
   def status do
     %{
       connected: safe_call(fn -> RsryClient.connected?() end, false),
       active_agents: safe_call(fn -> AgentSupervisor.active_count() end, 0),
-      orchestrator: Process.whereis(Orchestrator) != nil
+      orchestrator: safe_call(fn -> Orchestrator.running?() end, false)
     }
   end
+
+  @doc "Start the orchestrator's dispatch loop."
+  def start, do: Orchestrator.start_dispatching()
+
+  @doc "Pause the orchestrator (running agents continue)."
+  def pause, do: Orchestrator.pause()
 
   @doc """
   Manually dispatch a bead (bypasses orchestrator triage).
