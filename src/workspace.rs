@@ -388,6 +388,45 @@ mod tests {
         assert_eq!(provisions[0].bead_id, "test-1");
     }
 
+    /// Regression: git worktree must branch from HEAD, not an orphan.
+    /// Bug: worktree only had .beads/ bd init commit, no source code.
+    #[tokio::test]
+    async fn git_worktree_has_source_code_not_just_beads() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path();
+
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        std::fs::write(repo.join("src.rs"), "fn main() {}").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+
+        // Simulate .beads/ (Dolt creates its own git repo inside)
+        std::fs::create_dir_all(repo.join(".beads").join("dolt")).unwrap();
+
+        let wt_path = create_git_worktree(repo, "test-regression").await;
+        assert!(wt_path.is_ok(), "worktree creation should succeed");
+        let wt_path = wt_path.unwrap();
+
+        assert!(
+            wt_path.join("src.rs").exists(),
+            "worktree must contain source files from HEAD, not just .beads/"
+        );
+
+        cleanup_git_worktree(repo, "test-regression");
+    }
+
     #[tokio::test]
     async fn workspace_exec_without_provision_uses_local() {
         let tmp = tempfile::TempDir::new().unwrap();

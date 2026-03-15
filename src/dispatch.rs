@@ -165,8 +165,8 @@ impl AgentProvider for ClaudeProvider {
                 "json",
             ])
             .current_dir(work_dir)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
             .spawn()
             .with_context(|| format!("spawning claude CLI in {}", work_dir.display()))?;
         Ok(Box::new(CliSession::new(child)))
@@ -210,8 +210,8 @@ impl AgentProvider for GeminiProvider {
         }
         let child = cmd
             .current_dir(work_dir)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
             .spawn()
             .with_context(|| format!("spawning gemini CLI in {}", work_dir.display()))?;
         Ok(Box::new(CliSession::new(child)))
@@ -249,8 +249,8 @@ impl AgentProvider for AcpCliProvider {
         let child = tokio::process::Command::new(&self.binary)
             .current_dir(work_dir)
             .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
             .spawn()
             .with_context(|| format!("spawning ACP agent: {}", self.binary))?;
         Ok(Box::new(CliSession::new(child)))
