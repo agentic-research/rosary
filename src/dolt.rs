@@ -168,14 +168,20 @@ impl DoltClient {
     /// List all open issues as Beads.
     pub async fn list_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
         let rows = query(
-            r#"SELECT id, title, description, status, priority, issue_type,
-                      assignee, external_ref, created_at, updated_at,
-                      (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
-                      (SELECT COUNT(*) FROM dependencies d WHERE d.issue_id = i.id) as dependency_count,
-                      (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
+            r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
+                      i.assignee, i.external_ref, i.created_at, i.updated_at,
+                      COALESCE(dep.cnt, 0) as dep_count,
+                      COALESCE(deps.cnt, 0) as dependency_count,
+                      COALESCE(cmt.cnt, 0) as comment_count
                FROM issues i
-               WHERE status != 'closed'
-               ORDER BY priority ASC, created_at DESC"#,
+               LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
+                    ON dep.depends_on_id = i.id
+               LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM dependencies GROUP BY issue_id) deps
+                    ON deps.issue_id = i.id
+               LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
+                    ON cmt.issue_id = i.id
+               WHERE i.status != 'closed'
+               ORDER BY i.priority ASC, i.created_at DESC"#,
         )
         .fetch_all(&self.pool)
         .await
@@ -350,14 +356,21 @@ impl DoltClient {
     pub async fn search_beads(&self, query_str: &str, repo_name: &str) -> Result<Vec<Bead>> {
         let pattern = format!("%{query_str}%");
         let rows = query(
-            r#"SELECT id, title, description, status, priority, issue_type,
-                      assignee, external_ref, created_at, updated_at,
-                      (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
-                      (SELECT COUNT(*) FROM dependencies d WHERE d.issue_id = i.id) as dependency_count,
-                      (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
+            r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
+                      i.assignee, i.external_ref, i.created_at, i.updated_at,
+                      COALESCE(dep.cnt, 0) as dep_count,
+                      COALESCE(deps.cnt, 0) as dependency_count,
+                      COALESCE(cmt.cnt, 0) as comment_count
                FROM issues i
-               WHERE title LIKE ? OR description LIKE ?
-               ORDER BY priority ASC, created_at DESC"#,
+               LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
+                    ON dep.depends_on_id = i.id
+               LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM dependencies GROUP BY issue_id) deps
+                    ON deps.issue_id = i.id
+               LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
+                    ON cmt.issue_id = i.id
+               WHERE i.title LIKE ? OR i.description LIKE ?
+               ORDER BY i.priority ASC, i.created_at DESC
+               LIMIT 50"#,
         )
         .bind(&pattern)
         .bind(&pattern)
