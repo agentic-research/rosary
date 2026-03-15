@@ -651,7 +651,8 @@ fn handle_initialize(id: Value) -> JsonRpcResponse {
             },
             "serverInfo": {
                 "name": "rosary",
-                "version": env!("CARGO_PKG_VERSION")
+                "version": env!("CARGO_PKG_VERSION"),
+                "buildHash": env!("RSRY_BUILD_HASH")
             }
         }),
     )
@@ -1128,15 +1129,32 @@ async fn run_stdio(config_path: &str) -> Result<()> {
     let reader = BufReader::new(stdin);
     let mut lines = reader.lines();
 
+    // SIGHUP → graceful exit so Claude Code restarts with the new binary after `task install`
+    let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .context("registering SIGHUP handler")?;
+
     // Create connection pool on startup — reused across all tool calls
     let pool = RepoPool::from_config(config_path).await?;
     eprintln!(
-        "[rsry-mcp] server started (stdio transport, {} repos: {})",
+        "[rsry-mcp] server started (stdio transport, {} repos: {}, build {})",
         pool.len(),
-        pool.repo_names().join(", ")
+        pool.repo_names().join(", "),
+        env!("RSRY_BUILD_HASH"),
     );
 
-    while let Some(line) = lines.next_line().await.context("reading stdin")? {
+    loop {
+        let line = tokio::select! {
+            result = lines.next_line() => {
+                match result.context("reading stdin")? {
+                    Some(line) => line,
+                    None => break, // stdin closed
+                }
+            }
+            _ = sighup.recv() => {
+                eprintln!("[rsry-mcp] received SIGHUP, exiting for binary upgrade");
+                break;
+            }
+        };
         let line = line.trim().to_string();
         if line.is_empty() {
             continue;
@@ -1245,6 +1263,10 @@ mod tests {
         assert_eq!(result["protocolVersion"], "2024-11-05");
         assert!(result["capabilities"]["tools"].is_object());
         assert_eq!(result["serverInfo"]["name"], "rosary");
+        assert!(
+            result["serverInfo"]["buildHash"].is_string(),
+            "serverInfo should include buildHash"
+        );
     }
 
     #[test]
