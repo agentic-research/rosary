@@ -135,23 +135,23 @@ impl Reconciler {
             dispatch::provider_by_name("claude").unwrap()
         });
 
-        // Build compute provider from reconciler config's compute field.
-        // Default to LocalProvider if not specified.
-        let compute: Box<dyn crate::backend::ComputeProvider> =
-            if let Some(ref compute_cfg) = config.compute {
-                match compute_cfg.backend.as_str() {
-                    "sprites" => match build_sprites_provider(compute_cfg) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            eprintln!("[reconcile] sprites provider failed ({e}), using local");
-                            Box::new(crate::backend::LocalProvider)
-                        }
-                    },
-                    _ => Box::new(crate::backend::LocalProvider),
-                }
-            } else {
-                Box::new(crate::backend::LocalProvider)
+        // Build compute provider from config, fall back to local on failure.
+        let compute: Box<dyn crate::backend::ComputeProvider> = {
+            // Temporarily build a Config with just the compute field for the factory.
+            let tmp_cfg = crate::config::Config {
+                repo: vec![],
+                linear: None,
+                compute: config.compute.clone(),
+                http: None,
             };
+            match crate::config::compute_provider_from_config(&tmp_cfg) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("[reconcile] compute provider failed ({e}), using local");
+                    Box::new(crate::backend::LocalProvider)
+                }
+            }
+        };
 
         Reconciler {
             config,
@@ -686,60 +686,27 @@ impl Reconciler {
     }
 
     /// Clean up the workspace for a completed bead.
-    ///
-    /// If we have a Workspace from the agent handle, use its teardown
-    /// (handles jj/git/none + compute provider cleanup). Otherwise
-    /// fall back to legacy VCS cleanup.
+    /// Delegates to workspace.rs cleanup functions to avoid duplication.
     fn cleanup_workspace(&mut self, bead_id: &str) {
         if let Some(ws) = self.completed_workspaces.remove(bead_id) {
-            // Workspace handles its own VCS cleanup synchronously in drop,
-            // but compute teardown is async — fire and forget.
-            let compute_name = self.compute.name().to_string();
             eprintln!(
-                "[cleanup] {bead_id} workspace (vcs={:?}, compute={compute_name})",
-                ws.vcs
+                "[cleanup] {bead_id} workspace (vcs={:?}, compute={})",
+                ws.vcs,
+                self.compute.name()
             );
-            // VCS cleanup is synchronous — do it now
             match ws.vcs {
                 crate::workspace::VcsKind::Jj => {
-                    let workspace_name = format!("fix-{bead_id}");
-                    let _ = std::process::Command::new("jj")
-                        .args(["workspace", "forget", &workspace_name])
-                        .current_dir(&ws.repo_path)
-                        .output();
-                    let workspace_dir = ws.repo_path.join(format!("../fix/{bead_id}"));
-                    let _ = std::fs::remove_dir_all(workspace_dir);
+                    crate::workspace::cleanup_jj_workspace(&ws.repo_path, bead_id);
                 }
                 crate::workspace::VcsKind::Git => {
-                    let workspace_dir = ws.repo_path.join(format!("../fix/{bead_id}"));
-                    let _ = std::process::Command::new("git")
-                        .args([
-                            "worktree",
-                            "remove",
-                            &workspace_dir.to_string_lossy(),
-                            "--force",
-                        ])
-                        .current_dir(&ws.repo_path)
-                        .output();
-                    let branch_name = format!("fix/{bead_id}");
-                    let _ = std::process::Command::new("git")
-                        .args(["branch", "-D", &branch_name])
-                        .current_dir(&ws.repo_path)
-                        .output();
+                    crate::workspace::cleanup_git_worktree(&ws.repo_path, bead_id);
                 }
                 crate::workspace::VcsKind::None => {}
             }
         } else {
-            // Legacy fallback — no workspace available
-            let workspace_name = format!("fix-{bead_id}");
-            let _ = std::process::Command::new("jj")
-                .args(["workspace", "forget", &workspace_name])
-                .output();
-            let workspace_dir = format!("../fix/{bead_id}");
-            let _ = std::fs::remove_dir_all(&workspace_dir);
-            let _ = std::process::Command::new("git")
-                .args(["worktree", "remove", &workspace_dir, "--force"])
-                .output();
+            // Legacy fallback — try both VCS types
+            crate::workspace::cleanup_jj_workspace(std::path::Path::new("."), bead_id);
+            crate::workspace::cleanup_git_worktree(std::path::Path::new("."), bead_id);
         }
     }
 
@@ -825,31 +792,6 @@ impl Reconciler {
 
         false
     }
-}
-
-/// Build a SpritesProvider from compute config.
-fn build_sprites_provider(
-    compute_cfg: &crate::config::ComputeConfig,
-) -> anyhow::Result<Box<dyn crate::backend::ComputeProvider>> {
-    let sprites_cfg = compute_cfg
-        .sprites
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("[compute.sprites] section required"))?;
-
-    let token = std::env::var(&sprites_cfg.token_env)
-        .map_err(|_| anyhow::anyhow!("set ${} for sprites backend", sprites_cfg.token_env))?;
-
-    let client = if let Some(ref base_url) = sprites_cfg.base_url {
-        crate::sprites::SpritesClient::with_base_url(&token, base_url)?
-    } else {
-        crate::sprites::SpritesClient::new(&token)?
-    };
-
-    let provider = crate::sprites_provider::SpritesProvider::new(client)
-        .with_network_allowlist(sprites_cfg.network_allowlist.clone())
-        .with_checkpoints(sprites_cfg.checkpoint_on_complete);
-
-    Ok(Box::new(provider))
 }
 
 /// Detect language from repo contents.

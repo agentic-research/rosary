@@ -110,6 +110,7 @@ impl SpritesClient {
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .context("building HTTP client")?;
 

@@ -43,6 +43,20 @@ impl SpritesProvider {
     fn sprite_name(bead_id: &str) -> String {
         format!("rsry-{bead_id}")
     }
+
+    /// Shell-join a command slice, quoting args that contain spaces or quotes.
+    fn shell_join(cmd: &[&str]) -> String {
+        cmd.iter()
+            .map(|s| {
+                if s.contains(' ') || s.contains('\'') || s.contains('"') {
+                    format!("'{}'", s.replace('\'', "'\\''"))
+                } else {
+                    s.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }
 
 #[async_trait::async_trait]
@@ -69,19 +83,7 @@ impl ComputeProvider for SpritesProvider {
 
     async fn exec(&self, handle: &ExecHandle, cmd: &[&str]) -> Result<ExecResult> {
         anyhow::ensure!(!cmd.is_empty(), "empty command");
-
-        // Shell-join the command for sprites exec API
-        let cmd_str = cmd
-            .iter()
-            .map(|s| {
-                if s.contains(' ') || s.contains('\'') || s.contains('"') {
-                    format!("'{}'", s.replace('\'', "'\\''"))
-                } else {
-                    s.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        let cmd_str = Self::shell_join(cmd);
 
         let output = self
             .client
@@ -159,37 +161,18 @@ mod tests {
 
     #[test]
     fn shell_join_simple() {
-        // Verify the shell-join logic via a unit-testable path
-        let cmd = &["echo", "hello", "world"];
-        let joined = cmd
-            .iter()
-            .map(|s| {
-                if s.contains(' ') || s.contains('\'') || s.contains('"') {
-                    format!("'{}'", s.replace('\'', "'\\''"))
-                } else {
-                    s.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert_eq!(joined, "echo hello world");
+        assert_eq!(
+            SpritesProvider::shell_join(&["echo", "hello", "world"]),
+            "echo hello world"
+        );
     }
 
     #[test]
     fn shell_join_with_spaces() {
-        let cmd = &["echo", "hello world"];
-        let joined = cmd
-            .iter()
-            .map(|s| {
-                if s.contains(' ') || s.contains('\'') || s.contains('"') {
-                    format!("'{}'", s.replace('\'', "'\\''"))
-                } else {
-                    s.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert_eq!(joined, "echo 'hello world'");
+        assert_eq!(
+            SpritesProvider::shell_join(&["echo", "hello world"]),
+            "echo 'hello world'"
+        );
     }
 
     #[test]

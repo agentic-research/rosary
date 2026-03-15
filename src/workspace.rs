@@ -53,16 +53,6 @@ pub struct Workspace {
     exec_handle: Option<ExecHandle>,
 }
 
-/// Result of creating a workspace (isolation step).
-pub struct WorkspaceHandle {
-    /// Working directory for the isolated workspace.
-    pub work_dir: PathBuf,
-    /// VCS kind used.
-    pub vcs: VcsKind,
-    /// jj workspace name (for cleanup). None if git or no VCS.
-    pub jj_workspace_name: Option<String>,
-}
-
 impl Workspace {
     /// Create a new workspace with code isolation.
     ///
@@ -236,7 +226,7 @@ async fn create_jj_workspace(repo_path: &Path, id: &str) -> Result<PathBuf> {
 }
 
 /// Clean up a jj workspace. Best-effort — don't propagate errors.
-fn cleanup_jj_workspace(repo_path: &Path, id: &str) {
+pub(crate) fn cleanup_jj_workspace(repo_path: &Path, id: &str) {
     let workspace_name = format!("fix-{id}");
     let _ = std::process::Command::new("jj")
         .args(["workspace", "forget", &workspace_name])
@@ -282,7 +272,7 @@ async fn create_git_worktree(repo_path: &Path, id: &str) -> Result<PathBuf> {
 }
 
 /// Clean up a git worktree. Best-effort.
-fn cleanup_git_worktree(repo_path: &Path, id: &str) {
+pub(crate) fn cleanup_git_worktree(repo_path: &Path, id: &str) {
     let worktree_path = repo_path.join(format!("../fix/{id}"));
     let _ = std::process::Command::new("git")
         .args([

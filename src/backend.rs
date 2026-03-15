@@ -8,7 +8,7 @@
 //! - `SpritesProvider`: provision a sprite container, exec inside it
 //! - Future: K8sProvider, DockerProvider, etc.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -157,8 +157,6 @@ impl ComputeProvider for LocalProvider {
     }
 }
 
-use anyhow::Context as _;
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -180,7 +178,6 @@ pub(crate) mod tests {
         pub destroys: Mutex<Vec<String>>,
         pub checkpoints: Mutex<Vec<String>>,
         results: Mutex<VecDeque<ExecResult>>,
-        provision_counter: Mutex<u32>,
     }
 
     impl MockProvider {
@@ -191,7 +188,6 @@ pub(crate) mod tests {
                 destroys: Mutex::new(Vec::new()),
                 checkpoints: Mutex::new(Vec::new()),
                 results: Mutex::new(VecDeque::new()),
-                provision_counter: Mutex::new(0),
             }
         }
 
@@ -205,8 +201,6 @@ pub(crate) mod tests {
     impl ComputeProvider for MockProvider {
         async fn provision(&self, opts: &ProvisionOpts) -> Result<ExecHandle> {
             self.provisions.lock().unwrap().push(opts.clone());
-            let mut counter = self.provision_counter.lock().unwrap();
-            *counter += 1;
             Ok(ExecHandle {
                 id: format!("mock-{}", opts.bead_id),
                 backend: "mock".to_string(),
