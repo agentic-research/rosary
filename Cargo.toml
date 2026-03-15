@@ -7,6 +7,9 @@ name = "rosary"
 version = "0.1.0"
 edition = "2024"
 description = "Strings beads, repos, and review layers into coordinated work"
+license = "Apache-2.0"
+repository = "https://github.com/agentic-research/rosary"
+homepage = "https://github.com/agentic-research/rosary"
 
 [[bin]]
 name = "rsry"

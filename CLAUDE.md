@@ -15,7 +15,7 @@ Rust-based agent orchestration and work tracking. Backbone of the ART (Agentic R
 
 ```bash
 task build          # debug build
-task test           # run all tests (211+)
+task test           # run all tests
 task lint           # fmt + clippy -D warnings
 task install        # build release, codesign, install to ~/.local/bin
 task all            # fmt + check + lint + test
@@ -33,11 +33,6 @@ task all            # fmt + check + lint + test
 - **State mapping**: type-based (`started`/`unstarted`/`completed`), not name-based — works on any Linear team config
 - **Configurable**: `[linear.states]` overrides, `[linear.phases]` maps to Linear projects
 - **Labels**: agent perspectives (`perspective:dev`, etc.) flow through as Linear labels
-
-### Services (launchd)
-- `dev.rsry.serve` — HTTP server on :8383
-- `dev.rsry.tunnel` — Cloudflare tunnel routing `rsry.q-q.dev` → localhost:8383
-- Plists in `~/Library/LaunchAgents/`
 
 ### Config
 - `~/.rsry/config.toml` — global config (repos, linear settings, webhook secret)
@@ -93,7 +88,7 @@ rsry status            # aggregated counts
 
 Rosary exposes 10 MCP tools via `rsry serve`. Accessible from:
 - Claude Code (stdio transport, configured in MCP settings)
-- Claude web (HTTP transport via `rsry.q-q.dev`)
+- Claude web (HTTP transport via tunnel)
 - Any MCP client
 
 Mache (`mache` MCP) provides structural code intelligence for exploring any repo.

@@ -43,16 +43,12 @@ This is the "eating your own dogfood" pattern -- if rosary can't manage its own 
 
 ## Related Repos
 
-| Repo | Path | Purpose |
-|------|------|---------|
-| mache | `~/remotes/art/mache` | Code intelligence, MCP, schema projection |
-| assay | `~/remotes/art/assay` | Doc coverage verifier |
-| tropo | `~/remotes/art/tropo` | Architecture analysis (layer violations, cycles) |
-| ley-line | `~/remotes/art/ley-line` | Tree-sitter + MiniLM embeddings |
-| crumb | `~/remotes/art/crumb` | Semantic discovery capture (has evidence field bug) |
-| art-hooks | `~/remotes/art/art-hooks` | Hook system (lifecycle, crumb integration) |
-| the-firm | `netstoat-labs/the-firm` | Multi-agent audit plugin |
-| gt-infra | `netstoat-labs/gt-infra` | Gas Town infrastructure (cron, dispatch, hooks) |
+| Repo | Purpose |
+|------|---------|
+| mache | Code intelligence, MCP, schema projection |
+| ley-line | Zero-copy arena, tree-sitter, VCS (jj-lib) |
+| crumb | Semantic discovery capture |
+| art-hooks | Claude Code hook system |
 
 ## Review Layer Model
 
