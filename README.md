@@ -1,85 +1,94 @@
-# 📿 rosary
+# rosary
 
-Rosary keeps track of work across multiple code repos and gets it done automatically.
+Autonomous work orchestrator for AI agents across multiple code repos.
 
-It finds issues, decides what to work on next, hands tasks to AI agents, checks their work, and reports back. Think of it as a project manager that never sleeps.
+Rosary structures work as **beads** — small, trackable units stored in each repo via [Dolt](https://www.dolthub.com/). A reconciliation loop scans for ready beads, dispatches AI agents (Claude, Gemini) to execute them in isolated workspaces, verifies the results, and syncs status to [Linear](https://linear.app) for human review.
 
-## What it does
+The human reviews 5-10 feature PRs a day. The agents handle the atoms.
 
-1. **Finds work** — scans your repos for open issues (stored as "beads" in each repo)
-2. **Prioritizes** — scores each issue by urgency, age, and dependencies
-3. **Dispatches** — sends the highest-priority work to Claude Code agents
-4. **Checks results** — runs a gauntlet of checks: does it compile? do tests pass? is the diff reasonable?
-5. **Retries or moves on** — if the agent's fix didn't work, it tries again with backoff. After too many failures, it flags the issue for a human.
+## How it works
 
-## Quick start
+```mermaid
+graph LR
+    A[Scan repos] --> B[Triage & prioritize]
+    B --> C[Dispatch to agent]
+    C --> D[Agent works in<br/>isolated workspace]
+    D --> E{Verify}
+    E -->|pass| F[Close bead]
+    E -->|fail| G[Retry with backoff]
+    E -->|deadletter| H[Flag for human]
+    G --> C
+```
+
+### Bead lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> open
+    open --> dispatched: agent assigned
+    dispatched --> verifying: agent completes
+    verifying --> done: checks pass
+    verifying --> open: retry
+    verifying --> blocked: deadlettered
+    blocked --> open: human /resume
+```
+
+## Issue tracking with beads
+
+Work items live in each repo as [beads](https://github.com/steveyegge/beads) — an AI-native issue tracker backed by Dolt (version-controlled SQL). Rosary reads and writes beads directly over MySQL, no CLI shelling.
 
 ```bash
-task build    # requires Task (taskfile.dev) — sets PKG_CONFIG_PATH for fuse-t
+# Beads are managed via rosary's MCP tools or CLI:
+rsry bead create "Fix auth bug" --priority 1 --type bug
+rsry bead list
+rsry bead search "auth"
+rsry bead close rsry-abc123
+```
+
+## Getting started
+
+```bash
+task build    # requires Task (taskfile.dev)
 task test
 
-# Register a repo
+# Register repos to watch
 rsry enable ~/code/my-app
+rsry enable ~/code/my-lib
 
-# See what's out there
-rsry scan
+# See what's ready
+rsry status
 
-# Let it run (dry run first to see what it would do)
+# Dry run — see what would be dispatched
 rsry run --once --dry-run
 
-# For real — single pass, max 3 agents at a time
+# Real run — dispatch agents, verify, close
 rsry run --once --concurrency 3
 
-# Continuous loop, checking every 30 seconds
+# Continuous loop
 rsry run
 ```
 
-> **Note**: Use `task build` / `task test` instead of raw `cargo` — the Taskfile sets `PKG_CONFIG_PATH` for the fuse-t dependency via ley-line.
+> Use `task build` / `task test` instead of raw `cargo` — the Taskfile sets `PKG_CONFIG_PATH` for the fuse-t dependency via ley-line.
 
-## Commands
+## MCP server
 
-| Command | What it does |
-|---------|-------------|
-| `rsry scan` | Look at all your repos, find open issues |
-| `rsry status` | Summary of what's open, ready, blocked |
-| `rsry dispatch <id>` | Hand one specific issue to an AI agent |
-| `rsry run` | The main loop — find work, do work, check work, repeat |
-| `rsry run --provider gemini` | Use Gemini instead of Claude for dispatch |
-| `rsry enable [path]` | Register a repo in the global registry (`~/.rsry/repos.toml`) |
-| `rsry disable <name>` | Unregister a repo |
-| `rsry bead create <title>` | Create a new bead |
-| `rsry bead close <id>` | Close a bead |
-| `rsry bead list` | List open beads |
-| `rsry bead search <query>` | Search beads by title/description |
-| `rsry bead comment <id> <body>` | Add a comment to a bead |
-| `rsry plan <ticket>` | Fetch a Linear ticket |
-| `rsry sync` | List open Linear issues for your team |
-| `rsry serve` | Expose rosary as an MCP tool server (8 tools, stdio transport) |
+Rosary exposes its full API as MCP tools. Any AI agent or human with an MCP client can scan beads, dispatch work, and track progress.
 
-## How the loop works
+```bash
+# Add to Claude Code (one-time)
+claude mcp add -s user rsry -- rsry serve --transport stdio
 
-```
-  find issues ──► pick the best one ──► give it to an agent
-       ▲                                       │
-       │                                       ▼
-   wait a bit ◄── update status ◄── check the agent's work
+# Or run as HTTP server
+rsry serve --transport http --port 8383
 ```
 
-Each issue goes through these states:
-
-```
-open → queued → dispatched → verifying → done
-                                      └→ rejected (retry)
-                                      └→ blocked (needs human)
-```
-
-Failed issues get retried with increasing wait times. After 5 failures or 3 regressions in a row, rosary gives up and flags it.
+**Tools:** `rsry_scan`, `rsry_status`, `rsry_list_beads`, `rsry_run_once`, `rsry_bead_create`, `rsry_bead_close`, `rsry_bead_comment`, `rsry_bead_search`, `rsry_dispatch`, `rsry_active`
 
 ## Config
 
-Tell rosary which repos to watch in `rosary.toml`:
-
 ```toml
+# ~/.rsry/config.toml
+
 [[repo]]
 name = "my-app"
 path = "~/code/my-app"
@@ -87,115 +96,65 @@ path = "~/code/my-app"
 [[repo]]
 name = "my-lib"
 path = "~/code/my-lib"
+
+[linear]
+team = "ENG"
+
+[compute]
+backend = "local"   # or "sprites" for remote containers
 ```
-
-## How issues are stored
-
-Each repo has a `.beads/` directory with a local database (powered by [Dolt](https://www.dolthub.com/)). Rosary talks directly to these databases over MySQL — no shelling out to CLI tools.
-
-## Checking the agent's work
-
-After an agent finishes, rosary runs these checks in order:
-
-1. Did it actually commit something?
-2. Does the code compile?
-3. Do the tests pass?
-4. Does the linter approve?
-5. Is the change a reasonable size?
-
-If any check fails, it stops there. Compile failures mean something is fundamentally wrong. Test or lint failures get retried.
-
-## Self-management
-
-Rosary is configured to scan its own repo (`self = true` in rosary.toml). The goal is for rosary to manage its own development — finding its own bugs, dispatching agents to fix them, and verifying the results. This isn't fully proven yet, but the plumbing is in place.
-
-## MCP server
-
-Rosary exposes 10 tools via MCP (stdio and HTTP transports):
-
-```bash
-# Claude Code (one-time setup)
-claude mcp add -s user rsry -- /path/to/rsry serve --transport stdio
-
-# Gemini CLI (one-time setup)
-gemini mcp add rsry -s user /path/to/rsry serve --transport stdio --trust
-
-# HTTP transport (for webhooks, remote access, MCP Connector)
-rsry serve --transport http --port 8383
-```
-
-**10 MCP tools:**
-
-| Tool | Purpose |
-|------|---------|
-| `rsry_scan` | List beads across all repos |
-| `rsry_status` | Bead counts (open/ready/blocked) |
-| `rsry_list_beads` | List with optional status filter |
-| `rsry_run_once` | Single reconcile pass (dry_run default) |
-| `rsry_bead_create` | Create a bead |
-| `rsry_bead_close` | Close a bead |
-| `rsry_bead_comment` | Add comment to a bead |
-| `rsry_bead_search` | Search by title/description |
-| `rsry_dispatch` | Spawn agent for a specific bead |
-| `rsry_active` | Show running agent sessions |
 
 ## Compute providers
 
-Rosary abstracts where agent code runs via pluggable `ComputeProvider`s. Local is the default (zero config). Sprites.dev is the first remote provider.
-
-```toml
-# rosary.toml or ~/.rsry/config.toml
-
-[compute]
-backend = "sprites"   # "local" (default) or "sprites"
-
-[compute.sprites]
-token_env = "SPRITES_TOKEN"
-checkpoint_on_complete = true
-```
+Agents run in isolated workspaces (jj preferred, git worktree fallback). The compute backend is pluggable:
 
 | Provider | What | Config |
 |----------|------|--------|
-| `local` | Host subprocess (default, zero config) | — |
+| `local` | Host subprocess (default) | none |
 | `sprites` | [sprites.dev](https://sprites.dev) containers | `SPRITES_TOKEN` env var |
-
-Workspace isolation tries jj first, then git worktree, then in-place.
 
 ## Linear integration
 
-Configure in `~/.rsry/config.toml` (or override with env vars):
-
-```toml
-[linear]
-team = "AGE"
-api_key = "lin_api_..."   # or set LINEAR_API_KEY env var
-```
+Bidirectional sync — beads are source of truth, Linear is the UI.
 
 ```bash
-rsry plan AGE-123              # fetch ticket details
-rsry sync --dry-run            # preview what would sync
-rsry sync                      # bidirectional sync (link + push + close)
+rsry sync --dry-run    # preview
+rsry sync              # push + pull + reconcile
 ```
 
-## Cross-repo tracking
+Webhooks for real-time updates: `rsry serve --transport http` exposes `/webhook`.
 
-Beads can reference work in other repos via `external_ref` (e.g., `kiln:ll-packaging`). During each reconciliation loop, rosary syncs these references — creating mirror beads in target repos and propagating status changes bidirectionally. This is the "thread" that strings beads across repos.
+## Verification
 
-## Wasteland federation
+After an agent completes, rosary runs tiered checks:
 
-Rosary can publish beads to the [Wasteland](https://github.com/steveyegge/gastown) wanted board. The `rosary-crypto` crate encrypts private fields (description, notes, design) via ChaCha20-Poly1305 while leaving public fields (title, status, priority) in cleartext. The pipeline: local beads → selective encryption → public GitHub repo → DoltHub wl-commons.
+1. Did it commit something?
+2. Does it compile?
+3. Do tests pass?
+4. Does the linter approve?
+5. Is the diff a reasonable size?
+
+Failed checks trigger retry with backoff. After 5 failures or 3 regressions, the bead is deadlettered for human attention.
+
+## Self-management
+
+Rosary manages its own development. It scans its own repo, dispatches agents to fix its own bugs, and verifies the results. The plumbing works — proving it at scale is ongoing.
 
 ## Architecture
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full technical picture with diagrams.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full technical picture.
 
 ## Build
 
 ```bash
 task build     # debug build with fuse-t support
-task test      # 271 tests
-task lint      # clippy
+task test      # run tests
+task lint      # fmt + clippy
 task all       # fmt + check + lint + test
 ```
 
 Pre-commit hooks enforce `cargo fmt` and `cargo clippy` on every commit.
+
+## License
+
+[Apache-2.0](LICENSE)
