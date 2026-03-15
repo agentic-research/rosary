@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 /// Bead lifecycle states — modeled as a Labeled Transition System.
 ///
 /// Transitions:
+///   backlog → open (human/agent promotes after refinement)
 ///   open → queued (triage selects)
 ///   queued → dispatched (semaphore acquired)
 ///   dispatched → verifying (agent exits)
@@ -19,6 +20,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BeadState {
+    /// Refinement zone — human + agent shape the work. Never auto-dispatched.
+    Backlog,
     Open,
     Queued,
     Dispatched,
@@ -34,6 +37,7 @@ impl BeadState {
     #[allow(dead_code)] // API surface — used in tests, will be used for transition validation
     pub fn valid_transitions(self) -> &'static [BeadState] {
         match self {
+            BeadState::Backlog => &[BeadState::Open],
             BeadState::Open => &[BeadState::Queued],
             BeadState::Queued => &[BeadState::Dispatched],
             BeadState::Dispatched => &[BeadState::Verifying],
@@ -62,6 +66,7 @@ impl BeadState {
     /// Type is stable across all Linear teams; name is a hint for teams that have it.
     pub fn to_linear_type(self) -> (&'static str, &'static str) {
         match self {
+            BeadState::Backlog => ("backlog", "Backlog"),
             BeadState::Open | BeadState::Rejected | BeadState::Stale => ("unstarted", "Todo"),
             BeadState::Queued => ("unstarted", "Todo"),
             BeadState::Dispatched => ("started", "In Progress"),
@@ -87,7 +92,7 @@ impl BeadState {
                     BeadState::Dispatched
                 }
             }
-            "backlog" => BeadState::Open,
+            "backlog" => BeadState::Backlog,
             "unstarted" => BeadState::Open,
             _ => BeadState::Open,
         }
@@ -97,6 +102,7 @@ impl BeadState {
 impl fmt::Display for BeadState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
+            BeadState::Backlog => "backlog",
             BeadState::Open => "open",
             BeadState::Queued => "queued",
             BeadState::Dispatched => "dispatched",
@@ -113,6 +119,7 @@ impl fmt::Display for BeadState {
 impl From<&str> for BeadState {
     fn from(s: &str) -> Self {
         match s {
+            "backlog" => BeadState::Backlog,
             "open" => BeadState::Open,
             "queued" => BeadState::Queued,
             "dispatched" => BeadState::Dispatched,
@@ -297,6 +304,7 @@ mod tests {
 
     #[test]
     fn state_from_string() {
+        assert_eq!(BeadState::from("backlog"), BeadState::Backlog);
         assert_eq!(BeadState::from("open"), BeadState::Open);
         assert_eq!(BeadState::from("queued"), BeadState::Queued);
         assert_eq!(BeadState::from("dispatched"), BeadState::Dispatched);
@@ -313,6 +321,7 @@ mod tests {
     #[test]
     fn state_display_roundtrip() {
         let states = [
+            BeadState::Backlog,
             BeadState::Open,
             BeadState::Queued,
             BeadState::Dispatched,
@@ -330,6 +339,9 @@ mod tests {
 
     #[test]
     fn valid_transitions() {
+        assert!(BeadState::Backlog.can_transition_to(BeadState::Open));
+        assert!(!BeadState::Backlog.can_transition_to(BeadState::Done));
+
         assert!(BeadState::Open.can_transition_to(BeadState::Queued));
         assert!(!BeadState::Open.can_transition_to(BeadState::Done));
 
@@ -351,6 +363,7 @@ mod tests {
 
     #[test]
     fn to_linear_type_mapping() {
+        assert_eq!(BeadState::Backlog.to_linear_type(), ("backlog", "Backlog"));
         assert_eq!(BeadState::Open.to_linear_type(), ("unstarted", "Todo"));
         assert_eq!(BeadState::Queued.to_linear_type(), ("unstarted", "Todo"));
         assert_eq!(
@@ -396,7 +409,11 @@ mod tests {
         );
         assert_eq!(
             BeadState::from_linear_type("backlog", "Icebox"),
-            BeadState::Open
+            BeadState::Backlog
+        );
+        assert_eq!(
+            BeadState::from_linear_type("backlog", "Backlog"),
+            BeadState::Backlog
         );
     }
 

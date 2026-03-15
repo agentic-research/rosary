@@ -13,6 +13,7 @@ use crate::bead::Bead;
 
 pub fn status_badge(status: &str) -> String {
     match status {
+        "backlog" => "backlog".dimmed().to_string(),
         "open" => "open".green().to_string(),
         "in_progress" | "dispatched" => "in progress".blue().to_string(),
         "queued" => "queued".cyan().to_string(),
@@ -100,6 +101,7 @@ pub fn subheader(text: &str) -> String {
 
 pub fn print_status_summary(beads: &[Bead]) {
     let total = beads.len();
+    let backlog = beads.iter().filter(|b| b.status == "backlog").count();
     let open = beads.iter().filter(|b| b.status == "open").count();
     let ready = beads.iter().filter(|b| b.is_ready()).count();
     let in_progress = beads
@@ -121,7 +123,7 @@ pub fn print_status_summary(beads: &[Bead]) {
         if repos == 1 { "" } else { "s" }
     );
     println!(
-        "  {} ready  {} open  {} active  {} blocked  {} done",
+        "  {} ready  {} open  {} active  {} blocked  {} backlog  {} done",
         ready.to_string().green().bold(),
         open.to_string().green(),
         in_progress.to_string().blue(),
@@ -130,6 +132,7 @@ pub fn print_status_summary(beads: &[Bead]) {
         } else {
             blocked.to_string().dimmed().to_string()
         },
+        backlog.to_string().dimmed(),
         done.to_string().dimmed(),
     );
 }
@@ -355,6 +358,7 @@ mod tests {
     #[test]
     fn status_badge_returns_string_for_all_states() {
         for s in &[
+            "backlog",
             "open",
             "in_progress",
             "dispatched",
