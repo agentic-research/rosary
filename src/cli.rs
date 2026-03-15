@@ -52,34 +52,84 @@ fn repo_label(repo: &str) -> String {
     repo.cyan().to_string()
 }
 
+/// Render a Linear identifier (e.g., "AGE-312") as a clickable terminal hyperlink.
+/// Uses the OSC 8 escape sequence supported by most modern terminals.
+fn linear_link(identifier: &str) -> String {
+    // Extract team key to build the Linear URL
+    // Linear URLs: https://linear.app/{org}/issue/{identifier}
+    // We use a generic path that Linear redirects correctly
+    let url = format!("https://linear.app/issue/{identifier}");
+    format!("\x1b]8;;{url}\x1b\\{identifier}\x1b]8;;\x1b\\")
+}
+
+/// Format an external_ref as a clickable link if it looks like a Linear identifier.
+fn external_ref_badge(ext_ref: &Option<String>) -> String {
+    match ext_ref {
+        Some(id)
+            if id.contains('-') && id.chars().next().is_some_and(|c| c.is_ascii_uppercase()) =>
+        {
+            linear_link(id)
+        }
+        Some(id) => id.dimmed().to_string(),
+        None => String::new(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Bead formatting
 // ---------------------------------------------------------------------------
 
 /// One-line bead summary for lists.
 pub fn bead_line(b: &Bead) -> String {
-    format!(
-        "  {} {} {} {} {}",
-        b.id.dimmed(),
-        priority_badge(b.priority),
-        issue_type_badge(&b.issue_type),
-        repo_label(&b.repo),
-        b.title,
-    )
+    let ext = external_ref_badge(&b.external_ref);
+    if ext.is_empty() {
+        format!(
+            "  {} {} {} {} {}",
+            b.id.dimmed(),
+            priority_badge(b.priority),
+            issue_type_badge(&b.issue_type),
+            repo_label(&b.repo),
+            b.title,
+        )
+    } else {
+        format!(
+            "  {} {} {} {} {} {}",
+            b.id.dimmed(),
+            ext,
+            priority_badge(b.priority),
+            issue_type_badge(&b.issue_type),
+            repo_label(&b.repo),
+            b.title,
+        )
+    }
 }
 
 /// One-line bead for scan output (includes status).
 #[allow(dead_code)] // API surface — used by future verbose scan mode
 pub fn bead_scan_line(b: &Bead) -> String {
-    format!(
-        "  {} {} {} {} {} {}",
-        b.id.dimmed(),
-        status_badge(&b.status),
-        priority_badge(b.priority),
-        issue_type_badge(&b.issue_type),
-        repo_label(&b.repo),
-        b.title,
-    )
+    let ext = external_ref_badge(&b.external_ref);
+    if ext.is_empty() {
+        format!(
+            "  {} {} {} {} {} {}",
+            b.id.dimmed(),
+            status_badge(&b.status),
+            priority_badge(b.priority),
+            issue_type_badge(&b.issue_type),
+            repo_label(&b.repo),
+            b.title,
+        )
+    } else {
+        format!(
+            "  {} {} {} {} {} {} {}",
+            b.id.dimmed(),
+            ext,
+            status_badge(&b.status),
+            priority_badge(b.priority),
+            issue_type_badge(&b.issue_type),
+            repo_label(&b.repo),
+            b.title,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -178,19 +228,24 @@ pub fn sync_linked(bead_id: &str, linear_id: &str) {
         "linked".blue(),
         bead_id.dimmed(),
         "->".dimmed(),
-        linear_id,
+        linear_link(linear_id),
     );
 }
 
 pub fn sync_created(linear_id: &str, title: &str) {
-    println!("  {} {} {}", "created".green(), linear_id, title.dimmed(),);
+    println!(
+        "  {} {} {}",
+        "created".green(),
+        linear_link(linear_id),
+        title.dimmed(),
+    );
 }
 
 pub fn sync_closed(linear_id: &str, bead_id: &str) {
     println!(
         "  {} {} ({})",
         "closed".yellow(),
-        linear_id,
+        linear_link(linear_id),
         bead_id.dimmed(),
     );
 }
