@@ -372,14 +372,15 @@ defmodule Conductor.AgentWorker do
     end
   end
 
-  # Map agent names to ACP binaries. Supports multiple providers.
+  # Map to ACP binary. All providers speak the same protocol via --acp.
+  # Provider selection: config > per-step override > default (claude)
+  @supported_providers ~w(claude gemini codex copilot qwen-code)
+
   defp agent_binary(_agent_name) do
     provider = Application.get_env(:conductor, :agent_provider, "claude")
-
-    case provider do
-      "gemini" -> "gemini"
-      "claude" -> "claude"
-      binary -> binary
+    if provider not in @supported_providers do
+      Logger.warning("[worker] unknown provider #{provider}, using as-is (custom ACP binary)")
     end
+    provider
   end
 end

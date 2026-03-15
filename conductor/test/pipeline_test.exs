@@ -180,4 +180,47 @@ defmodule Conductor.PipelineTest do
     assert Pipeline.next_agent("feature", "staging-agent") == "prod-agent"
     assert Pipeline.next_agent("task", "dev-agent") == nil
   end
+
+  # -- Step modes --
+
+  test "steps have default mode :implement" do
+    p = Pipeline.for_bead("x", "/r", "bug")
+    step = Pipeline.current_step(p)
+    assert step.mode == :implement
+  end
+
+  test "insert_step with custom mode" do
+    p = Pipeline.for_bead("x", "/r", "task")
+    p = Pipeline.insert_step(p, 1, %{agent: "review-agent", mode: :plan_first})
+    # Inserted after current, so current still points to dev-agent
+    assert Pipeline.current_agent(p) == "dev-agent"
+    # The inserted step is at index 1
+    assert Enum.at(p.steps, 1).agent == "review-agent"
+    assert Enum.at(p.steps, 1).mode == :plan_first
+  end
+
+  test "step modes survive serialization roundtrip" do
+    p = Pipeline.for_bead("x", "/r", "task")
+    p = Pipeline.append_step(p, %{agent: "review-agent", mode: :plan_first})
+
+    map = Pipeline.to_map(p)
+    p2 = Pipeline.from_map(map)
+    review_step = Enum.at(p2.steps, 1)
+    assert review_step.mode == :plan_first
+  end
+
+  test "step with parallel_group" do
+    p = Pipeline.for_bead("x", "/r", "bug")
+    p = Pipeline.append_step(p, %{agent: "prod-agent", parallel_group: :review})
+    steps = p.steps
+    assert List.last(steps).parallel_group == :review
+  end
+
+  test "parallel_group survives serialization" do
+    p = Pipeline.for_bead("x", "/r", "task")
+    p = Pipeline.append_step(p, %{agent: "qa", parallel_group: :validation})
+    map = Pipeline.to_map(p)
+    p2 = Pipeline.from_map(map)
+    assert List.last(p2.steps).parallel_group == :validation
+  end
 end
