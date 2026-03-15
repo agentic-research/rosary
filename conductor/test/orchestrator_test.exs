@@ -185,6 +185,7 @@ defmodule Conductor.OrchestratorTest do
         Process.sleep(500)
 
         spawned = collect_spawn_messages(500)
+
         dup_spawns =
           spawned
           |> Enum.filter(fn {:agent_spawned, id, _} -> id == "bead-dup" end)

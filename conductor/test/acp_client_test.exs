@@ -61,18 +61,19 @@ defmodule Conductor.AcpClientTest do
 
   describe "handle_message/1" do
     test "parses permission request" do
-      msg = Jason.encode!(%{
-        "jsonrpc" => "2.0",
-        "id" => 42,
-        "method" => "session/request_permission",
-        "params" => %{
-          "toolCall" => %{"toolCallId" => "tc-1", "fields" => %{"title" => "Edit"}},
-          "options" => [
-            %{"optionId" => "allow-once", "name" => "Allow", "kind" => "allow_once"},
-            %{"optionId" => "reject-once", "name" => "Reject", "kind" => "reject_once"}
-          ]
-        }
-      })
+      msg =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => 42,
+          "method" => "session/request_permission",
+          "params" => %{
+            "toolCall" => %{"toolCallId" => "tc-1", "fields" => %{"title" => "Edit"}},
+            "options" => [
+              %{"optionId" => "allow-once", "name" => "Allow", "kind" => "allow_once"},
+              %{"optionId" => "reject-once", "name" => "Reject", "kind" => "reject_once"}
+            ]
+          }
+        })
 
       assert {:ok, {:permission_request, 42, tool_call, options}} = AcpClient.handle_message(msg)
       assert tool_call["toolCallId"] == "tc-1"
@@ -80,28 +81,30 @@ defmodule Conductor.AcpClientTest do
     end
 
     test "parses tool_call update" do
-      msg = Jason.encode!(%{
-        "jsonrpc" => "2.0",
-        "method" => "session/update",
-        "params" => %{
-          "update" => %{
-            "sessionUpdate" => "tool_call",
-            "toolCallId" => "tc-1",
-            "title" => "Edit",
-            "kind" => "file_edit"
+      msg =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "method" => "session/update",
+          "params" => %{
+            "update" => %{
+              "sessionUpdate" => "tool_call",
+              "toolCallId" => "tc-1",
+              "title" => "Edit",
+              "kind" => "file_edit"
+            }
           }
-        }
-      })
+        })
 
       assert {:ok, {:tool_call, "tc-1", "Edit", "file_edit"}} = AcpClient.handle_message(msg)
     end
 
     test "parses prompt completion" do
-      msg = Jason.encode!(%{
-        "jsonrpc" => "2.0",
-        "id" => 2,
-        "result" => %{"stopReason" => "end_turn", "cost" => 0.05}
-      })
+      msg =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => 2,
+          "result" => %{"stopReason" => "end_turn", "cost" => 0.05}
+        })
 
       assert {:ok, {:prompt_complete, "end_turn", _result}} = AcpClient.handle_message(msg)
     end

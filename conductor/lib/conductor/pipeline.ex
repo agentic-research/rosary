@@ -94,7 +94,9 @@ defmodule Conductor.Pipeline do
   dev-agent step for unknown types.
   """
   def for_bead(bead_id, repo, issue_type) do
-    step_defs = Map.get(@templates, issue_type, [%{agent: "dev-agent", timeout_ms: 600_000, max_retries: 3}])
+    step_defs =
+      Map.get(@templates, issue_type, [%{agent: "dev-agent", timeout_ms: 600_000, max_retries: 3}])
+
     steps = Enum.map(step_defs, &Step.new/1)
 
     %__MODULE__{

@@ -25,7 +25,9 @@ defmodule Conductor.Orchestrator do
     interval = Application.get_env(:conductor, :scan_interval_ms, 30_000)
     max_concurrent = Application.get_env(:conductor, :max_concurrent, 3)
 
-    Logger.info("[orchestrator] started (interval=#{inspect(interval)}, max_concurrent=#{max_concurrent})")
+    Logger.info(
+      "[orchestrator] started (interval=#{inspect(interval)}, max_concurrent=#{max_concurrent})"
+    )
 
     # Run first tick immediately (unless disabled)
     if is_integer(interval), do: send(self(), :tick)
@@ -65,11 +67,17 @@ defmodule Conductor.Orchestrator do
               acc ->
                 case AgentSupervisor.start_agent(bead) do
                   {:ok, _pid} ->
-                    Logger.info("[orchestrator] dispatched #{bead["id"]} (#{bead["owner"] || Pipeline.default_agent(bead["issue_type"])})")
+                    Logger.info(
+                      "[orchestrator] dispatched #{bead["id"]} (#{bead["owner"] || Pipeline.default_agent(bead["issue_type"])})"
+                    )
+
                     MapSet.put(acc, bead["id"])
 
                   {:error, reason} ->
-                    Logger.error("[orchestrator] failed to start #{bead["id"]}: #{inspect(reason)}")
+                    Logger.error(
+                      "[orchestrator] failed to start #{bead["id"]}: #{inspect(reason)}"
+                    )
+
                     acc
                 end
             end
@@ -91,7 +99,7 @@ defmodule Conductor.Orchestrator do
           beads
           |> Enum.filter(&(&1["priority"] <= 2))
           |> Enum.reject(&(&1["issue_type"] == "epic"))
-          |> Enum.sort_by(&(&1["priority"]))
+          |> Enum.sort_by(& &1["priority"])
 
         {:ok, dispatchable}
 

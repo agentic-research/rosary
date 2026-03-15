@@ -134,7 +134,9 @@ defmodule Conductor.Test.MockRsry do
   def handle_call({:tool, name, _args}, _from, state) do
     call = {:unknown_tool, name}
     if state.test_pid, do: send(state.test_pid, {:mock_rsry, call})
-    {:reply, {:error, %{"message" => "unknown tool: #{name}"}}, %{state | calls: state.calls ++ [call]}}
+
+    {:reply, {:error, %{"message" => "unknown tool: #{name}"}},
+     %{state | calls: state.calls ++ [call]}}
   end
 
   def handle_call(:connected?, _from, state) do

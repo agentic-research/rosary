@@ -29,7 +29,9 @@ defmodule Conductor.RsryClientTest do
 
   @tag :integration
   test "bead_search returns results" do
-    {:ok, result} = Conductor.RsryClient.bead_search("/Users/jamesgardner/remotes/art/rosary", "conductor")
+    {:ok, result} =
+      Conductor.RsryClient.bead_search("/Users/jamesgardner/remotes/art/rosary", "conductor")
+
     assert is_map(result)
   end
 end

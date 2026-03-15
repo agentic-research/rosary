@@ -164,8 +164,12 @@ defmodule Conductor.AcpClient do
   @spec policy_for(String.t(), atom()) :: policy()
   def policy_for(issue_type, step_mode \\ :implement) do
     case step_mode do
-      :read_only -> :read_only
-      :plan_first -> :read_only
+      :read_only ->
+        :read_only
+
+      :plan_first ->
+        :read_only
+
       :implement ->
         case issue_type do
           t when t in ["review", "survey", "audit"] -> :read_only
@@ -185,7 +189,11 @@ defmodule Conductor.AcpClient do
     end
   end
 
-  defp parse_acp_message(%{"method" => "session/request_permission", "id" => id, "params" => params}) do
+  defp parse_acp_message(%{
+         "method" => "session/request_permission",
+         "id" => id,
+         "params" => params
+       }) do
     tool_call = params["toolCall"] || %{}
     options = params["options"] || []
     {:ok, {:permission_request, id, tool_call, options}}

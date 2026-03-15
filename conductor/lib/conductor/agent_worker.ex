@@ -125,11 +125,12 @@ defmodule Conductor.AgentWorker do
         timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
 
         {:noreply,
-         %{state |
-           port: port,
-           os_pid: os_pid,
-           timeout_ref: timeout_ref,
-           started_at: DateTime.utc_now()
+         %{
+           state
+           | port: port,
+             os_pid: os_pid,
+             timeout_ref: timeout_ref,
+             started_at: DateTime.utc_now()
          }}
 
       {:error, reason} ->
@@ -175,7 +176,10 @@ defmodule Conductor.AgentWorker do
   def terminate(reason, state) do
     bead_id = state.pipeline.bead_id
     {done, total} = Pipeline.progress(state.pipeline)
-    Logger.info("[worker] #{bead_id}: terminated (#{done}/#{total} phases, reason=#{inspect(reason)})")
+
+    Logger.info(
+      "[worker] #{bead_id}: terminated (#{done}/#{total} phases, reason=#{inspect(reason)})"
+    )
 
     # Clean up the Port if still open
     if state.port && Port.info(state.port) != nil do
@@ -194,7 +198,9 @@ defmodule Conductor.AgentWorker do
 
     case Pipeline.advance(pipeline) do
       :done ->
-        Logger.info("[pipeline] #{bead_id}: complete (#{Enum.join(Pipeline.agents(pipeline), " → ")})")
+        Logger.info(
+          "[pipeline] #{bead_id}: complete (#{Enum.join(Pipeline.agents(pipeline), " → ")})"
+        )
 
         client().bead_comment(
           pipeline.repo,
@@ -220,12 +226,13 @@ defmodule Conductor.AgentWorker do
             timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
 
             {:noreply,
-             %{state |
-               pipeline: next_pipeline,
-               port: port,
-               os_pid: os_pid,
-               timeout_ref: timeout_ref,
-               started_at: DateTime.utc_now()
+             %{
+               state
+               | pipeline: next_pipeline,
+                 port: port,
+                 os_pid: os_pid,
+                 timeout_ref: timeout_ref,
+                 started_at: DateTime.utc_now()
              }}
 
           {:error, reason} ->
@@ -251,7 +258,7 @@ defmodule Conductor.AgentWorker do
         "#{agent} failed (exit #{exit_code}), retrying (#{retries}/#{step.max_retries})"
       )
 
-      backoff = min(30_000 * :math.pow(2, retries) |> trunc(), 300_000)
+      backoff = min((30_000 * :math.pow(2, retries)) |> trunc(), 300_000)
       Process.send_after(self(), :retry, backoff)
       {:noreply, %{state | pipeline: pipeline, port: nil, os_pid: nil, timeout_ref: nil}}
     else
@@ -378,9 +385,11 @@ defmodule Conductor.AgentWorker do
 
   defp agent_binary(_agent_name) do
     provider = Application.get_env(:conductor, :agent_provider, "claude")
+
     if provider not in @supported_providers do
       Logger.warning("[worker] unknown provider #{provider}, using as-is (custom ACP binary)")
     end
+
     provider
   end
 end
