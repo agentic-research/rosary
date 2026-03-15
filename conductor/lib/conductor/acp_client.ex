@@ -85,7 +85,7 @@ defmodule Conductor.AcpClient do
       if session_id do
         session_id
       else
-        send_jsonrpc(port, 1, "session/new", %{workingDirectory: work_dir})
+        send_jsonrpc(port, 1, "session/new", %{cwd: work_dir, mcpServers: []})
         # Real session ID comes back in the response — parsed in handle_message
         "session-#{System.unique_integer([:positive])}"
       end
