@@ -48,7 +48,8 @@ defmodule Conductor.AgentWorker do
   @impl true
   def init(bead) do
     bead_id = bead["id"] || bead[:id]
-    repo = bead["repo"] || bead[:repo]
+    repo_raw = bead["repo"] || bead[:repo]
+    repo = Conductor.RepoResolver.resolve(repo_raw)
     issue_type = bead["issue_type"] || bead[:issue_type] || "task"
     owner = bead["owner"] || bead[:owner]
     title = bead["title"] || bead[:title] || "#{issue_type} work"
