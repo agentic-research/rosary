@@ -16,7 +16,7 @@ It finds issues, decides what to work on next, hands tasks to AI agents, checks 
 
 ```bash
 task build    # requires Task (taskfile.dev) — sets PKG_CONFIG_PATH for fuse-t
-task test     # 271 tests
+task test
 
 # Register a repo
 rsry enable ~/code/my-app

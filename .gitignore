@@ -18,3 +18,14 @@ dolt-server.port
 dolt/
 .envrc
 .env
+
+# Agent workspace directories
+.rsry-workspaces/
+.claude/worktrees/
+
+# Stale scripts from agent runs
+.tmp-*
+_push_fix.*
+.fix-beads.py
+_fix_stale_servers.py
+_beads_clone/
