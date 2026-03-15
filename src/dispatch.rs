@@ -125,12 +125,14 @@ impl AgentSession for CliSession {
 /// of the provider code.
 pub trait AgentProvider: Send + Sync {
     /// Spawn an agent session with the given prompt, working directory,
-    /// and permission profile (derived from the bead).
+    /// permission profile (derived from the bead), and system prompt
+    /// (assembled from agent definitions + golden rules).
     fn spawn_agent(
         &self,
         prompt: &str,
         work_dir: &Path,
         permissions: &PermissionProfile,
+        system_prompt: &str,
     ) -> Result<Box<dyn AgentSession>>;
 
     /// Human-readable name of this provider.
@@ -149,6 +151,7 @@ impl AgentProvider for ClaudeProvider {
         prompt: &str,
         work_dir: &Path,
         permissions: &PermissionProfile,
+        system_prompt: &str,
     ) -> Result<Box<dyn AgentSession>> {
         let child = tokio::process::Command::new("claude")
             .args([
@@ -157,7 +160,7 @@ impl AgentProvider for ClaudeProvider {
                 "--allowedTools",
                 permissions.claude_allowed_tools(),
                 "--append-system-prompt",
-                AGENT_SYSTEM_PROMPT,
+                system_prompt,
                 "--output-format",
                 "json",
             ])
@@ -189,11 +192,14 @@ impl AgentProvider for GeminiProvider {
         prompt: &str,
         work_dir: &Path,
         permissions: &PermissionProfile,
+        system_prompt: &str,
     ) -> Result<Box<dyn AgentSession>> {
+        // Gemini CLI doesn't have --append-system-prompt; prepend to user prompt.
+        let full_prompt = format!("{system_prompt}\n\n---\n\n{prompt}");
         let mut cmd = tokio::process::Command::new("gemini");
         cmd.args([
             "-p",
-            prompt,
+            &full_prompt,
             "-o",
             "json",
             "--approval-mode",
@@ -234,6 +240,7 @@ impl AgentProvider for AcpCliProvider {
         _prompt: &str,
         work_dir: &Path,
         _permissions: &PermissionProfile,
+        _system_prompt: &str,
     ) -> Result<Box<dyn AgentSession>> {
         // ACP agents are spawned as subprocesses with stdio piped.
         // The prompt and permissions are sent via ACP protocol (JSON-RPC),
@@ -357,10 +364,99 @@ Your prompt includes a Bead ID and Repo path. You MUST manage the bead:\n\
 3. If you cannot fix the issue, comment explaining why — do NOT close it\n\
 ";
 
+// ---------------------------------------------------------------------------
+// Agent definition loading
+// ---------------------------------------------------------------------------
+
+/// Strip YAML frontmatter from a markdown file.
+/// Frontmatter is delimited by `---` on its own line at the start.
+pub fn strip_frontmatter(content: &str) -> String {
+    if !content.starts_with("---") {
+        return content.to_string();
+    }
+    // Find the closing "---" after the opening one
+    if let Some(end) = content[3..].find("\n---") {
+        let after = 3 + end + 4; // 3 for "---", end for body, 4 for "\n---"
+        content[after..].trim_start_matches('\n').to_string()
+    } else {
+        content.to_string()
+    }
+}
+
+/// Load an agent definition from its markdown file.
+///
+/// Reads `{agents_dir}/{agent_name}.md`, strips YAML frontmatter,
+/// and returns the markdown body.
+pub fn load_agent_prompt(agents_dir: &Path, agent_name: &str) -> Option<String> {
+    let file_name = if agent_name.ends_with(".md") {
+        agent_name.to_string()
+    } else {
+        format!("{agent_name}.md")
+    };
+    let path = agents_dir.join(&file_name);
+    let content = std::fs::read_to_string(&path).ok()?;
+    Some(strip_frontmatter(&content))
+}
+
+/// Load GOLDEN_RULES.md from the agents/rules/ directory.
+fn load_golden_rules(agents_dir: &Path) -> Option<String> {
+    let path = agents_dir.join("rules").join("GOLDEN_RULES.md");
+    std::fs::read_to_string(&path).ok()
+}
+
+/// Build the complete system prompt for an agent dispatch.
+///
+/// Layers:
+/// 1. Base AGENT_SYSTEM_PROMPT (MCP tools, workflow, bead lifecycle)
+/// 2. GOLDEN_RULES.md (if agents_dir provided)
+/// 3. Agent-specific definition (if agent_name set and file exists)
+///
+/// Falls back gracefully — missing files produce warnings, not errors.
+pub fn build_system_prompt(agent_name: Option<&str>, agents_dir: Option<&Path>) -> String {
+    let mut parts = vec![AGENT_SYSTEM_PROMPT.to_string()];
+
+    if let Some(dir) = agents_dir {
+        if let Some(rules) = load_golden_rules(dir) {
+            parts.push(format!("\n## Golden Rules\n\n{rules}"));
+        } else {
+            eprintln!(
+                "[dispatch] warning: GOLDEN_RULES.md not found in {}",
+                dir.display()
+            );
+        }
+
+        if let Some(name) = agent_name {
+            if let Some(agent_prompt) = load_agent_prompt(dir, name) {
+                parts.push(format!("\n## Agent Perspective\n\n{agent_prompt}"));
+                eprintln!("[dispatch] loaded agent definition: {name}");
+            } else {
+                eprintln!("[dispatch] warning: agent definition not found: {name}");
+            }
+        }
+    }
+
+    parts.join("\n")
+}
+
+/// Resolve agents_dir from config by finding the self-managed repo.
+pub fn resolve_agents_dir() -> Option<PathBuf> {
+    let cfg = crate::config::load_global().ok()?;
+    cfg.repo
+        .iter()
+        .find(|r| r.self_managed)
+        .map(|r| expand_path(&r.path).join("agents"))
+        .filter(|p| p.exists())
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch
+// ---------------------------------------------------------------------------
+
 /// Spawn an AI agent for a bead. Returns a handle without waiting.
 ///
 /// This is the async entry point for the reconciliation loop.
 /// The `provider` argument controls which AI backend is used.
+/// The `agents_dir` enables agent-aware system prompts from definition files.
 ///
 /// Isolation uses `Workspace` which tries jj first, git worktree second,
 /// then falls back to in-place if neither is available.
@@ -370,6 +466,7 @@ pub async fn spawn(
     isolate: bool,
     generation: u64,
     provider: &dyn AgentProvider,
+    agents_dir: Option<&Path>,
 ) -> Result<AgentHandle> {
     let path = expand_path(repo_path);
     let repo_name = path
@@ -384,24 +481,27 @@ pub async fn spawn(
     let work_dir = workspace.work_dir.clone();
     let prompt = build_prompt(bead, &path.display().to_string());
 
+    // Build agent-aware system prompt from bead.owner
+    let system_prompt = build_system_prompt(bead.owner.as_deref(), agents_dir);
+
     // Permissions come from the bead, not the provider.
-    // TODO: read from bead.permissions field or schema config once available.
-    // For now, derive from issue_type as a sensible default.
     let permissions = match bead.issue_type.as_str() {
         "review" | "survey" | "audit" => PermissionProfile::ReadOnly,
         "epic" | "plan" | "triage" => PermissionProfile::Plan,
         _ => PermissionProfile::Implement,
     };
 
+    let agent_label = bead.owner.as_deref().unwrap_or("generic");
     println!(
-        "Dispatching {} to {} (perms={:?})...",
+        "Dispatching {} to {} (agent={}, perms={:?})...",
         bead.id,
         provider.name(),
+        agent_label,
         permissions
     );
 
     let session = provider
-        .spawn_agent(&prompt, &work_dir, &permissions)
+        .spawn_agent(&prompt, &work_dir, &permissions, &system_prompt)
         .with_context(|| format!("spawning {} for {}", provider.name(), bead.id))?;
 
     Ok(AgentHandle {
@@ -430,7 +530,16 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
 
     client.update_status(bead_id, "dispatched").await?;
 
-    let mut handle = spawn(&bead, &path, isolate, bead.generation(), &ClaudeProvider).await?;
+    let agents_dir = resolve_agents_dir();
+    let mut handle = spawn(
+        &bead,
+        &path,
+        isolate,
+        bead.generation(),
+        &ClaudeProvider,
+        agents_dir.as_deref(),
+    )
+    .await?;
     let success = handle.wait().await?;
 
     if success {
@@ -643,5 +752,108 @@ mod tests {
     fn agent_session_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<CliSession>();
+    }
+
+    // -- Agent definition loading tests --
+
+    #[test]
+    fn strip_frontmatter_basic() {
+        let content = "---\nname: dev-agent\ndescription: test\n---\n\n# Dev Agent\n\nBody here.";
+        let stripped = strip_frontmatter(content);
+        assert!(stripped.starts_with("# Dev Agent"));
+        assert!(!stripped.contains("name: dev-agent"));
+    }
+
+    #[test]
+    fn strip_frontmatter_no_frontmatter() {
+        let content = "# Just Markdown\n\nNo frontmatter here.";
+        assert_eq!(strip_frontmatter(content), content);
+    }
+
+    #[test]
+    fn strip_frontmatter_empty() {
+        assert_eq!(strip_frontmatter(""), "");
+    }
+
+    #[test]
+    fn strip_frontmatter_only_opening() {
+        let content = "---\nno closing delimiter";
+        assert_eq!(strip_frontmatter(content), content);
+    }
+
+    #[test]
+    fn load_agent_prompt_from_tempdir() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("dev-agent.md"),
+            "---\nname: dev-agent\n---\n\n# Dev Agent\n\nYou review code.",
+        )
+        .unwrap();
+
+        let result = load_agent_prompt(dir.path(), "dev-agent");
+        assert!(result.is_some());
+        let body = result.unwrap();
+        assert!(body.contains("# Dev Agent"));
+        assert!(body.contains("You review code."));
+        assert!(!body.contains("name: dev-agent"));
+    }
+
+    #[test]
+    fn load_agent_prompt_missing_file() {
+        let dir = TempDir::new().unwrap();
+        assert!(load_agent_prompt(dir.path(), "nonexistent-agent").is_none());
+    }
+
+    #[test]
+    fn load_agent_prompt_with_md_extension() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("test.md"), "# Test").unwrap();
+        assert!(load_agent_prompt(dir.path(), "test.md").is_some());
+    }
+
+    #[test]
+    fn build_system_prompt_no_agent() {
+        let prompt = build_system_prompt(None, None);
+        assert!(prompt.contains("rosary-dispatched agent"));
+        assert!(!prompt.contains("Agent Perspective"));
+        assert!(!prompt.contains("Golden Rules"));
+    }
+
+    #[test]
+    fn build_system_prompt_with_agent() {
+        let dir = TempDir::new().unwrap();
+        let rules_dir = dir.path().join("rules");
+        std::fs::create_dir(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("GOLDEN_RULES.md"),
+            "# Golden Rules\n\n1. Be minimal.",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("dev-agent.md"),
+            "---\nname: dev-agent\n---\n\n# Dev Agent\n\nFind complexity hotspots.",
+        )
+        .unwrap();
+
+        let prompt = build_system_prompt(Some("dev-agent"), Some(dir.path()));
+        assert!(prompt.contains("rosary-dispatched agent"));
+        assert!(prompt.contains("Golden Rules"));
+        assert!(prompt.contains("Be minimal"));
+        assert!(prompt.contains("Agent Perspective"));
+        assert!(prompt.contains("Find complexity hotspots"));
+    }
+
+    #[test]
+    fn build_system_prompt_missing_agent_falls_back() {
+        let dir = TempDir::new().unwrap();
+        let rules_dir = dir.path().join("rules");
+        std::fs::create_dir(&rules_dir).unwrap();
+        std::fs::write(rules_dir.join("GOLDEN_RULES.md"), "# Rules").unwrap();
+
+        let prompt = build_system_prompt(Some("nonexistent-agent"), Some(dir.path()));
+        // Should still have base prompt + golden rules, just no agent section
+        assert!(prompt.contains("rosary-dispatched agent"));
+        assert!(prompt.contains("Golden Rules"));
+        assert!(!prompt.contains("Agent Perspective"));
     }
 }

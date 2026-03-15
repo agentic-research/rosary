@@ -187,13 +187,14 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_dispatch",
-                "description": "Dispatch an agent to work on a specific bead. Spawns a Claude/Gemini agent in the bead's repo with appropriate permissions.",
+                "description": "Dispatch an agent to work on a specific bead. Spawns a Claude/Gemini agent in the bead's repo with the appropriate agent perspective (dev-agent, staging-agent, etc.) and permissions.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "bead_id": { "type": "string", "description": "Bead ID to dispatch" },
                         "repo_path": { "type": "string", "description": "Path to repo containing the bead" },
-                        "provider": { "type": "string", "description": "Agent provider (claude, gemini, acp)", "default": "claude" }
+                        "provider": { "type": "string", "description": "Agent provider (claude, gemini, acp)", "default": "claude" },
+                        "agent": { "type": "string", "description": "Agent persona override (dev-agent, staging-agent, prod-agent, feature-agent, pm-agent). If omitted, uses bead owner." }
                     },
                     "required": ["bead_id", "repo_path"]
                 }
@@ -205,6 +206,18 @@ fn tool_definitions() -> Value {
                     "type": "object",
                     "properties": {},
                     "required": []
+                }
+            },
+            {
+                "name": "rsry_decompose",
+                "description": "Decompose a markdown document (ADR, README, etc.) into a decade of threaded beads. Returns the decomposition structure without creating beads.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Absolute path to the markdown file" },
+                        "title": { "type": "string", "description": "Title for the decade (defaults to first heading)" }
+                    },
+                    "required": ["path"]
                 }
             }
         ]
@@ -239,6 +252,7 @@ async fn call_tool(name: &str, args: &Value, config_path: &str, pool: &RepoPool)
         "rsry_bead_search" => tool_bead_search(args, pool).await,
         "rsry_dispatch" => tool_dispatch(args, config_path).await,
         "rsry_active" => tool_active().await,
+        "rsry_decompose" => tool_decompose(args).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
 }
@@ -468,6 +482,7 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     let provider_name = args["provider"].as_str().unwrap_or("claude");
+    let agent_override = args.get("agent").and_then(|v| v.as_str());
 
     // Find the bead
     let path = std::path::Path::new(repo_path);
@@ -481,15 +496,30 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".into());
 
-    let bead = client
+    let mut bead = client
         .get_bead(bead_id, &repo_name)
         .await?
         .ok_or_else(|| anyhow::anyhow!("bead {bead_id} not found"))?;
 
-    // Resolve provider and dispatch
+    // Agent override takes precedence over bead.owner
+    if let Some(agent) = agent_override {
+        bead.owner = Some(agent.to_string());
+    }
+
+    let agent_label = bead.owner.as_deref().unwrap_or("generic");
+
+    // Resolve agents_dir and provider, then dispatch
+    let agents_dir = crate::dispatch::resolve_agents_dir();
     let provider = crate::dispatch::provider_by_name(provider_name)?;
-    let handle =
-        crate::dispatch::spawn(&bead, &root, true, bead.generation(), provider.as_ref()).await?;
+    let handle = crate::dispatch::spawn(
+        &bead,
+        &root,
+        true,
+        bead.generation(),
+        provider.as_ref(),
+        agents_dir.as_deref(),
+    )
+    .await?;
 
     // Update status
     let _ = client.update_status(bead_id, "dispatched").await;
@@ -498,6 +528,7 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         "bead_id": bead_id,
         "status": "dispatched",
         "provider": provider_name,
+        "agent": agent_label,
         "pid": handle.pid(),
         "work_dir": handle.work_dir.to_string_lossy(),
     }))
@@ -558,6 +589,62 @@ async fn tool_active() -> Result<Value> {
     Ok(json!({
         "active": agents.len(),
         "agents": agents,
+    }))
+}
+
+async fn tool_decompose(args: &Value) -> Result<Value> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("path is required"))?;
+
+    let markdown = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
+
+    let atoms = bdr::parse::parse_adr(&markdown);
+    if atoms.is_empty() {
+        return Ok(json!({
+            "decade": null,
+            "message": "No decomposable atoms found",
+            "atom_count": 0,
+        }));
+    }
+
+    let title = args
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            markdown
+                .lines()
+                .find(|l| l.starts_with("# "))
+                .map(|l| l.trim_start_matches('#').trim().to_string())
+                .unwrap_or_else(|| path.to_string())
+        });
+
+    let decade = bdr::thread::build_decade(path, &title, &atoms);
+
+    Ok(json!({
+        "decade": {
+            "id": decade.id,
+            "title": decade.title,
+            "status": format!("{:?}", decade.status),
+            "thread_count": decade.threads.len(),
+            "bead_count": decade.threads.iter().map(|t| t.beads.len()).sum::<usize>(),
+        },
+        "threads": decade.threads.iter().map(|t| json!({
+            "id": t.id,
+            "name": t.name,
+            "bead_count": t.beads.len(),
+            "cross_repo_refs": t.cross_repo_refs,
+            "beads": t.beads.iter().map(|b| json!({
+                "title": b.title,
+                "issue_type": b.issue_type,
+                "priority": b.priority,
+                "channel": b.channel.as_str(),
+                "thread_group": b.thread_group,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "atom_count": atoms.len(),
     }))
 }
 
@@ -1129,10 +1216,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_definitions_has_ten_tools() {
+    fn tool_definitions_has_eleven_tools() {
         let defs = tool_definitions();
         let tools = defs["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 11);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"rsry_scan"));
@@ -1145,6 +1232,7 @@ mod tests {
         assert!(names.contains(&"rsry_bead_search"));
         assert!(names.contains(&"rsry_dispatch"));
         assert!(names.contains(&"rsry_active"));
+        assert!(names.contains(&"rsry_decompose"));
     }
 
     #[test]
@@ -1175,7 +1263,7 @@ mod tests {
         let resp = handle_tools_list(json!(2));
         let result = resp.result.unwrap();
         assert!(result["tools"].is_array());
-        assert_eq!(result["tools"].as_array().unwrap().len(), 10);
+        assert_eq!(result["tools"].as_array().unwrap().len(), 11);
     }
 
     #[test]
