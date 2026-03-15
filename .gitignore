@@ -32,3 +32,6 @@ _beads_clone/
 
 # Experiments (local only)
 experiments/
+
+# Agent working logs (ephemeral review notes, not source)
+_agent_logs/
