@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -139,6 +139,20 @@ enum Command {
     Disable {
         /// Repo name or path to remove
         name_or_path: String,
+    },
+    /// Decompose a markdown document (ADR, README, etc.) into beads
+    Decompose {
+        /// Path to the markdown file
+        path: String,
+        /// Title for the decade (defaults to first heading)
+        #[arg(short, long)]
+        title: Option<String>,
+        /// Repo path to create beads in
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+        /// Preview without creating beads
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Manage beads directly
     Bead {
@@ -382,6 +396,80 @@ async fn main() -> Result<()> {
             Some(name) => println!("Disabled: {name}"),
             None => println!("Not found: {name_or_path}"),
         },
+        Command::Decompose {
+            path,
+            title,
+            repo,
+            dry_run,
+        } => {
+            let markdown =
+                std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
+            let atoms = bdr::parse::parse_adr(&markdown);
+            if atoms.is_empty() {
+                println!("No decomposable atoms found in {path}");
+                return Ok(());
+            }
+
+            let adr_title = title.unwrap_or_else(|| {
+                markdown
+                    .lines()
+                    .find(|l: &&str| l.starts_with("# "))
+                    .map(|l: &str| l.trim_start_matches('#').trim().to_string())
+                    .unwrap_or_else(|| path.clone())
+            });
+
+            let decade = bdr::thread::build_decade(&path, &adr_title, &atoms);
+
+            println!("Decade: {} ({})", decade.title, decade.id);
+            println!("Status: {:?}", decade.status);
+            println!("Threads: {}", decade.threads.len());
+            for thread in &decade.threads {
+                println!("\n  {} ({} beads)", thread.name, thread.beads.len());
+                for bead_spec in &thread.beads {
+                    println!(
+                        "    [{}] {} ({}, P{})",
+                        bead_spec.channel,
+                        bead_spec.title,
+                        bead_spec.issue_type,
+                        bead_spec.priority
+                    );
+                }
+                if !thread.cross_repo_refs.is_empty() {
+                    println!("    refs: {}", thread.cross_repo_refs.join(", "));
+                }
+            }
+
+            if !dry_run {
+                let repo_root = Path::new(&repo)
+                    .canonicalize()
+                    .ok()
+                    .and_then(|p| config::discover_repo_root(&p))
+                    .unwrap_or_else(|| PathBuf::from(&repo));
+                let beads_dir = repo_root.join(".beads");
+                let dolt_config = dolt::DoltConfig::from_beads_dir(&beads_dir)?;
+                let client = dolt::DoltClient::connect(&dolt_config).await?;
+
+                let mut created = 0;
+                for thread in &decade.threads {
+                    for spec in &thread.beads {
+                        let id = generate_bead_id();
+                        client
+                            .create_bead(
+                                &id,
+                                &spec.title,
+                                &spec.description,
+                                spec.priority,
+                                &spec.issue_type,
+                            )
+                            .await?;
+                        created += 1;
+                    }
+                }
+                println!("\nCreated {created} beads in {}", repo_root.display());
+            } else {
+                println!("\n(dry run — no beads created)");
+            }
+        }
         Command::Bead { action, repo } => {
             // Walk up to find repo root (like uv's pyproject.toml discovery)
             let repo_root = Path::new(&repo)

@@ -86,6 +86,8 @@ pub struct Reconciler {
     issue_tracker: Option<Box<dyn IssueTracker>>,
     /// Compute provider for workspace provisioning (local, sprites, etc).
     compute: Box<dyn crate::backend::ComputeProvider>,
+    /// Path to agent definitions directory (from self_managed repo).
+    agents_dir: Option<PathBuf>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -153,6 +155,22 @@ impl Reconciler {
             }
         };
 
+        // Discover agents_dir from self-managed repo
+        let agents_dir = config
+            .repo
+            .iter()
+            .find(|r| r.self_managed)
+            .map(|r| scanner::expand_path(&r.path).join("agents"))
+            .filter(|p| p.exists());
+
+        if let Some(ref dir) = agents_dir {
+            eprintln!("[reconcile] agents_dir: {}", dir.display());
+        } else {
+            eprintln!(
+                "[reconcile] warning: no agents_dir found (no self-managed repo with agents/)"
+            );
+        }
+
         Reconciler {
             config,
             queue: WorkQueue::new(),
@@ -165,6 +183,7 @@ impl Reconciler {
             provider,
             issue_tracker: None,
             compute,
+            agents_dir,
         }
     }
 
@@ -361,16 +380,25 @@ impl Reconciler {
             let repo_path = self.repo_info.get(&entry.repo).map(|(p, _)| p.clone());
 
             if let (Some(bead), Some(path)) = (bead, repo_path) {
-                match dispatch::spawn(bead, &path, true, entry.generation, self.provider.as_ref())
-                    .await
+                match dispatch::spawn(
+                    bead,
+                    &path,
+                    true,
+                    entry.generation,
+                    self.provider.as_ref(),
+                    self.agents_dir.as_deref(),
+                )
+                .await
                 {
                     Ok(handle) => {
+                        let agent_label = bead.owner.as_deref().unwrap_or("generic");
                         println!(
-                            "[dispatch] {} (gen={}, retries={}, provider={})",
+                            "[dispatch] {} (gen={}, retries={}, provider={}, agent={})",
                             entry.bead_id,
                             entry.generation,
                             entry.retries,
-                            self.provider.name()
+                            self.provider.name(),
+                            agent_label,
                         );
                         self.persist_status(&entry.bead_id, &entry.repo, "dispatched")
                             .await;
