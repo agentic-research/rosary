@@ -60,6 +60,11 @@ Ship working solutions that are honest about limitations. Don't let theoretical 
 
 **Agent enforcement**: When proposing fixes, prefer the working solution over the perfect one. Tag aspirational improvements as `action:docs` (document the ideal, ship the adequate).
 
+## 11. Every Commit References a Bead
+Include `bead:ID` in commit messages so the VCS-driven lifecycle can track work automatically. No orphan commits — if there's no bead, create one first.
+
+**Agent enforcement**: The verify pipeline rejects commits without a bead reference. Use `bead:rsry-abc123` for references, `closes bead:rsry-abc123` when the commit completes the work.
+
 ---
 
 ## How Agents Use These Rules

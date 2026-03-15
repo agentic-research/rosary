@@ -74,7 +74,8 @@ impl Verifier {
 
     /// Build the default verification pipeline for a given language.
     pub fn for_language(lang: &str) -> Self {
-        let mut tiers: Vec<Box<dyn VerifyTier>> = vec![Box::new(CommitCheck)];
+        let mut tiers: Vec<Box<dyn VerifyTier>> =
+            vec![Box::new(CommitCheck), Box::new(BeadRefCheck)];
 
         match lang {
             "rust" => {
@@ -162,6 +163,39 @@ impl VerifyTier for CommitCheck {
             Ok(VerifyResult::Pass)
         } else {
             Ok(VerifyResult::Fail("no commit found".into()))
+        }
+    }
+}
+
+/// Tier 0.5: Does the agent's commit reference a bead?
+/// Enforces Golden Rule 11: every commit must include `bead:ID`.
+pub struct BeadRefCheck;
+
+impl VerifyTier for BeadRefCheck {
+    fn name(&self) -> &str {
+        "bead_ref"
+    }
+
+    fn check(&self, work_dir: &Path) -> Result<VerifyResult> {
+        let output = std::process::Command::new("git")
+            .args(["log", "--format=%B", "-1"])
+            .current_dir(work_dir)
+            .output()?;
+
+        if !output.status.success() {
+            return Ok(VerifyResult::Pass); // no git = skip
+        }
+
+        let message = String::from_utf8_lossy(&output.stdout);
+        let refs = crate::vcs::extract_bead_refs(&message);
+
+        if refs.is_empty() {
+            Ok(VerifyResult::Fail(
+                "commit does not reference a bead — add bead:ID to commit message (Golden Rule 11)"
+                    .into(),
+            ))
+        } else {
+            Ok(VerifyResult::Pass)
         }
     }
 }
@@ -549,13 +583,13 @@ mod tests {
     #[test]
     fn for_language_builds_correct_tiers() {
         let rust_v = Verifier::for_language("rust");
-        assert_eq!(rust_v.tiers.len(), 6); // commit, compile, test, lint, diff-sanity, review
+        assert_eq!(rust_v.tiers.len(), 7); // commit, bead_ref, compile, test, lint, diff-sanity, review
 
         let go_v = Verifier::for_language("go");
-        assert_eq!(go_v.tiers.len(), 6);
+        assert_eq!(go_v.tiers.len(), 7);
 
         let unknown_v = Verifier::for_language("brainfuck");
-        assert_eq!(unknown_v.tiers.len(), 3); // commit, diff-sanity, review
+        assert_eq!(unknown_v.tiers.len(), 4); // commit, bead_ref, diff-sanity, review
     }
 
     #[test]
