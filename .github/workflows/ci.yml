@@ -53,3 +53,28 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --check
+
+  conductor-test:
+    name: conductor (elixir)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: conductor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.17"
+      - name: cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            conductor/deps
+            conductor/_build
+          key: conductor-${{ runner.os }}-${{ hashFiles('conductor/mix.lock') }}
+          restore-keys: conductor-${{ runner.os }}-
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+      - run: mix format --check-formatted

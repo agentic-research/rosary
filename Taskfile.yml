@@ -27,9 +27,10 @@ tasks:
       - cargo build --release
 
   test:
-    desc: Run all tests
+    desc: Run all tests (Rust + Elixir)
     cmds:
       - cargo test
+      - cd conductor && mix test
 
   check:
     desc: Compile check without codegen
@@ -37,15 +38,17 @@ tasks:
       - cargo check
 
   lint:
-    desc: Run clippy
+    desc: Run clippy + Elixir compile warnings
     deps: [fmt]
     cmds:
       - cargo clippy -- -D warnings
+      - cd conductor && mix compile --warnings-as-errors
 
   fmt:
-    desc: Format code
+    desc: Format code (Rust + Elixir)
     cmds:
       - cargo fmt
+      - cd conductor && mix format
 
   install:
     desc: Build, codesign, and install rsry to ~/.local/bin
