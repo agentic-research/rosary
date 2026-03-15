@@ -64,20 +64,22 @@ impl Workspace {
             VcsKind::None
         };
 
-        let work_dir = match vcs {
-            VcsKind::Jj => create_jj_workspace(repo_path, id)
-                .await
-                .unwrap_or_else(|e| {
+        let (work_dir, actual_vcs) = match vcs {
+            VcsKind::Jj => match create_jj_workspace(repo_path, id).await {
+                Ok(path) => (path, VcsKind::Jj),
+                Err(e) => {
                     eprintln!("[workspace] jj isolation failed ({e}), falling back to in-place");
-                    repo_path.to_path_buf()
-                }),
-            VcsKind::Git => create_git_worktree(repo_path, id)
-                .await
-                .unwrap_or_else(|e| {
+                    (repo_path.to_path_buf(), VcsKind::None)
+                }
+            },
+            VcsKind::Git => match create_git_worktree(repo_path, id).await {
+                Ok(path) => (path, VcsKind::Git),
+                Err(e) => {
                     eprintln!("[workspace] git worktree failed ({e}), falling back to in-place");
-                    repo_path.to_path_buf()
-                }),
-            VcsKind::None => repo_path.to_path_buf(),
+                    (repo_path.to_path_buf(), VcsKind::None)
+                }
+            },
+            VcsKind::None => (repo_path.to_path_buf(), VcsKind::None),
         };
 
         Ok(Workspace {
@@ -85,7 +87,7 @@ impl Workspace {
             repo: repo.to_string(),
             repo_path: repo_path.to_path_buf(),
             work_dir,
-            vcs,
+            vcs: actual_vcs,
             exec_handle: None,
         })
     }
