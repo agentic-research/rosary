@@ -291,33 +291,66 @@ defmodule Conductor.Pipeline do
 end
 
 defmodule Conductor.Pipeline.Step do
-  @moduledoc "A single step in an agent pipeline."
+  @moduledoc """
+  A single step in an agent pipeline.
+
+  ## Modes
+
+  - `:implement` (default) — agent has read/write permissions, does the work
+  - `:plan_first` — agent plans in read-only mode, then implements after approval
+  - `:read_only` — agent can only read/analyze (for review, audit)
+
+  ## Parallel groups
+
+  Steps with the same `parallel_group` are dispatched simultaneously.
+  Steps without a group run sequentially. Groups complete when all
+  members finish, then the next sequential step (or group) begins.
+  """
 
   defstruct [
     :agent,
     timeout_ms: 600_000,
-    max_retries: 3
+    max_retries: 3,
+    mode: :implement,
+    parallel_group: nil
   ]
 
+  @type mode :: :implement | :plan_first | :read_only
   @type t :: %__MODULE__{
           agent: String.t(),
           timeout_ms: non_neg_integer(),
-          max_retries: non_neg_integer()
+          max_retries: non_neg_integer(),
+          mode: mode(),
+          parallel_group: atom() | nil
         }
 
   def new(attrs) when is_map(attrs) do
     %__MODULE__{
       agent: attrs[:agent] || attrs["agent"],
       timeout_ms: attrs[:timeout_ms] || attrs["timeout_ms"] || 600_000,
-      max_retries: attrs[:max_retries] || attrs["max_retries"] || 3
+      max_retries: attrs[:max_retries] || attrs["max_retries"] || 3,
+      mode: parse_mode(attrs[:mode] || attrs["mode"]),
+      parallel_group: parse_atom(attrs[:parallel_group] || attrs["parallel_group"])
     }
   end
 
   def to_map(%__MODULE__{} = s) do
-    %{agent: s.agent, timeout_ms: s.timeout_ms, max_retries: s.max_retries}
+    %{
+      agent: s.agent,
+      timeout_ms: s.timeout_ms,
+      max_retries: s.max_retries,
+      mode: to_string(s.mode),
+      parallel_group: if(s.parallel_group, do: to_string(s.parallel_group))
+    }
   end
 
-  def from_map(map) do
-    new(map)
-  end
+  def from_map(map), do: new(map)
+
+  defp parse_mode(nil), do: :implement
+  defp parse_mode(m) when is_atom(m), do: m
+  defp parse_mode(m) when is_binary(m), do: String.to_existing_atom(m)
+
+  defp parse_atom(nil), do: nil
+  defp parse_atom(a) when is_atom(a), do: a
+  defp parse_atom(a) when is_binary(a), do: String.to_atom(a)
 end

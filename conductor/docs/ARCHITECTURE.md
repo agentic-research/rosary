@@ -228,15 +228,83 @@ flowchart TD
 Conductor is the durable, headless version of Claude Code's interactive agent teams:
 
 | Agent Teams (interactive) | Conductor (headless) |
-|---------------------------|---------------------|
+|---|---|
 | Team lead coordinates | Orchestrator GenServer |
 | Shared task list | Beads in Dolt |
 | Teammates = Claude instances | AgentWorker GenServers |
 | Task deps (pending → unblocked) | Pipeline steps + bead depends_on |
-| TeammateIdle hook | GenServer `:DOWN` / `:exit_status` |
+| TeammateIdle hook | GenServer `:exit_status` |
 | TaskCompleted hook | `on_success` → `Pipeline.advance` |
+| Mailbox messaging | Bead comments via rsry MCP |
+| Plan approval gates | Pipeline step with `mode: :plan_first` |
 | Session-scoped, dies on exit | Dolt-persisted, survives crashes |
 | Permissions inherit from lead | Per-step policy via ACP callbacks |
+| One team per session | Multiple concurrent pipelines |
+| No session resumption | Pipeline state recovered from Dolt |
+
+### What conductor adds beyond agent teams
+
+```mermaid
+graph TB
+    subgraph "Agent Teams (ephemeral)"
+        Lead[Team Lead]
+        T1[Teammate 1]
+        T2[Teammate 2]
+        Tasks[Task List<br/>in-memory]
+        Lead --> T1
+        Lead --> T2
+        T1 -.->|mailbox| T2
+        Tasks -.-> T1
+        Tasks -.-> T2
+    end
+
+    subgraph "Conductor (durable)"
+        Orch[Orchestrator]
+        W1[AgentWorker 1]
+        W2[AgentWorker 2]
+        Beads[(Dolt beads)]
+        Pipe1[Pipeline closure]
+        Pipe2[Pipeline closure]
+        Orch --> W1
+        Orch --> W2
+        W1 --> Pipe1
+        W2 --> Pipe2
+        Beads --> Orch
+        W1 -->|comments| Beads
+        W2 -->|comments| Beads
+    end
+
+    style Tasks fill:#ff9999
+    style Beads fill:#99ff99
+```
+
+**Durable state**: agent teams store tasks in `~/.claude/tasks/{team-name}/` — ephemeral, lost on session exit. Conductor persists pipeline state to Dolt, surviving crashes and restarts.
+
+**Plan approval**: agent teams support `require plan approval` as a lead instruction. Conductor can model this as a pipeline step mode:
+
+```elixir
+# Future: plan-first step requires review before implementation
+%Step{agent: "dev-agent", mode: :plan_first, timeout_ms: 600_000}
+
+# The worker would:
+# 1. Dispatch agent with :read_only permissions
+# 2. Agent produces a plan (not code)
+# 3. Worker evaluates plan (or sends to lead for approval)
+# 4. If approved: re-dispatch with :implement permissions
+```
+
+**Competing hypotheses**: agent teams dispatch multiple teammates exploring different theories. Conductor can model this as a parallel pipeline:
+
+```elixir
+# Future: parallel steps dispatched simultaneously
+%Pipeline{steps: [
+  %Step{agent: "dev-agent", parallel_group: :investigation},
+  %Step{agent: "staging-agent", parallel_group: :investigation},
+  %Step{agent: "prod-agent", parallel_group: :review},  # runs after investigation group
+]}
+```
+
+**Inter-agent communication**: agent teams use a mailbox. Conductor uses bead comments — visible to all agents via rsry MCP, persisted in Dolt, and inspectable by humans in Linear.
 
 ## Relation to BDR
 

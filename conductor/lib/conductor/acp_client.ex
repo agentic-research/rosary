@@ -153,13 +153,25 @@ defmodule Conductor.AcpClient do
     end
   end
 
-  @doc "Map issue_type/agent to permission policy."
-  @spec policy_for(String.t()) :: policy()
-  def policy_for(issue_type) do
-    case issue_type do
-      t when t in ["review", "survey", "audit"] -> :read_only
-      t when t in ["epic", "plan", "triage", "design", "research"] -> :plan
-      _ -> :implement
+  @doc """
+  Map issue_type to permission policy. Can be overridden by step mode.
+
+  Step modes take precedence:
+  - `:plan_first` → `:read_only` during planning, `:implement` after approval
+  - `:read_only` → `:read_only` always
+  - `:implement` → determined by issue_type
+  """
+  @spec policy_for(String.t(), atom()) :: policy()
+  def policy_for(issue_type, step_mode \\ :implement) do
+    case step_mode do
+      :read_only -> :read_only
+      :plan_first -> :read_only
+      :implement ->
+        case issue_type do
+          t when t in ["review", "survey", "audit"] -> :read_only
+          t when t in ["epic", "plan", "triage", "design", "research"] -> :plan
+          _ -> :implement
+        end
     end
   end
 
