@@ -84,8 +84,9 @@ rsry_bead_create / rsry_bead_search / rsry_bead_comment / rsry_bead_close
 rsry_status / rsry_list_beads / rsry_scan / rsry_dispatch / rsry_active
 
 # CLI
-bd create / bd search / bd comments / bd close
 rsry sync --dry-run    # bidirectional Linear sync
+rsry scan              # scan all repos for beads
+rsry status            # aggregated counts
 ```
 
 ## MCP Integration
