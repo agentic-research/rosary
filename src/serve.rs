@@ -494,6 +494,19 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     // Update status
     let _ = client.update_status(bead_id, "dispatched").await;
 
+    // Register in session registry
+    let mut registry = crate::session::SessionRegistry::load().unwrap_or_default();
+    registry
+        .register(crate::session::SessionEntry {
+            bead_id: bead_id.to_string(),
+            repo: repo_name,
+            provider: provider_name.to_string(),
+            pid: handle.pid(),
+            work_dir: handle.work_dir.to_string_lossy().to_string(),
+            started_at: chrono::Utc::now(),
+        })
+        .ok();
+
     Ok(json!({
         "bead_id": bead_id,
         "status": "dispatched",
@@ -504,54 +517,19 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
 }
 
 async fn tool_active() -> Result<Value> {
-    // Read active sessions from the daemon's PID file + process list
-    // For now, scan for running claude/gemini -p processes
-    let output = tokio::process::Command::new("ps")
-        .args(["aux"])
-        .output()
-        .await?;
-
-    let ps_output = String::from_utf8_lossy(&output.stdout);
-    let agents: Vec<Value> = ps_output
-        .lines()
-        .filter(|line| line.contains("claude -p") || line.contains("gemini -p"))
-        .filter(|line| !line.contains("grep"))
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 11 {
-                return None;
-            }
-            let pid = parts[1];
-            let cpu = parts[2];
-            let mem = parts[3];
-            // Extract bead ID from the command line if present
-            let cmd = parts[10..].join(" ");
-            let bead_id = cmd
-                .find("Bead ID: ")
-                .map(|i| {
-                    cmd[i + 9..]
-                        .split('\n')
-                        .next()
-                        .unwrap_or("")
-                        .split("\\012")
-                        .next()
-                        .unwrap_or("")
-                        .trim()
-                })
-                .unwrap_or("unknown");
-            let provider = if cmd.contains("claude") {
-                "claude"
-            } else {
-                "gemini"
-            };
-
-            Some(json!({
-                "pid": pid,
-                "provider": provider,
-                "bead_id": bead_id,
-                "cpu": cpu,
-                "mem": mem,
-            }))
+    let registry = crate::session::SessionRegistry::load().unwrap_or_default();
+    let agents: Vec<Value> = registry
+        .active()
+        .iter()
+        .map(|s| {
+            json!({
+                "bead_id": s.bead_id,
+                "repo": s.repo,
+                "provider": s.provider,
+                "pid": s.pid,
+                "work_dir": s.work_dir,
+                "started_at": s.started_at.to_rfc3339(),
+            })
         })
         .collect();
 

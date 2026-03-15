@@ -58,6 +58,13 @@ impl Workspace {
     ///
     /// Tries jj first, falls back to git worktree, then in-place.
     pub async fn create(id: &str, repo: &str, repo_path: &Path, isolate: bool) -> Result<Self> {
+        // Canonicalize to avoid relative path issues when MCP server
+        // runs from a different cwd than the repo root.
+        let repo_path = repo_path
+            .canonicalize()
+            .unwrap_or_else(|_| repo_path.to_path_buf());
+        let repo_path = repo_path.as_path();
+
         let vcs = if isolate {
             detect_vcs(repo_path)
         } else {
@@ -200,7 +207,7 @@ impl Workspace {
 /// Create a jj workspace for isolated agent work.
 async fn create_jj_workspace(repo_path: &Path, id: &str) -> Result<PathBuf> {
     let workspace_name = format!("fix-{id}");
-    let workspace_path = repo_path.join(format!("../fix/{id}"));
+    let workspace_path = workspace_dir(repo_path, id);
 
     let output = tokio::process::Command::new("jj")
         .args([
@@ -235,18 +242,25 @@ pub(crate) fn cleanup_jj_workspace(repo_path: &Path, id: &str) {
         .current_dir(repo_path)
         .output();
 
-    let workspace_dir = repo_path.join(format!("../fix/{id}"));
-    let _ = std::fs::remove_dir_all(workspace_dir);
+    let ws_dir = workspace_dir(repo_path, id);
+    let _ = std::fs::remove_dir_all(ws_dir);
 }
 
 // ---------------------------------------------------------------------------
 // git worktree isolation (fallback)
 // ---------------------------------------------------------------------------
 
+/// Resolve the workspace directory for a bead.
+/// Uses `{repo_parent}/.rsry-workspaces/{id}` as a deterministic sibling path.
+fn workspace_dir(repo_path: &Path, id: &str) -> PathBuf {
+    let parent = repo_path.parent().unwrap_or(repo_path);
+    parent.join(".rsry-workspaces").join(id)
+}
+
 /// Create a git worktree for isolated work.
 async fn create_git_worktree(repo_path: &Path, id: &str) -> Result<PathBuf> {
     let branch_name = format!("fix/{id}");
-    let worktree_path = repo_path.join(format!("../fix/{id}"));
+    let worktree_path = workspace_dir(repo_path, id);
 
     let output = tokio::process::Command::new("git")
         .args([
@@ -275,7 +289,7 @@ async fn create_git_worktree(repo_path: &Path, id: &str) -> Result<PathBuf> {
 
 /// Clean up a git worktree. Best-effort.
 pub(crate) fn cleanup_git_worktree(repo_path: &Path, id: &str) {
-    let worktree_path = repo_path.join(format!("../fix/{id}"));
+    let worktree_path = workspace_dir(repo_path, id);
     let _ = std::process::Command::new("git")
         .args([
             "worktree",
@@ -334,11 +348,12 @@ mod tests {
     #[tokio::test]
     async fn workspace_create_no_isolation() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let canonical = tmp.path().canonicalize().unwrap();
         let ws = Workspace::create("test-1", "repo", tmp.path(), false)
             .await
             .unwrap();
         assert_eq!(ws.vcs, VcsKind::None);
-        assert_eq!(ws.work_dir, tmp.path());
+        assert_eq!(ws.work_dir, canonical);
         assert!(ws.exec_handle.is_none());
     }
 

@@ -20,6 +20,7 @@ mod queue;
 mod reconcile;
 mod scanner;
 mod serve;
+mod session;
 #[allow(dead_code)] // API surface — wired in rsry-e599fb (SpritesProvider)
 mod sprites;
 #[allow(dead_code)] // API surface — wired in rsry-e608bb (reconciler integration)
