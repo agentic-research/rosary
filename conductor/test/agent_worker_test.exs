@@ -61,9 +61,9 @@ defmodule Conductor.AgentWorkerTest do
 
       state = AgentWorker.get_state(pid)
       assert state.bead_id == "bead-init-1"
-      assert state.pipeline[:bead_id] == "bead-init-1"
-      assert state.pipeline[:issue_type] == "task"
-      assert state.progress == {0, 1}
+      assert state.bead_id == "bead-init-1"
+      assert state.issue_type == "task"
+      assert state.progress == "0/1"
       assert is_integer(state.os_pid)
 
       cleanup_worker(pid)
@@ -83,9 +83,7 @@ defmodule Conductor.AgentWorkerTest do
       assert_receive {:agent_spawned, "bead-init-2", "dev-agent", _port}, 1_000
 
       state = AgentWorker.get_state(pid)
-      steps = state.pipeline[:steps]
-      assert length(steps) == 2
-      assert Enum.map(steps, & &1[:agent]) == ["dev-agent", "staging-agent"]
+      assert state.agents == ["dev-agent", "staging-agent"]
 
       cleanup_worker(pid)
     end
@@ -110,7 +108,7 @@ defmodule Conductor.AgentWorkerTest do
       assert_receive {:agent_spawned, "bead-init-3", "staging-agent", _port}, 1_000
 
       state = AgentWorker.get_state(pid)
-      assert state.pipeline[:current] == 1
+      assert state.current_agent == "staging-agent"
 
       cleanup_worker(pid)
     end
@@ -346,10 +344,9 @@ defmodule Conductor.AgentWorkerTest do
       state = AgentWorker.get_state(pid)
 
       assert state.bead_id == "bead-state-1"
-      assert is_map(state.pipeline)
-      assert state.pipeline[:bead_id] == "bead-state-1"
-      assert state.pipeline[:repo] == "/tmp/repo"
-      assert {0, 2} = state.progress
+      assert state.repo == "/tmp/repo"
+      assert state.agents == ["dev-agent", "staging-agent"]
+      assert state.progress == "0/2"
       assert is_integer(state.os_pid)
       assert %DateTime{} = state.started_at
 
