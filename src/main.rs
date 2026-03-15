@@ -26,6 +26,10 @@ mod session;
 mod sprites;
 #[allow(dead_code)] // API surface — wired in rsry-e608bb (reconciler integration)
 mod sprites_provider;
+#[allow(dead_code)] // Phase 1: traits + impl, wired in Phase 2
+mod store;
+#[allow(dead_code)] // Phase 1: Dolt backend, wired in Phase 2
+mod store_dolt;
 #[allow(dead_code)]
 mod sync;
 mod thread;

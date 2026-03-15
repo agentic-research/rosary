@@ -530,8 +530,13 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     )
     .await?;
 
-    // Update status
-    let _ = client.update_status(bead_id, "dispatched").await;
+    // Update status — this is the linearization point for dispatch.
+    // Bead must be marked dispatched before pipeline state is written.
+    // Failure here means the dispatch did not happen from the bead's perspective.
+    client
+        .update_status(bead_id, "dispatched")
+        .await
+        .with_context(|| format!("marking bead {bead_id} as dispatched"))?;
 
     // Register in session registry
     let mut registry = crate::session::SessionRegistry::load().unwrap_or_default();

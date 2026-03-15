@@ -148,6 +148,7 @@ impl Reconciler {
                 linear: None,
                 compute: config.compute.clone(),
                 http: None,
+                backend: None,
             };
             match crate::config::compute_provider_from_config(&tmp_cfg) {
                 Ok(p) => p,

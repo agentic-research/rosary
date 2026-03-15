@@ -142,7 +142,7 @@ Rosary manages its own development. It scans its own repo, dispatches agents to 
 
 ## Architecture
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full technical picture.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full technical picture and [docs/glossary.md](docs/glossary.md) for terminology (beads, decades, threads, triage, etc.).
 
 ## Build
 
