@@ -498,7 +498,7 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         "bead_id": bead_id,
         "status": "dispatched",
         "provider": provider_name,
-        "pid": handle.child.id(),
+        "pid": handle.pid(),
         "work_dir": handle.work_dir.to_string_lossy(),
     }))
 }

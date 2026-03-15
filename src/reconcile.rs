@@ -484,9 +484,9 @@ impl Reconciler {
             let mut success = false;
 
             match handle.try_wait() {
-                Ok(Some(status)) => {
+                Ok(Some(ok)) => {
                     done = true;
-                    success = status.success();
+                    success = ok;
                 }
                 Ok(None) => {
                     // Check timeout (10 min default)
