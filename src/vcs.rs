@@ -89,6 +89,100 @@ pub fn push(state_path: &Path, remote: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// jj log scanning — extract recent commits for bead transition detection
+// ---------------------------------------------------------------------------
+
+/// A commit from jj log, parsed into structured fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VcsCommit {
+    /// jj change ID (short form, e.g., "kxryzmss")
+    pub change_id: String,
+    /// Commit description (may be multiline)
+    pub description: String,
+}
+
+/// Scan recent jj commits in a repo. Returns parsed commits.
+///
+/// Uses `jj log` with a structured template for reliable parsing.
+/// The `revset` parameter controls which commits to scan (e.g., `"@"`, `"@-..@"`).
+/// Default limit prevents unbounded output.
+pub fn scan_jj_log(repo_path: &Path, revset: &str, limit: usize) -> Result<Vec<VcsCommit>> {
+    // Template: change_id<NUL>description<NUL><NUL>
+    // NUL bytes are safe delimiters — they never appear in commit messages.
+    let template = r#"change_id.short() ++ "\0" ++ description ++ "\0\0""#;
+
+    let output = std::process::Command::new("jj")
+        .args([
+            "log",
+            "--no-graph",
+            "--no-pager",
+            "-r",
+            revset,
+            "--limit",
+            &limit.to_string(),
+            "--template",
+            template,
+        ])
+        .current_dir(repo_path)
+        .output()
+        .with_context(|| format!("running jj log in {}", repo_path.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // jj not initialized is not an error — repo might use git only
+        if stderr.contains("There is no jj repo") || stderr.contains("no jj repo") {
+            return Ok(Vec::new());
+        }
+        anyhow::bail!("jj log failed: {stderr}");
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let commits = parse_jj_log_output(&stdout);
+    Ok(commits)
+}
+
+/// Parse the NUL-delimited jj log output into VcsCommit structs.
+fn parse_jj_log_output(output: &str) -> Vec<VcsCommit> {
+    output
+        .split("\0\0")
+        .filter(|entry| !entry.trim().is_empty())
+        .filter_map(|entry| {
+            let parts: Vec<&str> = entry.splitn(2, '\0').collect();
+            if parts.len() == 2 {
+                let change_id = parts[0].trim().to_string();
+                let description = parts[1].trim().to_string();
+                if !change_id.is_empty() {
+                    return Some(VcsCommit {
+                        change_id,
+                        description,
+                    });
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+/// Scan a repo's jj log and extract bead references from recent commits.
+///
+/// Returns a list of (change_id, BeadRef) pairs — the reconciler uses these
+/// to trigger bead state transitions.
+pub fn scan_vcs_bead_refs(repo_path: &Path) -> Result<Vec<(String, BeadRef)>> {
+    // Scan recent non-immutable commits (working copy + recent work)
+    let commits = scan_jj_log(repo_path, "mine()", 50)?;
+
+    let mut results = Vec::new();
+    for commit in &commits {
+        let refs = extract_bead_refs(&commit.description);
+        for bead_ref in refs {
+            results.push((commit.change_id.clone(), bead_ref));
+        }
+    }
+
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
 // Bead ID extraction from commit messages
 // ---------------------------------------------------------------------------
 
@@ -217,6 +311,40 @@ mod tests {
         init_jj(tmp.path()).unwrap();
         init_jj(tmp.path()).unwrap();
         assert!(tmp.path().join(".jj").exists());
+    }
+
+    // --- jj log parsing tests ---
+
+    #[test]
+    fn parse_jj_log_single_commit() {
+        let output = "kxryzmss\0fix the widget bug\n\nbead:rsry-abc123\0\0";
+        let commits = parse_jj_log_output(output);
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].change_id, "kxryzmss");
+        assert!(commits[0].description.contains("bead:rsry-abc123"));
+    }
+
+    #[test]
+    fn parse_jj_log_multiple_commits() {
+        let output = "aaa\0first commit\0\0bbb\0second commit\n\ncloses bead:rsry-xyz\0\0";
+        let commits = parse_jj_log_output(output);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].change_id, "aaa");
+        assert_eq!(commits[1].change_id, "bbb");
+    }
+
+    #[test]
+    fn parse_jj_log_empty() {
+        let commits = parse_jj_log_output("");
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn parse_jj_log_trailing_whitespace() {
+        let output = "abc\0some desc\0\0\n";
+        let commits = parse_jj_log_output(output);
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].change_id, "abc");
     }
 
     // --- Bead ID extraction tests ---
