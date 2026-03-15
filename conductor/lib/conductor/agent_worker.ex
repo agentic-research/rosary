@@ -26,7 +26,8 @@ defmodule Conductor.AgentWorker do
     :os_pid,
     :timeout_ref,
     :started_at,
-    :work_dir
+    :work_dir,
+    pending_tools: %{}
   ]
 
   # -- Public API --
@@ -138,8 +139,20 @@ defmodule Conductor.AgentWorker do
   end
 
   @impl true
+  def handle_info({port, {:data, {:eol, line}}}, %{port: port} = state) do
+    # ACP JSON-RPC message from the agent
+    handle_acp_message(line, state)
+  end
+
+  @impl true
+  def handle_info({port, {:data, {:noeol, _chunk}}}, %{port: port} = state) do
+    # Partial line — ignore (will get full line on next :eol)
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info({_port, {:data, _data}}, state) do
-    # Ignore stdout/stderr data from the Port
+    # Non-line data from the Port
     {:noreply, state}
   end
 
@@ -259,49 +272,114 @@ defmodule Conductor.AgentWorker do
   defp start_agent_process(pipeline) do
     # Allow test injection of a custom spawn function
     case spawn_fn() do
-      nil -> start_claude_process(pipeline)
+      nil -> start_acp_process(pipeline)
       fun when is_function(fun) -> fun.(pipeline)
     end
   end
 
-  defp start_claude_process(pipeline) do
+  defp start_acp_process(pipeline) do
+    alias Conductor.AcpClient
+
     agent = Pipeline.current_agent(pipeline)
     bead_id = pipeline.bead_id
     repo = pipeline.repo
 
-    prompt =
-      "Fix this issue. Make the minimal change needed.\n\n" <>
-        "Bead ID: #{bead_id}\nRepo: #{repo}\n" <>
-        "Title: #{pipeline.issue_type} work\n\n" <>
-        "After fixing:\n" <>
-        "1. Run tests via `task test`\n" <>
-        "2. Create a commit with a descriptive message\n" <>
-        "3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"#{repo}\" and id=\"#{bead_id}\"\n" <>
-        "4. Report what you changed"
+    # Resolve binary from agent name (default: claude)
+    binary = agent_binary(agent)
 
-    # Spawn claude -p as an Erlang Port — we OWN the process
+    prompt = build_prompt(pipeline)
+
     try do
-      port =
-        Port.open(
-          {:spawn_executable, System.find_executable("claude") || "claude"},
-          [
-            :exit_status,
-            :binary,
-            :stderr_to_stdout,
-            args: [
-              "-p", prompt,
-              "--allowedTools", "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git *),Bash(task *),Glob,Grep,mcp__mache__*,mcp__rsry__*",
-              "--output-format", "json"
-            ],
-            cd: to_charlist(repo)
-          ]
-        )
-
-      {:os_pid, os_pid} = Port.info(port, :os_pid)
-      Logger.info("[worker] #{bead_id}: spawned #{agent} (pid=#{os_pid})")
+      {:ok, port, os_pid} = AcpClient.start(binary, repo)
+      _session_id = AcpClient.prompt(port, nil, repo, prompt)
+      Logger.info("[worker] #{bead_id}: spawned #{agent} via ACP (#{binary}, pid=#{os_pid})")
       {:ok, port, os_pid}
     rescue
       e -> {:error, Exception.message(e)}
+    end
+  end
+
+  defp build_prompt(pipeline) do
+    bead_id = pipeline.bead_id
+    repo = pipeline.repo
+    agent = Pipeline.current_agent(pipeline)
+
+    "Fix this issue. Make the minimal change needed.\n\n" <>
+      "Bead ID: #{bead_id}\n" <>
+      "Repo: #{repo}\n" <>
+      "Agent: #{agent}\n" <>
+      "Title: #{pipeline.issue_type} work\n\n" <>
+      "After fixing:\n" <>
+      "1. Run tests via `task test`\n" <>
+      "2. Create a commit with a descriptive message\n" <>
+      "3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"#{repo}\" and id=\"#{bead_id}\"\n" <>
+      "4. Report what you changed"
+  end
+
+  # -- ACP message handling --
+
+  defp handle_acp_message(line, state) do
+    alias Conductor.AcpClient
+
+    case AcpClient.handle_message(line) do
+      {:ok, {:permission_request, msg_id, tool_call, options}} ->
+        # Local policy check — the sigpol pattern
+        tool_name = tool_call["fields"]["title"] || tool_call["title"] || "unknown"
+        tool_id = tool_call["toolCallId"]
+        tool_info = Map.get(state.pending_tools, tool_id, %{})
+        resolved_name = tool_info[:title] || tool_name
+
+        policy = AcpClient.policy_for(state.pipeline.issue_type)
+        approved = AcpClient.policy_allows?(resolved_name, policy)
+
+        option_id =
+          if approved do
+            find_option(options, "allow_once") || find_option(options, "allow_always")
+          else
+            find_option(options, "reject_once")
+          end
+
+        if approved do
+          AcpClient.approve(state.port, msg_id, option_id)
+        else
+          AcpClient.reject(state.port, msg_id, option_id)
+          Logger.info("[policy] #{state.pipeline.bead_id}: rejected #{resolved_name}")
+        end
+
+        {:noreply, state}
+
+      {:ok, {:tool_call, tool_id, title, kind}} ->
+        # Stash tool details for permission lookup
+        tools = Map.put(state.pending_tools, tool_id, %{title: title, kind: kind})
+        {:noreply, %{state | pending_tools: tools}}
+
+      {:ok, {:tool_update, _tool_id, _status}} ->
+        {:noreply, state}
+
+      {:ok, {:prompt_complete, _reason, _result}} ->
+        # Agent finished via ACP — the exit_status handler will also fire
+        {:noreply, state}
+
+      {:ok, _other} ->
+        {:noreply, state}
+    end
+  end
+
+  defp find_option(options, kind) do
+    case Enum.find(options, fn o -> o["kind"] == kind end) do
+      %{"optionId" => id} -> id
+      _ -> kind
+    end
+  end
+
+  # Map agent names to ACP binaries. Supports multiple providers.
+  defp agent_binary(_agent_name) do
+    provider = Application.get_env(:conductor, :agent_provider, "claude")
+
+    case provider do
+      "gemini" -> "gemini"
+      "claude" -> "claude"
+      binary -> binary
     end
   end
 end
