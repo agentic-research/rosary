@@ -25,10 +25,10 @@ defmodule Conductor.Orchestrator do
     interval = Application.get_env(:conductor, :scan_interval_ms, 30_000)
     max_concurrent = Application.get_env(:conductor, :max_concurrent, 3)
 
-    Logger.info("[orchestrator] started (interval=#{interval}ms, max_concurrent=#{max_concurrent})")
+    Logger.info("[orchestrator] started (interval=#{inspect(interval)}, max_concurrent=#{max_concurrent})")
 
-    # Run first tick immediately
-    send(self(), :tick)
+    # Run first tick immediately (unless disabled)
+    if is_integer(interval), do: send(self(), :tick)
 
     {:ok, %__MODULE__{interval_ms: interval, max_concurrent: max_concurrent}}
   end
@@ -36,7 +36,7 @@ defmodule Conductor.Orchestrator do
   @impl true
   def handle_info(:tick, state) do
     state = do_tick(state)
-    Process.send_after(self(), :tick, state.interval_ms)
+    if is_integer(state.interval_ms), do: Process.send_after(self(), :tick, state.interval_ms)
     {:noreply, state}
   end
 
