@@ -55,21 +55,54 @@ defmodule Conductor.Pipeline do
 
   # -- Templates: issue_type → default pipeline --
 
+  @validation_implement %{command: "task test", interval_ms: 300_000, on_fail: :notify_agent}
+  @validation_review %{command: "task test", interval_ms: 300_000, on_fail: :kill}
+
   @templates %{
     "bug" => [
-      %{agent: "dev-agent", timeout_ms: 600_000, max_retries: 3},
-      %{agent: "staging-agent", timeout_ms: 600_000, max_retries: 2}
+      %{
+        agent: "dev-agent",
+        timeout_ms: 600_000,
+        max_retries: 3,
+        validation: @validation_implement
+      },
+      %{
+        agent: "staging-agent",
+        timeout_ms: 600_000,
+        max_retries: 2,
+        validation: @validation_review
+      }
     ],
     "feature" => [
-      %{agent: "dev-agent", timeout_ms: 600_000, max_retries: 3},
-      %{agent: "staging-agent", timeout_ms: 600_000, max_retries: 2},
-      %{agent: "prod-agent", timeout_ms: 600_000, max_retries: 2}
+      %{
+        agent: "dev-agent",
+        timeout_ms: 600_000,
+        max_retries: 3,
+        validation: @validation_implement
+      },
+      %{
+        agent: "staging-agent",
+        timeout_ms: 600_000,
+        max_retries: 2,
+        validation: @validation_review
+      },
+      %{agent: "prod-agent", timeout_ms: 600_000, max_retries: 2, validation: @validation_review}
     ],
     "task" => [
-      %{agent: "dev-agent", timeout_ms: 600_000, max_retries: 3}
+      %{
+        agent: "dev-agent",
+        timeout_ms: 600_000,
+        max_retries: 3,
+        validation: @validation_implement
+      }
     ],
     "chore" => [
-      %{agent: "dev-agent", timeout_ms: 600_000, max_retries: 3}
+      %{
+        agent: "dev-agent",
+        timeout_ms: 600_000,
+        max_retries: 3,
+        validation: @validation_implement
+      }
     ],
     "review" => [
       %{agent: "staging-agent", timeout_ms: 600_000, max_retries: 2}
@@ -314,8 +347,15 @@ defmodule Conductor.Pipeline.Step do
     timeout_ms: 600_000,
     max_retries: 3,
     mode: :implement,
-    parallel_group: nil
+    parallel_group: nil,
+    validation: nil
   ]
+
+  @type validation :: %{
+          command: String.t(),
+          interval_ms: non_neg_integer(),
+          on_fail: :notify_agent | :kill | :log_only
+        }
 
   @type mode :: :implement | :plan_first | :read_only
   @type t :: %__MODULE__{
@@ -323,7 +363,8 @@ defmodule Conductor.Pipeline.Step do
           timeout_ms: non_neg_integer(),
           max_retries: non_neg_integer(),
           mode: mode(),
-          parallel_group: atom() | nil
+          parallel_group: atom() | nil,
+          validation: validation() | nil
         }
 
   def new(attrs) when is_map(attrs) do
@@ -332,7 +373,8 @@ defmodule Conductor.Pipeline.Step do
       timeout_ms: attrs[:timeout_ms] || attrs["timeout_ms"] || 600_000,
       max_retries: attrs[:max_retries] || attrs["max_retries"] || 3,
       mode: parse_mode(attrs[:mode] || attrs["mode"]),
-      parallel_group: parse_atom(attrs[:parallel_group] || attrs["parallel_group"])
+      parallel_group: parse_atom(attrs[:parallel_group] || attrs["parallel_group"]),
+      validation: parse_validation(attrs[:validation] || attrs["validation"])
     }
   end
 
@@ -342,7 +384,8 @@ defmodule Conductor.Pipeline.Step do
       timeout_ms: s.timeout_ms,
       max_retries: s.max_retries,
       mode: to_string(s.mode),
-      parallel_group: if(s.parallel_group, do: to_string(s.parallel_group))
+      parallel_group: if(s.parallel_group, do: to_string(s.parallel_group)),
+      validation: s.validation
     }
   end
 
@@ -355,4 +398,18 @@ defmodule Conductor.Pipeline.Step do
   defp parse_atom(nil), do: nil
   defp parse_atom(a) when is_atom(a), do: a
   defp parse_atom(a) when is_binary(a), do: String.to_atom(a)
+
+  defp parse_validation(nil), do: nil
+
+  defp parse_validation(%{} = v) do
+    %{
+      command: v[:command] || v["command"],
+      interval_ms: v[:interval_ms] || v["interval_ms"] || 300_000,
+      on_fail: parse_on_fail(v[:on_fail] || v["on_fail"])
+    }
+  end
+
+  defp parse_on_fail(nil), do: :notify_agent
+  defp parse_on_fail(f) when is_atom(f), do: f
+  defp parse_on_fail(f) when is_binary(f), do: String.to_existing_atom(f)
 end

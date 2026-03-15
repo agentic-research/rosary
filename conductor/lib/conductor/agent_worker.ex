@@ -31,7 +31,8 @@ defmodule Conductor.AgentWorker do
     :bead_title,
     :bead_description,
     pending_tools: %{},
-    acp_stop_reason: nil
+    acp_stop_reason: nil,
+    validate_ref: nil
   ]
 
   # -- Public API --
@@ -69,6 +70,7 @@ defmodule Conductor.AgentWorker do
       {:ok, port, os_pid} ->
         step = Pipeline.current_step(pipeline)
         timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
+        validate_ref = schedule_validation(step)
 
         {:ok,
          %__MODULE__{
@@ -76,6 +78,7 @@ defmodule Conductor.AgentWorker do
            port: port,
            os_pid: os_pid,
            timeout_ref: timeout_ref,
+           validate_ref: validate_ref,
            started_at: DateTime.utc_now(),
            work_dir: repo,
            bead_title: title,
@@ -93,6 +96,7 @@ defmodule Conductor.AgentWorker do
   @impl true
   def handle_info({port, {:exit_status, code}}, %{port: port} = state) do
     if state.timeout_ref, do: Process.cancel_timer(state.timeout_ref)
+    if state.validate_ref, do: Process.cancel_timer(state.validate_ref)
 
     elapsed = DateTime.diff(DateTime.utc_now(), state.started_at, :second)
     agent = Pipeline.current_agent(state.pipeline)
@@ -129,11 +133,12 @@ defmodule Conductor.AgentWorker do
     step = Pipeline.current_step(state.pipeline)
     Logger.warning("[timeout] #{bead_id}: killing #{agent} (pid=#{state.os_pid})")
 
+    if state.validate_ref, do: Process.cancel_timer(state.validate_ref)
     if state.port, do: Port.close(state.port)
 
     pipeline = Pipeline.record(state.pipeline, :timeout, "exceeded #{step.timeout_ms}ms")
     # Port close will trigger exit_status message
-    {:noreply, %{state | pipeline: pipeline}}
+    {:noreply, %{state | pipeline: pipeline, validate_ref: nil}}
   end
 
   # -- Retry (after backoff) --
@@ -144,6 +149,7 @@ defmodule Conductor.AgentWorker do
       {:ok, port, os_pid} ->
         step = Pipeline.current_step(state.pipeline)
         timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
+        validate_ref = schedule_validation(step)
 
         {:noreply,
          %{
@@ -151,12 +157,70 @@ defmodule Conductor.AgentWorker do
            | port: port,
              os_pid: os_pid,
              timeout_ref: timeout_ref,
-             started_at: DateTime.utc_now()
+             validate_ref: validate_ref,
+             started_at: DateTime.utc_now(),
+             acp_stop_reason: nil
          }}
 
       {:error, reason} ->
         Logger.error("[retry] #{state.pipeline.bead_id}: start failed: #{inspect(reason)}")
         {:stop, {:retry_start_failed, reason}, state}
+    end
+  end
+
+  # -- Validation loop (the built-in /loop) --
+
+  @impl true
+  def handle_info(:validate, state) do
+    step = Pipeline.current_step(state.pipeline)
+    bead_id = state.pipeline.bead_id
+
+    case step && step.validation do
+      nil ->
+        {:noreply, state}
+
+      %{command: command, on_fail: on_fail} = validation ->
+        case run_validation(command, state.work_dir) do
+          :pass ->
+            ref = Process.send_after(self(), :validate, validation.interval_ms)
+            {:noreply, %{state | validate_ref: ref}}
+
+          {:fail, output} ->
+            agent = Pipeline.current_agent(state.pipeline)
+            Logger.warning("[validate] #{bead_id}: #{command} failed during #{agent}")
+
+            case on_fail do
+              :notify_agent ->
+                # Inject failure into the active ACP session
+                if state.port && state.session_id do
+                  alias Conductor.AcpClient
+
+                  AcpClient.resume(
+                    state.port,
+                    state.session_id,
+                    "Tests are failing. Fix before continuing:\n\n```\n#{truncate(output, 2000)}\n```"
+                  )
+                end
+
+                ref = Process.send_after(self(), :validate, validation.interval_ms)
+                {:noreply, %{state | validate_ref: ref}}
+
+              :kill ->
+                client().bead_comment(
+                  state.pipeline.repo,
+                  bead_id,
+                  "Validation failed during #{agent}, killing: #{truncate(output, 500)}"
+                )
+
+                if state.port, do: Port.close(state.port)
+                pipeline = Pipeline.record(state.pipeline, :fail, "validation: #{command}")
+                {:noreply, %{state | pipeline: pipeline, validate_ref: nil}}
+
+              :log_only ->
+                ref = Process.send_after(self(), :validate, validation.interval_ms)
+                {:noreply, %{state | validate_ref: ref}}
+            end
+        end
     end
   end
 
@@ -247,6 +311,7 @@ defmodule Conductor.AgentWorker do
           {:ok, port, os_pid} ->
             step = Pipeline.current_step(next_pipeline)
             timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
+            validate_ref = schedule_validation(step)
 
             {:noreply,
              %{
@@ -255,7 +320,11 @@ defmodule Conductor.AgentWorker do
                  port: port,
                  os_pid: os_pid,
                  timeout_ref: timeout_ref,
-                 started_at: DateTime.utc_now()
+                 validate_ref: validate_ref,
+                 started_at: DateTime.utc_now(),
+                 acp_stop_reason: nil,
+                 session_id: nil,
+                 pending_tools: %{}
              }}
 
           {:error, reason} ->
@@ -432,6 +501,24 @@ defmodule Conductor.AgentWorker do
       _ -> kind
     end
   end
+
+  # -- Validation helpers --
+
+  defp schedule_validation(%{validation: %{interval_ms: ms}}) do
+    Process.send_after(self(), :validate, ms)
+  end
+
+  defp schedule_validation(_step), do: nil
+
+  defp run_validation(command, work_dir) do
+    case System.cmd("/bin/sh", ["-c", command], cd: work_dir, stderr_to_stdout: true) do
+      {_output, 0} -> :pass
+      {output, _code} -> {:fail, output}
+    end
+  end
+
+  defp truncate(s, max) when byte_size(s) <= max, do: s
+  defp truncate(s, max), do: String.slice(s, 0, max) <> "\n... (truncated)"
 
   # Map to ACP binary. All providers speak the same protocol via --acp.
   # Provider selection: config > per-step override > default (claude)

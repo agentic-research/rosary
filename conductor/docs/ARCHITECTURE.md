@@ -85,7 +85,7 @@ Each tick:
 ### Conductor.AgentWorker
 GenServer managing one bead's full pipeline. The core of the system.
 
-**State**: holds a `Pipeline` struct (the closure), Port handle, OS PID, timeout timer.
+**State**: Pipeline struct (closure), Port handle, OS PID, timeout timer, ACP session ID, validation timer, stop reason.
 
 **Lifecycle**:
 
@@ -94,7 +94,7 @@ stateDiagram-v2
     [*] --> Init: start_link(bead)
     Init --> Running: AcpClient.start + prompt
     Running --> Success: exit_status 0
-    Running --> Failure: exit_status N
+    Running --> Failure: exit_status N or ACP refusal/max_tokens
     Running --> Timeout: timer fires
     Timeout --> Failure: Port.close
 
@@ -125,6 +125,17 @@ flowchart LR
     Policy -->|yes| Approve[AcpClient.approve]
     Policy -->|no| Reject[AcpClient.reject]
 ```
+
+**Validation loop**: each step can define a validation command (e.g., `task test`) that runs periodically while the agent works. On failure:
+- `:notify_agent` — inject the failure into the active ACP session via `resume()`
+- `:kill` — terminate the agent, record failure
+- `:log_only` — log and continue
+
+This is the built-in equivalent of `/loop 5m task test` — but first-class, per-step, with configurable failure policy.
+
+**Session resume**: on retry, the worker resumes the previous ACP session instead of starting fresh. The agent keeps context from its first attempt.
+
+**ACP stop_reason**: `refusal`, `max_tokens`, `cancelled` from ACP are treated as failures regardless of exit code. Only `end_turn` with exit 0 = success.
 
 **Why ACP, not claude -p**:
 - Real exit codes from Port (not approximated)
@@ -161,7 +172,13 @@ Operations:
 - `to_map/1`, `from_map/1` — serialize for Dolt persistence
 
 ### Conductor.Pipeline.Step
-Individual step in a pipeline. Fields: `agent`, `timeout_ms`, `max_retries`.
+Individual step in a pipeline:
+- `agent` — agent name (e.g., "dev-agent")
+- `timeout_ms` — max execution time
+- `max_retries` — retry budget
+- `mode` — `:implement` | `:plan_first` | `:read_only`
+- `parallel_group` — steps with same group dispatch concurrently
+- `validation` — optional `%{command, interval_ms, on_fail}` for periodic checks
 
 ## Data Flow
 
