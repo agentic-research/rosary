@@ -350,7 +350,9 @@ async fn connect_repo_dolt(repo: &crate::config::RepoConfig) -> Result<crate::do
 /// 1. Link: match existing Linear issues to beads by title, store external_ref
 /// 2. Push: create Linear issues for unlinked beads, store external_ref
 /// 3. Close: update Linear issues for closed beads
-pub async fn sync(dry_run: bool) -> Result<()> {
+///
+/// If `repo_filter` is provided, only beads from those repos are synced.
+pub async fn sync(dry_run: bool, repo_filter: Option<&[String]>) -> Result<()> {
     let api_key = match get_api_key() {
         Some(k) => k,
         None => return Ok(()),
@@ -365,8 +367,6 @@ pub async fn sync(dry_run: bool) -> Result<()> {
     });
 
     let client = build_client(&api_key)?;
-
-    println!("Looking up team '{team_key}'...");
     let team_id = resolve_team_id(&client, &team_key).await?;
 
     let query = r#"
@@ -407,24 +407,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         .and_then(|v| v.as_array())
         .context("could not fetch issues from Linear")?;
 
-    println!();
-    println!("=== {team_name} — Open Issues ({} found) ===", issues.len());
-    println!();
-
-    if issues.is_empty() {
-        println!("  No open issues.");
-    } else {
-        for issue in issues {
-            let ident = issue["identifier"].as_str().unwrap_or("???");
-            let title = issue["title"].as_str().unwrap_or("(untitled)");
-            let state = issue
-                .pointer("/state/name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let priority = issue["priority"].as_i64().unwrap_or(0);
-            println!("  {ident}  [{state}]  P{priority}  {title}");
-        }
-    }
+    crate::cli::sync_header(team_name);
 
     // --- Build per-repo Dolt client map ---
     let cfg = crate::config::load_merged("rosary.toml")?;
@@ -434,17 +417,29 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         .map(|l| l.phases.clone())
         .unwrap_or_default();
     let mut project_cache: HashMap<String, Option<String>> = HashMap::new();
-    let beads = crate::scanner::scan_repos(&cfg.repo).await?;
+
+    // Filter repos if --repo flag was provided
+    let repos: Vec<&crate::config::RepoConfig> = match repo_filter {
+        Some(names) => cfg
+            .repo
+            .iter()
+            .filter(|r| names.contains(&r.name))
+            .collect(),
+        None => cfg.repo.iter().collect(),
+    };
+
+    let beads =
+        crate::scanner::scan_repos(&repos.iter().map(|r| (*r).clone()).collect::<Vec<_>>()).await?;
 
     let mut dolt_clients: std::collections::HashMap<String, crate::dolt::DoltClient> =
         std::collections::HashMap::new();
-    for repo in &cfg.repo {
+    for repo in &repos {
         match connect_repo_dolt(repo).await {
             Ok(dc) => {
                 dolt_clients.insert(repo.name.clone(), dc);
             }
             Err(e) => {
-                eprintln!("  warning: cannot connect to {} Dolt: {e}", repo.name);
+                crate::cli::sync_error(&repo.name, &format!("Dolt connect: {e}"));
             }
         }
     }
@@ -465,6 +460,8 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         })
         .collect();
 
+    let dry_prefix = crate::cli::sync_dry_run_prefix();
+
     // --- LINK: match existing Linear issues to unlinked beads ---
     // Match by: (1) bead tag in description, (2) title match
     let mut linked = 0;
@@ -477,23 +474,19 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         let prefixed_title = format!("[{}] {}", bead.repo, bead.title);
 
         let matched = linear_issues.iter().find(|(_, title, desc, _, _)| {
-            // Match by bead tag in description (strongest signal)
-            desc.contains(&bead_tag)
-                // Or match by title
-                || *title == prefixed_title
-                || *title == bead.title
+            desc.contains(&bead_tag) || *title == prefixed_title || *title == bead.title
         });
 
         if let Some((ident, _, _, _url, _)) = matched {
             if dry_run {
-                println!("  [dry-run] would link {} → {ident}", bead.id);
+                println!("  {dry_prefix} link {} -> {ident}", bead.id);
                 linked += 1;
                 linked_ids.insert(bead.id.clone());
             } else if let Some(dc) = dolt_clients.get(&bead.repo) {
                 if let Err(e) = dc.set_external_ref(&bead.id, ident).await {
-                    eprintln!("  ✗ Failed to link {} → {ident}: {e}", bead.id);
+                    crate::cli::sync_error(&bead.id, &format!("link: {e}"));
                 } else {
-                    println!("  ↔ Linked {} → {ident}", bead.id);
+                    crate::cli::sync_linked(&bead.id, ident);
                     linked += 1;
                     linked_ids.insert(bead.id.clone());
                 }
@@ -513,7 +506,6 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         if bead.priority > 2 {
             continue;
         }
-        // Skip if we just linked it above (check by title match)
         let prefixed_title = format!("[{}] {}", bead.repo, bead.title);
         if linear_issues
             .iter()
@@ -525,7 +517,6 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         let label = format!("[{}] ", bead.repo);
         let full_title = format!("{label}{}", bead.title);
 
-        // Derive perspective labels from bead owner (e.g., "dev-agent" → "perspective:dev")
         let mut perspective_labels: Vec<String> = Vec::new();
         if let Some(ref owner) = bead.owner
             && let Some(perspective) = owner.strip_suffix("-agent")
@@ -533,21 +524,11 @@ pub async fn sync(dry_run: bool) -> Result<()> {
             perspective_labels.push(format!("perspective:{perspective}"));
         }
 
-        // Resolve phase → project mapping (if configured)
         let project_id =
             resolve_phase_project_id(&client, bead, &phase_map, &mut project_cache).await?;
 
         if dry_run {
-            if let Some(ref pid) = project_id {
-                let phase_key =
-                    extract_phase(&bead.title).or_else(|| extract_phase(&bead.description));
-                println!(
-                    "  [dry-run] would create: {full_title} (phase {} → project {pid})",
-                    phase_key.unwrap_or_default()
-                );
-            } else {
-                println!("  [dry-run] would create: {full_title}");
-            }
+            println!("  {dry_prefix} create: {full_title}");
             created += 1;
         } else {
             match create_linear_issue(
@@ -564,16 +545,16 @@ pub async fn sync(dry_run: bool) -> Result<()> {
             .await
             {
                 Ok(ident) => {
-                    println!("  → Created {ident}: {full_title}");
+                    crate::cli::sync_created(&ident, &full_title);
                     created += 1;
                     if let Some(dc) = dolt_clients.get(&bead.repo)
                         && let Err(e) = dc.set_external_ref(&bead.id, &ident).await
                     {
-                        eprintln!("  ✗ Failed to store external_ref for {}: {e}", bead.id);
+                        crate::cli::sync_error(&bead.id, &format!("store ref: {e}"));
                     }
                 }
                 Err(e) => {
-                    eprintln!("  ✗ Failed to create issue for {}: {e}", bead.id);
+                    crate::cli::sync_error(&bead.id, &e.to_string());
                 }
             }
         }
@@ -581,38 +562,34 @@ pub async fn sync(dry_run: bool) -> Result<()> {
 
     // --- CLOSE: update Linear issues for closed beads ---
     let mut closed = 0;
-    for repo in &cfg.repo {
+    for repo in &repos {
         let Some(dc) = dolt_clients.get(&repo.name) else {
             continue;
         };
         let closed_beads = match dc.list_closed_linked_beads(&repo.name).await {
             Ok(b) => b,
             Err(e) => {
-                eprintln!(
-                    "  warning: failed to query closed beads for {}: {e}",
-                    repo.name
-                );
+                crate::cli::sync_error(&repo.name, &format!("query closed: {e}"));
                 continue;
             }
         };
         for bead in &closed_beads {
             let ext_ref = bead.external_ref.as_deref().unwrap_or_default();
-            // Only close issues that are still open in Linear
             if linear_issues
                 .iter()
                 .any(|(ident, _, _, _, _)| *ident == ext_ref)
             {
                 if dry_run {
-                    println!("  [dry-run] would close {ext_ref} (bead {})", bead.id);
+                    println!("  {dry_prefix} close {ext_ref} ({})", bead.id);
                     closed += 1;
                 } else {
                     match update_linear_issue_status(&client, &team_id, ext_ref, "closed").await {
                         Ok(()) => {
-                            println!("  ✓ Closed {ext_ref} (bead {})", bead.id);
+                            crate::cli::sync_closed(ext_ref, &bead.id);
                             closed += 1;
                         }
                         Err(e) => {
-                            eprintln!("  ✗ Failed to close {ext_ref}: {e}",);
+                            crate::cli::sync_error(ext_ref, &e.to_string());
                         }
                     }
                 }
@@ -620,19 +597,7 @@ pub async fn sync(dry_run: bool) -> Result<()> {
         }
     }
 
-    println!();
-    if linked > 0 {
-        println!("  Linked {linked} existing issue(s)");
-    }
-    if created > 0 {
-        println!("  Pushed {created} bead(s) → Linear");
-    }
-    if closed > 0 {
-        println!("  Closed {closed} Linear issue(s)");
-    }
-    if linked == 0 && created == 0 && closed == 0 {
-        println!("  Everything in sync.");
-    }
+    crate::cli::sync_summary(linked, created, closed);
 
     Ok(())
 }
