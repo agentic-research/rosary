@@ -27,7 +27,11 @@ defmodule Conductor.AgentWorker do
     :timeout_ref,
     :started_at,
     :work_dir,
-    pending_tools: %{}
+    :session_id,
+    :bead_title,
+    :bead_description,
+    pending_tools: %{},
+    acp_stop_reason: nil
   ]
 
   # -- Public API --
@@ -46,6 +50,8 @@ defmodule Conductor.AgentWorker do
     repo = bead["repo"] || bead[:repo]
     issue_type = bead["issue_type"] || bead[:issue_type] || "task"
     owner = bead["owner"] || bead[:owner]
+    title = bead["title"] || bead[:title] || "#{issue_type} work"
+    description = bead["description"] || bead[:description] || ""
 
     pipeline =
       if owner do
@@ -59,7 +65,7 @@ defmodule Conductor.AgentWorker do
         "(starting at #{Pipeline.current_agent(pipeline)})"
     )
 
-    case start_agent_process(pipeline) do
+    case start_agent_process(pipeline, nil) do
       {:ok, port, os_pid} ->
         step = Pipeline.current_step(pipeline)
         timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
@@ -71,7 +77,9 @@ defmodule Conductor.AgentWorker do
            os_pid: os_pid,
            timeout_ref: timeout_ref,
            started_at: DateTime.utc_now(),
-           work_dir: repo
+           work_dir: repo,
+           bead_title: title,
+           bead_description: description
          }}
 
       {:error, reason} ->
@@ -90,9 +98,22 @@ defmodule Conductor.AgentWorker do
     agent = Pipeline.current_agent(state.pipeline)
     bead_id = state.pipeline.bead_id
 
-    Logger.info("[worker] #{bead_id}: #{agent} exited (code=#{code}, #{elapsed}s)")
+    # ACP stop_reason overrides exit code: "refusal" or "max_tokens" = fail even with exit 0
+    effective_success =
+      case state.acp_stop_reason do
+        "end_turn" -> code == 0
+        "refusal" -> false
+        "max_tokens" -> false
+        "cancelled" -> false
+        nil -> code == 0
+        _ -> code == 0
+      end
 
-    if code == 0 do
+    Logger.info(
+      "[worker] #{bead_id}: #{agent} exited (code=#{code}, acp=#{state.acp_stop_reason || "n/a"}, #{elapsed}s)"
+    )
+
+    if effective_success do
       on_success(state)
     else
       on_failure(state, code)
@@ -119,7 +140,7 @@ defmodule Conductor.AgentWorker do
 
   @impl true
   def handle_info(:retry, state) do
-    case start_agent_process(state.pipeline) do
+    case start_agent_process(state.pipeline, state) do
       {:ok, port, os_pid} ->
         step = Pipeline.current_step(state.pipeline)
         timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
@@ -168,6 +189,8 @@ defmodule Conductor.AgentWorker do
        pipeline: Pipeline.to_map(state.pipeline),
        progress: Pipeline.progress(state.pipeline),
        os_pid: state.os_pid,
+       session_id: state.session_id,
+       acp_stop_reason: state.acp_stop_reason,
        started_at: state.started_at
      }, state}
   end
@@ -220,7 +243,7 @@ defmodule Conductor.AgentWorker do
           "Phase passed: #{agent} → advancing to #{next_agent}"
         )
 
-        case start_agent_process(next_pipeline) do
+        case start_agent_process(next_pipeline, state) do
           {:ok, port, os_pid} ->
             step = Pipeline.current_step(next_pipeline)
             timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
@@ -276,46 +299,66 @@ defmodule Conductor.AgentWorker do
 
   # -- Agent process spawning --
 
-  defp start_agent_process(pipeline) do
-    # Allow test injection of a custom spawn function
+  defp start_agent_process(pipeline, state) do
     case spawn_fn() do
-      nil -> start_acp_process(pipeline)
+      nil -> start_acp_process(pipeline, state)
       fun when is_function(fun) -> fun.(pipeline)
     end
   end
 
-  defp start_acp_process(pipeline) do
+  defp start_acp_process(pipeline, state) do
     alias Conductor.AcpClient
 
     agent = Pipeline.current_agent(pipeline)
     bead_id = pipeline.bead_id
     repo = pipeline.repo
-
-    # Resolve binary from agent name (default: claude)
     binary = agent_binary(agent)
+    prompt = build_prompt(pipeline, state)
 
-    prompt = build_prompt(pipeline)
+    # Session resume: if retrying and we have a previous session_id,
+    # resume instead of starting fresh (preserves agent context)
+    previous_session = state && state.session_id
 
     try do
       {:ok, port, os_pid} = AcpClient.start(binary, repo)
-      _session_id = AcpClient.prompt(port, nil, repo, prompt)
-      Logger.info("[worker] #{bead_id}: spawned #{agent} via ACP (#{binary}, pid=#{os_pid})")
+
+      if previous_session do
+        AcpClient.resume(port, previous_session, prompt)
+
+        Logger.info(
+          "[worker] #{bead_id}: resumed #{agent} session=#{previous_session} (pid=#{os_pid})"
+        )
+      else
+        _sid = AcpClient.prompt(port, nil, repo, prompt)
+        Logger.info("[worker] #{bead_id}: spawned #{agent} via ACP (#{binary}, pid=#{os_pid})")
+      end
+
       {:ok, port, os_pid}
     rescue
       e -> {:error, Exception.message(e)}
     end
   end
 
-  defp build_prompt(pipeline) do
+  defp build_prompt(pipeline, state) do
     bead_id = pipeline.bead_id
     repo = pipeline.repo
     agent = Pipeline.current_agent(pipeline)
+    title = (state && state.bead_title) || "#{pipeline.issue_type} work"
+    description = (state && state.bead_description) || ""
+
+    desc_section =
+      if description != "" do
+        "Description: #{description}\n\n"
+      else
+        ""
+      end
 
     "Fix this issue. Make the minimal change needed.\n\n" <>
       "Bead ID: #{bead_id}\n" <>
       "Repo: #{repo}\n" <>
       "Agent: #{agent}\n" <>
-      "Title: #{pipeline.issue_type} work\n\n" <>
+      "Title: #{title}\n" <>
+      desc_section <>
       "After fixing:\n" <>
       "1. Run tests via `task test`\n" <>
       "2. Create a commit with a descriptive message\n" <>
@@ -363,8 +406,19 @@ defmodule Conductor.AgentWorker do
       {:ok, {:tool_update, _tool_id, _status}} ->
         {:noreply, state}
 
-      {:ok, {:prompt_complete, _reason, _result}} ->
-        # Agent finished via ACP — the exit_status handler will also fire
+      {:ok, {:prompt_complete, reason, _result}} ->
+        # Agent signaled completion via ACP before exit.
+        # Store the stop_reason — exit_status handler uses it to determine pass/fail.
+        # "refusal" or "max_tokens" = fail even if exit code 0.
+        {:noreply, %{state | acp_stop_reason: reason}}
+
+      {:ok, {:session_created, sid, _result}} ->
+        # Real session ID from session/new response — store for resume on retry
+        Logger.debug("[acp] #{state.pipeline.bead_id}: session=#{sid}")
+        {:noreply, %{state | session_id: sid}}
+
+      {:ok, {:initialized, result}} ->
+        Logger.debug("[acp] #{state.pipeline.bead_id}: agent caps=#{inspect(Map.keys(result))}")
         {:noreply, state}
 
       {:ok, _other} ->

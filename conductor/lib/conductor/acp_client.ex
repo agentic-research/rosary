@@ -74,15 +74,19 @@ defmodule Conductor.AcpClient do
     {:ok, port, os_pid}
   end
 
-  @doc "Create a new session and send a prompt."
+  @doc """
+  Create a new session and send a prompt.
+
+  Returns the session_id (placeholder until we parse the response).
+  If `session_id` is provided, resumes that session instead of creating new.
+  """
   def prompt(port, session_id \\ nil, work_dir, prompt_text) do
-    # Create session if needed
     sid =
       if session_id do
         session_id
       else
         send_jsonrpc(port, 1, "session/new", %{workingDirectory: work_dir})
-        # Session ID comes back in the response — for now use a placeholder
+        # Real session ID comes back in the response — parsed in handle_message
         "session-#{System.unique_integer([:positive])}"
       end
 
@@ -92,6 +96,32 @@ defmodule Conductor.AcpClient do
     })
 
     sid
+  end
+
+  @doc """
+  Resume a previous session with a follow-up prompt.
+  Uses the existing session_id to preserve agent context across retries.
+  """
+  def resume(port, session_id, prompt_text) do
+    send_jsonrpc(port, System.unique_integer([:positive]), "session/prompt", %{
+      sessionId: session_id,
+      prompt: [%{type: "text", text: prompt_text}]
+    })
+  end
+
+  @doc """
+  Map an ACP stop_reason to an outcome.
+
+  - "end_turn" → :pass (agent finished normally)
+  - "max_tokens" → :fail (agent ran out of context)
+  - "cancelled" → :fail (agent was interrupted)
+  - "refusal" → :fail (agent refused the task)
+  """
+  def stop_reason_outcome(stop_reason) do
+    case stop_reason do
+      "end_turn" -> :pass
+      _ -> :fail
+    end
   end
 
   @doc """
@@ -214,6 +244,16 @@ defmodule Conductor.AcpClient do
 
   defp parse_acp_message(%{"id" => _id, "result" => %{"stopReason" => reason} = result}) do
     {:ok, {:prompt_complete, reason, result}}
+  end
+
+  # session/new response — contains the real session ID
+  defp parse_acp_message(%{"id" => 1, "result" => %{"sessionId" => sid} = result}) do
+    {:ok, {:session_created, sid, result}}
+  end
+
+  # initialize response — contains agent capabilities
+  defp parse_acp_message(%{"id" => 0, "result" => result}) do
+    {:ok, {:initialized, result}}
   end
 
   defp parse_acp_message(%{"id" => _id, "result" => result}) do
