@@ -258,10 +258,7 @@ async fn tool_status(config_path: &str) -> Result<Value> {
 
     let open = beads.iter().filter(|b| b.status == "open").count();
     let in_progress = beads.iter().filter(|b| b.status == "in_progress").count();
-    let blocked = beads
-        .iter()
-        .filter(|b| b.dependency_count > 0 && b.status == "open")
-        .count();
+    let blocked = beads.iter().filter(|b| b.is_blocked()).count();
     let ready = beads.iter().filter(|b| b.is_ready()).count();
     let total = beads.len();
 
@@ -279,6 +276,8 @@ async fn tool_list_beads(config_path: &str, status: Option<&str>) -> Result<Valu
     let beads = scanner::scan_repos(&cfg.repo).await?;
 
     let filtered: Vec<_> = match status {
+        Some("blocked") => beads.into_iter().filter(|b| b.is_blocked()).collect(),
+        Some("ready") => beads.into_iter().filter(|b| b.is_ready()).collect(),
         Some(s) => beads.into_iter().filter(|b| b.status == s).collect(),
         None => beads,
     };
@@ -648,6 +647,8 @@ struct AppState {
     pool: Arc<RepoPool>,
     config_path: Arc<str>,
     sessions: Arc<RwLock<HashSet<String>>>,
+    /// Webhook signing secret (from config or env).
+    webhook_secret: Option<Arc<str>>,
 }
 
 /// Validate Origin header to prevent DNS rebinding attacks.
@@ -881,11 +882,13 @@ async fn handle_webhook(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
 
-    // 1. Read webhook secret from env
-    let secret = match std::env::var("LINEAR_WEBHOOK_SECRET") {
-        Ok(s) if !s.is_empty() => s,
-        _ => {
-            eprintln!("[webhook] LINEAR_WEBHOOK_SECRET not configured");
+    // 1. Read webhook secret from state (loaded from config or env at startup)
+    let secret = match &state.webhook_secret {
+        Some(s) => s.clone(),
+        None => {
+            eprintln!(
+                "[webhook] webhook_secret not configured (set [linear].webhook_secret in config or LINEAR_WEBHOOK_SECRET env)"
+            );
             return (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "webhook secret not configured",
@@ -1005,11 +1008,20 @@ async fn handle_webhook(
 }
 
 async fn run_http(config_path: &str, port: u16) -> Result<()> {
+    let cfg = config::load(config_path)?;
+    let webhook_secret = cfg
+        .linear
+        .as_ref()
+        .and_then(|l| l.webhook_secret.clone())
+        .or_else(|| std::env::var("LINEAR_WEBHOOK_SECRET").ok())
+        .filter(|s| !s.is_empty());
+
     let pool = Arc::new(RepoPool::from_config(config_path).await?);
     let state = AppState {
         pool: pool.clone(),
         config_path: Arc::from(config_path),
         sessions: Arc::new(RwLock::new(HashSet::new())),
+        webhook_secret: webhook_secret.map(|s| Arc::from(s.as_str())),
     };
 
     let app = axum::Router::new()
@@ -1313,6 +1325,7 @@ mod tests {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
+            webhook_secret: None,
         };
 
         let app = axum::Router::new()
@@ -1346,6 +1359,7 @@ mod tests {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
+            webhook_secret: None,
         };
 
         let app = axum::Router::new()
@@ -1376,6 +1390,7 @@ mod tests {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::from(["sess-1".to_string()]))),
+            webhook_secret: None,
         };
 
         let app = axum::Router::new()
@@ -1545,12 +1560,11 @@ mod tests {
         use axum::http::Request;
         use tower::ServiceExt;
 
-        unsafe { std::env::set_var("LINEAR_WEBHOOK_SECRET", "test-secret") };
-
         let state = AppState {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
+            webhook_secret: Some(Arc::from("test-secret")),
         };
 
         let app = axum::Router::new()
@@ -1574,12 +1588,11 @@ mod tests {
         use axum::http::Request;
         use tower::ServiceExt;
 
-        unsafe { std::env::set_var("LINEAR_WEBHOOK_SECRET", "test-secret") };
-
         let state = AppState {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
+            webhook_secret: Some(Arc::from("test-secret")),
         };
 
         let app = axum::Router::new()
@@ -1609,12 +1622,12 @@ mod tests {
         use tower::ServiceExt;
 
         let secret = "test-secret-for-webhook";
-        unsafe { std::env::set_var("LINEAR_WEBHOOK_SECRET", secret) };
 
         let state = AppState {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
+            webhook_secret: Some(Arc::from(secret)),
         };
 
         let app = axum::Router::new()
