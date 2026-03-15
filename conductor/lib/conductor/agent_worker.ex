@@ -248,15 +248,29 @@ defmodule Conductor.AgentWorker do
 
   @impl true
   def handle_call(:get_state, _from, state) do
+    pipeline_map = Pipeline.to_map(state.pipeline)
+    {done, total} = Pipeline.progress(state.pipeline)
+    current = Pipeline.current_agent(state.pipeline)
+    agents = Pipeline.agents(state.pipeline)
+
     {:reply,
      %{
        bead_id: state.pipeline.bead_id,
-       pipeline: Pipeline.to_map(state.pipeline),
-       progress: Pipeline.progress(state.pipeline),
+       repo: state.pipeline.repo,
+       issue_type: state.pipeline.issue_type,
+       title: state.bead_title,
+       current_agent: current,
+       agents: agents,
+       progress: "#{done}/#{total}",
        os_pid: state.os_pid,
        session_id: state.session_id,
        acp_stop_reason: state.acp_stop_reason,
-       started_at: state.started_at
+       started_at: state.started_at,
+       elapsed_s: DateTime.diff(DateTime.utc_now(), state.started_at, :second),
+       history:
+         Enum.map(pipeline_map.history, fn h ->
+           "#{h.agent}: #{h.outcome}#{if h.detail, do: " (#{h.detail})", else: ""}"
+         end)
      }, state}
   end
 
