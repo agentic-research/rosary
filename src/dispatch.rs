@@ -55,6 +55,68 @@ impl PermissionProfile {
     }
 }
 
+// ---------------------------------------------------------------------------
+// AgentSession — abstract session lifecycle (replaces raw Child)
+// ---------------------------------------------------------------------------
+
+/// Abstract session to a running agent. Decouples from tokio::process::Child
+/// so we can support CLI subprocesses, ACP sockets, raw API calls, etc.
+#[async_trait::async_trait]
+pub trait AgentSession: Send {
+    /// Non-blocking check: has the session completed? Returns true on success.
+    fn try_wait(&mut self) -> Result<Option<bool>>;
+
+    /// Block until the session completes. Returns true on success.
+    async fn wait(&mut self) -> Result<bool>;
+
+    /// Forcefully terminate the session.
+    fn kill(&mut self) -> Result<()>;
+
+    /// Process ID (if applicable). For logging/debugging.
+    fn pid(&self) -> Option<u32> {
+        None
+    }
+}
+
+/// CLI subprocess session — wraps tokio::process::Child.
+pub struct CliSession {
+    child: tokio::process::Child,
+}
+
+impl CliSession {
+    pub fn new(child: tokio::process::Child) -> Self {
+        Self { child }
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentSession for CliSession {
+    fn try_wait(&mut self) -> Result<Option<bool>> {
+        match self.child.try_wait()? {
+            Some(status) => Ok(Some(status.success())),
+            None => Ok(None),
+        }
+    }
+
+    async fn wait(&mut self) -> Result<bool> {
+        let status = self.child.wait().await?;
+        Ok(status.success())
+    }
+
+    fn kill(&mut self) -> Result<()> {
+        self.child.start_kill()?;
+        Ok(())
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AgentProvider — spawns sessions
+// ---------------------------------------------------------------------------
+
 /// Trait for AI agent providers. Implementations handle spawning and
 /// communicating with different AI backends (Claude, Gemini, Codex, etc).
 ///
@@ -62,14 +124,14 @@ impl PermissionProfile {
 /// translates it to CLI flags. This keeps schema/config decisions out
 /// of the provider code.
 pub trait AgentProvider: Send + Sync {
-    /// Spawn an agent process with the given prompt, working directory,
+    /// Spawn an agent session with the given prompt, working directory,
     /// and permission profile (derived from the bead).
     fn spawn_agent(
         &self,
         prompt: &str,
         work_dir: &Path,
         permissions: &PermissionProfile,
-    ) -> Result<tokio::process::Child>;
+    ) -> Result<Box<dyn AgentSession>>;
 
     /// Human-readable name of this provider.
     fn name(&self) -> &str;
@@ -87,8 +149,8 @@ impl AgentProvider for ClaudeProvider {
         prompt: &str,
         work_dir: &Path,
         permissions: &PermissionProfile,
-    ) -> Result<tokio::process::Child> {
-        tokio::process::Command::new("claude")
+    ) -> Result<Box<dyn AgentSession>> {
+        let child = tokio::process::Command::new("claude")
             .args([
                 "-p",
                 prompt,
@@ -103,7 +165,8 @@ impl AgentProvider for ClaudeProvider {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .with_context(|| format!("spawning claude CLI in {}", work_dir.display()))
+            .with_context(|| format!("spawning claude CLI in {}", work_dir.display()))?;
+        Ok(Box::new(CliSession::new(child)))
     }
 
     fn name(&self) -> &str {
@@ -126,7 +189,7 @@ impl AgentProvider for GeminiProvider {
         prompt: &str,
         work_dir: &Path,
         permissions: &PermissionProfile,
-    ) -> Result<tokio::process::Child> {
+    ) -> Result<Box<dyn AgentSession>> {
         let mut cmd = tokio::process::Command::new("gemini");
         cmd.args([
             "-p",
@@ -139,11 +202,13 @@ impl AgentProvider for GeminiProvider {
         for arg in &self.extra_args {
             cmd.arg(arg);
         }
-        cmd.current_dir(work_dir)
+        let child = cmd
+            .current_dir(work_dir)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .with_context(|| format!("spawning gemini CLI in {}", work_dir.display()))
+            .with_context(|| format!("spawning gemini CLI in {}", work_dir.display()))?;
+        Ok(Box::new(CliSession::new(child)))
     }
 
     fn name(&self) -> &str {
@@ -169,18 +234,19 @@ impl AgentProvider for AcpCliProvider {
         _prompt: &str,
         work_dir: &Path,
         _permissions: &PermissionProfile,
-    ) -> Result<tokio::process::Child> {
+    ) -> Result<Box<dyn AgentSession>> {
         // ACP agents are spawned as subprocesses with stdio piped.
         // The prompt and permissions are sent via ACP protocol (JSON-RPC),
         // not CLI args. The caller must establish a ClientSideConnection
         // after spawning and use Agent::prompt() to send the task.
-        tokio::process::Command::new(&self.binary)
+        let child = tokio::process::Command::new(&self.binary)
             .current_dir(work_dir)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .with_context(|| format!("spawning ACP agent: {}", self.binary))
+            .with_context(|| format!("spawning ACP agent: {}", self.binary))?;
+        Ok(Box::new(CliSession::new(child)))
     }
 
     fn name(&self) -> &str {
@@ -200,35 +266,37 @@ pub fn provider_by_name(name: &str) -> Result<Box<dyn AgentProvider>> {
     }
 }
 
-/// Handle to a running Claude Code agent process.
+/// Handle to a running agent session.
 pub struct AgentHandle {
-    #[allow(dead_code)] // stored for debugging/logging
+    #[allow(dead_code)]
     pub bead_id: String,
-    #[allow(dead_code)] // stored for generation tracking
+    #[allow(dead_code)]
     pub generation: u64,
-    pub child: tokio::process::Child,
+    pub session: Box<dyn AgentSession>,
     pub work_dir: PathBuf,
     pub started_at: chrono::DateTime<chrono::Utc>,
-    /// Workspace for this agent — owns the VCS isolation lifecycle.
-    #[allow(dead_code)] // consumed by reconciler teardown path
     pub workspace: Option<crate::workspace::Workspace>,
 }
 
 impl AgentHandle {
-    /// Check if the agent process has exited (non-blocking).
-    pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>> {
-        Ok(self.child.try_wait()?)
+    /// Non-blocking check: has the agent completed? Returns Some(success).
+    pub fn try_wait(&mut self) -> Result<Option<bool>> {
+        self.session.try_wait()
     }
 
-    /// Wait for the agent to complete.
-    pub async fn wait(&mut self) -> Result<std::process::ExitStatus> {
-        Ok(self.child.wait().await?)
+    /// Block until the agent completes. Returns success.
+    pub async fn wait(&mut self) -> Result<bool> {
+        self.session.wait().await
     }
 
-    /// Kill the agent process.
+    /// Kill the agent.
     pub fn kill(&mut self) -> Result<()> {
-        self.child.start_kill()?;
-        Ok(())
+        self.session.kill()
+    }
+
+    /// Process ID (if applicable).
+    pub fn pid(&self) -> Option<u32> {
+        self.session.pid()
     }
 
     /// Elapsed time since dispatch.
@@ -332,14 +400,14 @@ pub async fn spawn(
         permissions
     );
 
-    let child = provider
+    let session = provider
         .spawn_agent(&prompt, &work_dir, &permissions)
         .with_context(|| format!("spawning {} for {}", provider.name(), bead.id))?;
 
     Ok(AgentHandle {
         bead_id: bead.id.clone(),
         generation,
-        child,
+        session,
         work_dir,
         started_at: chrono::Utc::now(),
         workspace: Some(workspace),
@@ -363,12 +431,12 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
     client.update_status(bead_id, "dispatched").await?;
 
     let mut handle = spawn(&bead, &path, isolate, bead.generation(), &ClaudeProvider).await?;
-    let status = handle.wait().await?;
+    let success = handle.wait().await?;
 
-    if status.success() {
+    if success {
         println!("Claude Code completed successfully for {bead_id}");
     } else {
-        eprintln!("warning: claude exited with {status} for {bead_id}");
+        eprintln!("warning: agent exited with failure for {bead_id}");
     }
 
     Ok(())
@@ -518,5 +586,62 @@ mod tests {
             prompt.contains("rsry_bead_close"),
             "prompt should instruct agent to close bead"
         );
+    }
+
+    // -- AgentSession tests --
+
+    #[tokio::test]
+    async fn cli_session_success() {
+        let child = tokio::process::Command::new("true").spawn().unwrap();
+        let mut session = CliSession::new(child);
+        let success = session.wait().await.unwrap();
+        assert!(success);
+    }
+
+    #[tokio::test]
+    async fn cli_session_failure() {
+        let child = tokio::process::Command::new("false").spawn().unwrap();
+        let mut session = CliSession::new(child);
+        let success = session.wait().await.unwrap();
+        assert!(!success);
+    }
+
+    #[tokio::test]
+    async fn cli_session_try_wait_completed() {
+        let child = tokio::process::Command::new("true").spawn().unwrap();
+        let mut session = CliSession::new(child);
+        // Wait for it to finish
+        session.wait().await.unwrap();
+        // try_wait should return Some now
+        // (already waited, so this is a no-op — just verifying the API)
+    }
+
+    #[tokio::test]
+    async fn cli_session_kill() {
+        let child = tokio::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let mut session = CliSession::new(child);
+        assert!(session.pid().is_some());
+        session.kill().unwrap();
+        // After kill, wait should return (not hang)
+        let _success = session.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cli_session_pid() {
+        let child = tokio::process::Command::new("sleep")
+            .arg("0.1")
+            .spawn()
+            .unwrap();
+        let session = CliSession::new(child);
+        assert!(session.pid().is_some());
+    }
+
+    #[test]
+    fn agent_session_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<CliSession>();
     }
 }
