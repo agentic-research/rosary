@@ -14,6 +14,9 @@ pub struct Config {
     /// HTTP server + tunnel configuration.
     #[serde(default)]
     pub http: Option<HttpConfig>,
+    /// Backend storage for orchestrator state (cross-repo).
+    #[serde(default)]
+    pub backend: Option<BackendConfig>,
 }
 
 /// Compute provider selection + backend-specific settings.
@@ -138,6 +141,39 @@ fn default_tunnel_provider() -> String {
     "cloudflare".to_string()
 }
 
+/// Backend storage configuration for rosary orchestrator state.
+///
+/// Orchestrator state (pipeline tracking, dispatch history, cross-repo linkage)
+/// lives here — separate from per-repo `.beads/` Dolt databases.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendConfig {
+    /// Backend provider: "dolt" (default).
+    #[serde(default = "default_backend_provider")]
+    pub provider: String,
+    /// Path to the backend database directory.
+    #[serde(default = "default_backend_path")]
+    pub path: std::path::PathBuf,
+}
+
+fn default_backend_provider() -> String {
+    "dolt".to_string()
+}
+
+fn default_backend_path() -> std::path::PathBuf {
+    std::path::PathBuf::from("~/.rsry/dolt/rosary")
+}
+
+impl BackendConfig {
+    /// Returns a config with default values.
+    #[allow(dead_code)] // Used in Phase 2 when reconciler wires the backend
+    pub fn default_config() -> Self {
+        Self {
+            provider: default_backend_provider(),
+            path: default_backend_path(),
+        }
+    }
+}
+
 /// Resolve config path: $RSRY_CONFIG → ~/.rsry/config.toml → ./rosary.toml
 pub fn resolve_config_path() -> String {
     if let Ok(p) = std::env::var("RSRY_CONFIG") {
@@ -179,6 +215,7 @@ pub fn load_global() -> Result<Config> {
             linear: None,
             compute: None,
             http: None,
+            backend: None,
         });
     }
     let content = std::fs::read_to_string(&path)
@@ -452,6 +489,7 @@ path = "~/remotes/art/mache"
             linear: None,
             compute: None,
             http: None,
+            backend: None,
         };
         std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
         let content = toml::to_string_pretty(&config).unwrap();
@@ -545,6 +583,7 @@ path = "~/remotes/art/mache"
             linear: None,
             compute: None,
             http: None,
+            backend: None,
         };
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: Config = toml::from_str(&serialized).unwrap();
@@ -656,6 +695,7 @@ path = "/tmp/test"
             linear: None,
             compute: None,
             http: None,
+            backend: None,
         };
         let provider = compute_provider_from_config(&config).unwrap();
         assert_eq!(provider.name(), "local");
@@ -671,6 +711,7 @@ path = "/tmp/test"
                 sprites: None,
             }),
             http: None,
+            backend: None,
         };
         let provider = compute_provider_from_config(&config).unwrap();
         assert_eq!(provider.name(), "local");
@@ -686,6 +727,7 @@ path = "/tmp/test"
                 sprites: None,
             }),
             http: None,
+            backend: None,
         };
         let result = compute_provider_from_config(&config);
         let err = result.err().unwrap();
@@ -710,6 +752,7 @@ path = "/tmp/test"
                 }),
             }),
             http: None,
+            backend: None,
         };
         let result = compute_provider_from_config(&config);
         let err = result.err().unwrap();
@@ -726,6 +769,7 @@ path = "/tmp/test"
                 sprites: None,
             }),
             http: None,
+            backend: None,
         };
         let result = compute_provider_from_config(&config);
         let err = result.err().unwrap();
@@ -837,5 +881,52 @@ path = "~/remotes/art/rosary"
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.http.is_none());
         assert!(config.linear.is_none());
+        assert!(config.backend.is_none());
+    }
+
+    #[test]
+    fn parse_toml_backend_section() {
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[backend]
+provider = "dolt"
+path = "~/.rsry/dolt/rosary"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let backend = config.backend.unwrap();
+        assert_eq!(backend.provider, "dolt");
+        assert_eq!(
+            backend.path,
+            std::path::PathBuf::from("~/.rsry/dolt/rosary")
+        );
+    }
+
+    #[test]
+    fn parse_toml_backend_defaults() {
+        // [backend] with no fields uses defaults
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[backend]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let backend = config.backend.unwrap();
+        assert_eq!(backend.provider, "dolt");
+        assert_eq!(
+            backend.path,
+            std::path::PathBuf::from("~/.rsry/dolt/rosary")
+        );
+    }
+
+    #[test]
+    fn backend_config_default_values() {
+        let config = BackendConfig::default_config();
+        assert_eq!(config.provider, "dolt");
+        assert!(config.path.to_string_lossy().contains(".rsry/dolt/rosary"));
     }
 }
