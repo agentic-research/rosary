@@ -25,6 +25,23 @@ graph LR
 6. **Retries** with exponential backoff, deadletters after max attempts
 7. **Survives** crashes — OTP supervision tree outlives the orchestrator
 
+## Prerequisites
+
+```bash
+# Elixir + Erlang
+brew install elixir          # macOS (includes OTP)
+
+# ACP adapter for Claude (required for agent dispatch)
+npm install -g @zed-industries/claude-agent-acp
+
+# Rosary (the data plane)
+task install                 # builds + installs rsry to ~/.local/bin
+
+# Optional: other providers
+# npm install -g gemini-agent-acp
+# npm install -g codex-agent-acp
+```
+
 ## Quick Start
 
 ```bash

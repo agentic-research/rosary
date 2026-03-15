@@ -520,17 +520,19 @@ defmodule Conductor.AgentWorker do
   defp truncate(s, max) when byte_size(s) <= max, do: s
   defp truncate(s, max), do: String.slice(s, 0, max) <> "\n... (truncated)"
 
-  # Map to ACP binary. All providers speak the same protocol via --acp.
-  # Provider selection: config > per-step override > default (claude)
-  @supported_providers ~w(claude gemini codex copilot qwen-code)
+  # ACP adapter binaries for each provider.
+  # Each wraps the provider's SDK to speak ACP over stdio.
+  # Install: npm install -g @zed-industries/claude-agent-acp
+  @provider_binaries %{
+    "claude" => "claude-agent-acp",
+    "gemini" => "gemini-agent-acp",
+    "codex" => "codex-agent-acp",
+    "copilot" => "copilot-agent-acp",
+    "qwen-code" => "qwen-code-agent-acp"
+  }
 
   defp agent_binary(_agent_name) do
     provider = Application.get_env(:conductor, :agent_provider, "claude")
-
-    if provider not in @supported_providers do
-      Logger.warning("[worker] unknown provider #{provider}, using as-is (custom ACP binary)")
-    end
-
-    provider
+    Map.get(@provider_binaries, provider, provider)
   end
 end

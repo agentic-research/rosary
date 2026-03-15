@@ -211,13 +211,9 @@ defmodule Conductor.AcpClient do
 
   # -- Private --
 
-  defp acp_args(binary) do
-    case binary do
-      "claude" -> ["--acp"]
-      "gemini" -> ["--acp"]
-      _ -> []
-    end
-  end
+  # ACP adapters are separate binaries, not CLI flags.
+  # The binary IS the ACP server — no args needed.
+  defp acp_args(_binary), do: []
 
   defp parse_acp_message(%{
          "method" => "session/request_permission",
