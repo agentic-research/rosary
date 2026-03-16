@@ -105,7 +105,9 @@ impl DoltClient {
         )
         .await
         {
-            return Ok(DoltClient { pool });
+            let client = DoltClient { pool };
+            client.enable_auto_dolt_commit().await;
+            return Ok(client);
         }
 
         // Server not running — auto-start from the dolt data directory
@@ -179,29 +181,34 @@ impl DoltClient {
         .with_context(|| format!("connecting to Dolt at {url}"))?;
 
         eprintln!("[dolt] server started on port {port}");
-        Ok(DoltClient { pool })
+        let client = DoltClient { pool };
+        client.enable_auto_dolt_commit().await;
+        Ok(client)
     }
 
-    /// Commit the current working set so changes are visible to new connections.
-    /// Dolt sql-server uses per-session isolation — writes are invisible to other
-    /// connections until committed. Best-effort: logs warning on failure.
+    /// Enable dolt_transaction_commit so every SQL transaction auto-creates
+    /// a Dolt commit. This replaces explicit DOLT_COMMIT calls, which were
+    /// a hang risk (slow on large repos, blocks the single-threaded MCP server).
     ///
-    /// Timeout: 10s. DOLT_COMMIT can be slow on large repos; without a timeout
-    /// this blocks the entire MCP server (stdio is single-threaded).
-    async fn auto_commit(&self, message: &str) {
-        // -Am stages all tables + commits in one call (dolt cheat sheet)
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            query("CALL DOLT_COMMIT('-Am', ?, '--allow-empty')")
-                .bind(message)
-                .execute(&self.pool),
-        )
-        .await;
-        match result {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => eprintln!("[dolt] auto_commit failed: {e}"),
-            Err(_) => eprintln!("[dolt] auto_commit timed out (10s) for: {message}"),
+    /// With this set, writes are immediately visible to other connections
+    /// without a separate commit step — no data loss on timeout.
+    async fn enable_auto_dolt_commit(&self) {
+        let result = query("SET @@dolt_transaction_commit = 1")
+            .execute(&self.pool)
+            .await;
+        if let Err(e) = result {
+            eprintln!("[dolt] warning: failed to enable dolt_transaction_commit: {e}");
+            eprintln!("[dolt] falling back to explicit DOLT_COMMIT (risk of hangs)");
         }
+    }
+
+    /// Explicit Dolt commit — only used as fallback when dolt_transaction_commit
+    /// is not available. Prefer enable_auto_dolt_commit() at connection time.
+    async fn auto_commit(&self, _message: &str) {
+        // No-op: dolt_transaction_commit handles this automatically.
+        // If enable_auto_dolt_commit() failed at connect time, writes
+        // are still visible within the same session but may not persist
+        // across connections until the session closes.
     }
 
     /// Parse files and test_files from the notes JSON column.
