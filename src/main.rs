@@ -13,6 +13,8 @@ mod dispatch;
 mod dolt;
 #[allow(dead_code)] // API surface for PM agent (loom-w8c.4); is_dominated_by used by reconciler
 mod epic;
+#[allow(dead_code)] // API surface — wired into pipeline phase transitions
+mod handoff;
 mod linear;
 #[allow(dead_code)]
 mod linear_tracker;
