@@ -26,6 +26,12 @@ pub struct SessionEntry {
     /// Original repo path (needed for workspace cleanup when session dies).
     #[serde(default)]
     pub repo_path: String,
+    /// Last activity timestamp (updated on bead_comment).
+    #[serde(default)]
+    pub last_activity: Option<chrono::DateTime<chrono::Utc>>,
+    /// Latest bead comment body (truncated).
+    #[serde(default)]
+    pub last_comment: Option<String>,
 }
 
 /// File-based session registry at `~/.rsry/sessions.json`.
@@ -96,6 +102,16 @@ impl SessionRegistry {
     pub fn active(&self) -> &[SessionEntry] {
         &self.sessions
     }
+
+    /// Record activity for a session (called on bead_comment).
+    pub fn touch(&mut self, bead_id: &str, comment: &str) -> Result<()> {
+        if let Some(session) = self.sessions.iter_mut().find(|s| s.bead_id == bead_id) {
+            session.last_activity = Some(chrono::Utc::now());
+            session.last_comment = Some(comment.chars().take(200).collect());
+            self.save()?;
+        }
+        Ok(())
+    }
 }
 
 /// Check if a PID is alive via kill(pid, 0).
@@ -144,6 +160,8 @@ mod tests {
             agent: String::new(),
             workspace_vcs: String::new(),
             repo_path: String::new(),
+            last_activity: None,
+            last_comment: None,
         });
         assert_eq!(reg.active().len(), 1);
         assert_eq!(reg.active()[0].bead_id, "rsry-abc");
@@ -163,6 +181,8 @@ mod tests {
             agent: String::new(),
             workspace_vcs: String::new(),
             repo_path: String::new(),
+            last_activity: None,
+            last_comment: None,
         });
         reg.sessions.retain(|s| s.bead_id != "rsry-abc");
         assert!(reg.active().is_empty());
@@ -193,6 +213,8 @@ mod tests {
                 agent: "dev-agent".into(),
                 workspace_vcs: "jj".into(),
                 repo_path: "/tmp/repo".into(),
+                last_activity: None,
+                last_comment: None,
             }],
         };
         let json = serde_json::to_string(&reg).unwrap();

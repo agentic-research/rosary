@@ -533,6 +533,11 @@ async fn tool_bead_comment(args: &Value, pool: &RepoPool) -> Result<Value> {
     let client = get_client(repo_path, pool).await?;
     client.add_comment(id, body, "rsry-mcp").await?;
 
+    // Update session registry so rsry_active shows last activity
+    if let Ok(mut registry) = crate::session::SessionRegistry::load() {
+        let _ = registry.touch(id, body);
+    }
+
     Ok(json!({ "id": id, "comment_added": true }))
 }
 
@@ -638,6 +643,8 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
             agent: agent_label.to_string(),
             workspace_vcs,
             repo_path: ws_repo_path,
+            last_activity: None,
+            last_comment: None,
         })
         .ok();
 
@@ -668,6 +675,8 @@ async fn tool_active() -> Result<Value> {
                 "pid": s.pid,
                 "work_dir": s.work_dir,
                 "started_at": s.started_at.to_rfc3339(),
+                "last_activity": s.last_activity.map(|t| t.to_rfc3339()),
+                "last_comment": s.last_comment,
             })
         })
         .collect();

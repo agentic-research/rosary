@@ -58,8 +58,7 @@ tasks:
       - cp target/release/rsry ~/.local/bin/rsry
       - codesign -s - --force --deep --entitlements entitlements.plist ~/.local/bin/rsry
       - echo "Installed rsry to ~/.local/bin/rsry (codesigned)"
-      - pkill -HUP rsry || true
-      - echo "Sent SIGHUP to running rsry processes (they will restart with new binary)"
+      - echo "Note: running rsry processes use the old binary until next MCP reconnect"
 
   overnight:
     desc: Start overnight loop (concurrency=1, bugs first, caffeinate)

@@ -290,6 +290,13 @@ async fn create_jj_workspace(repo_path: &Path, id: &str) -> Result<PathBuf> {
         anyhow::bail!("jj workspace add failed: {stderr}");
     }
 
+    // Set jj description so workspace shows bead context in `jj workspace list`
+    let _ = tokio::process::Command::new("jj")
+        .args(["describe", "-m", &format!("bead:{id}")])
+        .current_dir(&workspace_path)
+        .output()
+        .await;
+
     eprintln!(
         "[workspace] created jj workspace: {}",
         workspace_path.display()
