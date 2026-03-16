@@ -93,6 +93,23 @@ impl Workspace {
             VcsKind::None
         };
 
+        // Reuse existing workspace if it exists (resume after agent death)
+        let existing_ws = workspace_dir(repo_path, id);
+        if existing_ws.exists() && vcs != VcsKind::None {
+            eprintln!(
+                "[workspace] reusing existing workspace: {}",
+                existing_ws.display()
+            );
+            return Ok(Workspace {
+                id: id.to_string(),
+                repo: repo.to_string(),
+                repo_path: repo_path.to_path_buf(),
+                work_dir: existing_ws,
+                vcs,
+                exec_handle: None,
+            });
+        }
+
         let (work_dir, actual_vcs) = match vcs {
             VcsKind::Jj => match create_jj_workspace(repo_path, id).await {
                 Ok(path) => (path, VcsKind::Jj),
