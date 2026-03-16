@@ -463,12 +463,18 @@ impl Reconciler {
                         self.persist_status(&entry.bead_id, &entry.repo, "dispatched")
                             .await;
 
-                        // Record the dispatch branch
+                        // Record the dispatch branch and workspace path
                         let branch = format!("fix/{}", entry.bead_id);
                         if let Some(client) = self.dolt_client(&entry.repo).await {
                             client
                                 .log_event(&entry.bead_id, "dispatch_branch", &branch)
                                 .await;
+                            // Record workspace_path so agents can resume in the same workspace
+                            if let Some(ref ws_path) = handle.workspace_path {
+                                client
+                                    .log_event(&entry.bead_id, "workspace_path", ws_path)
+                                    .await;
+                            }
                         }
 
                         self.active.insert(entry.bead_id.clone(), handle);

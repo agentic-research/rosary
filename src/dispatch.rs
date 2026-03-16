@@ -286,6 +286,14 @@ pub struct AgentHandle {
     pub work_dir: PathBuf,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub workspace: Option<crate::workspace::Workspace>,
+    /// Claude Code session ID (from --output-format json). Set after capture.
+    /// Enables `--resume` on retry to preserve agent context across failures.
+    #[allow(dead_code)]
+    pub session_id: Option<String>,
+    /// Path to the workspace directory (jj workspace or git worktree).
+    /// Recorded in DispatchRecord for resume and debugging.
+    #[allow(dead_code)]
+    pub workspace_path: Option<String>,
 }
 
 impl AgentHandle {
@@ -307,6 +315,13 @@ impl AgentHandle {
     /// Process ID (if applicable).
     pub fn pid(&self) -> Option<u32> {
         self.session.pid()
+    }
+
+    /// Set the session ID (captured from agent output after spawn).
+    /// Enables `--resume` on retry to preserve agent context.
+    #[allow(dead_code)]
+    pub fn set_session_id(&mut self, session_id: String) {
+        self.session_id = Some(session_id);
     }
 
     /// Elapsed time since dispatch.
@@ -538,6 +553,14 @@ pub async fn spawn(
         .spawn_agent(&prompt, &work_dir, &permissions, &system_prompt)
         .with_context(|| format!("spawning {} for {}", provider.name(), bead.id))?;
 
+    // Record workspace path for dispatch tracking (resume + debugging).
+    // This is the isolated work_dir, not the original repo root.
+    let workspace_path = if work_dir != path {
+        Some(work_dir.display().to_string())
+    } else {
+        None
+    };
+
     Ok(AgentHandle {
         bead_id: bead.id.clone(),
         generation,
@@ -545,6 +568,8 @@ pub async fn spawn(
         work_dir,
         started_at: chrono::Utc::now(),
         workspace: Some(workspace),
+        session_id: None,
+        workspace_path,
     })
 }
 
@@ -788,6 +813,29 @@ mod tests {
     fn agent_session_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<CliSession>();
+    }
+
+    #[tokio::test]
+    async fn agent_handle_session_id() {
+        let child = tokio::process::Command::new("true").spawn().unwrap();
+        let mut handle = AgentHandle {
+            bead_id: "test-1".into(),
+            generation: 1,
+            session: Box::new(CliSession::new(child)),
+            work_dir: PathBuf::from("/tmp"),
+            started_at: chrono::Utc::now(),
+            workspace: None,
+            session_id: None,
+            workspace_path: Some("/tmp/.rsry-workspaces/test-1".into()),
+        };
+
+        assert!(handle.session_id.is_none());
+        handle.set_session_id("sess-abc-123".into());
+        assert_eq!(handle.session_id.as_deref(), Some("sess-abc-123"));
+        assert_eq!(
+            handle.workspace_path.as_deref(),
+            Some("/tmp/.rsry-workspaces/test-1")
+        );
     }
 
     // -- Agent definition loading tests --

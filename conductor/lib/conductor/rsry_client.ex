@@ -34,6 +34,8 @@ defmodule Conductor.RsryClient do
   @callback workspace_checkpoint(String.t(), String.t(), String.t()) ::
               {:ok, map()} | {:error, term()}
   @callback workspace_cleanup(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  @callback record_session(String.t(), String.t(), String.t()) ::
+              {:ok, map()} | {:error, term()}
 
   # -- Public API --
 
@@ -81,6 +83,16 @@ defmodule Conductor.RsryClient do
 
   def workspace_cleanup(bead_id, repo_path) do
     call_tool("rsry_workspace_cleanup", %{bead_id: bead_id, repo_path: repo_path})
+  end
+
+  @doc """
+  Record a session ID for a dispatch.
+
+  Piggybacks on bead_comment until a dedicated MCP tool exists.
+  The session_id enables --resume on retry to preserve agent context.
+  """
+  def record_session(repo_path, bead_id, session_id) do
+    bead_comment(repo_path, bead_id, "session:#{session_id}")
   end
 
   @doc "Check if the client has an active session."

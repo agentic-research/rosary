@@ -136,6 +136,8 @@ pub trait DispatchStore: Send + Sync {
 
     async fn record_dispatch(&self, record: &DispatchRecord) -> Result<()>;
     async fn complete_dispatch(&self, id: &str, outcome: &str) -> Result<()>;
+    /// Update the session_id on a dispatch record (captured after agent starts).
+    async fn update_dispatch_session(&self, id: &str, session_id: &str) -> Result<()>;
     async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>>;
 }
 
@@ -291,6 +293,14 @@ mod tests {
             if let Some(d) = dispatches.iter_mut().find(|d| d.id == id) {
                 d.completed_at = Some(Utc::now());
                 d.outcome = Some(outcome.to_string());
+            }
+            Ok(())
+        }
+
+        async fn update_dispatch_session(&self, id: &str, session_id: &str) -> Result<()> {
+            let mut dispatches = self.dispatches.lock().unwrap();
+            if let Some(d) = dispatches.iter_mut().find(|d| d.id == id) {
+                d.session_id = Some(session_id.to_string());
             }
             Ok(())
         }
@@ -538,6 +548,45 @@ mod tests {
 
         let active = store.active_dispatches().await.unwrap();
         assert!(active.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_update_session_id() {
+        let store = InMemoryStore::new();
+        let record = DispatchRecord {
+            id: "d-002".into(),
+            bead_ref: BeadRef {
+                repo: "rosary".into(),
+                bead_id: "rsry-002".into(),
+            },
+            agent: "dev-agent".into(),
+            provider: "claude".into(),
+            started_at: Utc::now(),
+            completed_at: None,
+            outcome: None,
+            work_dir: "/tmp/work".into(),
+            session_id: None,
+            workspace_path: Some("/tmp/.rsry-workspaces/rsry-002".into()),
+        };
+
+        store.record_dispatch(&record).await.unwrap();
+
+        // Session ID not set yet
+        let active = store.active_dispatches().await.unwrap();
+        assert!(active[0].session_id.is_none());
+        assert_eq!(
+            active[0].workspace_path.as_deref(),
+            Some("/tmp/.rsry-workspaces/rsry-002")
+        );
+
+        // Update session_id after agent starts
+        store
+            .update_dispatch_session("d-002", "sess-abc-123")
+            .await
+            .unwrap();
+
+        let active = store.active_dispatches().await.unwrap();
+        assert_eq!(active[0].session_id.as_deref(), Some("sess-abc-123"));
     }
 
     // ── LinkageStore tests ──────────────────────────────

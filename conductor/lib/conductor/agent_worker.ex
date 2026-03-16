@@ -244,8 +244,17 @@ defmodule Conductor.AgentWorker do
 
   @impl true
   def handle_info({port, {:data, {:eol, line}}}, %{port: port} = state) do
-    # ACP JSON-RPC message from the agent
-    handle_acp_message(line, state)
+    mode = Application.get_env(:conductor, :dispatch_mode, :acp)
+
+    case mode do
+      :acp ->
+        # ACP JSON-RPC message from the agent
+        handle_acp_message(line, state)
+
+      :cli ->
+        # CLI mode: try to extract session_id from --output-format json output
+        handle_cli_output(line, state)
+    end
   end
 
   @impl true
@@ -438,6 +447,7 @@ defmodule Conductor.AgentWorker do
   # Fallback: claude -p via Port. No ACP protocol, just fire-and-forget.
   # Uses Claude Code's built-in OAuth auth — no API key needed.
   # MCP servers available. Exit code only (no mid-execution feedback).
+  # Stdout is captured via {:line, ...} to extract session_id from JSON output.
   defp start_cli_process(pipeline, state) do
     agent = Pipeline.current_agent(pipeline)
     bead_id = pipeline.bead_id
@@ -451,6 +461,19 @@ defmodule Conductor.AgentWorker do
         _ -> "claude"
       end
 
+    # Session resume: if retrying and we have a previous session_id,
+    # pass --resume to preserve agent context across retries
+    previous_session = state && state.session_id
+
+    base_args = ["-p", prompt, "--output-format", "json"]
+
+    args =
+      if previous_session do
+        base_args ++ ["--resume", previous_session]
+      else
+        base_args
+      end
+
     try do
       port =
         Port.open(
@@ -459,13 +482,21 @@ defmodule Conductor.AgentWorker do
             :binary,
             :exit_status,
             {:line, 65_536},
-            args: ["-p", prompt, "--output-format", "json"],
+            args: args,
             cd: to_charlist(work_dir)
           ]
         )
 
       {:os_pid, os_pid} = Port.info(port, :os_pid)
-      Logger.info("[worker] #{bead_id}: spawned #{agent} via CLI (#{binary} -p, pid=#{os_pid})")
+
+      if previous_session do
+        Logger.info(
+          "[worker] #{bead_id}: resumed #{agent} via CLI (#{binary} -p --resume #{previous_session}, pid=#{os_pid})"
+        )
+      else
+        Logger.info("[worker] #{bead_id}: spawned #{agent} via CLI (#{binary} -p, pid=#{os_pid})")
+      end
+
       {:ok, port, os_pid}
     rescue
       e -> {:error, Exception.message(e)}
@@ -531,6 +562,26 @@ defmodule Conductor.AgentWorker do
       "2. Create a commit with a descriptive message\n" <>
       "3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"#{repo}\" and id=\"#{bead_id}\"\n" <>
       "4. Report what you changed"
+  end
+
+  # -- CLI output handling --
+
+  defp handle_cli_output(line, state) do
+    # Claude CLI with --output-format json emits a JSON blob on stdout.
+    # Extract session_id if present to enable --resume on retry.
+    case Jason.decode(line) do
+      {:ok, %{"session_id" => sid}} when is_binary(sid) and sid != "" ->
+        Logger.debug("[cli] #{state.pipeline.bead_id}: captured session_id=#{sid}")
+        {:noreply, %{state | session_id: sid}}
+
+      {:ok, _json} ->
+        # Valid JSON but no session_id field — ignore
+        {:noreply, state}
+
+      {:error, _} ->
+        # Not JSON (stderr leak or partial line) — ignore
+        {:noreply, state}
+    end
   end
 
   # -- ACP message handling --

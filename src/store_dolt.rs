@@ -487,6 +487,16 @@ impl DispatchStore for DoltBackend {
         Ok(())
     }
 
+    async fn update_dispatch_session(&self, id: &str, session_id: &str) -> Result<()> {
+        query("UPDATE dispatches SET session_id = ? WHERE id = ?")
+            .bind(session_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("updating session_id for dispatch {id}"))?;
+        Ok(())
+    }
+
     async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>> {
         let rows = query(
             "SELECT id, repo, bead_id, agent, provider, started_at,
