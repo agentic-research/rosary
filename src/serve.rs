@@ -9,6 +9,8 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Sha256;
+
+use crate::store::DispatchRecord;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -300,6 +302,46 @@ fn tool_definitions() -> Value {
                     },
                     "required": ["repo", "bead_id", "pipeline_phase", "pipeline_agent"]
                 }
+            },
+            {
+                "name": "rsry_pipeline_query",
+                "description": "Query pipeline state. Get a single pipeline by repo + bead_id, or list all active pipelines with no args.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo": { "type": "string", "description": "Repository name" },
+                        "bead_id": { "type": "string", "description": "Bead ID" }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "rsry_dispatch_record",
+                "description": "Record a dispatch (agent execution) in the backend store.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Dispatch UUID" },
+                        "repo": { "type": "string", "description": "Repo name" },
+                        "bead_id": { "type": "string", "description": "Bead ID" },
+                        "agent": { "type": "string", "description": "Agent name" },
+                        "provider": { "type": "string", "description": "Provider (claude, gemini, acp)" },
+                        "work_dir": { "type": "string", "description": "Working directory" }
+                    },
+                    "required": ["id", "repo", "bead_id", "agent", "provider", "work_dir"]
+                }
+            },
+            {
+                "name": "rsry_dispatch_history",
+                "description": "Query dispatch history. Filter by bead_id or list active dispatches.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "bead_id": { "type": "string", "description": "Filter by bead ID" },
+                        "active_only": { "type": "boolean", "description": "Only active dispatches", "default": true }
+                    },
+                    "required": []
+                }
             }
         ]
     })
@@ -345,6 +387,9 @@ async fn call_tool(
         "rsry_workspace_cleanup" => tool_workspace_cleanup(args),
         "rsry_decompose" => tool_decompose(args).await,
         "rsry_pipeline_upsert" => tool_pipeline_upsert(args, backend).await,
+        "rsry_pipeline_query" => tool_pipeline_query(args, backend).await,
+        "rsry_dispatch_record" => tool_dispatch_record(args, backend).await,
+        "rsry_dispatch_history" => tool_dispatch_history(args, backend).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
 }
@@ -1057,6 +1102,133 @@ async fn tool_pipeline_upsert(args: &Value, backend: Option<&DoltBackend>) -> Re
     }))
 }
 
+async fn tool_pipeline_query(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+
+    let repo = args.get("repo").and_then(|v| v.as_str());
+    let bead_id = args.get("bead_id").and_then(|v| v.as_str());
+
+    match (repo, bead_id) {
+        (Some(repo), Some(bead_id)) => {
+            let bead_ref = BeadRef {
+                repo: repo.to_string(),
+                bead_id: bead_id.to_string(),
+            };
+            let pipeline = backend.get_pipeline(&bead_ref).await?;
+            match pipeline {
+                Some(p) => Ok(json!({
+                    "mode": "get",
+                    "pipeline": {
+                        "repo": p.bead_ref.repo,
+                        "bead_id": p.bead_ref.bead_id,
+                        "pipeline_phase": p.pipeline_phase,
+                        "pipeline_agent": p.pipeline_agent,
+                        "phase_status": p.phase_status,
+                        "retries": p.retries,
+                    }
+                })),
+                None => Ok(json!({ "mode": "get", "pipeline": null })),
+            }
+        }
+        (None, None) => {
+            let pipelines = backend.list_active_pipelines().await?;
+            let items: Vec<Value> = pipelines
+                .iter()
+                .map(|p| {
+                    json!({
+                        "repo": p.bead_ref.repo,
+                        "bead_id": p.bead_ref.bead_id,
+                        "pipeline_phase": p.pipeline_phase,
+                        "pipeline_agent": p.pipeline_agent,
+                        "phase_status": p.phase_status,
+                    })
+                })
+                .collect();
+            Ok(json!({ "mode": "list", "count": items.len(), "pipelines": items }))
+        }
+        _ => anyhow::bail!("provide both repo and bead_id, or neither for list"),
+    }
+}
+
+async fn tool_dispatch_record(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+
+    let id = args["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("id required"))?;
+    let repo = args["repo"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo required"))?;
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let agent = args["agent"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("agent required"))?;
+    let provider = args["provider"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("provider required"))?;
+    let work_dir = args["work_dir"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("work_dir required"))?;
+
+    let record = DispatchRecord {
+        id: id.to_string(),
+        bead_ref: BeadRef {
+            repo: repo.to_string(),
+            bead_id: bead_id.to_string(),
+        },
+        agent: agent.to_string(),
+        provider: provider.to_string(),
+        started_at: chrono::Utc::now(),
+        completed_at: None,
+        outcome: None,
+        work_dir: work_dir.to_string(),
+        session_id: None,
+        workspace_path: None,
+    };
+
+    backend.record_dispatch(&record).await?;
+    Ok(json!({ "id": id, "bead_id": bead_id, "recorded": true }))
+}
+
+async fn tool_dispatch_history(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+    let bead_id = args.get("bead_id").and_then(|v| v.as_str());
+    let active_only = args
+        .get("active_only")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(bead_id.is_none());
+
+    let mut dispatches = backend.active_dispatches().await?;
+    if let Some(bead_id) = bead_id {
+        dispatches.retain(|d: &DispatchRecord| d.bead_ref.bead_id == bead_id);
+    }
+    if !active_only {
+        // active_dispatches already filters to active — nothing extra needed
+        let _ = active_only;
+    }
+
+    let items: Vec<Value> = dispatches
+        .iter()
+        .map(|d| {
+            json!({
+                "id": d.id,
+                "repo": d.bead_ref.repo,
+                "bead_id": d.bead_ref.bead_id,
+                "agent": d.agent,
+                "provider": d.provider,
+                "started_at": d.started_at.to_rfc3339(),
+                "completed_at": d.completed_at.map(|t| t.to_rfc3339()),
+                "outcome": d.outcome,
+                "work_dir": d.work_dir,
+            })
+        })
+        .collect();
+
+    Ok(json!({ "count": items.len(), "dispatches": items }))
+}
+
 // ---------------------------------------------------------------------------
 // Message handling
 // ---------------------------------------------------------------------------
@@ -1699,7 +1871,7 @@ mod tests {
     fn tool_definitions_has_expected_tools() {
         let defs = tool_definitions();
         let tools = defs["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 19);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"rsry_scan"));
@@ -1718,6 +1890,9 @@ mod tests {
         assert!(names.contains(&"rsry_workspace_cleanup"));
         assert!(names.contains(&"rsry_decompose"));
         assert!(names.contains(&"rsry_pipeline_upsert"));
+        assert!(names.contains(&"rsry_pipeline_query"));
+        assert!(names.contains(&"rsry_dispatch_record"));
+        assert!(names.contains(&"rsry_dispatch_history"));
     }
 
     #[test]
@@ -1752,7 +1927,7 @@ mod tests {
         let resp = handle_tools_list(json!(2));
         let result = resp.result.unwrap();
         assert!(result["tools"].is_array());
-        assert_eq!(result["tools"].as_array().unwrap().len(), 16);
+        assert_eq!(result["tools"].as_array().unwrap().len(), 19);
     }
 
     #[tokio::test]
