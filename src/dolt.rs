@@ -179,11 +179,38 @@ impl DoltClient {
         }
     }
 
+    /// Parse files and test_files from the notes JSON column.
+    fn parse_files_from_notes(row: &sqlx_mysql::MySqlRow) -> (Vec<String>, Vec<String>) {
+        let notes: Option<String> = row.try_get("notes").ok();
+        let parsed: Option<serde_json::Value> = notes.and_then(|s| serde_json::from_str(&s).ok());
+        let files = parsed
+            .as_ref()
+            .and_then(|v| v.get("files"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let test_files = parsed
+            .as_ref()
+            .and_then(|v| v.get("test_files"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        (files, test_files)
+    }
+
     /// List all open issues as Beads.
     pub async fn list_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
         let rows = query(
             r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
-                      i.assignee, i.external_ref, i.created_at, i.updated_at,
+                      i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
                       COALESCE(dep.cnt, 0) as dep_count,
                       COALESCE(deps.cnt, 0) as dependency_count,
                       COALESCE(cmt.cnt, 0) as comment_count
@@ -203,7 +230,56 @@ impl DoltClient {
 
         let beads = rows
             .iter()
-            .map(|row| Bead {
+            .map(|row| {
+                let (files, test_files) = Self::parse_files_from_notes(row);
+                Bead {
+                    id: row.get("id"),
+                    title: row.get("title"),
+                    description: row.try_get("description").unwrap_or_default(),
+                    status: row.get("status"),
+                    priority: row.try_get::<i32, _>("priority").unwrap_or(2) as u8,
+                    issue_type: row
+                        .try_get("issue_type")
+                        .unwrap_or_else(|_| "task".to_string()),
+                    owner: row.try_get("assignee").ok(),
+                    repo: repo_name.to_string(),
+                    created_at: row.try_get("created_at").unwrap_or_default(),
+                    updated_at: row.try_get("updated_at").unwrap_or_default(),
+                    dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0) as u32,
+                    dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
+                    comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0) as u32,
+                    branch: None,
+                    pr_url: None,
+                    jj_change_id: None,
+                    external_ref: row.try_get("external_ref").ok(),
+                    files,
+                    test_files,
+                }
+            })
+            .collect();
+
+        Ok(beads)
+    }
+
+    /// Get a single bead by ID.
+    pub async fn get_bead(&self, id: &str, repo_name: &str) -> Result<Option<Bead>> {
+        let row = query(
+            r#"SELECT id, title, description, status, priority, issue_type,
+                      assignee, external_ref, notes, created_at, updated_at,
+                      (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
+                      (SELECT COUNT(*) FROM dependencies d WHERE d.issue_id = i.id) as dependency_count,
+                      (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
+               FROM issues i
+               WHERE id = ?"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .with_context(|| format!("querying issue {id}"))?;
+
+        Ok(row.map(|row| {
+            let (files, test_files) = Self::parse_files_from_notes(&row);
+            Bead {
                 id: row.get("id"),
                 title: row.get("title"),
                 description: row.try_get("description").unwrap_or_default(),
@@ -219,56 +295,13 @@ impl DoltClient {
                 dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0) as u32,
                 dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
                 comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0) as u32,
+                external_ref: row.try_get("external_ref").ok(),
                 branch: None,
                 pr_url: None,
                 jj_change_id: None,
-                external_ref: row.try_get("external_ref").ok(),
-                files: Vec::new(),
-                test_files: Vec::new(),
-            })
-            .collect();
-
-        Ok(beads)
-    }
-
-    /// Get a single bead by ID.
-    pub async fn get_bead(&self, id: &str, repo_name: &str) -> Result<Option<Bead>> {
-        let row = query(
-            r#"SELECT id, title, description, status, priority, issue_type,
-                      assignee, external_ref, created_at, updated_at,
-                      (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
-                      (SELECT COUNT(*) FROM dependencies d WHERE d.issue_id = i.id) as dependency_count,
-                      (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
-               FROM issues i
-               WHERE id = ?"#,
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .with_context(|| format!("querying issue {id}"))?;
-
-        Ok(row.map(|row| Bead {
-            id: row.get("id"),
-            title: row.get("title"),
-            description: row.try_get("description").unwrap_or_default(),
-            status: row.get("status"),
-            priority: row.try_get::<i32, _>("priority").unwrap_or(2) as u8,
-            issue_type: row
-                .try_get("issue_type")
-                .unwrap_or_else(|_| "task".to_string()),
-            owner: row.try_get("assignee").ok(),
-            repo: repo_name.to_string(),
-            created_at: row.try_get("created_at").unwrap_or_default(),
-            updated_at: row.try_get("updated_at").unwrap_or_default(),
-            dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0) as u32,
-            dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
-            comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0) as u32,
-            external_ref: row.try_get("external_ref").ok(),
-            branch: None,
-            pr_url: None,
-            jj_change_id: None,
-            files: Vec::new(),
-            test_files: Vec::new(),
+                files,
+                test_files,
+            }
         }))
     }
 
@@ -487,7 +520,7 @@ impl DoltClient {
         let pattern = format!("%{query_str}%");
         let rows = query(
             r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
-                      i.assignee, i.external_ref, i.created_at, i.updated_at,
+                      i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
                       COALESCE(dep.cnt, 0) as dep_count,
                       COALESCE(deps.cnt, 0) as dependency_count,
                       COALESCE(cmt.cnt, 0) as comment_count
@@ -510,28 +543,31 @@ impl DoltClient {
 
         let beads = rows
             .iter()
-            .map(|row| Bead {
-                id: row.get("id"),
-                title: row.get("title"),
-                description: row.try_get("description").unwrap_or_default(),
-                status: row.get("status"),
-                priority: row.try_get::<i32, _>("priority").unwrap_or(2) as u8,
-                issue_type: row
-                    .try_get("issue_type")
-                    .unwrap_or_else(|_| "task".to_string()),
-                owner: row.try_get("assignee").ok(),
-                repo: repo_name.to_string(),
-                created_at: row.try_get("created_at").unwrap_or_default(),
-                updated_at: row.try_get("updated_at").unwrap_or_default(),
-                dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0) as u32,
-                dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
-                comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0) as u32,
-                branch: None,
-                pr_url: None,
-                jj_change_id: None,
-                external_ref: row.try_get("external_ref").ok(),
-                files: Vec::new(),
-                test_files: Vec::new(),
+            .map(|row| {
+                let (files, test_files) = Self::parse_files_from_notes(row);
+                Bead {
+                    id: row.get("id"),
+                    title: row.get("title"),
+                    description: row.try_get("description").unwrap_or_default(),
+                    status: row.get("status"),
+                    priority: row.try_get::<i32, _>("priority").unwrap_or(2) as u8,
+                    issue_type: row
+                        .try_get("issue_type")
+                        .unwrap_or_else(|_| "task".to_string()),
+                    owner: row.try_get("assignee").ok(),
+                    repo: repo_name.to_string(),
+                    created_at: row.try_get("created_at").unwrap_or_default(),
+                    updated_at: row.try_get("updated_at").unwrap_or_default(),
+                    dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0) as u32,
+                    dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
+                    comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0) as u32,
+                    branch: None,
+                    pr_url: None,
+                    jj_change_id: None,
+                    external_ref: row.try_get("external_ref").ok(),
+                    files,
+                    test_files,
+                }
             })
             .collect();
 
