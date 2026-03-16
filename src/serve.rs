@@ -794,30 +794,36 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
 
 async fn tool_active() -> Result<Value> {
     let registry = crate::session::SessionRegistry::load().unwrap_or_default();
-    let agents: Vec<Value> = registry
-        .active()
-        .iter()
-        .map(|s| {
-            let health = check_agent_health(s);
-            json!({
-                "bead_id": s.bead_id,
-                "title": s.title,
-                "agent": s.agent,
-                "repo": s.repo,
-                "provider": s.provider,
-                "pid": s.pid,
-                "work_dir": s.work_dir,
-                "started_at": s.started_at.to_rfc3339(),
-                "last_activity": s.last_activity.map(|t| t.to_rfc3339()),
-                "last_comment": s.last_comment,
-                "health": health,
-            })
-        })
-        .collect();
+    let mut running = Vec::new();
+    let mut completed = Vec::new();
+
+    for s in registry.active() {
+        let health = check_agent_health(s);
+        let entry = json!({
+            "bead_id": s.bead_id,
+            "title": s.title,
+            "agent": s.agent,
+            "repo": s.repo,
+            "provider": s.provider,
+            "pid": s.pid,
+            "work_dir": s.work_dir,
+            "started_at": s.started_at.to_rfc3339(),
+            "last_activity": s.last_activity.map(|t| t.to_rfc3339()),
+            "last_comment": s.last_comment,
+            "health": health,
+        });
+        if health == "dead" {
+            completed.push(entry);
+        } else {
+            running.push(entry);
+        }
+    }
 
     Ok(json!({
-        "active": agents.len(),
-        "agents": agents,
+        "running": running.len(),
+        "completed": completed.len(),
+        "agents": running,
+        "needs_merge": completed,
     }))
 }
 

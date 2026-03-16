@@ -57,18 +57,12 @@ impl SessionRegistry {
         let mut registry: Self =
             serde_json::from_str(&content).with_context(|| "parsing sessions.json")?;
 
-        // Partition into alive and dead sessions
-        let (alive, dead): (Vec<_>, Vec<_>) = registry
-            .sessions
-            .into_iter()
-            .partition(|s| s.pid.map(is_pid_alive).unwrap_or(false));
-
-        // Clean up workspaces for dead sessions
-        for session in &dead {
-            cleanup_session_workspace(session);
-        }
-
-        registry.sessions = alive;
+        // Remove sessions with no PID (legacy entries), but keep dead-PID
+        // sessions — their worktrees may contain unmerged work. Cleanup
+        // happens explicitly via rsry_workspace_cleanup or rsry_workspace_merge,
+        // NOT on load. Auto-cleanup on load caused data loss: agent finishes →
+        // PID dies → next MCP call nukes worktree before merge.
+        registry.sessions.retain(|s| s.pid.is_some());
         Ok(registry)
     }
 
@@ -115,11 +109,15 @@ impl SessionRegistry {
 }
 
 /// Check if a PID is alive via kill(pid, 0).
+#[allow(dead_code)]
 fn is_pid_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
 /// Clean up workspace for a dead session (best-effort).
+/// NOTE: intentionally not called from load() — auto-cleanup caused data loss
+/// (worktrees nuked before merge). Call rsry_workspace_cleanup explicitly instead.
+#[allow(dead_code)]
 fn cleanup_session_workspace(session: &SessionEntry) {
     if session.repo_path.is_empty() || session.workspace_vcs.is_empty() {
         return;
