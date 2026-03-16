@@ -383,6 +383,47 @@ pub fn is_dominated_by(bead: &Bead, active_beads: &[&Bead]) -> Option<String> {
     None
 }
 
+/// Check if a candidate bead's files overlap with any active/queued bead.
+///
+/// Returns the ID of the conflicting bead if files (or test_files) intersect.
+/// Beads without files declared are always allowed — overlap is only detected
+/// when **both** beads have files set.
+///
+/// Paths are normalized by stripping leading `./` before comparison.
+pub fn has_file_overlap(bead: &Bead, active_beads: &[&Bead]) -> Option<String> {
+    if bead.files.is_empty() && bead.test_files.is_empty() {
+        return None;
+    }
+
+    let candidate_files: HashSet<&str> = bead
+        .files
+        .iter()
+        .chain(bead.test_files.iter())
+        .map(|f| f.strip_prefix("./").unwrap_or(f.as_str()))
+        .collect();
+
+    for other in active_beads {
+        if other.id == bead.id || other.repo != bead.repo {
+            continue;
+        }
+        if other.files.is_empty() && other.test_files.is_empty() {
+            continue;
+        }
+
+        let other_files: HashSet<&str> = other
+            .files
+            .iter()
+            .chain(other.test_files.iter())
+            .map(|f| f.strip_prefix("./").unwrap_or(f.as_str()))
+            .collect();
+
+        if !candidate_files.is_disjoint(&other_files) {
+            return Some(other.id.clone());
+        }
+    }
+    None
+}
+
 /// Suggest a priority adjustment for a cluster member based on its cluster.
 ///
 /// If the cluster contains a high-priority bead, related lower-priority beads
@@ -820,6 +861,97 @@ mod tests {
             assert_eq!(close, &vec!["b".to_string()]);
         }
         // NearDuplicate is expected for very similar titles
+    }
+
+    // --- file overlap ---
+
+    fn make_bead_with_files(id: &str, title: &str, files: &[&str], test_files: &[&str]) -> Bead {
+        Bead {
+            files: files.iter().map(|f| f.to_string()).collect(),
+            test_files: test_files.iter().map(|f| f.to_string()).collect(),
+            ..make_bead(id, title)
+        }
+    }
+
+    #[test]
+    fn file_overlap_detected() {
+        let active = make_bead_with_files("a", "fix serve", &["src/serve.rs"], &[]);
+        let candidate =
+            make_bead_with_files("b", "add endpoint", &["src/serve.rs", "src/api.rs"], &[]);
+        let result = has_file_overlap(&candidate, &[&active]);
+        assert_eq!(
+            result,
+            Some("a".to_string()),
+            "overlapping src/serve.rs should conflict"
+        );
+    }
+
+    #[test]
+    fn file_overlap_disjoint_ok() {
+        let active = make_bead_with_files("a", "fix dolt", &["src/dolt.rs"], &[]);
+        let candidate = make_bead_with_files("b", "fix dispatch", &["src/dispatch.rs"], &[]);
+        let result = has_file_overlap(&candidate, &[&active]);
+        assert!(result.is_none(), "disjoint files should not conflict");
+    }
+
+    #[test]
+    fn file_overlap_no_files_always_ok() {
+        let active = make_bead_with_files("a", "fix serve", &["src/serve.rs"], &[]);
+        let candidate = make_bead("b", "vague task");
+        let result = has_file_overlap(&candidate, &[&active]);
+        assert!(
+            result.is_none(),
+            "candidate without files should always pass"
+        );
+    }
+
+    #[test]
+    fn file_overlap_active_no_files_ok() {
+        let active = make_bead("a", "vague active task");
+        let candidate = make_bead_with_files("b", "fix serve", &["src/serve.rs"], &[]);
+        let result = has_file_overlap(&candidate, &[&active]);
+        assert!(
+            result.is_none(),
+            "active bead without files should not block"
+        );
+    }
+
+    #[test]
+    fn file_overlap_test_files_conflict() {
+        let active =
+            make_bead_with_files("a", "fix dolt", &["src/dolt.rs"], &["tests/dolt_test.rs"]);
+        let candidate =
+            make_bead_with_files("b", "dolt perf", &["src/pool.rs"], &["tests/dolt_test.rs"]);
+        let result = has_file_overlap(&candidate, &[&active]);
+        assert_eq!(
+            result,
+            Some("a".to_string()),
+            "overlapping test_files should conflict"
+        );
+    }
+
+    #[test]
+    fn file_overlap_normalizes_dot_slash() {
+        let active = make_bead_with_files("a", "fix serve", &["./src/serve.rs"], &[]);
+        let candidate = make_bead_with_files("b", "add endpoint", &["src/serve.rs"], &[]);
+        let result = has_file_overlap(&candidate, &[&active]);
+        assert_eq!(
+            result,
+            Some("a".to_string()),
+            "./src/serve.rs and src/serve.rs should match"
+        );
+    }
+
+    #[test]
+    fn file_overlap_cross_repo_ignored() {
+        let active = make_bead_with_files("a", "fix serve", &["src/serve.rs"], &[]);
+        let mut candidate = make_bead_with_files("b", "fix serve", &["src/serve.rs"], &[]);
+        candidate.repo = "other-repo".to_string();
+        let result = has_file_overlap(&candidate, &[&active]);
+        assert!(
+            result.is_none(),
+            "cross-repo file overlap should not conflict"
+        );
     }
 
     // --- strip_n_of_m ---

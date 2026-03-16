@@ -369,6 +369,17 @@ impl Reconciler {
                 continue;
             }
 
+            // File overlap: defer if candidate's files conflict with an active/queued
+            // bead. Prevents merge conflicts from concurrent modifications to the
+            // same source files (e.g., two agents both writing to serve.rs).
+            if let Some(blocker) = epic::has_file_overlap(bead, &active_beads) {
+                eprintln!(
+                    "[file-overlap] deferring {} — files conflict with active {blocker}",
+                    bead.id
+                );
+                continue;
+            }
+
             let retries = self.queue.retries(&bead.id);
             let mut score = if self.config.overnight {
                 queue::triage_score_overnight(bead, retries, now)
@@ -437,6 +448,20 @@ impl Reconciler {
             let repo_path = self.repo_info.get(&entry.repo).map(|(p, _)| p.clone());
 
             if let (Some(bead), Some(path)) = (bead, repo_path) {
+                // Re-check file overlap against beads dispatched earlier in this loop.
+                // Triage couldn't catch these because they were queued simultaneously.
+                let active_beads: Vec<&crate::bead::Bead> = beads
+                    .iter()
+                    .filter(|b| self.active.contains_key(&b.id))
+                    .collect();
+                if let Some(blocker) = epic::has_file_overlap(bead, &active_beads) {
+                    eprintln!(
+                        "[file-overlap] deferring {} — files conflict with just-dispatched {blocker}",
+                        entry.bead_id
+                    );
+                    continue;
+                }
+
                 match dispatch::spawn(
                     bead,
                     &path,

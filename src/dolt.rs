@@ -656,6 +656,237 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
+    /// Sandboxed Dolt beads database for integration testing.
+    ///
+    /// Spins up a fresh Dolt instance in a temp directory with the beads schema,
+    /// then kills the server on drop. Each `fresh_client()` call returns a new
+    /// connection pool — simulating an MCP reconnect.
+    struct SandboxBeads {
+        config: DoltConfig,
+        _tmp: TempDir,
+    }
+
+    impl SandboxBeads {
+        async fn new() -> Option<Self> {
+            if std::process::Command::new("dolt")
+                .arg("version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_err()
+            {
+                eprintln!("skipping: dolt not installed");
+                return None;
+            }
+
+            let tmp = TempDir::new().unwrap();
+            let beads_dir = tmp.path();
+            let db_dir = beads_dir.join("dolt").join("beads");
+            std::fs::create_dir_all(&db_dir).unwrap();
+
+            // Initialize dolt database
+            let status = std::process::Command::new("dolt")
+                .args(["init"])
+                .current_dir(&db_dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("dolt init");
+            assert!(status.success(), "dolt init failed");
+
+            std::fs::write(
+                beads_dir.join("metadata.json"),
+                r#"{"dolt_database": "beads"}"#,
+            )
+            .unwrap();
+
+            // port=0 → connect() will auto-start
+            let config = DoltConfig::from_beads_dir(beads_dir).unwrap();
+            let client = DoltClient::connect(&config).await.unwrap();
+
+            // Create beads schema
+            for sql in [
+                "CREATE TABLE issues (
+                    id VARCHAR(128) PRIMARY KEY,
+                    title VARCHAR(512) NOT NULL,
+                    description TEXT,
+                    design TEXT DEFAULT '',
+                    acceptance_criteria TEXT DEFAULT '',
+                    notes TEXT DEFAULT '',
+                    status VARCHAR(32) NOT NULL DEFAULT 'open',
+                    priority INT NOT NULL DEFAULT 2,
+                    issue_type VARCHAR(32) NOT NULL DEFAULT 'task',
+                    assignee VARCHAR(128),
+                    external_ref VARCHAR(128),
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )",
+                "CREATE TABLE comments (
+                    issue_id VARCHAR(128) NOT NULL,
+                    text TEXT NOT NULL,
+                    author VARCHAR(128) NOT NULL,
+                    created_at DATETIME NOT NULL
+                )",
+                "CREATE TABLE dependencies (
+                    issue_id VARCHAR(128) NOT NULL,
+                    depends_on_id VARCHAR(128) NOT NULL,
+                    PRIMARY KEY (issue_id, depends_on_id)
+                )",
+                "CREATE TABLE events (
+                    issue_id VARCHAR(128) NOT NULL,
+                    event_type VARCHAR(64) NOT NULL,
+                    actor VARCHAR(128) NOT NULL,
+                    comment TEXT,
+                    created_at DATETIME NOT NULL
+                )",
+            ] {
+                client.execute_raw(sql).await.unwrap();
+            }
+
+            // Commit schema so it's visible to all future connections
+            client
+                .execute_raw("CALL DOLT_COMMIT('-Am', 'init schema', '--allow-empty')")
+                .await
+                .unwrap();
+
+            // Re-read config to pick up the port written by auto-start
+            let config = DoltConfig::from_beads_dir(beads_dir).unwrap();
+            Some(SandboxBeads { config, _tmp: tmp })
+        }
+
+        /// Each call returns a fresh connection pool — simulates MCP reconnect.
+        async fn fresh_client(&self) -> DoltClient {
+            DoltClient::connect(&self.config).await.unwrap()
+        }
+    }
+
+    impl Drop for SandboxBeads {
+        fn drop(&mut self) {
+            let pid_file = self.config.beads_dir.join("dolt-server.pid");
+            if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+                && let Ok(pid) = pid_str.trim().parse::<i32>()
+            {
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
+                }
+            }
+        }
+    }
+
+    // ── Sandboxed cross-connection tests ────────────────────
+
+    /// The exact bug scenario: bead created on connection A must be
+    /// findable from a completely new connection B (simulating MCP reconnect).
+    #[tokio::test]
+    async fn create_bead_visible_to_new_connection() {
+        let sandbox = match SandboxBeads::new().await {
+            Some(s) => s,
+            None => return,
+        };
+
+        // Session A: create a bead
+        let client_a = sandbox.fresh_client().await;
+        client_a
+            .create_bead(
+                "vis-1",
+                "Cross-session visibility",
+                "Should survive reconnect",
+                1,
+                "bug",
+            )
+            .await
+            .unwrap();
+        drop(client_a);
+
+        // Session B: completely new pool — must see the bead
+        let client_b = sandbox.fresh_client().await;
+        let found = client_b
+            .search_beads("Cross-session", "test")
+            .await
+            .unwrap();
+        assert!(
+            found.iter().any(|b| b.id == "vis-1"),
+            "bead created in session A must be visible to session B (auto_commit guarantees this)"
+        );
+
+        let bead = client_b.get_bead("vis-1", "test").await.unwrap();
+        assert!(bead.is_some());
+        assert_eq!(bead.unwrap().title, "Cross-session visibility");
+    }
+
+    /// Every write path must auto-commit: update_status, close_bead,
+    /// add_comment, update_bead_fields. Verified by checking from a fresh connection.
+    #[tokio::test]
+    async fn all_write_paths_visible_across_connections() {
+        let sandbox = match SandboxBeads::new().await {
+            Some(s) => s,
+            None => return,
+        };
+
+        // Setup: create bead
+        let setup = sandbox.fresh_client().await;
+        setup
+            .create_bead("wp-1", "Write paths test", "desc", 2, "task")
+            .await
+            .unwrap();
+        drop(setup);
+
+        // update_status
+        let writer = sandbox.fresh_client().await;
+        writer.update_status("wp-1", "in_progress").await.unwrap();
+        drop(writer);
+
+        let reader = sandbox.fresh_client().await;
+        let status = reader.get_status("wp-1").await.unwrap();
+        assert_eq!(
+            status.as_deref(),
+            Some("in_progress"),
+            "update_status must auto_commit"
+        );
+        drop(reader);
+
+        // add_comment
+        let writer = sandbox.fresh_client().await;
+        writer
+            .add_comment("wp-1", "test comment", "test-runner")
+            .await
+            .unwrap();
+        drop(writer);
+
+        let reader = sandbox.fresh_client().await;
+        let bead = reader.get_bead("wp-1", "test").await.unwrap().unwrap();
+        assert_eq!(bead.comment_count, 1, "add_comment must auto_commit");
+        drop(reader);
+
+        // update_bead_fields (PATCH)
+        let writer = sandbox.fresh_client().await;
+        let update = crate::bead::BeadUpdate {
+            title: Some("Updated title".into()),
+            ..Default::default()
+        };
+        writer.update_bead_fields("wp-1", &update).await.unwrap();
+        drop(writer);
+
+        let reader = sandbox.fresh_client().await;
+        let bead = reader.get_bead("wp-1", "test").await.unwrap().unwrap();
+        assert_eq!(
+            bead.title, "Updated title",
+            "update_bead_fields must auto_commit"
+        );
+        drop(reader);
+
+        // close_bead
+        let writer = sandbox.fresh_client().await;
+        writer.close_bead("wp-1").await.unwrap();
+        drop(writer);
+
+        let reader = sandbox.fresh_client().await;
+        let bead = reader.get_bead("wp-1", "test").await.unwrap().unwrap();
+        assert_eq!(bead.status, "closed", "close_bead must auto_commit");
+    }
+
+    // ── Existing tests ──────────────────────────────────────
+
     #[test]
     fn parse_dolt_config_from_beads_dir() {
         let dir = TempDir::new().unwrap();
