@@ -134,6 +134,15 @@ impl From<&str> for BeadState {
     }
 }
 
+/// Issue types that require `files` on create — these represent actionable
+/// implementation work where the agent must know what code to touch.
+const ACTIONABLE_TYPES: &[&str] = &["bug", "task", "feature", "chore"];
+
+/// Returns true if the issue type requires a non-empty `files` field on create.
+pub fn requires_files(issue_type: &str) -> bool {
+    ACTIONABLE_TYPES.contains(&issue_type)
+}
+
 /// A bead is a file-scoped work item tracked in a repo's .beads/ directory.
 /// This is the common representation used across scanner, sync, and dispatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -546,6 +555,23 @@ mod tests {
         assert!(bead.branch.is_none());
         assert!(bead.pr_url.is_none());
         assert!(bead.jj_change_id.is_none());
+    }
+
+    #[test]
+    fn requires_files_for_actionable_types() {
+        assert!(requires_files("bug"));
+        assert!(requires_files("task"));
+        assert!(requires_files("feature"));
+        assert!(requires_files("chore"));
+    }
+
+    #[test]
+    fn does_not_require_files_for_non_actionable_types() {
+        assert!(!requires_files("epic"));
+        assert!(!requires_files("design"));
+        assert!(!requires_files("research"));
+        assert!(!requires_files("review"));
+        assert!(!requires_files("unknown"));
     }
 
     #[test]

@@ -421,6 +421,31 @@ async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
         .and_then(|v| v.as_str())
         .unwrap_or_else(|| crate::dispatch::default_agent(issue_type));
 
+    let files: Vec<String> = args
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let test_files: Vec<String> = args
+        .get("test_files")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if crate::bead::requires_files(issue_type) && files.is_empty() {
+        anyhow::bail!(
+            "files required for {issue_type} beads — specify which code this bead touches"
+        );
+    }
+
     let client = get_client(repo_path, pool).await?;
     let repo_name = repo_name_from_path(repo_path);
     let millis = std::time::SystemTime::now()
@@ -433,6 +458,9 @@ async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
         .create_bead(&id, title, description, priority, issue_type)
         .await?;
     client.set_assignee(&id, owner).await?;
+    if !files.is_empty() || !test_files.is_empty() {
+        client.set_files(&id, &files, &test_files).await?;
+    }
 
     Ok(json!({ "id": id, "title": title, "priority": priority, "owner": owner }))
 }

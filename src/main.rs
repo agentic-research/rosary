@@ -550,6 +550,11 @@ async fn main() -> Result<()> {
                     files,
                     test_files,
                 } => {
+                    if bead::requires_files(&issue_type) && files.is_empty() {
+                        anyhow::bail!(
+                            "files required for {issue_type} beads — specify which code this bead touches"
+                        );
+                    }
                     let id = generate_bead_id(&repo_name);
                     client
                         .create_bead(&id, &title, &description, priority, &issue_type)
