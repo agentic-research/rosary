@@ -153,6 +153,9 @@ impl AgentProvider for ClaudeProvider {
         permissions: &PermissionProfile,
         system_prompt: &str,
     ) -> Result<Box<dyn AgentSession>> {
+        let log_path = work_dir.join(STREAM_LOG_FILENAME);
+        let log_file = std::fs::File::create(&log_path)
+            .with_context(|| format!("creating stream log {}", log_path.display()))?;
         let child = tokio::process::Command::new("claude")
             .args([
                 "-p",
@@ -166,7 +169,7 @@ impl AgentProvider for ClaudeProvider {
             ])
             .current_dir(work_dir)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::inherit())
             .spawn()
             .with_context(|| format!("spawning claude CLI in {}", work_dir.display()))?;
@@ -197,6 +200,9 @@ impl AgentProvider for GeminiProvider {
     ) -> Result<Box<dyn AgentSession>> {
         // Gemini CLI doesn't have --append-system-prompt; prepend to user prompt.
         let full_prompt = format!("{system_prompt}\n\n---\n\n{prompt}");
+        let log_path = work_dir.join(STREAM_LOG_FILENAME);
+        let log_file = std::fs::File::create(&log_path)
+            .with_context(|| format!("creating stream log {}", log_path.display()))?;
         let mut cmd = tokio::process::Command::new("gemini");
         cmd.args([
             "-p",
@@ -212,7 +218,7 @@ impl AgentProvider for GeminiProvider {
         let child = cmd
             .current_dir(work_dir)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::inherit())
             .spawn()
             .with_context(|| format!("spawning gemini CLI in {}", work_dir.display()))?;
@@ -248,11 +254,14 @@ impl AgentProvider for AcpCliProvider {
         // The prompt and permissions are sent via ACP protocol (JSON-RPC),
         // not CLI args. The caller must establish a ClientSideConnection
         // after spawning and use Agent::prompt() to send the task.
+        let log_path = work_dir.join(STREAM_LOG_FILENAME);
+        let log_file = std::fs::File::create(&log_path)
+            .with_context(|| format!("creating stream log {}", log_path.display()))?;
         let child = tokio::process::Command::new(&self.binary)
             .current_dir(work_dir)
             .stdin(std::process::Stdio::piped())
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::inherit())
             .spawn()
             .with_context(|| format!("spawning ACP agent: {}", self.binary))?;
@@ -276,6 +285,9 @@ pub fn provider_by_name(name: &str) -> Result<Box<dyn AgentProvider>> {
     }
 }
 
+/// Filename for the agent stdout stream log within a workspace.
+pub const STREAM_LOG_FILENAME: &str = ".rsry-stream.jsonl";
+
 /// Handle to a running agent session.
 pub struct AgentHandle {
     #[allow(dead_code)]
@@ -294,6 +306,10 @@ pub struct AgentHandle {
     /// Recorded in DispatchRecord for resume and debugging.
     #[allow(dead_code)]
     pub workspace_path: Option<String>,
+    /// Path to the JSONL stream log capturing agent stdout.
+    /// Contains init, assistant, and result events from `--output-format json`.
+    #[allow(dead_code)]
+    pub log_path: Option<PathBuf>,
 }
 
 impl AgentHandle {
@@ -561,6 +577,8 @@ pub async fn spawn(
         None
     };
 
+    let log_path = work_dir.join(STREAM_LOG_FILENAME);
+
     Ok(AgentHandle {
         bead_id: bead.id.clone(),
         generation,
@@ -570,6 +588,7 @@ pub async fn spawn(
         workspace: Some(workspace),
         session_id: None,
         workspace_path,
+        log_path: Some(log_path),
     })
 }
 
@@ -827,6 +846,7 @@ mod tests {
             workspace: None,
             session_id: None,
             workspace_path: Some("/tmp/.rsry-workspaces/test-1".into()),
+            log_path: Some(PathBuf::from("/tmp/.rsry-stream.jsonl")),
         };
 
         assert!(handle.session_id.is_none());
