@@ -272,6 +272,19 @@ fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "rsry_workspace_merge",
+                "description": "Merge a completed agent's worktree branch back to main (ff-merge for tasks/bugs, push branch for features/epics).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "bead_id": { "type": "string", "description": "Bead ID (branch is fix/{bead_id})" },
+                        "repo_path": { "type": "string", "description": "Path to the repo root" },
+                        "issue_type": { "type": "string", "description": "Issue type (task/bug = ff-merge, feature/epic = push branch)", "default": "task" }
+                    },
+                    "required": ["bead_id", "repo_path"]
+                }
+            },
+            {
                 "name": "rsry_decompose",
                 "description": "Decompose a markdown document (ADR, README, etc.) into a decade of threaded beads. Returns the decomposition structure without creating beads.",
                 "inputSchema": {
@@ -385,6 +398,7 @@ async fn call_tool(
         "rsry_workspace_create" => tool_workspace_create(args).await,
         "rsry_workspace_checkpoint" => tool_workspace_checkpoint(args).await,
         "rsry_workspace_cleanup" => tool_workspace_cleanup(args),
+        "rsry_workspace_merge" => tool_workspace_merge(args).await,
         "rsry_decompose" => tool_decompose(args).await,
         "rsry_pipeline_upsert" => tool_pipeline_upsert(args, backend).await,
         "rsry_pipeline_query" => tool_pipeline_query(args, backend).await,
@@ -941,6 +955,28 @@ fn tool_workspace_cleanup(args: &Value) -> Result<Value> {
     Ok(json!({
         "bead_id": bead_id,
         "cleaned": true,
+    }))
+}
+
+async fn tool_workspace_merge(args: &Value) -> Result<Value> {
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    let issue_type = args["issue_type"].as_str().unwrap_or("task");
+
+    let path = std::path::Path::new(repo_path);
+    let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
+    let branch = format!("fix/{bead_id}");
+
+    let result = crate::workspace::merge_or_pr(&root, &branch, bead_id, issue_type).await?;
+
+    Ok(json!({
+        "bead_id": bead_id,
+        "branch": branch,
+        "result": result,
     }))
 }
 
