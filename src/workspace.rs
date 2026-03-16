@@ -313,11 +313,14 @@ pub(crate) fn cleanup_jj_workspace(repo_path: &Path, id: &str) {
 // git worktree isolation (fallback)
 // ---------------------------------------------------------------------------
 
-/// Resolve the workspace directory for a bead.
+/// Resolve the workspace directory for a bead, creating the parent if needed.
 /// Uses `{repo_parent}/.rsry-workspaces/{id}` as a deterministic sibling path.
 fn workspace_dir(repo_path: &Path, id: &str) -> PathBuf {
     let parent = repo_path.parent().unwrap_or(repo_path);
-    parent.join(".rsry-workspaces").join(id)
+    let ws_root = parent.join(".rsry-workspaces");
+    // Best-effort mkdir — callers handle the actual VCS error if this fails
+    let _ = std::fs::create_dir_all(&ws_root);
+    ws_root.join(id)
 }
 
 /// Create a git worktree for isolated work.
