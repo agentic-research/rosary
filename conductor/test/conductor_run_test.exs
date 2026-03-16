@@ -5,7 +5,7 @@ defmodule Mix.Tasks.Conductor.RunTest do
 
   describe "parse_args/1" do
     test "returns defaults when no args" do
-      assert Run.parse_args([]) == %{log: nil, interval: nil, max: nil}
+      assert Run.parse_args([]) == %{log: nil, interval: nil, max: nil, repo: nil}
     end
 
     test "parses --log" do
@@ -20,13 +20,18 @@ defmodule Mix.Tasks.Conductor.RunTest do
       assert %{max: 5} = Run.parse_args(["--max", "5"])
     end
 
+    test "parses --repo" do
+      assert %{repo: "rosary"} = Run.parse_args(["--repo", "rosary"])
+    end
+
     test "parses all options together" do
-      args = ["--log", "/var/log/conductor.log", "--interval", "15000", "--max", "2"]
+      args = ["--log", "/var/log/conductor.log", "--interval", "15000", "--max", "2", "--repo", "rosary"]
 
       assert Run.parse_args(args) == %{
                log: "/var/log/conductor.log",
                interval: 15_000,
-               max: 2
+               max: 2,
+               repo: "rosary"
              }
     end
 
@@ -34,7 +39,8 @@ defmodule Mix.Tasks.Conductor.RunTest do
       assert Run.parse_args(["--verbose", "--log", "out.log"]) == %{
                log: "out.log",
                interval: nil,
-               max: nil
+               max: nil,
+               repo: nil
              }
     end
 

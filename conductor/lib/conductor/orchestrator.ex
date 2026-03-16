@@ -157,11 +157,16 @@ defmodule Conductor.Orchestrator do
   end
 
   defp fetch_dispatchable_beads do
+    repo_filter = Application.get_env(:conductor, :repo_filter, nil)
+
     case RsryClient.list_beads("open") do
       {:ok, %{"beads" => beads}} ->
         # Filter to P0-P2 beads with owners, sorted by priority
         dispatchable =
           beads
+          |> then(fn bs ->
+            if repo_filter, do: Enum.filter(bs, &(&1["repo"] == repo_filter)), else: bs
+          end)
           |> Enum.filter(&(&1["priority"] <= 2))
           |> Enum.reject(&(&1["issue_type"] == "epic"))
           |> Enum.sort_by(& &1["priority"])

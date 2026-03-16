@@ -27,7 +27,7 @@ defmodule Mix.Tasks.Conductor.Run do
 
   @shortdoc "Start conductor daemon (overnight dispatch)"
 
-  @switches [log: :string, interval: :integer, max: :integer]
+  @switches [log: :string, interval: :integer, max: :integer, repo: :string]
 
   @doc false
   def parse_args(args) do
@@ -36,7 +36,8 @@ defmodule Mix.Tasks.Conductor.Run do
     %{
       log: Keyword.get(parsed, :log),
       interval: Keyword.get(parsed, :interval),
-      max: Keyword.get(parsed, :max)
+      max: Keyword.get(parsed, :max),
+      repo: Keyword.get(parsed, :repo)
     }
   end
 
@@ -47,6 +48,10 @@ defmodule Mix.Tasks.Conductor.Run do
     # Apply config overrides BEFORE starting the application.
     # auto_start tells the Orchestrator to begin dispatching immediately.
     Application.put_env(:conductor, :auto_start, true)
+
+    if opts.repo do
+      Application.put_env(:conductor, :repo_filter, opts.repo)
+    end
 
     if opts.interval do
       Application.put_env(:conductor, :scan_interval_ms, opts.interval)
@@ -70,7 +75,8 @@ defmodule Mix.Tasks.Conductor.Run do
     interval = Application.get_env(:conductor, :scan_interval_ms, 30_000)
     max_concurrent = Application.get_env(:conductor, :max_concurrent, 3)
 
-    print_banner(opts.log, interval, max_concurrent)
+    repo_filter = Application.get_env(:conductor, :repo_filter)
+    print_banner(opts.log, interval, max_concurrent, repo_filter)
 
     # Block forever — the BEAM stays up until Ctrl-C / SIGTERM
     Process.sleep(:infinity)
@@ -104,7 +110,7 @@ defmodule Mix.Tasks.Conductor.Run do
     :logger.add_handler(:conductor_file, :logger_std_h, handler_config)
   end
 
-  defp print_banner(log_path, interval, max_concurrent) do
+  defp print_banner(log_path, interval, max_concurrent, repo_filter) do
     pid = System.pid()
 
     IO.puts("""
@@ -116,6 +122,7 @@ defmodule Mix.Tasks.Conductor.Run do
       Log:        #{log_path || "(console)"}
       Interval:   #{interval}ms
       Max agents: #{max_concurrent}
+      Repo:       #{repo_filter || "(all repos)"}
     ----------------------------------------
       Ctrl-C to stop.
     ========================================
