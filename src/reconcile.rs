@@ -1012,6 +1012,11 @@ impl Reconciler {
             if let Err(e) = manifest.write_to(work_dir) {
                 eprintln!("[manifest] {bead_id}: failed to write: {e}");
             }
+
+            // Terminal step: merge or PR based on issue type
+            let branch = format!("fix/{bead_id}");
+            let issue_type = "task"; // TODO: read from bead
+            merge_or_pr(&ws.repo_path, work_dir, &branch, bead_id, issue_type).await;
         }
 
         self.cleanup_workspace(bead_id);
@@ -1124,6 +1129,66 @@ impl Reconciler {
         self.cleanup_workspace(bead_id);
 
         false
+    }
+}
+
+/// Terminal step: ff-merge small beads to main, create PR for features/epics.
+async fn merge_or_pr(
+    repo_path: &std::path::Path,
+    _work_dir: &std::path::Path,
+    branch: &str,
+    bead_id: &str,
+    issue_type: &str,
+) {
+    let needs_pr = matches!(issue_type, "feature" | "epic");
+
+    if needs_pr {
+        // Push branch for PR — actual PR creation happens via github.rs
+        let push = tokio::process::Command::new("git")
+            .args(["push", "origin", branch])
+            .current_dir(repo_path)
+            .output()
+            .await;
+        match push {
+            Ok(o) if o.status.success() => {
+                eprintln!("[terminal] {bead_id}: pushed {branch} — PR needed");
+            }
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                eprintln!("[terminal] {bead_id}: push failed: {stderr}");
+            }
+            Err(e) => eprintln!("[terminal] {bead_id}: push error: {e}"),
+        }
+    } else {
+        // Fast-forward merge to main for small beads
+        let merge = tokio::process::Command::new("git")
+            .args(["merge", "--ff-only", branch])
+            .current_dir(repo_path)
+            .output()
+            .await;
+        match merge {
+            Ok(o) if o.status.success() => {
+                eprintln!("[terminal] {bead_id}: ff-merged {branch} to main");
+                // Push main
+                let _ = tokio::process::Command::new("git")
+                    .args(["push", "origin", "main"])
+                    .current_dir(repo_path)
+                    .output()
+                    .await;
+            }
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                eprintln!(
+                    "[terminal] {bead_id}: ff-merge failed ({stderr}), pushing branch for manual merge"
+                );
+                let _ = tokio::process::Command::new("git")
+                    .args(["push", "origin", branch])
+                    .current_dir(repo_path)
+                    .output()
+                    .await;
+            }
+            Err(e) => eprintln!("[terminal] {bead_id}: merge error: {e}"),
+        }
     }
 }
 

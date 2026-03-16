@@ -356,6 +356,9 @@ defmodule Conductor.AgentWorker do
           "Pipeline complete: #{Enum.join(Pipeline.agents(pipeline), " → ")}"
         )
 
+        # Terminal step: merge or PR based on issue type
+        merge_or_pr(state, pipeline)
+
         # Clean up workspace on pipeline completion
         client().workspace_cleanup(bead_id, pipeline.repo)
 
@@ -570,6 +573,36 @@ defmodule Conductor.AgentWorker do
       "2. Commit your changes (git add + git commit with bead:#{bead_id} in message)\n" <>
       "3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"#{repo}\" and id=\"#{bead_id}\"\n" <>
       "4. Report what you changed"
+  end
+
+  defp merge_or_pr(state, pipeline) do
+    work_dir = state.work_dir || pipeline.repo
+    repo = pipeline.repo
+    bead_id = pipeline.bead_id
+    branch = "fix/#{bead_id}"
+    needs_pr = pipeline.issue_type in ["feature", "epic"]
+
+    if needs_pr do
+      # Push branch — PR creation handled separately (github.rs or manual)
+      case System.cmd("git", ["push", "origin", branch], cd: repo, stderr_to_stdout: true) do
+        {_, 0} ->
+          Logger.info("[terminal] #{bead_id}: pushed #{branch} — PR needed")
+
+        {err, _} ->
+          Logger.warning("[terminal] #{bead_id}: push failed: #{err}")
+      end
+    else
+      # Fast-forward merge for small beads (chore, task, bug)
+      case System.cmd("git", ["merge", "--ff-only", branch], cd: repo, stderr_to_stdout: true) do
+        {_, 0} ->
+          Logger.info("[terminal] #{bead_id}: ff-merged #{branch} to main")
+          System.cmd("git", ["push", "origin", "main"], cd: repo, stderr_to_stdout: true)
+
+        {err, _} ->
+          Logger.warning("[terminal] #{bead_id}: ff-merge failed (#{err}), pushing branch")
+          System.cmd("git", ["push", "origin", branch], cd: repo, stderr_to_stdout: true)
+      end
+    end
   end
 
   defp write_handoff(state, pipeline, agent) do
