@@ -399,10 +399,15 @@ pub(crate) fn cleanup_jj_workspace(repo_path: &Path, id: &str) {
 // ---------------------------------------------------------------------------
 
 /// Resolve the workspace directory for a bead, creating the parent if needed.
-/// Uses `{repo_parent}/.rsry-workspaces/{id}` as a deterministic sibling path.
+/// Uses `~/.rsry/worktrees/{repo}/{id}` — user-scoped, survives repo cleans,
+/// doesn't collide with CC's .claude/worktrees/ or other tools.
 fn workspace_dir(repo_path: &Path, id: &str) -> PathBuf {
-    let parent = repo_path.parent().unwrap_or(repo_path);
-    let ws_root = parent.join(".rsry-workspaces");
+    let repo_name = repo_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let ws_root = home.join(".rsry").join("worktrees").join(&repo_name);
     // Best-effort mkdir — callers handle the actual VCS error if this fails
     let _ = std::fs::create_dir_all(&ws_root);
     ws_root.join(id)
@@ -466,11 +471,13 @@ pub(crate) fn cleanup_git_worktree(repo_path: &Path, id: &str) {
 /// Scan `.rsry-workspaces/` directories and clean up any that don't
 /// correspond to active bead IDs. Call on startup to reclaim leaked workspaces.
 pub fn sweep_orphaned(repo_paths: &[PathBuf], active_bead_ids: &[String]) {
+    let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("."));
     for repo_path in repo_paths {
-        let ws_root = repo_path
-            .parent()
-            .unwrap_or(repo_path)
-            .join(".rsry-workspaces");
+        let repo_name = repo_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let ws_root = home.join(".rsry").join("worktrees").join(&repo_name);
         if !ws_root.exists() {
             continue;
         }
