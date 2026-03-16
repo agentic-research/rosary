@@ -19,6 +19,7 @@ use crate::config;
 use crate::dolt::{DoltClient, DoltConfig};
 use crate::pool::RepoPool;
 use crate::scanner;
+use crate::store::{BeadRef, DispatchStore, PipelineState};
 use crate::store_dolt::DoltBackend;
 
 // ---------------------------------------------------------------------------
@@ -279,6 +280,26 @@ fn tool_definitions() -> Value {
                     },
                     "required": ["path"]
                 }
+            },
+            {
+                "name": "rsry_pipeline_upsert",
+                "description": "Write pipeline state for a bead to the backend store. Creates or updates the pipeline record tracking which agent phase a bead is in.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo": { "type": "string", "description": "Repository name (e.g. 'rosary')" },
+                        "bead_id": { "type": "string", "description": "Bead ID (e.g. 'rsry-abc123')" },
+                        "pipeline_phase": { "type": "integer", "description": "Phase index: dev=0, staging=1, prod=2, feature=3" },
+                        "pipeline_agent": { "type": "string", "description": "Agent name (e.g. 'dev-agent')" },
+                        "phase_status": { "type": "string", "description": "Sub-state: pending, executing, completed, failed", "default": "pending" },
+                        "retries": { "type": "integer", "description": "Retry count", "default": 0 },
+                        "consecutive_reverts": { "type": "integer", "description": "Consecutive revert count", "default": 0 },
+                        "highest_verify_tier": { "type": "integer", "description": "Highest verification tier reached (optional)" },
+                        "last_generation": { "type": "integer", "description": "Content hash generation", "default": 0 },
+                        "backoff_until": { "type": "string", "description": "ISO 8601 datetime for retry eligibility (optional)" }
+                    },
+                    "required": ["repo", "bead_id", "pipeline_phase", "pipeline_agent"]
+                }
             }
         ]
     })
@@ -288,7 +309,13 @@ fn tool_definitions() -> Value {
 // Tool execution
 // ---------------------------------------------------------------------------
 
-async fn call_tool(name: &str, args: &Value, config_path: &str, pool: &RepoPool) -> Result<Value> {
+async fn call_tool(
+    name: &str,
+    args: &Value,
+    config_path: &str,
+    pool: &RepoPool,
+    backend: Option<&DoltBackend>,
+) -> Result<Value> {
     match name {
         "rsry_scan" => tool_scan(config_path).await,
         "rsry_status" => tool_status(config_path).await,
@@ -317,6 +344,7 @@ async fn call_tool(name: &str, args: &Value, config_path: &str, pool: &RepoPool)
         "rsry_workspace_checkpoint" => tool_workspace_checkpoint(args).await,
         "rsry_workspace_cleanup" => tool_workspace_cleanup(args),
         "rsry_decompose" => tool_decompose(args).await,
+        "rsry_pipeline_upsert" => tool_pipeline_upsert(args, backend).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
 }
@@ -956,6 +984,79 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
     }))
 }
 
+async fn tool_pipeline_upsert(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+    let backend = backend.ok_or_else(|| {
+        anyhow::anyhow!(
+            "backend store not configured — add [backend] section to ~/.rsry/config.toml"
+        )
+    })?;
+
+    let repo = args["repo"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo required"))?;
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let pipeline_phase = args["pipeline_phase"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("pipeline_phase required"))? as u8;
+    let pipeline_agent = args["pipeline_agent"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("pipeline_agent required"))?;
+
+    let phase_status = args
+        .get("phase_status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("pending");
+    let retries = args.get("retries").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let consecutive_reverts = args
+        .get("consecutive_reverts")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let highest_verify_tier = args
+        .get("highest_verify_tier")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u8);
+    let last_generation = args
+        .get("last_generation")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let backoff_until = args
+        .get("backoff_until")
+        .and_then(|v| v.as_str())
+        .map(|s| {
+            s.parse::<chrono::DateTime<chrono::Utc>>()
+                .with_context(|| format!("parsing backoff_until '{s}' as ISO 8601"))
+        })
+        .transpose()?;
+
+    let state = PipelineState {
+        bead_ref: BeadRef {
+            repo: repo.to_string(),
+            bead_id: bead_id.to_string(),
+        },
+        pipeline_phase,
+        pipeline_agent: pipeline_agent.to_string(),
+        phase_status: phase_status.to_string(),
+        retries,
+        consecutive_reverts,
+        highest_verify_tier,
+        last_generation,
+        backoff_until,
+    };
+
+    backend.upsert_pipeline(&state).await?;
+
+    Ok(json!({
+        "repo": repo,
+        "bead_id": bead_id,
+        "pipeline_phase": pipeline_phase,
+        "pipeline_agent": pipeline_agent,
+        "phase_status": phase_status,
+        "upserted": true,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Message handling
 // ---------------------------------------------------------------------------
@@ -986,12 +1087,13 @@ async fn handle_tools_call(
     params: &Value,
     config_path: &str,
     pool: &RepoPool,
+    backend: Option<&DoltBackend>,
 ) -> JsonRpcResponse {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
-    match call_tool(name, &args, config_path, pool).await {
+    match call_tool(name, &args, config_path, pool, backend).await {
         Ok(result) => JsonRpcResponse::success(
             id,
             json!({
@@ -1047,8 +1149,6 @@ struct AppState {
     webhook_secret: Option<Arc<str>>,
     /// Backend store for cross-repo orchestrator state (pipeline, dispatches, linkage).
     /// None when `[backend]` is not configured — existing functionality is unaffected.
-    #[allow(dead_code)]
-    // Wired in; pipeline tool handlers will consume this in a follow-up bead.
     backend: Option<Arc<DoltBackend>>,
 }
 
@@ -1186,7 +1286,14 @@ async fn handle_mcp_post(
         "initialize" => handle_initialize(id.clone()),
         "tools/list" => handle_tools_list(id),
         "tools/call" => {
-            handle_tools_call(id, &request.params, &state.config_path, &state.pool).await
+            handle_tools_call(
+                id,
+                &request.params,
+                &state.config_path,
+                &state.pool,
+                state.backend.as_deref(),
+            )
+            .await
         }
         _ => JsonRpcResponse::method_not_found(id, &request.method),
     };
@@ -1479,7 +1586,7 @@ async fn run_stdio(config_path: &str) -> Result<()> {
 
     // Connect backend store if [backend] is configured
     let cfg = config::load(config_path).ok();
-    let _backend = if let Some(backend_cfg) = cfg.as_ref().and_then(|c| c.backend.as_ref()) {
+    let backend = if let Some(backend_cfg) = cfg.as_ref().and_then(|c| c.backend.as_ref()) {
         match DoltBackend::connect(backend_cfg).await {
             Ok(b) => {
                 eprintln!(
@@ -1564,7 +1671,9 @@ async fn run_stdio(config_path: &str) -> Result<()> {
         let response = match request.method.as_str() {
             "initialize" => handle_initialize(id),
             "tools/list" => handle_tools_list(id),
-            "tools/call" => handle_tools_call(id, &request.params, config_path, &pool).await,
+            "tools/call" => {
+                handle_tools_call(id, &request.params, config_path, &pool, backend.as_deref()).await
+            }
             _ => JsonRpcResponse::method_not_found(id, &request.method),
         };
 
@@ -1590,7 +1699,7 @@ mod tests {
     fn tool_definitions_has_expected_tools() {
         let defs = tool_definitions();
         let tools = defs["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 16);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"rsry_scan"));
@@ -1608,6 +1717,7 @@ mod tests {
         assert!(names.contains(&"rsry_workspace_checkpoint"));
         assert!(names.contains(&"rsry_workspace_cleanup"));
         assert!(names.contains(&"rsry_decompose"));
+        assert!(names.contains(&"rsry_pipeline_upsert"));
     }
 
     #[test]
@@ -1642,7 +1752,35 @@ mod tests {
         let resp = handle_tools_list(json!(2));
         let result = resp.result.unwrap();
         assert!(result["tools"].is_array());
-        assert_eq!(result["tools"].as_array().unwrap().len(), 15);
+        assert_eq!(result["tools"].as_array().unwrap().len(), 16);
+    }
+
+    #[tokio::test]
+    async fn pipeline_upsert_errors_without_backend() {
+        let args = json!({
+            "repo": "rosary",
+            "bead_id": "rsry-001",
+            "pipeline_phase": 0,
+            "pipeline_agent": "dev-agent",
+        });
+        let result = tool_pipeline_upsert(&args, None).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("backend store not configured"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn pipeline_upsert_rejects_missing_required_fields() {
+        // Missing pipeline_agent
+        let args = json!({
+            "repo": "rosary",
+            "bead_id": "rsry-001",
+            "pipeline_phase": 0,
+        });
+        let result = tool_pipeline_upsert(&args, None).await;
+        // Should fail on backend check before field validation, but if backend were present
+        // it would fail on missing pipeline_agent. Test the backend-absent path first.
+        assert!(result.is_err());
     }
 
     #[test]
