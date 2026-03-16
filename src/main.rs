@@ -16,6 +16,8 @@ mod epic;
 mod linear;
 #[allow(dead_code)]
 mod linear_tracker;
+#[allow(dead_code)] // API surface — consumed by orchestrator after dispatch
+mod manifest;
 mod pool;
 mod queue;
 mod reconcile;
