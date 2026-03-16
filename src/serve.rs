@@ -149,8 +149,8 @@ fn tool_definitions() -> Value {
                         "priority": { "type": "integer", "description": "Priority 0-3 (0=P0 highest)", "default": 2 },
                         "issue_type": { "type": "string", "description": "Issue type (bug, task, feature, review, epic)", "default": "task" },
                         "owner": { "type": "string", "description": "Agent owner (dev-agent, staging-agent, etc.). Auto-assigned from issue_type if omitted." },
-                        "files": { "type": "array", "items": { "type": "string" }, "description": "Source files this bead touches (scopes agent dispatch)" },
-                        "test_files": { "type": "array", "items": { "type": "string" }, "description": "Test files to validate the change" }
+                        "files": { "type": "array", "items": { "type": "string" }, "description": "Source files this bead touches. CRITICAL: these scope parallel dispatch — has_file_overlap() (epic.rs:386-393) blocks concurrent beads sharing files, and reconcile.rs:372-380 enforces it at dispatch time. Set scopes ONLY after reading the code; guessed scopes cause false-negative overlap and agent collisions. Include both files being modified AND files needing wiring changes (imports, call sites). New files are safe — no overlap possible." },
+                        "test_files": { "type": "array", "items": { "type": "string" }, "description": "Test files to validate the change. Also checked for overlap — two beads sharing a test file will be serialized, not parallelized." }
                     },
                     "required": ["repo_path", "title"]
                 }
@@ -168,8 +168,8 @@ fn tool_definitions() -> Value {
                         "priority": { "type": "integer", "description": "New priority 0-3" },
                         "issue_type": { "type": "string", "description": "New issue type" },
                         "owner": { "type": "string", "description": "New owner/assignee" },
-                        "files": { "type": "array", "items": { "type": "string" }, "description": "Updated source files list" },
-                        "test_files": { "type": "array", "items": { "type": "string" }, "description": "Updated test files list" }
+                        "files": { "type": "array", "items": { "type": "string" }, "description": "Updated source files list. These scope parallel dispatch — see has_file_overlap() (epic.rs:386-393). Verify against actual code before setting; inaccurate scopes cause agent collisions or missed overlap detection." },
+                        "test_files": { "type": "array", "items": { "type": "string" }, "description": "Updated test files list. Also checked for overlap at dispatch time (reconcile.rs:372-380)." }
                     },
                     "required": ["repo_path", "id"]
                 }
@@ -487,32 +487,7 @@ async fn get_client<'a>(repo_path: &str, pool: &'a RepoPool) -> Result<ClientRef
     }
     let path = std::path::Path::new(repo_path);
     let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
-    // Worktrees (e.g. .claude/worktrees/X) don't have .beads/ — resolve via git
-    let beads_dir = if root.join(".beads").exists() {
-        root.join(".beads")
-    } else {
-        // Try to find the main worktree's .beads/ via git commondir
-        let git_common = std::process::Command::new("git")
-            .args(["rev-parse", "--git-common-dir"])
-            .current_dir(&root)
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    String::from_utf8(o.stdout).ok()
-                } else {
-                    None
-                }
-            })
-            .map(|s| std::path::PathBuf::from(s.trim()));
-        if let Some(common) = git_common {
-            // git common dir is .git in main worktree — parent is repo root
-            let main_root = common.parent().unwrap_or(&root);
-            main_root.join(".beads")
-        } else {
-            root.join(".beads")
-        }
-    };
+    let beads_dir = crate::resolve_beads_dir(&root);
     let config = DoltConfig::from_beads_dir(&beads_dir)?;
     let client = DoltClient::connect(&config).await?;
     Ok(ClientRef::Owned(client))
@@ -582,11 +557,7 @@ async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
 
     let client = get_client(repo_path, pool).await?;
     let repo_name = repo_name_from_path(repo_path);
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let id = format!("{repo_name}-{:06x}", millis & 0xffffff);
+    let id = crate::generate_bead_id(&repo_name);
 
     client
         .create_bead(&id, title, description, priority, issue_type)

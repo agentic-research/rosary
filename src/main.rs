@@ -231,12 +231,40 @@ enum BeadAction {
 
 /// Generate a bead ID from the current timestamp with a repo-specific prefix.
 /// Format: `{prefix}-{lower 6 hex chars of millis}` (~16M values before collision).
-fn generate_bead_id(prefix: &str) -> String {
+pub fn generate_bead_id(prefix: &str) -> String {
     let millis = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .expect("system clock before UNIX epoch")
+        .unwrap_or_default()
         .as_millis();
     format!("{prefix}-{:06x}", millis & 0xffffff)
+}
+
+/// Resolve the .beads/ directory for a repo, handling git/jj worktrees.
+/// In a worktree, .beads/ lives in the main worktree — resolve via git commondir.
+pub fn resolve_beads_dir(repo_root: &Path) -> PathBuf {
+    if repo_root.join(".beads").exists() {
+        return repo_root.join(".beads");
+    }
+    // Try to find the main worktree's .beads/ via git commondir
+    let git_common = std::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(repo_root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| PathBuf::from(s.trim()));
+    if let Some(common) = git_common {
+        let main_root = common.parent().unwrap_or(repo_root);
+        main_root.join(".beads")
+    } else {
+        repo_root.join(".beads")
+    }
 }
 
 fn daemon_pid_path() -> PathBuf {
@@ -539,7 +567,7 @@ async fn main() -> Result<()> {
                 .ok()
                 .and_then(|p| config::discover_repo_root(&p))
                 .unwrap_or_else(|| PathBuf::from(&repo));
-            let beads_dir = repo_root.join(".beads");
+            let beads_dir = resolve_beads_dir(&repo_root);
             let dolt_config = dolt::DoltConfig::from_beads_dir(&beads_dir)?;
             let client = dolt::DoltClient::connect(&dolt_config).await?;
             let repo_name = repo_root
@@ -562,9 +590,11 @@ async fn main() -> Result<()> {
                         );
                     }
                     let id = generate_bead_id(&repo_name);
+                    let owner = dispatch::default_agent(&issue_type);
                     client
                         .create_bead(&id, &title, &description, priority, &issue_type)
                         .await?;
+                    client.set_assignee(&id, owner).await?;
                     if !files.is_empty() || !test_files.is_empty() {
                         client.set_files(&id, &files, &test_files).await?;
                     }
@@ -579,7 +609,7 @@ async fn main() -> Result<()> {
                     cli::bead_list(&beads);
                 }
                 BeadAction::Comment { id, body } => {
-                    client.add_comment(&id, &body, "rsry").await?;
+                    client.add_comment(&id, &body, "rsry-cli").await?;
                     cli::bead_commented(&id);
                 }
                 BeadAction::Search { query } => {
