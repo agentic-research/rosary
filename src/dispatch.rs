@@ -165,6 +165,7 @@ impl AgentProvider for ClaudeProvider {
                 "json",
             ])
             .current_dir(work_dir)
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())
             .spawn()
@@ -210,6 +211,7 @@ impl AgentProvider for GeminiProvider {
         }
         let child = cmd
             .current_dir(work_dir)
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())
             .spawn()
@@ -249,6 +251,7 @@ impl AgentProvider for AcpCliProvider {
         let child = tokio::process::Command::new(&self.binary)
             .current_dir(work_dir)
             .stdin(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())
             .spawn()
@@ -523,8 +526,8 @@ pub async fn spawn(
     };
 
     let agent_label = bead.owner.as_deref().unwrap_or("generic");
-    println!(
-        "Dispatching {} to {} (agent={}, perms={:?})...",
+    eprintln!(
+        "[dispatch] {} → {} (agent={}, perms={:?})",
         bead.id,
         provider.name(),
         agent_label,
@@ -574,7 +577,7 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
     let success = handle.wait().await?;
 
     if success {
-        println!("Claude Code completed successfully for {bead_id}");
+        eprintln!("[dispatch] {bead_id} completed successfully");
     } else {
         eprintln!("warning: agent exited with failure for {bead_id}");
     }
