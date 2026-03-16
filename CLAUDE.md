@@ -46,13 +46,19 @@ task all            # fmt + check + lint + test
 | src/serve.rs | MCP server (stdio + HTTP) + Linear webhook handler |
 | src/reconcile.rs | Reconciliation loop: scan → triage → dispatch → verify |
 | src/bead.rs | Bead model, BeadState enum, Linear type mapping |
-| src/dispatch.rs | Agent dispatch and execution |
-| src/dolt.rs | Dolt database client |
+| src/dispatch.rs | Agent dispatch, pipeline mapping, execution |
+| src/epic.rs | Semantic clustering, dedup, file overlap detection |
+| src/dolt.rs | Dolt database client (per-repo beads) |
+| src/store_dolt.rs | Dolt backend for orchestrator state (pipeline, dispatches, cross-repo deps) |
+| src/store.rs | Backend-agnostic store traits (HierarchyStore, DispatchStore, LinkageStore) |
+| src/handoff.rs | Structured context transfer between pipeline phases |
+| src/workspace.rs | Git/jj worktree creation and isolation |
 | src/linear.rs | Linear sync CLI (`rsry sync`) |
 | src/linear_tracker.rs | IssueTracker trait impl for Linear (cached states, configurable) |
 | src/sync.rs | Backend-agnostic sync engine |
-| src/config.rs | Configuration (repos, linear, http, tunnel) |
+| src/config.rs | Configuration (repos, linear, http, tunnel, backend) |
 | src/pool.rs | Connection pool for multi-repo Dolt access |
+| src/main.rs | CLI entry + shared helpers (`generate_bead_id`, `resolve_beads_dir`) |
 
 ## Agent Definitions
 
@@ -62,31 +68,63 @@ agents/
 ├── staging-agent.md      # Test validity (adversarial review)
 ├── prod-agent.md         # Production quality (module-level)
 ├── feature-agent.md      # Cross-file coherence
+├── architect-agent.md    # System architecture, ADRs, BDR decomposition
 ├── pm-agent.md           # Strategic perspective (cross-repo)
 └── rules/
-    └── GOLDEN_RULES.md   # 10 rules all agents operate under
+    └── GOLDEN_RULES.md   # 11 rules all agents operate under
 ```
 
 Agents map to Linear **labels** (not users — one seat, all perspectives via labels).
+Pipeline mapping: issue_type → agent sequence (dispatch.rs `agent_pipeline()`).
 
 ## Beads (Issue Tracking)
 
 Beads are the distributed work tracking system. Each repo has `.beads/` with a Dolt database.
 
 ```bash
-# MCP tools (via rsry serve)
-rsry_bead_create / rsry_bead_search / rsry_bead_comment / rsry_bead_close
-rsry_status / rsry_list_beads / rsry_scan / rsry_dispatch / rsry_active
+# MCP tools (via rsry serve) — 22 tools
+# Beads
+rsry_bead_create / rsry_bead_update / rsry_bead_search / rsry_bead_comment / rsry_bead_close
+rsry_status / rsry_list_beads / rsry_scan / rsry_active
+# Dispatch + pipeline
+rsry_dispatch / rsry_run_once / rsry_decompose
+rsry_pipeline_upsert / rsry_pipeline_query / rsry_dispatch_record / rsry_dispatch_history
+# Workspaces
+rsry_workspace_create / rsry_workspace_checkpoint / rsry_workspace_cleanup
 
 # CLI
 rsry sync --dry-run    # bidirectional Linear sync
 rsry scan              # scan all repos for beads
 rsry status            # aggregated counts
+rsry bead create/list/search/close/comment
 ```
+
+## Triage & Dispatch
+
+The reconciler's triage phase applies multiple filters before dispatch:
+1. State check (must be Open)
+2. Severity floor (configurable min priority)
+3. Skip epics (planning beads)
+4. Dependency check (blocked beads deferred)
+5. Per-repo busy check (one agent per repo)
+6. Semantic dedup (`epic::is_dominated_by` — multi-signal similarity)
+7. **File overlap detection** (`epic::has_file_overlap` — prevents concurrent edits to same files)
+
+File overlap is also re-checked in Phase 4 (dispatch loop) to catch beads queued in the same triage pass.
+
+## ADRs
+
+| ADR | Status | Topic |
+|-----|--------|-------|
+| 0001 | Proposed | Sprint planning protocol (Explore → Synthesize → Derive → Decompose) |
+| 0002 | Accepted | ACP integration (Agent Client Protocol) |
+| 0004 | Accepted | Dual state machine (bead lifecycle + pipeline phases) |
+| 0005 | Proposed | Reactive persistent store ("local firebase" for agent IPC) |
+| 0006 | Proposed | Declarative tool registry (unified MCP/CLI/pipeline from single source) |
 
 ## MCP Integration
 
-Rosary exposes 10 MCP tools via `rsry serve`. Accessible from:
+Rosary exposes 22 MCP tools via `rsry serve`. Accessible from:
 - Claude Code (stdio transport, configured in MCP settings)
 - Claude web (HTTP transport via tunnel)
 - Any MCP client
