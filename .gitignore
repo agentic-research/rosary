@@ -22,6 +22,9 @@ dolt/
 # Agent workspace directories
 .rsry-workspaces/
 
+# Rosary user-scoped config (worktrees, config live in ~/.rsry/)
+.rsry/
+
 # Claude Code runtime artifacts (keep .claude/settings.json etc)
 .claude/worktrees/
 .claude/scheduled_tasks.lock
