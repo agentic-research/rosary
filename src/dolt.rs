@@ -80,8 +80,10 @@ fn pool_options() -> PoolOptions<MySql> {
         .acquire_timeout(std::time::Duration::from_secs(5))
         // Close idle connections after 5 minutes (prevents stale connections).
         .idle_timeout(Some(std::time::Duration::from_secs(300)))
-        // Max 5 connections per repo (sqlx default is 10, overkill for MCP).
-        .max_connections(5)
+        // Single connection: MCP stdio is sequential, and session variables
+        // (like @@dolt_transaction_commit) are per-connection. Multiple
+        // connections would require SET on each via after_connect callback.
+        .max_connections(1)
 }
 
 /// Client for querying beads from a Dolt server.
