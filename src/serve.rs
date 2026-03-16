@@ -19,6 +19,7 @@ use crate::config;
 use crate::dolt::{DoltClient, DoltConfig};
 use crate::pool::RepoPool;
 use crate::scanner;
+use crate::store_dolt::DoltBackend;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC types
@@ -1044,6 +1045,11 @@ struct AppState {
     sessions: Arc<RwLock<HashSet<String>>>,
     /// Webhook signing secret (from config or env).
     webhook_secret: Option<Arc<str>>,
+    /// Backend store for cross-repo orchestrator state (pipeline, dispatches, linkage).
+    /// None when `[backend]` is not configured — existing functionality is unaffected.
+    #[allow(dead_code)]
+    // Wired in; pipeline tool handlers will consume this in a follow-up bead.
+    backend: Option<Arc<DoltBackend>>,
 }
 
 /// Validate Origin header to prevent DNS rebinding attacks.
@@ -1411,12 +1417,32 @@ async fn run_http(config_path: &str, port: u16) -> Result<()> {
         .or_else(|| std::env::var("LINEAR_WEBHOOK_SECRET").ok())
         .filter(|s| !s.is_empty());
 
+    // Connect backend store if [backend] is configured
+    let backend = if let Some(ref backend_cfg) = cfg.backend {
+        match DoltBackend::connect(backend_cfg).await {
+            Ok(b) => {
+                eprintln!(
+                    "[rsry-mcp] backend store connected ({})",
+                    backend_cfg.path.display()
+                );
+                Some(Arc::new(b))
+            }
+            Err(e) => {
+                eprintln!("[rsry-mcp] backend store unavailable, continuing without it: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let pool = Arc::new(RepoPool::from_config(config_path).await?);
     let state = AppState {
         pool: pool.clone(),
         config_path: Arc::from(config_path),
         sessions: Arc::new(RwLock::new(HashSet::new())),
         webhook_secret: webhook_secret.map(|s| Arc::from(s.as_str())),
+        backend,
     };
 
     let app = axum::Router::new()
@@ -1450,6 +1476,26 @@ async fn run_stdio(config_path: &str) -> Result<()> {
     // SIGHUP → graceful exit so Claude Code restarts with the new binary after `task install`
     let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
         .context("registering SIGHUP handler")?;
+
+    // Connect backend store if [backend] is configured
+    let cfg = config::load(config_path).ok();
+    let _backend = if let Some(backend_cfg) = cfg.as_ref().and_then(|c| c.backend.as_ref()) {
+        match DoltBackend::connect(backend_cfg).await {
+            Ok(b) => {
+                eprintln!(
+                    "[rsry-mcp] backend store connected ({})",
+                    backend_cfg.path.display()
+                );
+                Some(Arc::new(b))
+            }
+            Err(e) => {
+                eprintln!("[rsry-mcp] backend store unavailable, continuing without it: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Create connection pool on startup — reused across all tool calls
     let pool = RepoPool::from_config(config_path).await?;
@@ -1747,6 +1793,7 @@ mod tests {
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: None,
+            backend: None,
         };
 
         let app = axum::Router::new()
@@ -1781,6 +1828,7 @@ mod tests {
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: None,
+            backend: None,
         };
 
         let app = axum::Router::new()
@@ -1812,6 +1860,7 @@ mod tests {
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::from(["sess-1".to_string()]))),
             webhook_secret: None,
+            backend: None,
         };
 
         let app = axum::Router::new()
@@ -1986,6 +2035,7 @@ mod tests {
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: Some(Arc::from("test-secret")),
+            backend: None,
         };
 
         let app = axum::Router::new()
@@ -2014,6 +2064,7 @@ mod tests {
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: Some(Arc::from("test-secret")),
+            backend: None,
         };
 
         let app = axum::Router::new()
@@ -2049,6 +2100,7 @@ mod tests {
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: Some(Arc::from(secret)),
+            backend: None,
         };
 
         let app = axum::Router::new()
