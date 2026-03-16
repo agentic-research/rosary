@@ -4,9 +4,10 @@
 //! then queries the Dolt server directly over MySQL wire protocol via sqlx.
 
 use anyhow::{Context, Result};
+use sqlx_core::pool::PoolOptions;
 use sqlx_core::query::query;
 use sqlx_core::row::Row;
-use sqlx_mysql::MySqlPool;
+use sqlx_mysql::{MySql, MySqlPool};
 use std::path::Path;
 
 use crate::bead::Bead;
@@ -69,6 +70,20 @@ impl DoltConfig {
     }
 }
 
+/// Build a connection pool with timeouts that prevent MCP server hangs.
+///
+/// Without these, a hung Dolt query blocks the entire stdio MCP server
+/// (single-threaded), freezing the Claude Code UI including statusline.
+fn pool_options() -> PoolOptions<MySql> {
+    PoolOptions::<MySql>::new()
+        // How long to wait for a connection from the pool before erroring.
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        // Close idle connections after 5 minutes (prevents stale connections).
+        .idle_timeout(Some(std::time::Duration::from_secs(300)))
+        // Max 5 connections per repo (sqlx default is 10, overkill for MCP).
+        .max_connections(5)
+}
+
 /// Client for querying beads from a Dolt server.
 pub struct DoltClient {
     pool: MySqlPool,
@@ -86,7 +101,7 @@ impl DoltClient {
         // Fast path — server already running
         if let Ok(Ok(pool)) = tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            MySqlPool::connect(&config.url()),
+            pool_options().connect(&config.url()),
         )
         .await
         {
@@ -155,11 +170,13 @@ impl DoltClient {
 
         // Connect via MySQL
         let url = format!("mysql://root@127.0.0.1:{port}/{}", config.database);
-        let pool =
-            tokio::time::timeout(std::time::Duration::from_secs(5), MySqlPool::connect(&url))
-                .await
-                .with_context(|| format!("timeout connecting after auto-start on port {port}"))?
-                .with_context(|| format!("connecting to Dolt at {url}"))?;
+        let pool = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            pool_options().connect(&url),
+        )
+        .await
+        .with_context(|| format!("timeout connecting after auto-start on port {port}"))?
+        .with_context(|| format!("connecting to Dolt at {url}"))?;
 
         eprintln!("[dolt] server started on port {port}");
         Ok(DoltClient { pool })
@@ -168,14 +185,22 @@ impl DoltClient {
     /// Commit the current working set so changes are visible to new connections.
     /// Dolt sql-server uses per-session isolation — writes are invisible to other
     /// connections until committed. Best-effort: logs warning on failure.
+    ///
+    /// Timeout: 10s. DOLT_COMMIT can be slow on large repos; without a timeout
+    /// this blocks the entire MCP server (stdio is single-threaded).
     async fn auto_commit(&self, message: &str) {
         // -Am stages all tables + commits in one call (dolt cheat sheet)
-        let result = query("CALL DOLT_COMMIT('-Am', ?, '--allow-empty')")
-            .bind(message)
-            .execute(&self.pool)
-            .await;
-        if let Err(e) = result {
-            eprintln!("[dolt] auto_commit failed: {e}");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            query("CALL DOLT_COMMIT('-Am', ?, '--allow-empty')")
+                .bind(message)
+                .execute(&self.pool),
+        )
+        .await;
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => eprintln!("[dolt] auto_commit failed: {e}"),
+            Err(_) => eprintln!("[dolt] auto_commit timed out (10s) for: {message}"),
         }
     }
 
