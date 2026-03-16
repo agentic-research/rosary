@@ -54,6 +54,28 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Reconstruct a workspace from existing on-disk state.
+    ///
+    /// Used by MCP tools that need to operate on a workspace created by
+    /// a previous call. Does not create anything — just rebuilds the struct.
+    pub fn from_existing(id: &str, repo: &str, repo_path: &Path) -> Self {
+        let vcs = detect_vcs(repo_path);
+        let ws_dir = workspace_dir(repo_path, id);
+        let (work_dir, vcs) = if ws_dir.exists() {
+            (ws_dir, vcs)
+        } else {
+            (repo_path.to_path_buf(), VcsKind::None)
+        };
+        Workspace {
+            id: id.to_string(),
+            repo: repo.to_string(),
+            repo_path: repo_path.to_path_buf(),
+            work_dir,
+            vcs,
+            exec_handle: None,
+        }
+    }
+
     /// Create a new workspace with code isolation.
     ///
     /// Tries jj first, falls back to git worktree, then in-place.

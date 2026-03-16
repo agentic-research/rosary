@@ -67,6 +67,21 @@ defmodule Conductor.AgentWorker do
         "(starting at #{Pipeline.current_agent(pipeline)})"
     )
 
+    # Create isolated workspace via rsry (jj preferred, git fallback)
+    work_dir =
+      case client().workspace_create(bead_id, repo) do
+        {:ok, %{"work_dir" => wd}} ->
+          Logger.info("[worker] #{bead_id}: workspace created at #{wd}")
+          wd
+
+        {:error, reason} ->
+          Logger.warning(
+            "[worker] #{bead_id}: workspace create failed (#{inspect(reason)}), running in-place"
+          )
+
+          repo
+      end
+
     case start_agent_process(pipeline, nil) do
       {:ok, port, os_pid} ->
         step = Pipeline.current_step(pipeline)
@@ -81,13 +96,15 @@ defmodule Conductor.AgentWorker do
            timeout_ref: timeout_ref,
            validate_ref: validate_ref,
            started_at: DateTime.utc_now(),
-           work_dir: repo,
+           work_dir: work_dir,
            bead_title: title,
            bead_description: description
          }}
 
       {:error, reason} ->
         Logger.error("[worker] #{bead_id}: failed to start agent: #{inspect(reason)}")
+        # Clean up workspace on start failure
+        client().workspace_cleanup(bead_id, repo)
         {:stop, {:start_failed, reason}}
     end
   end
@@ -288,6 +305,11 @@ defmodule Conductor.AgentWorker do
       Port.close(state.port)
     end
 
+    # Clean up workspace (best-effort — may already be cleaned up on :done)
+    if reason != :normal do
+      client().workspace_cleanup(bead_id, state.pipeline.repo)
+    end
+
     :ok
   end
 
@@ -297,6 +319,18 @@ defmodule Conductor.AgentWorker do
     pipeline = Pipeline.record(state.pipeline, :pass)
     bead_id = pipeline.bead_id
     agent = Pipeline.current_agent(pipeline)
+
+    # Checkpoint workspace (jj commit + bookmark) before advancing
+    case client().workspace_checkpoint(bead_id, pipeline.repo, "fix(#{bead_id}): #{agent} pass") do
+      {:ok, %{"change_id" => cid}} when not is_nil(cid) ->
+        Logger.info("[checkpoint] #{bead_id}: jj change #{cid}")
+
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("[checkpoint] #{bead_id}: failed: #{inspect(reason)}")
+    end
 
     case Pipeline.advance(pipeline) do
       :done ->
@@ -309,6 +343,9 @@ defmodule Conductor.AgentWorker do
           bead_id,
           "Pipeline complete: #{Enum.join(Pipeline.agents(pipeline), " → ")}"
         )
+
+        # Clean up workspace on pipeline completion
+        client().workspace_cleanup(bead_id, pipeline.repo)
 
         {:stop, :normal, %{state | pipeline: pipeline}}
 
@@ -404,7 +441,8 @@ defmodule Conductor.AgentWorker do
   defp start_cli_process(pipeline, state) do
     agent = Pipeline.current_agent(pipeline)
     bead_id = pipeline.bead_id
-    repo = pipeline.repo
+    # Use workspace work_dir if available, fall back to repo
+    work_dir = (state && state.work_dir) || pipeline.repo
     prompt = build_prompt(pipeline, state)
 
     binary =
@@ -422,7 +460,7 @@ defmodule Conductor.AgentWorker do
             :exit_status,
             {:line, 65_536},
             args: ["-p", prompt, "--output-format", "json"],
-            cd: to_charlist(repo)
+            cd: to_charlist(work_dir)
           ]
         )
 
@@ -439,7 +477,8 @@ defmodule Conductor.AgentWorker do
 
     agent = Pipeline.current_agent(pipeline)
     bead_id = pipeline.bead_id
-    repo = pipeline.repo
+    # Use workspace work_dir if available, fall back to repo
+    work_dir = (state && state.work_dir) || pipeline.repo
     binary = agent_binary(agent)
     prompt = build_prompt(pipeline, state)
 
@@ -448,7 +487,7 @@ defmodule Conductor.AgentWorker do
     previous_session = state && state.session_id
 
     try do
-      {:ok, port, os_pid} = AcpClient.start(binary, repo)
+      {:ok, port, os_pid} = AcpClient.start(binary, work_dir)
 
       if previous_session do
         AcpClient.resume(port, previous_session, prompt)
@@ -457,7 +496,7 @@ defmodule Conductor.AgentWorker do
           "[worker] #{bead_id}: resumed #{agent} session=#{previous_session} (pid=#{os_pid})"
         )
       else
-        _sid = AcpClient.prompt(port, nil, repo, prompt)
+        _sid = AcpClient.prompt(port, nil, work_dir, prompt)
         Logger.info("[worker] #{bead_id}: spawned #{agent} via ACP (#{binary}, pid=#{os_pid})")
       end
 

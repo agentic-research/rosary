@@ -212,6 +212,43 @@ fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "rsry_workspace_create",
+                "description": "Create an isolated workspace (jj or git worktree) for a bead. Returns the workspace work_dir and vcs type. The conductor should call this before dispatching an agent.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "bead_id": { "type": "string", "description": "Bead ID for the workspace" },
+                        "repo_path": { "type": "string", "description": "Path to the repo root" }
+                    },
+                    "required": ["bead_id", "repo_path"]
+                }
+            },
+            {
+                "name": "rsry_workspace_checkpoint",
+                "description": "Checkpoint a workspace: jj commit + bookmark. Returns the jj change ID. Call after agent completes, before cleanup.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "bead_id": { "type": "string", "description": "Bead ID" },
+                        "repo_path": { "type": "string", "description": "Path to the repo root" },
+                        "message": { "type": "string", "description": "Commit message (default: agent work)" }
+                    },
+                    "required": ["bead_id", "repo_path"]
+                }
+            },
+            {
+                "name": "rsry_workspace_cleanup",
+                "description": "Clean up a workspace (jj workspace forget + delete directory). Call after checkpoint.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "bead_id": { "type": "string", "description": "Bead ID" },
+                        "repo_path": { "type": "string", "description": "Path to the repo root" }
+                    },
+                    "required": ["bead_id", "repo_path"]
+                }
+            },
+            {
                 "name": "rsry_decompose",
                 "description": "Decompose a markdown document (ADR, README, etc.) into a decade of threaded beads. Returns the decomposition structure without creating beads.",
                 "inputSchema": {
@@ -255,6 +292,9 @@ async fn call_tool(name: &str, args: &Value, config_path: &str, pool: &RepoPool)
         "rsry_bead_search" => tool_bead_search(args, pool).await,
         "rsry_dispatch" => tool_dispatch(args, config_path).await,
         "rsry_active" => tool_active().await,
+        "rsry_workspace_create" => tool_workspace_create(args).await,
+        "rsry_workspace_checkpoint" => tool_workspace_checkpoint(args).await,
+        "rsry_workspace_cleanup" => tool_workspace_cleanup(args),
         "rsry_decompose" => tool_decompose(args).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
@@ -635,6 +675,85 @@ async fn tool_active() -> Result<Value> {
     Ok(json!({
         "active": agents.len(),
         "agents": agents,
+    }))
+}
+
+async fn tool_workspace_create(args: &Value) -> Result<Value> {
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+
+    let path = std::path::Path::new(repo_path);
+    let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
+    let repo_name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".into());
+
+    let ws = crate::workspace::Workspace::create(bead_id, &repo_name, &root, true).await?;
+
+    Ok(json!({
+        "bead_id": bead_id,
+        "work_dir": ws.work_dir.to_string_lossy(),
+        "vcs": format!("{:?}", ws.vcs),
+        "repo_path": ws.repo_path.to_string_lossy(),
+    }))
+}
+
+async fn tool_workspace_checkpoint(args: &Value) -> Result<Value> {
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    let message = args["message"].as_str().unwrap_or("agent work");
+
+    let path = std::path::Path::new(repo_path);
+    let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
+    let repo_name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".into());
+
+    let ws = crate::workspace::Workspace::from_existing(bead_id, &repo_name, &root);
+    let change_id = ws.checkpoint(message).await?;
+
+    Ok(json!({
+        "bead_id": bead_id,
+        "change_id": change_id,
+        "vcs": format!("{:?}", ws.vcs),
+    }))
+}
+
+fn tool_workspace_cleanup(args: &Value) -> Result<Value> {
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+
+    let path = std::path::Path::new(repo_path);
+    let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
+    let vcs = crate::workspace::detect_vcs(&root);
+
+    match vcs {
+        crate::workspace::VcsKind::Jj => {
+            crate::workspace::cleanup_jj_workspace(&root, bead_id);
+        }
+        crate::workspace::VcsKind::Git => {
+            crate::workspace::cleanup_git_worktree(&root, bead_id);
+        }
+        crate::workspace::VcsKind::None => {}
+    }
+
+    Ok(json!({
+        "bead_id": bead_id,
+        "cleaned": true,
     }))
 }
 
@@ -1280,10 +1399,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_definitions_has_eleven_tools() {
+    fn tool_definitions_has_expected_tools() {
         let defs = tool_definitions();
         let tools = defs["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 11);
+        assert_eq!(tools.len(), 14);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"rsry_scan"));
@@ -1296,6 +1415,9 @@ mod tests {
         assert!(names.contains(&"rsry_bead_search"));
         assert!(names.contains(&"rsry_dispatch"));
         assert!(names.contains(&"rsry_active"));
+        assert!(names.contains(&"rsry_workspace_create"));
+        assert!(names.contains(&"rsry_workspace_checkpoint"));
+        assert!(names.contains(&"rsry_workspace_cleanup"));
         assert!(names.contains(&"rsry_decompose"));
     }
 
@@ -1331,7 +1453,7 @@ mod tests {
         let resp = handle_tools_list(json!(2));
         let result = resp.result.unwrap();
         assert!(result["tools"].is_array());
-        assert_eq!(result["tools"].as_array().unwrap().len(), 11);
+        assert_eq!(result["tools"].as_array().unwrap().len(), 14);
     }
 
     #[test]

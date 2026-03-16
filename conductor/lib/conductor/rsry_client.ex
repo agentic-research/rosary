@@ -30,6 +30,10 @@ defmodule Conductor.RsryClient do
   @callback bead_close(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   @callback bead_comment(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   @callback bead_search(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  @callback workspace_create(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  @callback workspace_checkpoint(String.t(), String.t(), String.t()) ::
+              {:ok, map()} | {:error, term()}
+  @callback workspace_cleanup(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
 
   # -- Public API --
 
@@ -61,6 +65,22 @@ defmodule Conductor.RsryClient do
 
   def bead_search(repo_path, query) do
     call_tool("rsry_bead_search", %{repo_path: repo_path, query: query})
+  end
+
+  def workspace_create(bead_id, repo_path) do
+    call_tool("rsry_workspace_create", %{bead_id: bead_id, repo_path: repo_path})
+  end
+
+  def workspace_checkpoint(bead_id, repo_path, message \\ "agent work") do
+    call_tool("rsry_workspace_checkpoint", %{
+      bead_id: bead_id,
+      repo_path: repo_path,
+      message: message
+    })
+  end
+
+  def workspace_cleanup(bead_id, repo_path) do
+    call_tool("rsry_workspace_cleanup", %{bead_id: bead_id, repo_path: repo_path})
   end
 
   @doc "Check if the client has an active session."

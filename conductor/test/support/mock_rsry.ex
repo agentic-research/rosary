@@ -131,6 +131,37 @@ defmodule Conductor.Test.MockRsry do
     {:reply, {:ok, %{"beads" => []}}, %{state | calls: state.calls ++ [call]}}
   end
 
+  def handle_call({:tool, "rsry_workspace_create", args}, _from, state) do
+    bead_id = args[:bead_id] || args["bead_id"]
+    repo_path = args[:repo_path] || args["repo_path"]
+    call = {:workspace_create, bead_id, repo_path}
+    if state.test_pid, do: send(state.test_pid, {:mock_rsry, call})
+
+    {:reply,
+     {:ok, %{"bead_id" => bead_id, "work_dir" => repo_path, "vcs" => "None", "repo_path" => repo_path}},
+     %{state | calls: state.calls ++ [call]}}
+  end
+
+  def handle_call({:tool, "rsry_workspace_checkpoint", args}, _from, state) do
+    bead_id = args[:bead_id] || args["bead_id"]
+    repo_path = args[:repo_path] || args["repo_path"]
+    call = {:workspace_checkpoint, bead_id, repo_path}
+    if state.test_pid, do: send(state.test_pid, {:mock_rsry, call})
+
+    {:reply, {:ok, %{"bead_id" => bead_id, "change_id" => nil, "vcs" => "None"}},
+     %{state | calls: state.calls ++ [call]}}
+  end
+
+  def handle_call({:tool, "rsry_workspace_cleanup", args}, _from, state) do
+    bead_id = args[:bead_id] || args["bead_id"]
+    repo_path = args[:repo_path] || args["repo_path"]
+    call = {:workspace_cleanup, bead_id, repo_path}
+    if state.test_pid, do: send(state.test_pid, {:mock_rsry, call})
+
+    {:reply, {:ok, %{"bead_id" => bead_id, "cleaned" => true}},
+     %{state | calls: state.calls ++ [call]}}
+  end
+
   def handle_call({:tool, name, _args}, _from, state) do
     call = {:unknown_tool, name}
     if state.test_pid, do: send(state.test_pid, {:mock_rsry, call})
