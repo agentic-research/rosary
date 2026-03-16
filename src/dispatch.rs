@@ -491,7 +491,8 @@ pub fn agent_pipeline(issue_type: &str) -> &'static [&'static str] {
         "feature" => &["dev-agent", "staging-agent", "prod-agent"],
         "task" | "chore" => &["dev-agent"],
         "review" => &["staging-agent"],
-        "epic" | "design" | "research" => &["pm-agent"],
+        "design" | "research" => &["architect-agent"],
+        "epic" => &["pm-agent"],
         _ => &["dev-agent"],
     }
 }
