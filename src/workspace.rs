@@ -662,4 +662,351 @@ mod tests {
         assert_ne!(VcsKind::Jj, VcsKind::Git);
         assert_ne!(VcsKind::Git, VcsKind::None);
     }
+
+    // -----------------------------------------------------------------------
+    // Helper: create a git+jj colocated repo in a tempdir.
+    //
+    // Returns (TempDir, canonical repo path). TempDir must be held alive
+    // for the lifetime of the test (drop deletes it).
+    // -----------------------------------------------------------------------
+    async fn setup_colocated_repo() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().canonicalize().unwrap();
+
+        // git init
+        let out = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git init failed");
+
+        // Configure git user (needed for commits in CI / clean environments)
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@rosary.dev"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "rosary-test"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+
+        // Seed a source file so HEAD exists
+        std::fs::write(repo.join("lib.rs"), "pub fn hello() {}").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+
+        // jj init --colocate (creates .jj/ alongside existing .git/)
+        let jj = std::process::Command::new("jj")
+            .args(["git", "init", "--colocate"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            jj.status.success(),
+            "jj git init --colocate failed: {}",
+            String::from_utf8_lossy(&jj.stderr)
+        );
+
+        // Sanity: both dirs exist
+        assert!(repo.join(".git").exists(), ".git must exist");
+        assert!(repo.join(".jj").exists(), ".jj must exist");
+
+        (tmp, repo)
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression test for rosary-a0eb7c / commit 120fd5a:
+    //
+    // In old code, detect_vcs() returned Jj for colocated repos, which
+    // created jj workspaces where git paths resolved wrong (agent git
+    // add/commit saw parent-relative paths). The fix returns Git for
+    // colocated repos so git worktree is used instead.
+    //
+    // This test exercises the FULL dispatch lifecycle:
+    //   1. detect_vcs → Git (not Jj) for colocated repo
+    //   2. Workspace::create → git worktree with proper .git file
+    //   3. git rev-parse inside worktree → worktree path (not parent)
+    //   4. git add + commit inside worktree → clean paths (no prefix)
+    //   5. Workspace::checkpoint → returns a SHA
+    //   6. cleanup → worktree removed, work visible in main repo log
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn e2e_colocated_workspace_isolation() {
+        // Skip if jj is not installed (CI without jj)
+        if std::process::Command::new("jj")
+            .arg("--help")
+            .output()
+            .is_err()
+        {
+            eprintln!("SKIP: jj not installed");
+            return;
+        }
+
+        let (_tmp, repo) = setup_colocated_repo().await;
+        let bead_id = "e2e-colocated-test";
+
+        // ----- Step 1: detect_vcs returns Git for colocated repos ----------
+        assert_eq!(
+            detect_vcs(&repo),
+            VcsKind::Git,
+            "colocated repo (both .jj/ and .git/) must use Git worktree, not Jj"
+        );
+
+        // ----- Step 2: Workspace::create produces a git worktree ----------
+        let ws = Workspace::create(bead_id, "test-repo", &repo, true)
+            .await
+            .expect("workspace create must succeed");
+
+        assert_eq!(ws.vcs, VcsKind::Git, "workspace vcs should be Git");
+        assert_ne!(
+            ws.work_dir, ws.repo_path,
+            "worktree dir must differ from repo root"
+        );
+        assert!(
+            ws.work_dir.exists(),
+            "worktree directory must exist on disk"
+        );
+
+        // The worktree should contain a .git *file* (not directory) pointing
+        // back to the parent repo's worktree metadata.
+        let dot_git = ws.work_dir.join(".git");
+        assert!(dot_git.exists(), "worktree must have a .git file");
+        assert!(
+            dot_git.is_file(),
+            ".git in worktree must be a file (gitdir pointer), not a directory"
+        );
+
+        // Source files from HEAD must be present
+        assert!(
+            ws.work_dir.join("lib.rs").exists(),
+            "worktree must contain source files from HEAD"
+        );
+
+        // ----- Step 3: git rev-parse --show-toplevel → worktree path ------
+        let toplevel = tokio::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(&ws.work_dir)
+            .output()
+            .await
+            .expect("git rev-parse must succeed");
+        assert!(toplevel.status.success());
+
+        let toplevel_path =
+            PathBuf::from(String::from_utf8_lossy(&toplevel.stdout).trim().to_string());
+        // Canonicalize both to handle macOS /private/var vs /var symlinks
+        assert_eq!(
+            toplevel_path.canonicalize().unwrap(),
+            ws.work_dir.canonicalize().unwrap(),
+            "git rev-parse --show-toplevel must return the WORKTREE path, not the parent repo"
+        );
+
+        // ----- Step 4: git add + commit inside worktree → clean paths -----
+        let test_file = ws.work_dir.join("agent-output.txt");
+        std::fs::write(&test_file, "agent wrote this").unwrap();
+
+        let add = tokio::process::Command::new("git")
+            .args(["add", "agent-output.txt"])
+            .current_dir(&ws.work_dir)
+            .output()
+            .await
+            .expect("git add must succeed");
+        assert!(
+            add.status.success(),
+            "git add failed: {}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+
+        let commit = tokio::process::Command::new("git")
+            .args(["commit", "-m", "agent: test commit"])
+            .current_dir(&ws.work_dir)
+            .output()
+            .await
+            .expect("git commit must succeed");
+        assert!(
+            commit.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+
+        // Verify committed paths don't have a .rsry-workspaces/ prefix.
+        // `git diff-tree` lists paths in the last commit — they should be
+        // root-relative within the worktree, not parent-relative.
+        let diff_tree = tokio::process::Command::new("git")
+            .args(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
+            .current_dir(&ws.work_dir)
+            .output()
+            .await
+            .expect("git diff-tree must succeed");
+        let committed_paths = String::from_utf8_lossy(&diff_tree.stdout);
+        assert!(
+            committed_paths.contains("agent-output.txt"),
+            "committed file must appear in diff-tree"
+        );
+        assert!(
+            !committed_paths.contains(".rsry-workspaces"),
+            "committed paths must NOT contain .rsry-workspaces/ prefix — \
+             this means git is resolving paths relative to parent, not worktree. \
+             Got: {committed_paths}"
+        );
+
+        // ----- Step 5: Workspace::checkpoint → returns a SHA ---------------
+        // Write another file so checkpoint has something to commit
+        std::fs::write(ws.work_dir.join("checkpoint-file.txt"), "checkpoint data").unwrap();
+
+        let sha = ws
+            .checkpoint("e2e: checkpoint test")
+            .await
+            .expect("checkpoint must succeed");
+        assert!(
+            sha.is_some(),
+            "checkpoint must return a SHA when there are dirty files"
+        );
+        let sha = sha.unwrap();
+        assert!(!sha.is_empty(), "checkpoint SHA must be non-empty");
+
+        // Verify the checkpoint commit also has clean paths
+        let diff_tree2 = tokio::process::Command::new("git")
+            .args(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
+            .current_dir(&ws.work_dir)
+            .output()
+            .await
+            .unwrap();
+        let checkpoint_paths = String::from_utf8_lossy(&diff_tree2.stdout);
+        assert!(
+            checkpoint_paths.contains("checkpoint-file.txt"),
+            "checkpoint commit must include the new file"
+        );
+        assert!(
+            !checkpoint_paths.contains(".rsry-workspaces"),
+            "checkpoint paths must not have workspace prefix"
+        );
+
+        // ----- Step 6: cleanup → worktree gone, work in main repo log -----
+        let worktree_dir = ws.work_dir.clone();
+
+        // Record the branch name to look up in main repo after cleanup
+        let branch_out = tokio::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&worktree_dir)
+            .output()
+            .await
+            .unwrap();
+        let _branch_name = String::from_utf8_lossy(&branch_out.stdout)
+            .trim()
+            .to_string();
+
+        // Get the full SHA of the branch tip before cleanup
+        let full_sha_out = tokio::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&worktree_dir)
+            .output()
+            .await
+            .unwrap();
+        let full_sha = String::from_utf8_lossy(&full_sha_out.stdout)
+            .trim()
+            .to_string();
+
+        // cleanup_git_worktree removes the worktree AND deletes the branch,
+        // so we must verify the commit is reachable by SHA before cleanup.
+        // But since the branch is force-deleted, the commit becomes
+        // unreachable (gc would collect it). Instead, verify the SHA exists
+        // in the main repo's object store before cleanup.
+        let verify_before = std::process::Command::new("git")
+            .args(["cat-file", "-t", &full_sha])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            verify_before.status.success(),
+            "commit SHA must exist in main repo object store before cleanup"
+        );
+        let obj_type = String::from_utf8_lossy(&verify_before.stdout)
+            .trim()
+            .to_string();
+        assert_eq!(obj_type, "commit", "SHA must point to a commit object");
+
+        // Now clean up
+        cleanup_git_worktree(&repo, bead_id);
+
+        // Worktree directory should be removed
+        assert!(
+            !worktree_dir.exists(),
+            "worktree directory must be removed after cleanup"
+        );
+
+        // The commit object still exists in git's object store (it's not
+        // garbage collected immediately). Verify it's still there.
+        let verify_after = std::process::Command::new("git")
+            .args(["cat-file", "-t", &full_sha])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            verify_after.status.success(),
+            "commit object must still exist in main repo after worktree removal \
+             (git objects persist until gc)"
+        );
+    }
+
+    /// Verify that .beads/ directory from the parent repo is accessible
+    /// inside a git worktree (it comes from HEAD, so if .beads/ is
+    /// committed or if it's an untracked dir, agents can still reach Dolt).
+    ///
+    /// This test creates a .beads/ marker in the repo and verifies the
+    /// worktree can see it. Actual Dolt connectivity requires a running
+    /// Dolt server, so this test only checks file-level accessibility.
+    #[tokio::test]
+    #[ignore] // requires jj installed; run with `cargo test -- --ignored`
+    async fn e2e_colocated_worktree_beads_accessible() {
+        if std::process::Command::new("jj")
+            .arg("--help")
+            .output()
+            .is_err()
+        {
+            eprintln!("SKIP: jj not installed");
+            return;
+        }
+
+        let (_tmp, repo) = setup_colocated_repo().await;
+
+        // Create and commit a .beads/ marker file (simulates Dolt init)
+        std::fs::create_dir_all(repo.join(".beads")).unwrap();
+        std::fs::write(repo.join(".beads").join("marker"), "dolt-placeholder").unwrap();
+        std::process::Command::new("git")
+            .args(["add", ".beads/"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "add .beads marker"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+
+        let ws = Workspace::create("beads-access-test", "test-repo", &repo, true)
+            .await
+            .expect("workspace create must succeed");
+
+        assert_eq!(ws.vcs, VcsKind::Git);
+
+        // .beads/ should be present in the worktree (branched from HEAD)
+        assert!(
+            ws.work_dir.join(".beads").join("marker").exists(),
+            ".beads/ must be accessible in the git worktree — \
+             agents need this to reach Dolt"
+        );
+
+        cleanup_git_worktree(&repo, "beads-access-test");
+    }
 }
