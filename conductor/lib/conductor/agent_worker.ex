@@ -543,6 +543,7 @@ defmodule Conductor.AgentWorker do
     agent = Pipeline.current_agent(pipeline)
     title = (state && state.bead_title) || "#{pipeline.issue_type} work"
     description = (state && state.bead_description) || ""
+    work_dir = (state && state.work_dir) || repo
 
     desc_section =
       if description != "" do
@@ -551,18 +552,65 @@ defmodule Conductor.AgentWorker do
         ""
       end
 
+    # Read handoff chain from previous phases (if any)
+    handoff_section = read_handoff_chain(work_dir, pipeline.current)
+
     "Fix this issue. Make the minimal change needed.\n\n" <>
       "Bead ID: #{bead_id}\n" <>
       "Repo: #{repo}\n" <>
       "Agent: #{agent}\n" <>
       "Title: #{title}\n" <>
       desc_section <>
+      handoff_section <>
       "After fixing:\n" <>
       "1. Run tests via `task test`\n" <>
-      "2. Create a commit with a descriptive message\n" <>
+      "2. Commit your changes (git add + git commit with bead:#{bead_id} in message)\n" <>
       "3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"#{repo}\" and id=\"#{bead_id}\"\n" <>
       "4. Report what you changed"
   end
+
+  defp read_handoff_chain(work_dir, current_phase) when current_phase > 0 do
+    handoffs =
+      0..(current_phase - 1)
+      |> Enum.map(fn phase ->
+        path = Path.join(work_dir, ".rsry-handoff-#{phase}.json")
+
+        case File.read(path) do
+          {:ok, content} ->
+            case Jason.decode(content) do
+              {:ok, h} -> h
+              _ -> nil
+            end
+
+          _ ->
+            nil
+        end
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    if handoffs == [] do
+      ""
+    else
+      sections =
+        Enum.map(handoffs, fn h ->
+          "### Phase #{h["phase"]} (#{h["from_agent"]} via #{h["provider"]})\n" <>
+            "Summary: #{h["summary"]}\n" <>
+            "Files: #{Enum.join(h["files_changed"] || [], ", ")}\n" <>
+            if(h["review_hints"] && h["review_hints"] != [],
+              do:
+                "Review hints:\n" <>
+                  Enum.map_join(h["review_hints"], "\n", &"- #{&1}") <> "\n",
+              else: ""
+            )
+        end)
+
+      "\n## Previous Phase Context\n\n" <>
+        Enum.join(sections, "\n") <>
+        "\nHandoff files are in your working directory. Use mache MCP tools to structurally review the changes.\n\n"
+    end
+  end
+
+  defp read_handoff_chain(_work_dir, _phase), do: ""
 
   # -- CLI output handling --
 

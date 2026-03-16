@@ -349,10 +349,16 @@ impl AgentHandle {
 /// Build the prompt for a bead.
 ///
 /// Includes the bead ID and repo path so the agent can self-manage its
-/// lifecycle via MCP tools (comment, close). This is critical for
-/// consumption throughput — agents that close their own beads don't
-/// block on the reconciler's verify-then-close cycle.
-pub fn build_prompt(bead: &Bead, repo_path: &str) -> String {
+/// lifecycle via MCP tools (comment, close). When a workspace path is
+/// provided, reads the handoff chain for context from previous phases.
+pub fn build_prompt(bead: &Bead, repo_path: &str, workspace: Option<&Path>) -> String {
+    let handoff_context = workspace
+        .map(|ws| {
+            let chain = crate::handoff::Handoff::read_chain(ws);
+            crate::handoff::Handoff::format_for_prompt(&chain)
+        })
+        .unwrap_or_default();
+
     format!(
         "Fix this issue. Make the minimal change needed.\n\
          \n\
@@ -360,6 +366,7 @@ pub fn build_prompt(bead: &Bead, repo_path: &str) -> String {
          Repo: {repo}\n\
          Title: {title}\n\
          Description: {desc}\n\
+         {handoff}\
          \n\
          After fixing:\n\
          1. Run tests via `task test` (not raw cargo/go test)\n\
@@ -370,6 +377,7 @@ pub fn build_prompt(bead: &Bead, repo_path: &str) -> String {
         repo = repo_path,
         title = bead.title,
         desc = bead.description,
+        handoff = handoff_context,
     )
 }
 
@@ -544,7 +552,7 @@ pub async fn spawn(
         .with_context(|| format!("creating workspace for {}", bead.id))?;
 
     let work_dir = workspace.work_dir.clone();
-    let prompt = build_prompt(bead, &path.display().to_string());
+    let prompt = build_prompt(bead, &path.display().to_string(), Some(&work_dir));
 
     // Build agent-aware system prompt from bead.owner
     let system_prompt = build_system_prompt(bead.owner.as_deref(), agents_dir);
@@ -762,7 +770,7 @@ mod tests {
             test_files: Vec::new(),
         };
 
-        let prompt = build_prompt(&bead, "/tmp/test-repo");
+        let prompt = build_prompt(&bead, "/tmp/test-repo", None);
         assert!(prompt.contains("Fix the widget"));
         assert!(prompt.contains("The widget is broken"));
         assert!(prompt.contains("Run tests via"));
