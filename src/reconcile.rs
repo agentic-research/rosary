@@ -951,11 +951,69 @@ impl Reconciler {
         change_id
     }
 
-    /// Checkpoint workspace then clean up.
+    /// Checkpoint workspace then write handoff + manifest, then clean up.
     ///
     /// Used when the pipeline is complete (no next agent) or on deadletter.
     async fn checkpoint_and_cleanup(&mut self, bead_id: &str) -> Option<String> {
         let change_id = self.checkpoint_workspace(bead_id).await;
+
+        // Write handoff + manifest to workspace before cleanup
+        if let Some(ws) = self.completed_workspaces.get(bead_id) {
+            let work_dir = &ws.work_dir;
+            let repo = self
+                .trackers
+                .get(bead_id)
+                .map(|t| t.repo.clone())
+                .unwrap_or_default();
+
+            // Build work summary from git
+            let work = crate::manifest::Work::from_git(work_dir, change_id.as_deref());
+
+            // Write handoff for the phase that just completed
+            let agent = self
+                .trackers
+                .get(bead_id)
+                .and(None::<String>) // TODO: track current agent in tracker
+                .unwrap_or_else(|| "dev-agent".to_string());
+            let handoff = crate::handoff::Handoff::new(
+                0, // TODO: track pipeline phase
+                &agent,
+                None,
+                bead_id,
+                self.provider.name(),
+                &work,
+            );
+            if let Err(e) = handoff.write_to(work_dir) {
+                eprintln!("[handoff] {bead_id}: failed to write: {e}");
+            }
+
+            // Write manifest
+            let vcs_kind = match ws.vcs {
+                crate::workspace::VcsKind::Jj => "jj",
+                crate::workspace::VcsKind::Git => "git",
+                crate::workspace::VcsKind::None => "none",
+            };
+            let mut manifest = crate::manifest::Manifest::at_spawn(
+                &format!("d-{bead_id}"),
+                bead_id,
+                &repo,
+                &agent,
+                self.provider.name(),
+                "task",
+                "implement",
+                0,
+                &work_dir.display().to_string(),
+                &ws.repo_path.display().to_string(),
+                vcs_kind,
+                None,
+            );
+            manifest.work = work;
+            manifest.complete(true, Some("end_turn"));
+            if let Err(e) = manifest.write_to(work_dir) {
+                eprintln!("[manifest] {bead_id}: failed to write: {e}");
+            }
+        }
+
         self.cleanup_workspace(bead_id);
         change_id
     }

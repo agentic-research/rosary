@@ -341,6 +341,9 @@ defmodule Conductor.AgentWorker do
         Logger.warning("[checkpoint] #{bead_id}: failed: #{inspect(reason)}")
     end
 
+    # Write handoff file for the phase that just completed
+    write_handoff(state, pipeline, agent)
+
     case Pipeline.advance(pipeline) do
       :done ->
         Logger.info(
@@ -567,6 +570,43 @@ defmodule Conductor.AgentWorker do
       "2. Commit your changes (git add + git commit with bead:#{bead_id} in message)\n" <>
       "3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"#{repo}\" and id=\"#{bead_id}\"\n" <>
       "4. Report what you changed"
+  end
+
+  defp write_handoff(state, pipeline, agent) do
+    work_dir = state.work_dir || pipeline.repo
+    phase = pipeline.current
+    bead_id = pipeline.bead_id
+
+    handoff = %{
+      schema_version: "1",
+      phase: phase,
+      from_agent: agent,
+      to_agent: Pipeline.current_agent(pipeline),
+      bead_id: bead_id,
+      provider: Application.get_env(:conductor, :agent_provider, "claude"),
+      summary: "Phase #{phase} (#{agent}) completed",
+      files_changed: [],
+      lines_changed: %{added: 0, removed: 0},
+      review_hints: [],
+      artifacts: %{
+        manifest: ".rsry-dispatch.json",
+        log: ".rsry-stream-#{phase}.jsonl",
+        previous_handoff: if(phase > 0, do: ".rsry-handoff-#{phase - 1}.json")
+      },
+      verdict: nil,
+      timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    path = Path.join(work_dir, ".rsry-handoff-#{phase}.json")
+
+    case Jason.encode(handoff, pretty: true) do
+      {:ok, json} ->
+        File.write(path, json)
+        Logger.info("[handoff] #{bead_id}: wrote #{path}")
+
+      {:error, reason} ->
+        Logger.warning("[handoff] #{bead_id}: failed to encode: #{inspect(reason)}")
+    end
   end
 
   defp read_handoff_chain(work_dir, current_phase) when current_phase > 0 do
