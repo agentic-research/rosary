@@ -176,6 +176,47 @@ impl Workspace {
         Ok(())
     }
 
+    /// Checkpoint the workspace: jj commit + bookmark, return change ID.
+    ///
+    /// Call this BEFORE cleanup to preserve the agent's work in the shared
+    /// jj repo history. In a colocated repo, the agent's git commits are
+    /// already visible to jj, but this adds a bookmark for tracking.
+    pub async fn checkpoint(&self, message: &str) -> Result<Option<String>> {
+        if self.vcs != VcsKind::Jj {
+            return Ok(None);
+        }
+        self.jj_commit(message).await?;
+        let change_id = self.jj_change_id().await?;
+        let bookmark = format!("fix/{}", self.id);
+        self.jj_bookmark(&bookmark).await?;
+        Ok(change_id)
+    }
+
+    /// Get the jj change ID of the most recent commit (@-).
+    ///
+    /// After `jj commit`, the new commit is @- (jj advances the working copy).
+    async fn jj_change_id(&self) -> Result<Option<String>> {
+        if self.vcs != VcsKind::Jj {
+            return Ok(None);
+        }
+        let output = tokio::process::Command::new("jj")
+            .args(["log", "-r", "@-", "--no-graph", "-T", "change_id"])
+            .current_dir(&self.work_dir)
+            .output()
+            .await
+            .context("jj log change_id")?;
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if id.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(id))
+        }
+    }
+
     /// Tear down the workspace: destroy compute + clean up VCS isolation.
     pub async fn teardown(self, provider: &dyn ComputeProvider) -> Result<()> {
         // Destroy compute
@@ -306,6 +347,36 @@ pub(crate) fn cleanup_git_worktree(repo_path: &Path, id: &str) {
         .args(["branch", "-D", &branch_name])
         .current_dir(repo_path)
         .output();
+}
+
+// ---------------------------------------------------------------------------
+// Orphan sweep
+// ---------------------------------------------------------------------------
+
+/// Scan `.rsry-workspaces/` directories and clean up any that don't
+/// correspond to active bead IDs. Call on startup to reclaim leaked workspaces.
+pub fn sweep_orphaned(repo_paths: &[PathBuf], active_bead_ids: &[String]) {
+    for repo_path in repo_paths {
+        let ws_root = repo_path
+            .parent()
+            .unwrap_or(repo_path)
+            .join(".rsry-workspaces");
+        if !ws_root.exists() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&ws_root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !active_bead_ids.contains(&name) {
+                eprintln!("[sweep] cleaning orphaned workspace: {name}");
+                cleanup_jj_workspace(repo_path, &name);
+                cleanup_git_worktree(repo_path, &name);
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

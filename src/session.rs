@@ -20,6 +20,12 @@ pub struct SessionEntry {
     pub title: String,
     #[serde(default)]
     pub agent: String,
+    /// VCS kind used for workspace isolation ("jj", "git", or empty).
+    #[serde(default)]
+    pub workspace_vcs: String,
+    /// Original repo path (needed for workspace cleanup when session dies).
+    #[serde(default)]
+    pub repo_path: String,
 }
 
 /// File-based session registry at `~/.rsry/sessions.json`.
@@ -45,11 +51,18 @@ impl SessionRegistry {
         let mut registry: Self =
             serde_json::from_str(&content).with_context(|| "parsing sessions.json")?;
 
-        // Prune dead sessions (PID no longer alive)
-        registry
+        // Partition into alive and dead sessions
+        let (alive, dead): (Vec<_>, Vec<_>) = registry
             .sessions
-            .retain(|s| s.pid.map(is_pid_alive).unwrap_or(false));
+            .into_iter()
+            .partition(|s| s.pid.map(is_pid_alive).unwrap_or(false));
 
+        // Clean up workspaces for dead sessions
+        for session in &dead {
+            cleanup_session_workspace(session);
+        }
+
+        registry.sessions = alive;
         Ok(registry)
     }
 
@@ -90,6 +103,23 @@ fn is_pid_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
+/// Clean up workspace for a dead session (best-effort).
+fn cleanup_session_workspace(session: &SessionEntry) {
+    if session.repo_path.is_empty() || session.workspace_vcs.is_empty() {
+        return;
+    }
+    let repo_path = std::path::Path::new(&session.repo_path);
+    eprintln!(
+        "[session-cleanup] {} workspace for {} (vcs={})",
+        session.bead_id, session.repo, session.workspace_vcs
+    );
+    match session.workspace_vcs.as_str() {
+        "jj" => crate::workspace::cleanup_jj_workspace(repo_path, &session.bead_id),
+        "git" => crate::workspace::cleanup_git_worktree(repo_path, &session.bead_id),
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +142,8 @@ mod tests {
             started_at: chrono::Utc::now(),
             title: String::new(),
             agent: String::new(),
+            workspace_vcs: String::new(),
+            repo_path: String::new(),
         });
         assert_eq!(reg.active().len(), 1);
         assert_eq!(reg.active()[0].bead_id, "rsry-abc");
@@ -129,6 +161,8 @@ mod tests {
             started_at: chrono::Utc::now(),
             title: String::new(),
             agent: String::new(),
+            workspace_vcs: String::new(),
+            repo_path: String::new(),
         });
         reg.sessions.retain(|s| s.bead_id != "rsry-abc");
         assert!(reg.active().is_empty());
@@ -157,6 +191,8 @@ mod tests {
                 started_at: chrono::Utc::now(),
                 title: "Test bead".into(),
                 agent: "dev-agent".into(),
+                workspace_vcs: "jj".into(),
+                repo_path: "/tmp/repo".into(),
             }],
         };
         let json = serde_json::to_string(&reg).unwrap();

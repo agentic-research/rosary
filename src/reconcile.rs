@@ -245,6 +245,11 @@ impl Reconciler {
         // Recover beads stuck at 'dispatched' from previous crashed run
         self.recover_stuck_beads().await;
 
+        // Sweep orphaned workspaces from previous runs
+        let repo_paths: Vec<PathBuf> = self.repo_info.values().map(|(p, _)| p.clone()).collect();
+        let active_ids: Vec<String> = self.active.keys().cloned().collect();
+        crate::workspace::sweep_orphaned(&repo_paths, &active_ids);
+
         loop {
             let summary = self.iterate().await?;
             println!("[reconcile] {summary}");
@@ -483,6 +488,7 @@ impl Reconciler {
                 summary.agent_closed += 1;
                 summary.passed += 1;
                 self.on_pass(bead_id);
+                self.checkpoint_and_cleanup(bead_id).await;
 
                 if let Some((ref issue_type, Some(ref current_agent))) = bead_info
                     && let Some(next) = dispatch::next_agent(issue_type, current_agent)
@@ -498,6 +504,7 @@ impl Reconciler {
                     Some(vs) if vs.passed() => {
                         summary.passed += 1;
                         self.on_pass(bead_id);
+                        self.checkpoint_and_cleanup(bead_id).await;
 
                         if let Some((ref issue_type, Some(ref current_agent))) = bead_info {
                             if let Some(next) = dispatch::next_agent(issue_type, current_agent) {
@@ -526,6 +533,7 @@ impl Reconciler {
                     None => {
                         summary.passed += 1;
                         self.on_pass(bead_id);
+                        self.checkpoint_and_cleanup(bead_id).await;
 
                         if let Some((ref issue_type, Some(ref current_agent))) = bead_info {
                             if let Some(next) = dispatch::next_agent(issue_type, current_agent) {
@@ -759,6 +767,7 @@ impl Reconciler {
                 if self.is_bead_agent_closed(bead_id, &repo).await {
                     self.completed_work_dirs.remove(bead_id);
                     self.on_pass(bead_id);
+                    self.checkpoint_and_cleanup(bead_id).await;
                     continue;
                 }
 
@@ -767,6 +776,7 @@ impl Reconciler {
                     match verify_result {
                         Some(vs) if vs.passed() => {
                             self.on_pass(bead_id);
+                            self.checkpoint_and_cleanup(bead_id).await;
                             self.persist_status(bead_id, &repo, "closed").await;
                         }
                         Some(vs) => {
@@ -776,6 +786,7 @@ impl Reconciler {
                         None => {
                             // No verifier — treat as pass
                             self.on_pass(bead_id);
+                            self.checkpoint_and_cleanup(bead_id).await;
                             self.persist_status(bead_id, &repo, "closed").await;
                         }
                     }
@@ -853,7 +864,47 @@ impl Reconciler {
         if let Some(tracker) = self.trackers.get_mut(bead_id) {
             tracker.consecutive_reverts = 0;
         }
+        // Cleanup happens after checkpoint (called from iterate)
+    }
+
+    /// Checkpoint workspace (jj commit + bookmark) then clean up.
+    ///
+    /// Must be called from async context. Returns jj change ID if available.
+    async fn checkpoint_and_cleanup(&mut self, bead_id: &str) -> Option<String> {
+        let change_id = if let Some(ws) = self.completed_workspaces.remove(bead_id) {
+            let message = format!("fix({bead_id}): agent work");
+            let result = ws.checkpoint(&message).await;
+            // Put it back for cleanup
+            self.completed_workspaces.insert(bead_id.to_string(), ws);
+            match result {
+                Ok(Some(id)) => {
+                    eprintln!("[checkpoint] {bead_id}: jj change {id}");
+                    Some(id)
+                }
+                Ok(None) => None,
+                Err(e) => {
+                    eprintln!("[checkpoint] {bead_id}: failed: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Log change_id as event for audit trail
+        if let Some(ref cid) = change_id {
+            let repo = self
+                .trackers
+                .get(bead_id)
+                .map(|t| t.repo.clone())
+                .unwrap_or_default();
+            if let Some(client) = self.dolt_client(&repo).await {
+                client.log_event(bead_id, "jj_checkpoint", cid).await;
+            }
+        }
+
         self.cleanup_workspace(bead_id);
+        change_id
     }
 
     /// Clean up the workspace for a completed bead.

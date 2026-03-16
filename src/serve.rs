@@ -566,7 +566,25 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         .await
         .with_context(|| format!("marking bead {bead_id} as dispatched"))?;
 
-    // Register in session registry
+    // Extract workspace metadata before handle is dropped (workspace has no Drop
+    // impl, so the on-disk workspace persists — we need metadata for cleanup).
+    let workspace_vcs = handle
+        .workspace
+        .as_ref()
+        .map(|ws| match ws.vcs {
+            crate::workspace::VcsKind::Jj => "jj",
+            crate::workspace::VcsKind::Git => "git",
+            crate::workspace::VcsKind::None => "",
+        })
+        .unwrap_or("")
+        .to_string();
+    let ws_repo_path = handle
+        .workspace
+        .as_ref()
+        .map(|ws| ws.repo_path.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    // Register in session registry (includes workspace info for cleanup on death)
     let mut registry = crate::session::SessionRegistry::load().unwrap_or_default();
     registry
         .register(crate::session::SessionEntry {
@@ -578,6 +596,8 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
             started_at: chrono::Utc::now(),
             title: bead.title.clone(),
             agent: agent_label.to_string(),
+            workspace_vcs,
+            repo_path: ws_repo_path,
         })
         .ok();
 

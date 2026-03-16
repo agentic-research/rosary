@@ -39,3 +39,6 @@ experiments/
 
 # Agent working logs (ephemeral review notes, not source)
 _agent_logs/
+
+# Local plan/scratch files (agent session plans, not tracked)
+_*.md
