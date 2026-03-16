@@ -165,6 +165,24 @@ impl DoltClient {
         Ok(DoltClient { pool })
     }
 
+    /// Commit the current working set so changes are visible to new connections.
+    /// Dolt sql-server uses per-session isolation — writes are invisible to other
+    /// connections until committed. Best-effort: logs warning on failure.
+    async fn auto_commit(&self, message: &str) {
+        let result = query("CALL DOLT_ADD('-A')").execute(&self.pool).await;
+        if let Err(e) = result {
+            eprintln!("[dolt] auto_commit add failed: {e}");
+            return;
+        }
+        let result = query("CALL DOLT_COMMIT('-m', ?, '--allow-empty')")
+            .bind(message)
+            .execute(&self.pool)
+            .await;
+        if let Err(e) = result {
+            eprintln!("[dolt] auto_commit failed: {e}");
+        }
+    }
+
     /// List all open issues as Beads.
     pub async fn list_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
         let rows = query(
@@ -266,6 +284,7 @@ impl DoltClient {
             .execute(&self.pool)
             .await
             .with_context(|| format!("updating status for {id}"))?;
+        self.auto_commit(&format!("{id}: status → {status}")).await;
         Ok(())
     }
 
@@ -311,6 +330,7 @@ impl DoltClient {
         .execute(&self.pool)
         .await
         .with_context(|| format!("creating bead {id}"))?;
+        self.auto_commit(&format!("create {id}")).await;
         Ok(())
     }
 
@@ -436,6 +456,8 @@ impl DoltClient {
             .await
             .with_context(|| format!("updating fields for {id}"))?;
 
+        self.auto_commit(&format!("update {id}: {}", updated_fields.join(", ")))
+            .await;
         Ok(updated_fields)
     }
 
@@ -446,6 +468,7 @@ impl DoltClient {
             .execute(&self.pool)
             .await
             .with_context(|| format!("closing bead {id}"))?;
+        self.auto_commit(&format!("close {id}")).await;
         Ok(())
     }
 
@@ -458,6 +481,7 @@ impl DoltClient {
             .execute(&self.pool)
             .await
             .with_context(|| format!("adding comment to {issue_id}"))?;
+        self.auto_commit(&format!("comment on {issue_id}")).await;
         Ok(())
     }
 
