@@ -82,6 +82,10 @@ pub struct DispatchRecord {
     /// success, failure, timeout
     pub outcome: Option<String>,
     pub work_dir: String,
+    /// Claude Code session ID (from --output-format json). Enables --resume.
+    pub session_id: Option<String>,
+    /// jj workspace path (distinct from work_dir repo root).
+    pub workspace_path: Option<String>,
 }
 
 /// Cross-repo dependency between beads.
@@ -520,6 +524,8 @@ mod tests {
             completed_at: None,
             outcome: None,
             work_dir: "/tmp/work".into(),
+            session_id: None,
+            workspace_path: None,
         };
 
         store.record_dispatch(&record).await.unwrap();

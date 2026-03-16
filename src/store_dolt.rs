@@ -188,6 +188,8 @@ impl DoltBackend {
                 completed_at DATETIME,
                 outcome VARCHAR(32),
                 work_dir VARCHAR(1024),
+                session_id VARCHAR(256),
+                workspace_path VARCHAR(1024),
                 INDEX idx_bead (repo, bead_id),
                 INDEX idx_active (completed_at)
             )",
@@ -457,8 +459,8 @@ impl DispatchStore for DoltBackend {
 
     async fn record_dispatch(&self, record: &DispatchRecord) -> Result<()> {
         query(
-            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, work_dir)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, work_dir, session_id, workspace_path)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&record.id)
         .bind(&record.bead_ref.repo)
@@ -467,6 +469,8 @@ impl DispatchStore for DoltBackend {
         .bind(&record.provider)
         .bind(record.started_at.naive_utc())
         .bind(&record.work_dir)
+        .bind(&record.session_id)
+        .bind(&record.workspace_path)
         .execute(&self.pool)
         .await
         .with_context(|| format!("recording dispatch {}", record.id))?;
@@ -486,7 +490,7 @@ impl DispatchStore for DoltBackend {
     async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>> {
         let rows = query(
             "SELECT id, repo, bead_id, agent, provider, started_at,
-                    completed_at, outcome, work_dir
+                    completed_at, outcome, work_dir, session_id, workspace_path
              FROM dispatches WHERE completed_at IS NULL",
         )
         .fetch_all(&self.pool)
@@ -631,6 +635,8 @@ fn row_to_dispatch_record(r: &sqlx_mysql::MySqlRow) -> DispatchRecord {
             .map(|n| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(n, chrono::Utc)),
         outcome: r.try_get("outcome").ok(),
         work_dir: r.try_get("work_dir").unwrap_or_default(),
+        session_id: r.try_get("session_id").ok().flatten(),
+        workspace_path: r.try_get("workspace_path").ok().flatten(),
     }
 }
 
@@ -779,6 +785,8 @@ mod tests {
             completed_at: None,
             outcome: None,
             work_dir: "/tmp/work".into(),
+            session_id: Some("test-session-123".into()),
+            workspace_path: Some("/tmp/ws/test".into()),
         };
         backend.record_dispatch(&dispatch).await.unwrap();
 
