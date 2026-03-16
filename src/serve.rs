@@ -666,6 +666,7 @@ async fn tool_active() -> Result<Value> {
         .active()
         .iter()
         .map(|s| {
+            let health = check_agent_health(s);
             json!({
                 "bead_id": s.bead_id,
                 "title": s.title,
@@ -677,6 +678,7 @@ async fn tool_active() -> Result<Value> {
                 "started_at": s.started_at.to_rfc3339(),
                 "last_activity": s.last_activity.map(|t| t.to_rfc3339()),
                 "last_comment": s.last_comment,
+                "health": health,
             })
         })
         .collect();
@@ -685,6 +687,64 @@ async fn tool_active() -> Result<Value> {
         "active": agents.len(),
         "agents": agents,
     }))
+}
+
+/// Quick health check for a dispatched agent.
+/// Returns "healthy", "idle", "stuck", or "dead".
+fn check_agent_health(session: &crate::session::SessionEntry) -> &'static str {
+    // Check if PID is alive
+    let pid_alive = session
+        .pid
+        .map(|pid| unsafe { libc::kill(pid as i32, 0) == 0 })
+        .unwrap_or(false);
+    if !pid_alive {
+        return "dead";
+    }
+
+    // Check for TCP connections (active API calls)
+    let has_tcp = session.pid.is_some_and(|pid| {
+        std::process::Command::new("lsof")
+            .args(["-p", &pid.to_string(), "-i", "TCP"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("ESTABLISHED"))
+            .unwrap_or(false)
+    });
+
+    // Check workspace for recent file changes (last 2 minutes)
+    let ws_active = if !session.work_dir.is_empty() {
+        std::process::Command::new("find")
+            .args([
+                &session.work_dir,
+                "-maxdepth",
+                "3",
+                "-newer",
+                &session.work_dir,
+                "-name",
+                "*.rs",
+                "-o",
+                "-name",
+                "*.ex",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    if has_tcp || ws_active {
+        "healthy"
+    } else if session.last_activity.is_some() {
+        // Had activity before but none now
+        "idle"
+    } else {
+        // Never had activity, no TCP — likely stuck
+        "stuck"
+    }
 }
 
 async fn tool_workspace_create(args: &Value) -> Result<Value> {
