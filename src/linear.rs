@@ -585,7 +585,7 @@ pub async fn sync(dry_run: bool, repo_filter: Option<&[String]>) -> Result<()> {
                 } else {
                     match update_linear_issue_status(&client, &team_id, ext_ref, "closed").await {
                         Ok(()) => {
-                            crate::cli::sync_closed(ext_ref, &bead.id);
+                            crate::cli::sync_closed(ext_ref, &bead.id, &bead.title);
                             closed += 1;
                         }
                         Err(e) => {

@@ -241,12 +241,13 @@ pub fn sync_created(linear_id: &str, title: &str) {
     );
 }
 
-pub fn sync_closed(linear_id: &str, bead_id: &str) {
+pub fn sync_closed(linear_id: &str, bead_id: &str, title: &str) {
     println!(
-        "  {} {} ({})",
+        "  {} {} ({}) {}",
         "closed".yellow(),
         linear_link(linear_id),
         bead_id.dimmed(),
+        title.dimmed(),
     );
 }
 
