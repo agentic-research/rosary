@@ -169,12 +169,8 @@ impl DoltClient {
     /// Dolt sql-server uses per-session isolation — writes are invisible to other
     /// connections until committed. Best-effort: logs warning on failure.
     async fn auto_commit(&self, message: &str) {
-        let result = query("CALL DOLT_ADD('-A')").execute(&self.pool).await;
-        if let Err(e) = result {
-            eprintln!("[dolt] auto_commit add failed: {e}");
-            return;
-        }
-        let result = query("CALL DOLT_COMMIT('-m', ?, '--allow-empty')")
+        // -Am stages all tables + commits in one call (dolt cheat sheet)
+        let result = query("CALL DOLT_COMMIT('-Am', ?, '--allow-empty')")
             .bind(message)
             .execute(&self.pool)
             .await;
