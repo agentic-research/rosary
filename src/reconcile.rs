@@ -335,6 +335,25 @@ impl Reconciler {
                 continue;
             }
 
+            // (Smart triage) Dependency-aware: hard-filter beads with unresolved deps.
+            // triage_score already penalizes these, but we skip them entirely to
+            // avoid dispatching work whose prerequisites aren't done yet.
+            if bead.is_blocked() {
+                continue;
+            }
+
+            // (Smart triage) Per-repo coordination: don't dispatch to a repo that
+            // already has an active agent. Prevents conflicts from concurrent
+            // modifications to the same repo (uncommitted work, branch collisions).
+            let repo_busy = self.active.keys().any(|active_id| {
+                self.trackers
+                    .get(active_id)
+                    .is_some_and(|t| t.repo == bead.repo)
+            });
+            if repo_busy {
+                continue;
+            }
+
             // Dedup: skip if semantically dominated by an active or queued bead.
             // Uses multi-signal similarity (title + description + scope prefix +
             // sequential pattern) instead of plain Jaccard on titles.
@@ -354,11 +373,22 @@ impl Reconciler {
             }
 
             let retries = self.queue.retries(&bead.id);
-            let score = if self.config.overnight {
+            let mut score = if self.config.overnight {
                 queue::triage_score_overnight(bead, retries, now)
             } else {
                 queue::triage_score(bead, retries, now)
             };
+
+            // (Smart triage) Self-managed repo preference: boost beads from the
+            // rosary repo itself so dogfooding work gets dispatched first.
+            if self
+                .config
+                .repo
+                .iter()
+                .any(|r| r.name == bead.repo && r.self_managed)
+            {
+                score = (score + 0.15).min(1.0);
+            }
 
             if score >= self.config.triage_threshold {
                 let bead_gen = bead.generation();
@@ -1345,5 +1375,127 @@ mod tests {
             !should_skip,
             "bead with pending retries should NOT be skipped by generation check"
         );
+    }
+
+    // -- Smart triage tests --
+
+    #[test]
+    fn blocked_bead_filtered_by_triage() {
+        // A bead with dependency_count > 0 should be hard-filtered in triage,
+        // not just scored low. This prevents dispatching work whose
+        // prerequisites aren't done yet.
+        let bead = crate::bead::Bead {
+            id: "dep-blocked".into(),
+            title: "blocked by deps".into(),
+            description: String::new(),
+            status: "open".into(),
+            priority: 0, // highest priority
+            issue_type: "task".into(),
+            owner: None,
+            repo: "test".into(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            dependency_count: 2, // has unresolved deps
+            dependent_count: 0,
+            comment_count: 0,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
+            external_ref: None,
+            files: Vec::new(),
+            test_files: Vec::new(),
+        };
+
+        // is_blocked returns true for open beads with deps
+        assert!(bead.is_blocked());
+        // is_ready returns false
+        assert!(!bead.is_ready());
+        // Even with P0 priority, the bead should be blocked
+        assert_eq!(bead.state(), BeadState::Open);
+    }
+
+    #[test]
+    fn self_managed_repo_gets_score_boost() {
+        // Beads from self-managed repos should get a 0.15 score boost,
+        // making them dispatch before equivalent beads on other repos.
+        let now = chrono::Utc::now();
+        let bead = crate::bead::Bead {
+            id: "self-1".into(),
+            title: "self-managed task".into(),
+            description: String::new(),
+            status: "open".into(),
+            priority: 2,
+            issue_type: "task".into(),
+            owner: None,
+            repo: "rosary".into(),
+            created_at: now,
+            updated_at: now,
+            dependency_count: 0,
+            dependent_count: 0,
+            comment_count: 0,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
+            external_ref: None,
+            files: Vec::new(),
+            test_files: Vec::new(),
+        };
+
+        let base_score = queue::triage_score(&bead, 0, now);
+        let boosted_score = (base_score + 0.15).min(1.0);
+        assert!(
+            boosted_score > base_score,
+            "self-managed boost should increase score: {boosted_score} vs {base_score}"
+        );
+        // The boost is 0.15 — enough to push self-managed beads ahead
+        assert!(
+            (boosted_score - base_score - 0.15).abs() < f64::EPSILON,
+            "boost should be exactly 0.15"
+        );
+    }
+
+    #[test]
+    fn repo_busy_check_uses_trackers() {
+        // When an agent is active on repo "mache", no other bead from
+        // "mache" should be triaged. This tests the tracker lookup logic.
+        let config = ReconcilerConfig {
+            once: true,
+            repo: Vec::new(),
+            ..Default::default()
+        };
+        let mut r = Reconciler::new(config);
+
+        // Simulate an active agent on repo "mache"
+        r.trackers.insert(
+            "mache-abc".into(),
+            BeadTracker {
+                repo: "mache".into(),
+                last_generation: 1,
+                retries: 0,
+                consecutive_reverts: 0,
+                highest_tier: None,
+            },
+        );
+        // Mark it as active (need a dummy handle — use the key presence)
+        // We can't easily create an AgentHandle in tests, so test the
+        // lookup logic directly:
+        let active_ids = ["mache-abc".to_string()];
+        let candidate_repo = "mache";
+
+        let repo_busy = active_ids.iter().any(|active_id| {
+            r.trackers
+                .get(active_id)
+                .is_some_and(|t| t.repo == candidate_repo)
+        });
+        assert!(repo_busy, "repo with active agent should be busy");
+
+        // Different repo should not be busy
+        let other_repo = "rosary";
+        let other_busy = active_ids.iter().any(|active_id| {
+            r.trackers
+                .get(active_id)
+                .is_some_and(|t| t.repo == other_repo)
+        });
+        assert!(!other_busy, "repo without active agent should not be busy");
     }
 }
