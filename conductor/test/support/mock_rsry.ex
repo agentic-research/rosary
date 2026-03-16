@@ -138,7 +138,8 @@ defmodule Conductor.Test.MockRsry do
     if state.test_pid, do: send(state.test_pid, {:mock_rsry, call})
 
     {:reply,
-     {:ok, %{"bead_id" => bead_id, "work_dir" => repo_path, "vcs" => "None", "repo_path" => repo_path}},
+     {:ok,
+      %{"bead_id" => bead_id, "work_dir" => repo_path, "vcs" => "None", "repo_path" => repo_path}},
      %{state | calls: state.calls ++ [call]}}
   end
 

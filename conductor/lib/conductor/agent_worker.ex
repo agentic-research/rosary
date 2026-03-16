@@ -576,7 +576,7 @@ defmodule Conductor.AgentWorker do
   end
 
   defp merge_or_pr(state, pipeline) do
-    work_dir = state.work_dir || pipeline.repo
+    _work_dir = state.work_dir || pipeline.repo
     repo = pipeline.repo
     bead_id = pipeline.bead_id
     branch = "fix/#{bead_id}"

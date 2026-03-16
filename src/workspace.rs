@@ -118,6 +118,13 @@ impl Workspace {
         let (work_dir, actual_vcs) = match vcs {
             VcsKind::Jj => match create_jj_workspace(repo_path, id).await {
                 Ok(path) => (path, VcsKind::Jj),
+                Err(e) if isolate => {
+                    // Isolation was requested — don't silently run in-place.
+                    // This prevents agents from writing to the main repo.
+                    anyhow::bail!(
+                        "workspace isolation failed for {id}: jj workspace creation failed: {e}"
+                    );
+                }
                 Err(e) => {
                     eprintln!("[workspace] jj isolation failed ({e}), falling back to in-place");
                     (repo_path.to_path_buf(), VcsKind::None)
@@ -125,6 +132,13 @@ impl Workspace {
             },
             VcsKind::Git => match create_git_worktree(repo_path, id).await {
                 Ok(path) => (path, VcsKind::Git),
+                Err(e) if isolate => {
+                    // Isolation was requested — don't silently run in-place.
+                    // This prevents agents from writing to the main repo.
+                    anyhow::bail!(
+                        "workspace isolation failed for {id}: git worktree creation failed: {e}"
+                    );
+                }
                 Err(e) => {
                     eprintln!("[workspace] git worktree failed ({e}), falling back to in-place");
                     (repo_path.to_path_buf(), VcsKind::None)
@@ -414,6 +428,9 @@ fn workspace_dir(repo_path: &Path, id: &str) -> PathBuf {
 }
 
 /// Create a git worktree for isolated work.
+///
+/// Handles the common case where a previous dispatch left behind a
+/// `fix/{id}` branch — deletes the stale branch and retries.
 async fn create_git_worktree(repo_path: &Path, id: &str) -> Result<PathBuf> {
     let branch_name = format!("fix/{id}");
     let worktree_path = workspace_dir(repo_path, id);
@@ -431,16 +448,60 @@ async fn create_git_worktree(repo_path: &Path, id: &str) -> Result<PathBuf> {
         .await
         .context("git worktree add")?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git worktree add failed: {stderr}");
+    if output.status.success() {
+        eprintln!(
+            "[workspace] created git worktree: {}",
+            worktree_path.display()
+        );
+        return Ok(worktree_path);
     }
 
-    eprintln!(
-        "[workspace] created git worktree: {}",
-        worktree_path.display()
-    );
-    Ok(worktree_path)
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Branch already exists from a previous (failed) dispatch — clean up and retry.
+    if stderr.contains("already exists") {
+        eprintln!("[workspace] branch {branch_name} already exists, cleaning up stale state");
+        // Remove stale worktree dir if it exists
+        let _ = std::fs::remove_dir_all(&worktree_path);
+        // Prune worktree references that point to missing directories
+        let _ = tokio::process::Command::new("git")
+            .args(["worktree", "prune"])
+            .current_dir(repo_path)
+            .output()
+            .await;
+        // Delete the stale branch
+        let _ = tokio::process::Command::new("git")
+            .args(["branch", "-D", &branch_name])
+            .current_dir(repo_path)
+            .output()
+            .await;
+
+        // Retry
+        let retry = tokio::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                &worktree_path.to_string_lossy(),
+                "-b",
+                &branch_name,
+            ])
+            .current_dir(repo_path)
+            .output()
+            .await
+            .context("git worktree add (retry)")?;
+
+        if retry.status.success() {
+            eprintln!(
+                "[workspace] created git worktree (after cleanup): {}",
+                worktree_path.display()
+            );
+            return Ok(worktree_path);
+        }
+        let retry_err = String::from_utf8_lossy(&retry.stderr);
+        anyhow::bail!("git worktree add failed after cleanup: {retry_err}");
+    }
+
+    anyhow::bail!("git worktree add failed: {stderr}");
 }
 
 /// Clean up a git worktree. Best-effort.
@@ -1082,5 +1143,355 @@ mod tests {
         );
 
         cleanup_git_worktree(&repo, "beads-access-test");
+    }
+
+    /// Concurrent multi-agent isolation: two worktrees from the same repo
+    /// must not cross-contaminate. Each agent writes a different file;
+    /// neither file appears in the other worktree or in main.
+    #[tokio::test]
+    async fn concurrent_worktree_isolation() {
+        if std::process::Command::new("jj")
+            .arg("--help")
+            .output()
+            .is_err()
+        {
+            eprintln!("SKIP: jj not installed");
+            return;
+        }
+
+        let (_tmp, repo) = setup_colocated_repo().await;
+
+        // Create two worktrees concurrently
+        let ws_a = Workspace::create("agent-alpha", "test-repo", &repo, true)
+            .await
+            .expect("workspace A must succeed");
+        let ws_b = Workspace::create("agent-beta", "test-repo", &repo, true)
+            .await
+            .expect("workspace B must succeed");
+
+        assert_ne!(ws_a.work_dir, ws_b.work_dir, "worktrees must be distinct");
+        assert_ne!(ws_a.work_dir, repo, "worktree A must differ from main");
+        assert_ne!(ws_b.work_dir, repo, "worktree B must differ from main");
+
+        // Each "agent" writes a unique file
+        std::fs::write(ws_a.work_dir.join("alpha.txt"), "alpha output").unwrap();
+        std::fs::write(ws_b.work_dir.join("beta.txt"), "beta output").unwrap();
+
+        // Commit in each worktree
+        for (label, ws) in [("alpha", &ws_a), ("beta", &ws_b)] {
+            let add = std::process::Command::new("git")
+                .args(["add", "-A"])
+                .current_dir(&ws.work_dir)
+                .output()
+                .unwrap();
+            assert!(add.status.success(), "{label} git add failed");
+
+            let commit = std::process::Command::new("git")
+                .args(["commit", "-m", &format!("{label} work")])
+                .current_dir(&ws.work_dir)
+                .output()
+                .unwrap();
+            assert!(commit.status.success(), "{label} git commit failed");
+        }
+
+        // Verify isolation: alpha.txt must NOT exist in beta or main
+        assert!(
+            ws_a.work_dir.join("alpha.txt").exists(),
+            "alpha.txt must exist in worktree A"
+        );
+        assert!(
+            !ws_b.work_dir.join("alpha.txt").exists(),
+            "alpha.txt must NOT leak into worktree B"
+        );
+        assert!(
+            !repo.join("alpha.txt").exists(),
+            "alpha.txt must NOT leak into main repo"
+        );
+
+        // Verify isolation: beta.txt must NOT exist in alpha or main
+        assert!(
+            ws_b.work_dir.join("beta.txt").exists(),
+            "beta.txt must exist in worktree B"
+        );
+        assert!(
+            !ws_a.work_dir.join("beta.txt").exists(),
+            "beta.txt must NOT leak into worktree A"
+        );
+        assert!(
+            !repo.join("beta.txt").exists(),
+            "beta.txt must NOT leak into main repo"
+        );
+
+        // Verify each worktree's git log only has its own commit
+        let log_a = std::process::Command::new("git")
+            .args(["log", "--oneline", "-1", "--format=%s"])
+            .current_dir(&ws_a.work_dir)
+            .output()
+            .unwrap();
+        let msg_a = String::from_utf8_lossy(&log_a.stdout).trim().to_string();
+        assert_eq!(
+            msg_a, "alpha work",
+            "worktree A HEAD must be alpha's commit"
+        );
+
+        let log_b = std::process::Command::new("git")
+            .args(["log", "--oneline", "-1", "--format=%s"])
+            .current_dir(&ws_b.work_dir)
+            .output()
+            .unwrap();
+        let msg_b = String::from_utf8_lossy(&log_b.stdout).trim().to_string();
+        assert_eq!(msg_b, "beta work", "worktree B HEAD must be beta's commit");
+
+        // Cleanup
+        cleanup_git_worktree(&repo, "agent-alpha");
+        cleanup_git_worktree(&repo, "agent-beta");
+    }
+
+    /// Regression: create_git_worktree must handle an existing branch
+    /// from a previous failed dispatch by cleaning up and retrying.
+    #[tokio::test]
+    async fn git_worktree_retries_on_existing_branch() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().canonicalize().unwrap();
+
+        // Set up git repo
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@rosary.dev"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "rosary-test"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        std::fs::write(repo.join("main.rs"), "fn main() {}").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+
+        // Create a stale branch (simulates a previous failed dispatch)
+        std::process::Command::new("git")
+            .args(["branch", "fix/stale-bead"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+
+        // Now try to create a worktree for the same bead ID — should succeed
+        // by cleaning up the stale branch
+        let result = create_git_worktree(&repo, "stale-bead").await;
+        assert!(
+            result.is_ok(),
+            "create_git_worktree must retry after cleaning stale branch, got: {:?}",
+            result.err()
+        );
+
+        let wt_path = result.unwrap();
+        assert!(wt_path.exists(), "worktree directory must exist");
+        assert!(
+            wt_path.join("main.rs").exists(),
+            "worktree must contain source files"
+        );
+
+        cleanup_git_worktree(&repo, "stale-bead");
+    }
+
+    /// When isolate=true and VCS setup fails, Workspace::create must
+    /// return an error instead of silently falling back to in-place.
+    #[tokio::test]
+    async fn workspace_create_isolate_true_no_silent_fallback() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().canonicalize().unwrap();
+
+        // Create .git dir so detect_vcs returns Git, but don't init git
+        // so git worktree add will fail
+        std::fs::create_dir(repo.join(".git")).unwrap();
+
+        let result = Workspace::create("test-no-fallback", "repo", &repo, true).await;
+        assert!(
+            result.is_err(),
+            "Workspace::create with isolate=true must fail when VCS setup fails, \
+             not silently fall back to in-place"
+        );
+    }
+
+    /// E2E pipeline integration: exercises the full dispatch lifecycle
+    /// across two pipeline phases (dev-agent → staging-agent) in a single
+    /// worktree. Tests workspace reuse, handoff writing, checkpoint, and
+    /// merge_or_pr.
+    ///
+    /// No Dolt, no real Claude — just the workspace + handoff + merge mechanics.
+    #[tokio::test]
+    async fn e2e_pipeline_two_phase_lifecycle() {
+        if std::process::Command::new("jj")
+            .arg("--help")
+            .output()
+            .is_err()
+        {
+            eprintln!("SKIP: jj not installed");
+            return;
+        }
+
+        let (_tmp, repo) = setup_colocated_repo().await;
+        let bead_id = "pipeline-e2e-test";
+
+        // === Phase 1: dev-agent ===
+        let ws = Workspace::create(bead_id, "test-repo", &repo, true)
+            .await
+            .expect("phase 1 workspace create");
+        assert_eq!(ws.vcs, VcsKind::Git);
+
+        // Stub agent work: write a file and commit
+        std::fs::write(ws.work_dir.join("fix.rs"), "fn fix() { /* dev-agent */ }").unwrap();
+        let commit = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&ws.work_dir)
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", &format!("bead:{bead_id} dev-agent fix")])
+            .current_dir(&ws.work_dir)
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+
+        // Checkpoint (orchestrator does this after agent exits)
+        let sha1 = ws
+            .checkpoint("fix(pipeline-e2e-test): dev-agent work")
+            .await
+            .expect("phase 1 checkpoint");
+        // Checkpoint may return None if nothing new to commit (agent already committed)
+        // That's fine — the agent's commit is what matters
+
+        // Write handoff for phase 1
+        let work1 = crate::manifest::Work {
+            commits: vec![crate::manifest::CommitInfo {
+                sha: sha1.clone().unwrap_or_else(|| "agent-sha".to_string()),
+                message: format!("bead:{bead_id} dev-agent fix"),
+                author: "dev-agent".to_string(),
+            }],
+            files_changed: vec!["fix.rs".to_string()],
+            lines_added: 1,
+            lines_removed: 0,
+            diff_stat: None,
+        };
+        let handoff1 = crate::handoff::Handoff::new(
+            0,
+            "dev-agent",
+            Some("staging-agent"),
+            bead_id,
+            "test",
+            &work1,
+        );
+        let handoff_path = handoff1.write_to(&ws.work_dir).expect("write handoff 1");
+        assert!(handoff_path.exists(), "handoff file must exist");
+
+        // === Phase 2: staging-agent (reuse same workspace) ===
+        // The reconciler reopens the bead with the new owner and dispatches again.
+        // Workspace::create should reuse the existing worktree.
+        let ws2 = Workspace::create(bead_id, "test-repo", &repo, true)
+            .await
+            .expect("phase 2 workspace create (reuse)");
+
+        assert_eq!(
+            ws.work_dir, ws2.work_dir,
+            "workspace must be REUSED across pipeline phases"
+        );
+
+        // The previous agent's files must be present
+        assert!(
+            ws2.work_dir.join("fix.rs").exists(),
+            "dev-agent's fix.rs must persist into phase 2"
+        );
+
+        // Handoff chain must be readable by the next agent
+        let chain = crate::handoff::Handoff::read_chain(&ws2.work_dir);
+        assert_eq!(chain.len(), 1, "handoff chain must have phase 0");
+        assert_eq!(chain[0].from_agent, "dev-agent");
+        assert_eq!(chain[0].to_agent.as_deref(), Some("staging-agent"));
+
+        // Staging-agent work: add a test file
+        std::fs::write(
+            ws2.work_dir.join("fix_test.rs"),
+            "#[test] fn test_fix() { fix(); }",
+        )
+        .unwrap();
+        let commit = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&ws2.work_dir)
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+        let commit = std::process::Command::new("git")
+            .args([
+                "commit",
+                "-m",
+                &format!("bead:{bead_id} staging-agent review"),
+            ])
+            .current_dir(&ws2.work_dir)
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+
+        // Checkpoint phase 2
+        let _sha2 = ws2
+            .checkpoint("fix(pipeline-e2e-test): staging-agent review")
+            .await
+            .expect("phase 2 checkpoint");
+
+        // === Terminal step: merge to main ===
+        let branch = format!("fix/{bead_id}");
+        let merge_result = merge_or_pr(&repo, &branch, bead_id, "bug").await;
+        assert!(
+            merge_result.is_ok(),
+            "merge_or_pr must succeed for bug type, got: {:?}",
+            merge_result.err()
+        );
+        let msg = merge_result.unwrap();
+        assert!(
+            msg.contains("ff-merged"),
+            "bug beads should ff-merge, got: {msg}"
+        );
+
+        // Verify: both files are now in main
+        assert!(
+            repo.join("fix.rs").exists(),
+            "dev-agent's fix.rs must be in main after merge"
+        );
+        assert!(
+            repo.join("fix_test.rs").exists(),
+            "staging-agent's fix_test.rs must be in main after merge"
+        );
+
+        // Verify: main's git log has both commits
+        let log = std::process::Command::new("git")
+            .args(["log", "--oneline", "--format=%s"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        let log_output = String::from_utf8_lossy(&log.stdout);
+        assert!(
+            log_output.contains("staging-agent review"),
+            "main log must include staging-agent commit"
+        );
+        assert!(
+            log_output.contains("dev-agent fix"),
+            "main log must include dev-agent commit"
+        );
+
+        cleanup_git_worktree(&repo, bead_id);
     }
 }

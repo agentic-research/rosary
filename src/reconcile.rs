@@ -63,6 +63,10 @@ struct BeadTracker {
     retries: u32,
     consecutive_reverts: u32,
     highest_tier: Option<usize>,
+    /// Current agent name (e.g. "dev-agent"). Set on dispatch, used for handoffs.
+    current_agent: Option<String>,
+    /// Current pipeline phase index (0-based). Advances on phase completion.
+    phase_index: u32,
 }
 
 /// The reconciliation loop orchestrator.
@@ -500,6 +504,7 @@ impl Reconciler {
                         }
 
                         self.active.insert(entry.bead_id.clone(), handle);
+                        let agent_name = bead.owner.clone();
                         let tracker =
                             self.trackers
                                 .entry(entry.bead_id.clone())
@@ -509,9 +514,12 @@ impl Reconciler {
                                     retries: entry.retries,
                                     consecutive_reverts: 0,
                                     highest_tier: None,
+                                    current_agent: None,
+                                    phase_index: 0,
                                 });
                         tracker.last_generation = entry.generation;
                         tracker.repo = entry.repo.clone();
+                        tracker.current_agent = agent_name;
                         summary.dispatched += 1;
                     }
                     Err(e) => {
@@ -637,16 +645,55 @@ impl Reconciler {
             self.persist_status(bead_id, repo, status).await;
         }
 
-        // Phase advancement: update owner + reopen for next agent
+        // Phase advancement: write handoff, update owner, advance phase, reopen
         for (bead_id, repo, next_agent) in &phase_advances {
+            // Write handoff to workspace so the next agent has context
+            let (from_agent, phase) = self
+                .trackers
+                .get(bead_id.as_str())
+                .map(|t| {
+                    (
+                        t.current_agent
+                            .clone()
+                            .unwrap_or_else(|| "dev-agent".to_string()),
+                        t.phase_index,
+                    )
+                })
+                .unwrap_or_else(|| ("dev-agent".to_string(), 0));
+
+            if let Some(ws) = self.completed_workspaces.get(bead_id.as_str()) {
+                let work = crate::manifest::Work::from_git(&ws.work_dir, None);
+                let handoff = crate::handoff::Handoff::new(
+                    phase,
+                    &from_agent,
+                    Some(next_agent),
+                    bead_id,
+                    self.provider.name(),
+                    &work,
+                );
+                if let Err(e) = handoff.write_to(&ws.work_dir) {
+                    eprintln!("[handoff] {bead_id}: failed to write phase handoff: {e}");
+                }
+            }
+
+            // Advance tracker state for next phase
+            if let Some(tracker) = self.trackers.get_mut(bead_id.as_str()) {
+                tracker.current_agent = Some(next_agent.clone());
+                tracker.phase_index = phase + 1;
+            }
+
             if let Some(client) = self.dolt_client(repo).await {
                 client
-                    .log_event(bead_id, "phase_complete", &format!("→ {next_agent}"))
+                    .log_event(
+                        bead_id,
+                        "phase_complete",
+                        &format!("{from_agent} → {next_agent}"),
+                    )
                     .await;
                 if let Err(e) = client.set_assignee(bead_id, next_agent).await {
                     eprintln!("[phase] failed to advance {bead_id}: {e}");
                 } else {
-                    println!("[phase] {bead_id} → {next_agent}");
+                    println!("[phase] {bead_id} → {next_agent} (phase {})", phase + 1);
                 }
             }
             self.persist_status(bead_id, repo, "open").await;
@@ -995,13 +1042,20 @@ impl Reconciler {
             let work = crate::manifest::Work::from_git(work_dir, change_id.as_deref());
 
             // Write handoff for the phase that just completed
-            let agent = self
+            let (agent, phase) = self
                 .trackers
                 .get(bead_id)
-                .and(None::<String>) // TODO: track current agent in tracker
-                .unwrap_or_else(|| "dev-agent".to_string());
+                .map(|t| {
+                    (
+                        t.current_agent
+                            .clone()
+                            .unwrap_or_else(|| "dev-agent".to_string()),
+                        t.phase_index,
+                    )
+                })
+                .unwrap_or_else(|| ("dev-agent".to_string(), 0));
             let handoff = crate::handoff::Handoff::new(
-                0, // TODO: track pipeline phase
+                phase,
                 &agent,
                 None,
                 bead_id,
@@ -1026,7 +1080,7 @@ impl Reconciler {
                 self.provider.name(),
                 "task",
                 "implement",
-                0,
+                phase,
                 &work_dir.display().to_string(),
                 &ws.repo_path.display().to_string(),
                 vcs_kind,
@@ -1099,6 +1153,8 @@ impl Reconciler {
                 retries: 0,
                 consecutive_reverts: 0,
                 highest_tier: None,
+                current_agent: None,
+                phase_index: 0,
             });
 
         // Check for revert (regression from previous best)
@@ -1149,6 +1205,8 @@ impl Reconciler {
                 retries: 0,
                 consecutive_reverts: 0,
                 highest_tier: None,
+                current_agent: None,
+                phase_index: 0,
             });
         tracker.retries += 1;
 
@@ -1371,6 +1429,8 @@ mod tests {
                 retries: 2,
                 consecutive_reverts: 1,
                 highest_tier: Some(3),
+                current_agent: None,
+                phase_index: 0,
             },
         );
 
@@ -1413,6 +1473,8 @@ mod tests {
                 retries: 0,
                 consecutive_reverts: 0,
                 highest_tier: Some(4),
+                current_agent: None,
+                phase_index: 0,
             },
         );
 
@@ -1455,6 +1517,8 @@ mod tests {
                 retries: 1,
                 consecutive_reverts: 0,
                 highest_tier: None,
+                current_agent: None,
+                phase_index: 0,
             },
         );
         // Record backoff (retry is pending)
@@ -1602,6 +1666,8 @@ mod tests {
                 retries: 0,
                 consecutive_reverts: 0,
                 highest_tier: None,
+                current_agent: None,
+                phase_index: 0,
             },
         );
         // Mark it as active (need a dummy handle — use the key presence)

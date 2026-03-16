@@ -25,7 +25,16 @@ defmodule Mix.Tasks.Conductor.RunTest do
     end
 
     test "parses all options together" do
-      args = ["--log", "/var/log/conductor.log", "--interval", "15000", "--max", "2", "--repo", "rosary"]
+      args = [
+        "--log",
+        "/var/log/conductor.log",
+        "--interval",
+        "15000",
+        "--max",
+        "2",
+        "--repo",
+        "rosary"
+      ]
 
       assert Run.parse_args(args) == %{
                log: "/var/log/conductor.log",
