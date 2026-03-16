@@ -518,12 +518,15 @@ impl Reconciler {
                 summary.agent_closed += 1;
                 summary.passed += 1;
                 self.on_pass(bead_id);
-                self.checkpoint_and_cleanup(bead_id).await;
 
                 if let Some((ref issue_type, Some(ref current_agent))) = bead_info
                     && let Some(next) = dispatch::next_agent(issue_type, current_agent)
                 {
+                    // Keep workspace for next pipeline phase
+                    self.checkpoint_workspace(bead_id).await;
                     phase_advances.push((bead_id.clone(), repo.clone(), next.to_string()));
+                } else {
+                    self.checkpoint_and_cleanup(bead_id).await;
                 }
                 continue;
             }
@@ -534,19 +537,22 @@ impl Reconciler {
                     Some(vs) if vs.passed() => {
                         summary.passed += 1;
                         self.on_pass(bead_id);
-                        self.checkpoint_and_cleanup(bead_id).await;
 
                         if let Some((ref issue_type, Some(ref current_agent))) = bead_info {
                             if let Some(next) = dispatch::next_agent(issue_type, current_agent) {
+                                // Keep workspace for next pipeline phase
+                                self.checkpoint_workspace(bead_id).await;
                                 phase_advances.push((
                                     bead_id.clone(),
                                     repo.clone(),
                                     next.to_string(),
                                 ));
                             } else {
+                                self.checkpoint_and_cleanup(bead_id).await;
                                 status_updates.push((bead_id.clone(), repo, "closed".into()));
                             }
                         } else {
+                            self.checkpoint_and_cleanup(bead_id).await;
                             status_updates.push((bead_id.clone(), repo, "closed".into()));
                         }
                     }
@@ -555,6 +561,7 @@ impl Reconciler {
                         let deadlettered = self.on_fail(bead_id, &vs);
                         if deadlettered {
                             summary.deadlettered += 1;
+                            self.cleanup_workspace(bead_id);
                             status_updates.push((bead_id.clone(), repo, "blocked".into()));
                         } else {
                             status_updates.push((bead_id.clone(), repo, "open".into()));
@@ -563,19 +570,22 @@ impl Reconciler {
                     None => {
                         summary.passed += 1;
                         self.on_pass(bead_id);
-                        self.checkpoint_and_cleanup(bead_id).await;
 
                         if let Some((ref issue_type, Some(ref current_agent))) = bead_info {
                             if let Some(next) = dispatch::next_agent(issue_type, current_agent) {
+                                // Keep workspace for next pipeline phase
+                                self.checkpoint_workspace(bead_id).await;
                                 phase_advances.push((
                                     bead_id.clone(),
                                     repo.clone(),
                                     next.to_string(),
                                 ));
                             } else {
+                                self.checkpoint_and_cleanup(bead_id).await;
                                 status_updates.push((bead_id.clone(), repo, "closed".into()));
                             }
                         } else {
+                            self.checkpoint_and_cleanup(bead_id).await;
                             status_updates.push((bead_id.clone(), repo, "closed".into()));
                         }
                     }
@@ -586,6 +596,7 @@ impl Reconciler {
                 let deadlettered = self.on_fail_exit(bead_id);
                 if deadlettered {
                     summary.deadlettered += 1;
+                    self.cleanup_workspace(bead_id);
                     status_updates.push((bead_id.clone(), repo, "blocked".into()));
                 } else {
                     status_updates.push((bead_id.clone(), repo, "open".into()));
@@ -897,14 +908,15 @@ impl Reconciler {
         // Cleanup happens after checkpoint (called from iterate)
     }
 
-    /// Checkpoint workspace (jj commit + bookmark) then clean up.
+    /// Checkpoint workspace (jj commit + bookmark) without cleanup.
     ///
-    /// Must be called from async context. Returns jj change ID if available.
-    async fn checkpoint_and_cleanup(&mut self, bead_id: &str) -> Option<String> {
+    /// Used during phase advancement: the workspace stays alive so the
+    /// next pipeline agent reuses the same worktree and its changes.
+    async fn checkpoint_workspace(&mut self, bead_id: &str) -> Option<String> {
         let change_id = if let Some(ws) = self.completed_workspaces.remove(bead_id) {
             let message = format!("fix({bead_id}): agent work");
             let result = ws.checkpoint(&message).await;
-            // Put it back for cleanup
+            // Put it back — workspace stays for next phase or cleanup
             self.completed_workspaces.insert(bead_id.to_string(), ws);
             match result {
                 Ok(Some(id)) => {
@@ -933,6 +945,14 @@ impl Reconciler {
             }
         }
 
+        change_id
+    }
+
+    /// Checkpoint workspace then clean up.
+    ///
+    /// Used when the pipeline is complete (no next agent) or on deadletter.
+    async fn checkpoint_and_cleanup(&mut self, bead_id: &str) -> Option<String> {
+        let change_id = self.checkpoint_workspace(bead_id).await;
         self.cleanup_workspace(bead_id);
         change_id
     }
