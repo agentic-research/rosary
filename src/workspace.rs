@@ -26,14 +26,19 @@ pub enum VcsKind {
     None,
 }
 
-/// Detect which VCS is available in a repo.
+/// Detect which VCS to use for workspace isolation.
+///
+/// Colocated repos (both .jj and .git): use git worktree. Agents use
+/// `git add/commit` which needs a proper `.git` file that only
+/// `git worktree add` provides. jj sees git commits via colocation.
+/// The orchestrator handles jj checkpoint/bookmark separately.
 pub fn detect_vcs(repo_path: &Path) -> VcsKind {
-    if repo_path.join(".jj").exists() {
-        VcsKind::Jj
-    } else if repo_path.join(".git").exists() {
-        VcsKind::Git
-    } else {
-        VcsKind::None
+    let has_jj = repo_path.join(".jj").exists();
+    let has_git = repo_path.join(".git").exists();
+    match (has_jj, has_git) {
+        (_, true) => VcsKind::Git,    // git worktree (jj tracks via colocation)
+        (true, false) => VcsKind::Jj, // pure jj
+        _ => VcsKind::None,
     }
 }
 
@@ -215,20 +220,76 @@ impl Workspace {
         Ok(())
     }
 
-    /// Checkpoint the workspace: jj commit + bookmark, return change ID.
+    /// Checkpoint the workspace: commit all changes, return commit/change ID.
     ///
-    /// Call this BEFORE cleanup to preserve the agent's work in the shared
-    /// jj repo history. In a colocated repo, the agent's git commits are
-    /// already visible to jj, but this adds a bookmark for tracking.
+    /// Call this BEFORE cleanup to preserve the agent's work.
+    /// - Git worktree: `git add -A && git commit`
+    /// - jj workspace: `jj commit` + bookmark
+    ///   The orchestrator calls this — agents don't commit themselves.
     pub async fn checkpoint(&self, message: &str) -> Result<Option<String>> {
-        if self.vcs != VcsKind::Jj {
-            return Ok(None);
+        match self.vcs {
+            VcsKind::Git => self.git_checkpoint(message).await,
+            VcsKind::Jj => {
+                self.jj_commit(message).await?;
+                let change_id = self.jj_change_id().await?;
+                let bookmark = format!("fix/{}", self.id);
+                self.jj_bookmark(&bookmark).await?;
+                Ok(change_id)
+            }
+            VcsKind::None => Ok(None),
         }
-        self.jj_commit(message).await?;
-        let change_id = self.jj_change_id().await?;
-        let bookmark = format!("fix/{}", self.id);
-        self.jj_bookmark(&bookmark).await?;
-        Ok(change_id)
+    }
+
+    /// Git checkpoint: stage all changes and commit. Returns short SHA.
+    async fn git_checkpoint(&self, message: &str) -> Result<Option<String>> {
+        // Check if there are any changes to commit
+        let status = tokio::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&self.work_dir)
+            .output()
+            .await
+            .context("git status")?;
+
+        if status.stdout.is_empty() {
+            return Ok(None); // Nothing to commit
+        }
+
+        // Stage all changes
+        let add = tokio::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&self.work_dir)
+            .output()
+            .await
+            .context("git add")?;
+
+        if !add.status.success() {
+            let stderr = String::from_utf8_lossy(&add.stderr);
+            anyhow::bail!("git add failed: {stderr}");
+        }
+
+        // Commit
+        let commit = tokio::process::Command::new("git")
+            .args(["commit", "-m", message])
+            .current_dir(&self.work_dir)
+            .output()
+            .await
+            .context("git commit")?;
+
+        if !commit.status.success() {
+            let stderr = String::from_utf8_lossy(&commit.stderr);
+            anyhow::bail!("git commit failed: {stderr}");
+        }
+
+        // Get short SHA
+        let rev = tokio::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(&self.work_dir)
+            .output()
+            .await
+            .context("git rev-parse")?;
+
+        let sha = String::from_utf8_lossy(&rev.stdout).trim().to_string();
+        Ok(if sha.is_empty() { None } else { Some(sha) })
     }
 
     /// Get the jj change ID of the most recent commit (@-).
@@ -451,12 +512,12 @@ mod tests {
     }
 
     #[test]
-    fn detect_vcs_jj_preferred_over_git() {
+    fn detect_vcs_colocated_uses_git() {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join(".jj")).unwrap();
         std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
-        // jj should win when both exist
-        assert_eq!(detect_vcs(tmp.path()), VcsKind::Jj);
+        // Colocated: git worktree for agents, jj tracks via colocation
+        assert_eq!(detect_vcs(tmp.path()), VcsKind::Git);
     }
 
     #[test]

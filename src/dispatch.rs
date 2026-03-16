@@ -332,7 +332,7 @@ pub fn build_prompt(bead: &Bead, repo_path: &str) -> String {
          \n\
          After fixing:\n\
          1. Run tests via `task test` (not raw cargo/go test)\n\
-         2. Create a commit with a descriptive message\n\
+         2. Do NOT run git add/commit — the orchestrator handles commits\n\
          3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"{repo}\" and id=\"{bead_id}\"\n\
          4. Report what you changed",
         bead_id = bead.id,
@@ -357,8 +357,8 @@ You are a rosary-dispatched agent working on a bead (work item).\n\
 ## Workflow\n\
 - Use `task build` / `task test` instead of raw `cargo` or `go` commands\n\
 - Make minimal, focused changes\n\
-- Commit with descriptive messages\n\
-- Do NOT add co-author lines to commits\n\
+- Do NOT run git add, git commit, or jj commit — the orchestrator handles VCS\n\
+- Just write/edit files and run tests. Your changes are captured automatically.\n\
 \n\
 ## Bead Lifecycle (IMPORTANT)\n\
 Your prompt includes a Bead ID and Repo path. You MUST manage the bead:\n\
