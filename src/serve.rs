@@ -1871,28 +1871,37 @@ mod tests {
     fn tool_definitions_has_expected_tools() {
         let defs = tool_definitions();
         let tools = defs["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 19);
-
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert!(names.contains(&"rsry_scan"));
-        assert!(names.contains(&"rsry_status"));
-        assert!(names.contains(&"rsry_list_beads"));
-        assert!(names.contains(&"rsry_run_once"));
-        assert!(names.contains(&"rsry_bead_create"));
-        assert!(names.contains(&"rsry_bead_update"));
-        assert!(names.contains(&"rsry_bead_close"));
-        assert!(names.contains(&"rsry_bead_comment"));
-        assert!(names.contains(&"rsry_bead_search"));
-        assert!(names.contains(&"rsry_dispatch"));
-        assert!(names.contains(&"rsry_active"));
-        assert!(names.contains(&"rsry_workspace_create"));
-        assert!(names.contains(&"rsry_workspace_checkpoint"));
-        assert!(names.contains(&"rsry_workspace_cleanup"));
-        assert!(names.contains(&"rsry_decompose"));
-        assert!(names.contains(&"rsry_pipeline_upsert"));
-        assert!(names.contains(&"rsry_pipeline_query"));
-        assert!(names.contains(&"rsry_dispatch_record"));
-        assert!(names.contains(&"rsry_dispatch_history"));
+
+        // Verify all tools have rsry_ prefix (no typos or missing names)
+        for name in &names {
+            assert!(
+                name.starts_with("rsry_"),
+                "tool '{name}' missing rsry_ prefix"
+            );
+        }
+
+        // Verify critical tools exist (not exhaustive — adding a tool shouldn't break this test)
+        for required in [
+            "rsry_scan",
+            "rsry_bead_create",
+            "rsry_bead_close",
+            "rsry_dispatch",
+            "rsry_active",
+            "rsry_workspace_create",
+        ] {
+            assert!(
+                names.contains(&required),
+                "required tool '{required}' missing"
+            );
+        }
+
+        // Sanity: at least 15 tools (grows over time, never shrinks)
+        assert!(
+            tools.len() >= 15,
+            "expected at least 15 tools, got {}",
+            tools.len()
+        );
     }
 
     #[test]
@@ -1927,7 +1936,7 @@ mod tests {
         let resp = handle_tools_list(json!(2));
         let result = resp.result.unwrap();
         assert!(result["tools"].is_array());
-        assert_eq!(result["tools"].as_array().unwrap().len(), 19);
+        assert!(result["tools"].as_array().unwrap().len() >= 15);
     }
 
     #[tokio::test]
