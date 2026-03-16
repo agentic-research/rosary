@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 
-use crate::bead::Bead;
+use crate::bead::{Bead, BeadUpdate};
 use crate::dolt::DoltClient;
 
 /// A normalized issue from an external tracker.
@@ -39,6 +39,12 @@ pub trait IssueTracker: Send + Sync {
 
     /// Update an issue's status in the external system.
     async fn update_status(&self, external_id: &str, status: &str) -> Result<()>;
+
+    /// Update an issue's fields in the external system (PATCH semantics).
+    /// Default implementation is a no-op — backends opt in to field sync.
+    async fn update_fields(&self, _external_id: &str, _update: &BeadUpdate) -> Result<()> {
+        Ok(())
+    }
 
     /// Human-readable backend name (e.g., "linear", "github").
     fn name(&self) -> &str;

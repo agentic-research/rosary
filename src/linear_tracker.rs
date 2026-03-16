@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-use crate::bead::BeadState;
+use crate::bead::{BeadState, BeadUpdate};
 use crate::sync::{ExternalIssue, IssueTracker};
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
@@ -118,6 +118,37 @@ impl LinearTracker {
             .and_then(|v| v.as_str())
             .context("missing label ID in issueLabelCreate response")?;
         Ok(label_id.to_string())
+    }
+
+    /// Find the Linear internal UUID for an issue by its identifier (e.g., "AGE-5").
+    async fn find_issue_id(&self, external_id: &str) -> Result<String> {
+        let query_str = r#"
+            query FindIssue($filter: IssueFilter!) {
+                issues(filter: $filter, first: 1) {
+                    nodes { id }
+                }
+            }
+        "#;
+
+        let parts: Vec<&str> = external_id.splitn(2, '-').collect();
+        let filter = if parts.len() == 2 {
+            if let Ok(num) = parts[1].parse::<i64>() {
+                json!({
+                    "team": { "key": { "eq": parts[0] } },
+                    "number": { "eq": num }
+                })
+            } else {
+                json!({ "identifier": { "eq": external_id } })
+            }
+        } else {
+            json!({ "identifier": { "eq": external_id } })
+        };
+
+        let resp = graphql(&self.client, query_str, json!({ "filter": filter })).await?;
+        resp.pointer("/data/issues/nodes/0/id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .context(format!("issue {external_id} not found in Linear"))
     }
 
     /// Resolve a BeadState to a Linear state ID.
@@ -366,7 +397,6 @@ impl IssueTracker for LinearTracker {
     }
 
     async fn update_status(&self, external_id: &str, status: &str) -> Result<()> {
-        // Resolve target state from cached states (config override → name → type fallback)
         let bead_state = BeadState::from(status);
         let target_state = self
             .resolve_state_id(bead_state)
@@ -377,36 +407,8 @@ impl IssueTracker for LinearTracker {
             ))?
             .to_string();
 
-        // Find the issue's internal ID
-        let query = r#"
-            query FindIssue($filter: IssueFilter!) {
-                issues(filter: $filter, first: 1) {
-                    nodes { id }
-                }
-            }
-        "#;
+        let issue_id = self.find_issue_id(external_id).await?;
 
-        let parts: Vec<&str> = external_id.splitn(2, '-').collect();
-        let filter = if parts.len() == 2 {
-            if let Ok(num) = parts[1].parse::<i64>() {
-                json!({
-                    "team": { "key": { "eq": parts[0] } },
-                    "number": { "eq": num }
-                })
-            } else {
-                json!({ "identifier": { "eq": external_id } })
-            }
-        } else {
-            json!({ "identifier": { "eq": external_id } })
-        };
-
-        let resp = graphql(&self.client, query, json!({ "filter": filter })).await?;
-        let issue_id = resp
-            .pointer("/data/issues/nodes/0/id")
-            .and_then(|v| v.as_str())
-            .context("issue not found in Linear")?;
-
-        // Update the issue
         let mutation = r#"
             mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
                 issueUpdate(id: $id, input: $input) { success }
@@ -425,6 +427,47 @@ impl IssueTracker for LinearTracker {
             .unwrap_or(false);
         if !success {
             anyhow::bail!("issueUpdate failed for {external_id}");
+        }
+
+        Ok(())
+    }
+
+    async fn update_fields(&self, external_id: &str, update: &BeadUpdate) -> Result<()> {
+        let issue_id = self.find_issue_id(external_id).await?;
+
+        let mut input = json!({});
+        if let Some(ref title) = update.title {
+            input["title"] = json!(title);
+        }
+        if let Some(ref description) = update.description {
+            input["description"] = json!(description);
+        }
+        if let Some(priority) = update.priority {
+            input["priority"] = json!(to_linear_priority(priority));
+        }
+
+        if input.as_object().is_none_or(|m| m.is_empty()) {
+            return Ok(()); // Nothing Linear can update
+        }
+
+        let mutation = r#"
+            mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+                issueUpdate(id: $id, input: $input) { success }
+            }
+        "#;
+        let resp = graphql(
+            &self.client,
+            mutation,
+            json!({ "id": issue_id, "input": input }),
+        )
+        .await?;
+
+        let success = resp
+            .pointer("/data/issueUpdate/success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !success {
+            anyhow::bail!("issueUpdate (fields) failed for {external_id}");
         }
 
         Ok(())

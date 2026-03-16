@@ -143,6 +143,33 @@ pub fn requires_files(issue_type: &str) -> bool {
     ACTIONABLE_TYPES.contains(&issue_type)
 }
 
+/// PATCH-style update for bead fields. Only `Some` fields are written;
+/// `None` fields are left unchanged. Used by `rsry_bead_update` MCP tool
+/// and the `IssueTracker::update_fields` trait method.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BeadUpdate {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub priority: Option<u8>,
+    pub issue_type: Option<String>,
+    pub owner: Option<String>,
+    pub files: Option<Vec<String>>,
+    pub test_files: Option<Vec<String>>,
+}
+
+impl BeadUpdate {
+    /// Returns true if no fields are set (nothing to update).
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.description.is_none()
+            && self.priority.is_none()
+            && self.issue_type.is_none()
+            && self.owner.is_none()
+            && self.files.is_none()
+            && self.test_files.is_none()
+    }
+}
+
 /// A bead is a file-scoped work item tracked in a repo's .beads/ directory.
 /// This is the common representation used across scanner, sync, and dispatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]

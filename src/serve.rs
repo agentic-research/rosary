@@ -152,6 +152,25 @@ fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "rsry_bead_update",
+                "description": "Update a bead's fields (PATCH semantics). Only provided fields are changed; omitted fields are left unchanged.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "id": { "type": "string", "description": "Bead ID to update" },
+                        "title": { "type": "string", "description": "New title" },
+                        "description": { "type": "string", "description": "New description" },
+                        "priority": { "type": "integer", "description": "New priority 0-3" },
+                        "issue_type": { "type": "string", "description": "New issue type" },
+                        "owner": { "type": "string", "description": "New owner/assignee" },
+                        "files": { "type": "array", "items": { "type": "string" }, "description": "Updated source files list" },
+                        "test_files": { "type": "array", "items": { "type": "string" }, "description": "Updated test files list" }
+                    },
+                    "required": ["repo_path", "id"]
+                }
+            },
+            {
                 "name": "rsry_bead_close",
                 "description": "Close a bead by ID.",
                 "inputSchema": {
@@ -287,6 +306,7 @@ async fn call_tool(name: &str, args: &Value, config_path: &str, pool: &RepoPool)
             tool_run_once(config_path, dry_run).await
         }
         "rsry_bead_create" => tool_bead_create(args, pool).await,
+        "rsry_bead_update" => tool_bead_update(args, pool).await,
         "rsry_bead_close" => tool_bead_close(args, pool).await,
         "rsry_bead_comment" => tool_bead_comment(args, pool).await,
         "rsry_bead_search" => tool_bead_search(args, pool).await,
@@ -503,6 +523,59 @@ async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
     }
 
     Ok(json!({ "id": id, "title": title, "priority": priority, "owner": owner }))
+}
+
+async fn tool_bead_update(args: &Value, pool: &RepoPool) -> Result<Value> {
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    let id = args["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("id required"))?;
+
+    let update = crate::bead::BeadUpdate {
+        title: args.get("title").and_then(|v| v.as_str()).map(String::from),
+        description: args
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        priority: args
+            .get("priority")
+            .and_then(|v| v.as_u64())
+            .map(|p| p as u8),
+        issue_type: args
+            .get("issue_type")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        owner: args.get("owner").and_then(|v| v.as_str()).map(String::from),
+        files: args.get("files").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        }),
+        test_files: args
+            .get("test_files")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            }),
+    };
+
+    if update.is_empty() {
+        anyhow::bail!("no fields to update — provide at least one field besides repo_path and id");
+    }
+
+    let client = get_client(repo_path, pool).await?;
+    let updated_fields = client.update_bead_fields(id, &update).await?;
+
+    // Log the update event for audit trail
+    client
+        .log_event(id, "fields_updated", &updated_fields.join(", "))
+        .await;
+
+    Ok(json!({ "id": id, "updated_fields": updated_fields }))
 }
 
 async fn tool_bead_close(args: &Value, pool: &RepoPool) -> Result<Value> {
@@ -1471,7 +1544,7 @@ mod tests {
     fn tool_definitions_has_expected_tools() {
         let defs = tool_definitions();
         let tools = defs["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 14);
+        assert_eq!(tools.len(), 15);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"rsry_scan"));
@@ -1479,6 +1552,7 @@ mod tests {
         assert!(names.contains(&"rsry_list_beads"));
         assert!(names.contains(&"rsry_run_once"));
         assert!(names.contains(&"rsry_bead_create"));
+        assert!(names.contains(&"rsry_bead_update"));
         assert!(names.contains(&"rsry_bead_close"));
         assert!(names.contains(&"rsry_bead_comment"));
         assert!(names.contains(&"rsry_bead_search"));
@@ -1522,7 +1596,7 @@ mod tests {
         let resp = handle_tools_list(json!(2));
         let result = resp.result.unwrap();
         assert!(result["tools"].is_array());
-        assert_eq!(result["tools"].as_array().unwrap().len(), 14);
+        assert_eq!(result["tools"].as_array().unwrap().len(), 15);
     }
 
     #[test]

@@ -329,6 +329,116 @@ impl DoltClient {
         Ok(())
     }
 
+    /// PATCH-style update: only writes fields that are `Some` in the update.
+    /// Returns the list of field names that were actually updated.
+    pub async fn update_bead_fields(
+        &self,
+        id: &str,
+        update: &crate::bead::BeadUpdate,
+    ) -> Result<Vec<String>> {
+        let mut set_clauses = Vec::new();
+        let mut bind_values: Vec<String> = Vec::new();
+        let mut updated_fields = Vec::new();
+
+        if let Some(ref title) = update.title {
+            set_clauses.push("title = ?");
+            bind_values.push(title.clone());
+            updated_fields.push("title".to_string());
+        }
+        if let Some(ref description) = update.description {
+            set_clauses.push("description = ?");
+            bind_values.push(description.clone());
+            updated_fields.push("description".to_string());
+        }
+        if let Some(priority) = update.priority {
+            set_clauses.push("priority = ?");
+            bind_values.push(priority.to_string());
+            updated_fields.push("priority".to_string());
+        }
+        if let Some(ref issue_type) = update.issue_type {
+            set_clauses.push("issue_type = ?");
+            bind_values.push(issue_type.clone());
+            updated_fields.push("issue_type".to_string());
+        }
+        if let Some(ref owner) = update.owner {
+            set_clauses.push("assignee = ?");
+            bind_values.push(owner.clone());
+            updated_fields.push("owner".to_string());
+        }
+        if update.files.is_some() || update.test_files.is_some() {
+            // Files/test_files are stored as JSON in the notes column.
+            // Read existing notes first to preserve fields not being updated.
+            let existing_notes: serde_json::Value = {
+                let row = query("SELECT notes FROM issues WHERE id = ?")
+                    .bind(id)
+                    .fetch_optional(&self.pool)
+                    .await?;
+                row.and_then(|r| {
+                    r.try_get::<String, _>("notes")
+                        .ok()
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                })
+                .unwrap_or_else(|| serde_json::json!({}))
+            };
+
+            let files = update
+                .files
+                .as_ref()
+                .map(|f| serde_json::json!(f))
+                .unwrap_or_else(|| {
+                    existing_notes
+                        .get("files")
+                        .cloned()
+                        .unwrap_or(serde_json::json!([]))
+                });
+            let test_files = update
+                .test_files
+                .as_ref()
+                .map(|f| serde_json::json!(f))
+                .unwrap_or_else(|| {
+                    existing_notes
+                        .get("test_files")
+                        .cloned()
+                        .unwrap_or(serde_json::json!([]))
+                });
+
+            let notes_json = serde_json::json!({
+                "files": files,
+                "test_files": test_files,
+            });
+            set_clauses.push("notes = ?");
+            bind_values.push(notes_json.to_string());
+            if update.files.is_some() {
+                updated_fields.push("files".to_string());
+            }
+            if update.test_files.is_some() {
+                updated_fields.push("test_files".to_string());
+            }
+        }
+
+        if set_clauses.is_empty() {
+            return Ok(updated_fields);
+        }
+
+        set_clauses.push("updated_at = NOW()");
+        let sql = format!("UPDATE issues SET {} WHERE id = ?", set_clauses.join(", "));
+
+        // Build the query with dynamic binds.
+        // sqlx doesn't support dynamic bind count easily, so we use raw SQL via execute_raw
+        // after safely escaping. However, since all values are strings and we control the SQL,
+        // we build a parameterized query manually.
+        let mut q = query(&sql);
+        for val in &bind_values {
+            q = q.bind(val);
+        }
+        q = q.bind(id);
+        q.execute(&self.pool)
+            .await
+            .with_context(|| format!("updating fields for {id}"))?;
+
+        Ok(updated_fields)
+    }
+
     /// Close a bead by setting its status to 'closed'.
     pub async fn close_bead(&self, id: &str) -> Result<()> {
         query("UPDATE issues SET status = 'closed', updated_at = NOW() WHERE id = ?")
