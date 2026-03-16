@@ -144,11 +144,8 @@ impl Reconciler {
         let compute: Box<dyn crate::backend::ComputeProvider> = {
             // Temporarily build a Config with just the compute field for the factory.
             let tmp_cfg = crate::config::Config {
-                repo: vec![],
-                linear: None,
                 compute: config.compute.clone(),
-                http: None,
-                backend: None,
+                ..Default::default()
             };
             match crate::config::compute_provider_from_config(&tmp_cfg) {
                 Ok(p) => p,

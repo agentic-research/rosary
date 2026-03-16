@@ -3,13 +3,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     /// Repo entries — accepts `[[repo]]` in TOML (singular).
-    #[serde(alias = "repos")]
+    #[serde(alias = "repos", default)]
     pub repo: Vec<RepoConfig>,
+    #[serde(default)]
     pub linear: Option<LinearConfig>,
+    /// GitHub integration for PR creation.
+    #[serde(default)]
+    pub github: Option<GitHubConfig>,
     /// Compute provider configuration.
+    #[serde(default)]
     pub compute: Option<ComputeConfig>,
     /// HTTP server + tunnel configuration.
     #[serde(default)]
@@ -17,6 +22,9 @@ pub struct Config {
     /// Backend storage for orchestrator state (cross-repo).
     #[serde(default)]
     pub backend: Option<BackendConfig>,
+    /// Dispatch pipeline behavior.
+    #[serde(default)]
+    pub dispatch: Option<DispatchConfig>,
 }
 
 /// Compute provider selection + backend-specific settings.
@@ -99,6 +107,46 @@ pub struct LinearConfig {
     /// Webhook signing secret (alternative to LINEAR_WEBHOOK_SECRET env var)
     #[serde(default)]
     pub webhook_secret: Option<String>,
+}
+
+/// GitHub integration for PR creation from dispatch pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubConfig {
+    /// Personal access token (fine-grained PAT).
+    pub token: Option<String>,
+    /// Default owner for PR creation (e.g., "agentic-research").
+    pub owner: Option<String>,
+    /// Default base branch for PRs.
+    #[serde(default = "default_base_branch")]
+    pub base: String,
+    /// Auto-create PR when pipeline completes.
+    #[serde(default)]
+    pub auto_pr: bool,
+}
+
+fn default_base_branch() -> String {
+    "main".to_string()
+}
+
+/// Dispatch pipeline behavior.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DispatchConfig {
+    /// Default agent provider: "claude", "gemini", "acp".
+    #[serde(default = "default_dispatch_provider")]
+    pub provider: String,
+    /// Provider for adversarial review phases.
+    pub adversarial_provider: Option<String>,
+    /// Max concurrent dispatches.
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: usize,
+}
+
+fn default_dispatch_provider() -> String {
+    "claude".to_string()
+}
+
+fn default_max_concurrent() -> usize {
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,6 +264,7 @@ pub fn load_global() -> Result<Config> {
             compute: None,
             http: None,
             backend: None,
+            ..Default::default()
         });
     }
     let content = std::fs::read_to_string(&path)
@@ -490,6 +539,7 @@ path = "~/remotes/art/mache"
             compute: None,
             http: None,
             backend: None,
+            ..Default::default()
         };
         std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
         let content = toml::to_string_pretty(&config).unwrap();
@@ -584,6 +634,7 @@ path = "~/remotes/art/mache"
             compute: None,
             http: None,
             backend: None,
+            ..Default::default()
         };
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: Config = toml::from_str(&serialized).unwrap();
@@ -696,6 +747,7 @@ path = "/tmp/test"
             compute: None,
             http: None,
             backend: None,
+            ..Default::default()
         };
         let provider = compute_provider_from_config(&config).unwrap();
         assert_eq!(provider.name(), "local");
@@ -712,6 +764,7 @@ path = "/tmp/test"
             }),
             http: None,
             backend: None,
+            ..Default::default()
         };
         let provider = compute_provider_from_config(&config).unwrap();
         assert_eq!(provider.name(), "local");
@@ -728,6 +781,7 @@ path = "/tmp/test"
             }),
             http: None,
             backend: None,
+            ..Default::default()
         };
         let result = compute_provider_from_config(&config);
         let err = result.err().unwrap();
@@ -753,6 +807,7 @@ path = "/tmp/test"
             }),
             http: None,
             backend: None,
+            ..Default::default()
         };
         let result = compute_provider_from_config(&config);
         let err = result.err().unwrap();
@@ -770,6 +825,7 @@ path = "/tmp/test"
             }),
             http: None,
             backend: None,
+            ..Default::default()
         };
         let result = compute_provider_from_config(&config);
         let err = result.err().unwrap();
