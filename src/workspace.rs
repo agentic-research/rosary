@@ -1242,6 +1242,22 @@ mod tests {
         let msg_b = String::from_utf8_lossy(&log_b.stdout).trim().to_string();
         assert_eq!(msg_b, "beta work", "worktree B HEAD must be beta's commit");
 
+        // Verify main's git status is clean — no unstaged diffs from worktree ops.
+        // Regression: worktree isolation leak caused agent changes to appear as
+        // unstaged diffs in main, blocking ff-merge of other agents' work.
+        let main_status = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        let main_status_str = String::from_utf8_lossy(&main_status.stdout)
+            .trim()
+            .to_string();
+        assert!(
+            main_status_str.is_empty(),
+            "main repo git status must be clean after worktree operations, got: {main_status_str}"
+        );
+
         // Cleanup
         cleanup_git_worktree(&repo, "agent-alpha");
         cleanup_git_worktree(&repo, "agent-beta");

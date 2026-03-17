@@ -168,6 +168,12 @@ impl AgentProvider for ClaudeProvider {
                 "json",
             ])
             .current_dir(work_dir)
+            // Prevent git env vars from leaking into the agent — these override
+            // cwd-based repo discovery and can cause the agent to resolve to the
+            // main repo instead of its isolated worktree.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::inherit())
@@ -217,6 +223,9 @@ impl AgentProvider for GeminiProvider {
         }
         let child = cmd
             .current_dir(work_dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::inherit())
@@ -259,6 +268,9 @@ impl AgentProvider for AcpCliProvider {
             .with_context(|| format!("creating stream log {}", log_path.display()))?;
         let child = tokio::process::Command::new(&self.binary)
             .current_dir(work_dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .stdin(std::process::Stdio::piped())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log_file))
