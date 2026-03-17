@@ -343,7 +343,80 @@ impl Reconciler {
         let completed = self.check_completed();
         summary.completed = completed.len();
 
-        // Phase 2.5: BUILD THREAD MAP — pre-compute bead→thread for triage.
+        // Phase 2.5: AUTO-THREAD — cluster open beads and persist as threads.
+        // Only runs when hierarchy store is available. Sequential and SharedScope
+        // clusters become threads; NearDuplicate and Overlapping are left for dedup.
+        if let Some(ref hierarchy) = self.hierarchy {
+            let open_beads: Vec<&crate::bead::Bead> = beads
+                .iter()
+                .filter(|b| b.state() == BeadState::Open)
+                .collect();
+            let owned: Vec<crate::bead::Bead> = open_beads.iter().map(|b| (*b).clone()).collect();
+            let clusters = epic::cluster_beads(&owned);
+
+            for cluster in &clusters {
+                let should_thread = matches!(
+                    cluster.relationship,
+                    epic::ClusterRelationship::Sequential | epic::ClusterRelationship::SharedScope
+                );
+                if !should_thread || cluster.bead_ids.len() < 2 {
+                    continue;
+                }
+
+                // Generate a thread ID from the first two bead IDs
+                let thread_id = format!("auto/{}-{}", &cluster.bead_ids[0], &cluster.bead_ids[1]);
+
+                // Check if any bead in the cluster already has a thread
+                let mut already_threaded = false;
+                for bid in &cluster.bead_ids {
+                    let bead_ref = crate::store::BeadRef {
+                        repo: owned
+                            .iter()
+                            .find(|b| b.id == *bid)
+                            .map(|b| b.repo.clone())
+                            .unwrap_or_default(),
+                        bead_id: bid.clone(),
+                    };
+                    if let Ok(Some(_)) = hierarchy.find_thread_for_bead(&bead_ref).await {
+                        already_threaded = true;
+                        break;
+                    }
+                }
+                if already_threaded {
+                    continue;
+                }
+
+                // Create thread and assign beads
+                let thread = crate::store::ThreadRecord {
+                    id: thread_id.clone(),
+                    name: format!("{:?} cluster", cluster.relationship),
+                    decade_id: "auto-discovered".to_string(),
+                    feature_branch: None,
+                };
+                if let Err(e) = hierarchy.upsert_thread(&thread).await {
+                    eprintln!("[auto-thread] failed to create thread {thread_id}: {e}");
+                    continue;
+                }
+                for bid in &cluster.bead_ids {
+                    let bead_ref = crate::store::BeadRef {
+                        repo: owned
+                            .iter()
+                            .find(|b| b.id == *bid)
+                            .map(|b| b.repo.clone())
+                            .unwrap_or_default(),
+                        bead_id: bid.clone(),
+                    };
+                    let _ = hierarchy.add_bead_to_thread(&thread_id, &bead_ref).await;
+                }
+                eprintln!(
+                    "[auto-thread] created thread {thread_id} with {} beads ({:?})",
+                    cluster.bead_ids.len(),
+                    cluster.relationship
+                );
+            }
+        }
+
+        // Phase 2.75: BUILD THREAD MAP — pre-compute bead→thread for triage.
         // Done before triage to avoid async calls inside the triage loop
         // (which would make iterate() non-Send due to AgentHandle borrows).
         let thread_map: HashMap<String, String> = if let Some(ref hierarchy) = self.hierarchy {
