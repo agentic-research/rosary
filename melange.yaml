@@ -25,7 +25,24 @@ environment:
       - openssl-dev
 
 pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/agentic-research/rosary
+      tag: v${{package.version}}
+
   - runs: |
       cargo build --release --bin rsry
       install -Dm755 target/release/rsry \
         "${{targets.destdir}}/usr/bin/rsry"
+
+test:
+  pipeline:
+    - runs: |
+        rsry --help
+        rsry --version 2>&1 | grep -q "rsry"
+
+update:
+  enabled: true
+  github:
+    identifier: agentic-research/rosary
+    strip-prefix: v

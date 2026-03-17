@@ -4,6 +4,7 @@
 #
 # Result: distroless OCI image with just the rsry binary.
 # No shell, no package manager. Minimal attack surface.
+# SBOM auto-generated when using `apko publish`.
 
 contents:
   repositories:
@@ -24,6 +25,16 @@ accounts:
       uid: 65533
       gid: 65533
   run-as: 65533
+
+environment:
+  RSRY_DATA: /data
+
+paths:
+  - path: /data
+    type: directory
+    uid: 65533
+    gid: 65533
+    permissions: 0o755
 
 entrypoint:
   command: /usr/bin/rsry
