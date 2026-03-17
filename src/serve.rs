@@ -589,14 +589,6 @@ async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
     let repo_name = repo_name_from_path(repo_path);
     let id = crate::generate_bead_id(&repo_name);
 
-    client
-        .create_bead(&id, title, description, priority, issue_type)
-        .await?;
-    client.set_assignee(&id, owner).await?;
-    if !files.is_empty() || !test_files.is_empty() {
-        client.set_files(&id, &files, &test_files).await?;
-    }
-
     // Wire dependencies if provided
     let depends_on: Vec<String> = args
         .get("depends_on")
@@ -607,9 +599,21 @@ async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
                 .collect()
         })
         .unwrap_or_default();
-    for dep_id in &depends_on {
-        client.add_dependency(&id, dep_id).await?;
-    }
+
+    // Single transaction: INSERT + assignee + files + deps → one dolt commit
+    client
+        .create_bead_full(
+            &id,
+            title,
+            description,
+            priority,
+            issue_type,
+            owner,
+            &files,
+            &test_files,
+            &depends_on,
+        )
+        .await?;
 
     Ok(json!({ "id": id, "title": title, "priority": priority, "owner": owner }))
 }

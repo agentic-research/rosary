@@ -539,13 +539,18 @@ async fn main() -> Result<()> {
                 for thread in &decade.threads {
                     for spec in &thread.beads {
                         let id = generate_bead_id(&decompose_repo_name);
+                        let owner = dispatch::default_agent(&spec.issue_type);
                         client
-                            .create_bead(
+                            .create_bead_full(
                                 &id,
                                 &spec.title,
                                 &spec.description,
                                 spec.priority,
                                 &spec.issue_type,
+                                owner,
+                                &[], // TODO: populate from BeadSpec.references
+                                &[],
+                                &[], // TODO: populate from thread ordering
                             )
                             .await?;
                         created += 1;
@@ -592,12 +597,18 @@ async fn main() -> Result<()> {
                     let id = generate_bead_id(&repo_name);
                     let owner = dispatch::default_agent(&issue_type);
                     client
-                        .create_bead(&id, &title, &description, priority, &issue_type)
+                        .create_bead_full(
+                            &id,
+                            &title,
+                            &description,
+                            priority,
+                            &issue_type,
+                            owner,
+                            &files,
+                            &test_files,
+                            &[], // CLI doesn't support depends_on yet
+                        )
                         .await?;
-                    client.set_assignee(&id, owner).await?;
-                    if !files.is_empty() || !test_files.is_empty() {
-                        client.set_files(&id, &files, &test_files).await?;
-                    }
                     cli::bead_created(&id, &title);
                 }
                 BeadAction::Close { id } => {

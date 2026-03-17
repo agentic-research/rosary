@@ -134,13 +134,16 @@ impl From<&str> for BeadState {
     }
 }
 
-/// Issue types that require `files` on create — these represent actionable
-/// implementation work where the agent must know what code to touch.
-const ACTIONABLE_TYPES: &[&str] = &["bug", "task", "feature", "chore"];
-
-/// Returns true if the issue type requires a non-empty `files` field on create.
-pub fn requires_files(issue_type: &str) -> bool {
-    ACTIONABLE_TYPES.contains(&issue_type)
+/// All bead types require scopes (files or directories) for overlap detection.
+///
+/// Files: `src/reconcile.rs` (exact path, no trailing slash)
+/// Directories: `crates/bdr/` or `src/` (trailing slash = prefix match)
+/// Repo-wide: `./` (blocks all dispatch in that repo — use sparingly)
+///
+/// This enables parallel dispatch: beads with non-overlapping scopes can
+/// run concurrently, while overlapping scopes serialize execution.
+pub fn requires_files(_issue_type: &str) -> bool {
+    true
 }
 
 /// PATCH-style update for bead fields. Only `Some` fields are written;
@@ -585,20 +588,16 @@ mod tests {
     }
 
     #[test]
-    fn requires_files_for_actionable_types() {
+    fn requires_files_for_all_types() {
+        // All types require scopes (files or directories) for overlap detection
         assert!(requires_files("bug"));
         assert!(requires_files("task"));
         assert!(requires_files("feature"));
         assert!(requires_files("chore"));
-    }
-
-    #[test]
-    fn does_not_require_files_for_non_actionable_types() {
-        assert!(!requires_files("epic"));
-        assert!(!requires_files("design"));
-        assert!(!requires_files("research"));
-        assert!(!requires_files("review"));
-        assert!(!requires_files("unknown"));
+        assert!(requires_files("epic"));
+        assert!(requires_files("design"));
+        assert!(requires_files("research"));
+        assert!(requires_files("review"));
     }
 
     #[test]

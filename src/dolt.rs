@@ -397,7 +397,85 @@ impl DoltClient {
         Ok(())
     }
 
+    /// Create a bead with all metadata in a single transaction (one dolt commit).
+    ///
+    /// Without this, create_bead + set_assignee + set_files + add_dependency
+    /// each trigger a separate dolt commit (4+ commits for one bead). This
+    /// wraps everything in START TRANSACTION → COMMIT for a single commit.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_bead_full(
+        &self,
+        id: &str,
+        title: &str,
+        description: &str,
+        priority: u8,
+        issue_type: &str,
+        owner: &str,
+        files: &[String],
+        test_files: &[String],
+        depends_on: &[String],
+    ) -> Result<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("starting transaction for create_bead_full")?;
+
+        // 1. Insert the bead
+        query(
+            r#"INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_at, updated_at)
+               VALUES (?, ?, ?, '', '', '', 'open', ?, ?, NOW(), NOW())"#,
+        )
+        .bind(id)
+        .bind(title)
+        .bind(description)
+        .bind(priority as i32)
+        .bind(issue_type)
+        .execute(&mut *tx)
+        .await
+        .with_context(|| format!("creating bead {id}"))?;
+
+        // 2. Set owner
+        query("UPDATE issues SET assignee = ?, updated_at = NOW() WHERE id = ?")
+            .bind(owner)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .with_context(|| format!("setting assignee for {id}"))?;
+
+        // 3. Set files if provided
+        if !files.is_empty() || !test_files.is_empty() {
+            let file_json = serde_json::json!({
+                "files": files,
+                "test_files": test_files,
+            });
+            query("UPDATE issues SET notes = ?, updated_at = NOW() WHERE id = ?")
+                .bind(file_json.to_string())
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("setting files for {id}"))?;
+        }
+
+        // 4. Add dependencies
+        for dep_id in depends_on {
+            query("INSERT IGNORE INTO dependencies (issue_id, depends_on_id) VALUES (?, ?)")
+                .bind(id)
+                .bind(dep_id)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("adding dependency {id} → {dep_id}"))?;
+        }
+
+        tx.commit()
+            .await
+            .with_context(|| format!("committing bead {id}"))?;
+
+        Ok(())
+    }
+
     /// Set files and test_files on a bead. Stored as JSON in the notes column.
+    #[allow(dead_code)] // API surface — used by bead_update and future backfill tools
     pub async fn set_files(&self, id: &str, files: &[String], test_files: &[String]) -> Result<()> {
         let file_json = serde_json::json!({
             "files": files,

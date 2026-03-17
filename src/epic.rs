@@ -383,11 +383,37 @@ pub fn is_dominated_by(bead: &Bead, active_beads: &[&Bead]) -> Option<String> {
     None
 }
 
+/// Check if two scope paths overlap.
+///
+/// Supports both files and directories:
+/// - File `src/dolt.rs` overlaps file `src/dolt.rs` (exact match)
+/// - Directory `src/` overlaps file `src/dolt.rs` (prefix match)
+/// - Directory `crates/bdr/` overlaps `crates/bdr/src/harmony.rs`
+/// - Directory `src/` overlaps directory `src/dispatch/` (nested)
+///
+/// Convention: directories end with `/`, files don't.
+fn scopes_overlap(a: &str, b: &str) -> bool {
+    let a = a.strip_prefix("./").unwrap_or(a);
+    let b = b.strip_prefix("./").unwrap_or(b);
+    if a == b {
+        return true;
+    }
+    // Directory prefix: "src/" matches "src/dolt.rs"
+    if a.ends_with('/') && b.starts_with(a) {
+        return true;
+    }
+    if b.ends_with('/') && a.starts_with(b) {
+        return true;
+    }
+    false
+}
+
 /// Check if a candidate bead's files overlap with any active/queued bead.
 ///
-/// Returns the ID of the conflicting bead if files (or test_files) intersect.
-/// Beads without files declared are always allowed — overlap is only detected
-/// when **both** beads have files set.
+/// Returns the ID of the conflicting bead if scopes intersect.
+/// Supports both file paths (`src/dolt.rs`) and directory scopes (`crates/bdr/`).
+/// Beads without scopes are always allowed — overlap is only detected
+/// when **both** beads have scopes set.
 ///
 /// Paths are normalized by stripping leading `./` before comparison.
 pub fn has_file_overlap(bead: &Bead, active_beads: &[&Bead]) -> Option<String> {
@@ -395,7 +421,7 @@ pub fn has_file_overlap(bead: &Bead, active_beads: &[&Bead]) -> Option<String> {
         return None;
     }
 
-    let candidate_files: HashSet<&str> = bead
+    let candidate_scopes: Vec<&str> = bead
         .files
         .iter()
         .chain(bead.test_files.iter())
@@ -410,15 +436,19 @@ pub fn has_file_overlap(bead: &Bead, active_beads: &[&Bead]) -> Option<String> {
             continue;
         }
 
-        let other_files: HashSet<&str> = other
+        let other_scopes: Vec<&str> = other
             .files
             .iter()
             .chain(other.test_files.iter())
             .map(|f| f.strip_prefix("./").unwrap_or(f.as_str()))
             .collect();
 
-        if !candidate_files.is_disjoint(&other_files) {
-            return Some(other.id.clone());
+        for cs in &candidate_scopes {
+            for os in &other_scopes {
+                if scopes_overlap(cs, os) {
+                    return Some(other.id.clone());
+                }
+            }
         }
     }
     None
@@ -952,6 +982,71 @@ mod tests {
             result.is_none(),
             "cross-repo file overlap should not conflict"
         );
+    }
+
+    // --- directory scope overlap ---
+
+    #[test]
+    fn dir_scope_overlaps_file() {
+        let active = make_bead_with_files("a", "design bdr", &["crates/bdr/"], &[]);
+        let candidate =
+            make_bead_with_files("b", "fix harmony", &["crates/bdr/src/harmony.rs"], &[]);
+        let result = has_file_overlap(&candidate, &[&active]);
+        assert_eq!(
+            result,
+            Some("a".to_string()),
+            "directory scope crates/bdr/ must overlap crates/bdr/src/harmony.rs"
+        );
+    }
+
+    #[test]
+    fn dir_scope_overlaps_nested_dir() {
+        let active = make_bead_with_files("a", "src redesign", &["src/"], &[]);
+        let candidate = make_bead_with_files("b", "dispatch work", &["src/dispatch/"], &[]);
+        let result = has_file_overlap(&candidate, &[&active]);
+        assert_eq!(
+            result,
+            Some("a".to_string()),
+            "parent dir src/ must overlap nested src/dispatch/"
+        );
+    }
+
+    #[test]
+    fn dir_scope_no_overlap_sibling() {
+        let active = make_bead_with_files("a", "bdr design", &["crates/bdr/"], &[]);
+        let candidate = make_bead_with_files("b", "conductor work", &["conductor/"], &[]);
+        let result = has_file_overlap(&candidate, &[&active]);
+        assert!(
+            result.is_none(),
+            "sibling directories crates/bdr/ and conductor/ must not overlap"
+        );
+    }
+
+    #[test]
+    fn file_does_not_overlap_similar_prefix() {
+        let active = make_bead_with_files("a", "fix serve", &["src/serve.rs"], &[]);
+        let candidate = make_bead_with_files("b", "fix serve test", &["src/serve_test.rs"], &[]);
+        let result = has_file_overlap(&candidate, &[&active]);
+        assert!(
+            result.is_none(),
+            "src/serve.rs and src/serve_test.rs are different files, not a prefix match"
+        );
+    }
+
+    #[test]
+    fn scopes_overlap_unit() {
+        // Exact match
+        assert!(scopes_overlap("src/dolt.rs", "src/dolt.rs"));
+        // Dir overlaps file
+        assert!(scopes_overlap("src/", "src/dolt.rs"));
+        assert!(scopes_overlap("src/dolt.rs", "src/"));
+        // Nested dirs
+        assert!(scopes_overlap("crates/", "crates/bdr/src/lib.rs"));
+        // No overlap
+        assert!(!scopes_overlap("src/dolt.rs", "src/serve.rs"));
+        assert!(!scopes_overlap("src/", "conductor/"));
+        // Dot-slash normalization
+        assert!(scopes_overlap("./src/dolt.rs", "src/dolt.rs"));
     }
 
     // --- strip_n_of_m ---
