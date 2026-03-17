@@ -140,6 +140,10 @@ defmodule Conductor.AgentWorker do
       "[worker] #{bead_id}: #{agent} exited (code=#{code}, acp=#{state.acp_stop_reason || "n/a"}, #{elapsed}s)"
     )
 
+    # With :nouse_stdio, session_id isn't captured from pipe output.
+    # TODO: capture from .rsry-stream.jsonl when we add file-based output.
+    # For now, retry starts a fresh session (no --resume).
+
     if effective_success do
       on_success(state)
     else
@@ -499,22 +503,18 @@ defmodule Conductor.AgentWorker do
       end
 
     try do
-      # Use a wrapper script that execs with stdin from /dev/null.
-      # Claude Code hangs if stdin is an Erlang pipe (waits for
-      # interactive permission prompts). Erlang Ports don't support
-      # closing stdin, so we use a tiny sh wrapper with exec + redirect.
-      # The exec replaces sh, so Port.info(:os_pid) returns the real PID
-      # and :exit_status reflects the actual agent exit code.
-      wrapper = Application.app_dir(:conductor, "priv/exec-null-stdin.sh")
-
+      # :nouse_stdio — no pipes. stdin/stdout are NOT connected to the
+      # Port, so Claude Code gets /dev/null stdin (no interactive hang)
+      # and writes stdout to its own stream log. We only need :exit_status
+      # from the Port. Agent output is read from .rsry-stream.jsonl
+      # post-completion (same file the Rust dispatcher writes to).
       port =
         Port.open(
-          {:spawn_executable, to_charlist(wrapper)},
+          {:spawn_executable, System.find_executable(binary)},
           [
-            :binary,
+            :nouse_stdio,
             :exit_status,
-            {:line, 65_536},
-            args: [binary | args],
+            args: args,
             cd: to_charlist(work_dir)
           ]
         )
