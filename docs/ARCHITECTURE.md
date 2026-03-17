@@ -1,12 +1,12 @@
 # Rosary Architecture
 
-Rosary is a cross-repo task orchestrator that strings beads (per-repo work items), Linear tickets, and review layers into coordinated autonomous development work.
+Rosary is a cross-repo agent orchestrator that strings beads (per-repo work items), threads (ordered progressions), and decades (ADR-level groupings) into coordinated autonomous development work.
 
 ## System Overview
 
 ```mermaid
 graph TB
-    subgraph "rosary"
+    subgraph "Rosary (Rust)"
         CLI[rsry CLI]
         MCP[MCP Server<br/>stdio + HTTP]
         RC[Reconciler]
@@ -14,53 +14,125 @@ graph TB
         TR[Triage / Queue]
         DI[Dispatcher]
         VE[Verifier]
-        WS[Workspace<br/>jj / git / in-place]
-        CP[ComputeProvider<br/>local / sprites]
+        WS[Workspace<br/>jj / git worktree]
+        HS[HierarchyStore<br/>decades / threads]
+    end
+
+    subgraph "Conductor (Elixir/OTP)"
+        ORCH[Orchestrator<br/>GenServer]
+        SUP[DynamicSupervisor]
+        AW[AgentWorker<br/>per-bead GenServer]
     end
 
     subgraph "Storage"
-        D1[Dolt Server<br/>repo-A/.beads/]
-        D2[Dolt Server<br/>repo-B/.beads/]
-        DN[Dolt Server<br/>repo-N/.beads/]
-        SR[Session Registry<br/>~/.rsry/sessions.json]
+        D1[Dolt: repo-A/.beads/]
+        D2[Dolt: repo-B/.beads/]
+        DB[DoltBackend<br/>~/.rsry/dolt/rosary<br/>decades, threads, pipelines]
     end
 
     subgraph "External"
         LN[Linear API + Webhooks]
-        CC[Claude / Gemini CLI]
-        SP[sprites.dev API]
+        CC[Claude / Gemini / Qwen]
         GH[GitHub]
     end
 
     CLI --> RC
     MCP --> RC
-    RC --> SC --> D1 & D2 & DN
-    RC --> TR
-    TR --> DI
-    DI --> WS --> CP
-    CP --> CC
-    CP --> SP
-    DI --> VE
-    DI --> SR
+    MCP --> HS
+    ORCH -->|MCP HTTP| MCP
+    ORCH --> SUP --> AW
+    AW --> CC
+    RC --> SC --> D1 & D2
+    RC --> TR --> DI --> WS
+    RC --> VE
+    RC --> HS --> DB
     RC -.-> LN
-    CC --> GH
+    AW -.-> GH
 ```
+
+## Dual Orchestrator
+
+Rosary has two orchestration paths:
+
+```mermaid
+graph LR
+    subgraph "Rust Reconciler"
+        RT[Triage + Scoring]
+        RV[Verification Pipeline]
+        RS[Dolt Persistence]
+        RH[Hierarchy Store]
+    end
+
+    subgraph "Elixir Conductor"
+        EL[Agent Lifecycle<br/>OTP supervision]
+        EP[Pipeline Phases<br/>dev → staging → prod]
+        EH[Handoff Writing]
+        EM[merge_or_pr]
+    end
+
+    RT -->|"MCP: rsry_scan, rsry_status"| EL
+    EL -->|"MCP: rsry_bead_close"| RS
+    EP --> EH --> EM
+```
+
+The Rust reconciler handles triage, verification, and persistence. The Elixir conductor handles agent lifecycle via OTP supervision — instant crash detection (`:DOWN` messages), automatic restart, and pipeline phase advancement as synchronous GenServer state.
+
+## BDR Harmony Lattice
+
+Work is organized in a 3-tier lattice matching OpenAI's Harmony channel model:
+
+```mermaid
+graph TB
+    DEC[Decade<br/>ADR-level rationale<br/>channel: analysis]
+    THR1[Thread: pipeline-quality<br/>channel: commentary]
+    THR2[Thread: auth-redesign<br/>channel: commentary]
+    B1[Bead: staging review gate<br/>channel: final]
+    B2[Bead: test safety linter<br/>channel: final]
+    B3[Bead: signet OIDC flow<br/>channel: final]
+    B4[Bead: auth middleware<br/>channel: final]
+
+    DEC --> THR1
+    DEC --> THR2
+    THR1 --> B1
+    THR1 --> B2
+    THR2 --> B3
+    THR2 --> B4
+```
+
+| Tier   | BDR Channel  | Visibility              | Dolt Table                   |
+| ------ | ------------ | ----------------------- | ---------------------------- |
+| Decade | `analysis`   | Internal (architect)    | `decades`                    |
+| Thread | `commentary` | Team (developers)       | `threads` + `thread_members` |
+| Bead   | `final`      | External (stakeholders) | per-repo `issues`            |
+
+Thread-aware triage: same-thread beads are **sequenced** (dispatched in order), not **suppressed** (false dedup). The reconciler pre-computes a bead→thread map before triage to avoid async borrows.
 
 ## Reconciliation Loop
 
-The core is a Kubernetes-controller-style desired-state loop:
-
 ```mermaid
 flowchart LR
-    SCAN["1. SCAN<br/>Discover beads<br/>across repos"]
-    TRIAGE["2. TRIAGE<br/>Score & enqueue<br/>eligible beads"]
-    DISPATCH["3. DISPATCH<br/>Spawn agent in<br/>workspace"]
-    VERIFY["4. VERIFY<br/>Tiered checks<br/>on results"]
-    REPORT["5. REPORT<br/>Update status,<br/>sync Linear"]
-    SLEEP["6. SLEEP<br/>Wait interval"]
+    SCAN["1. SCAN<br/>Discover beads"]
+    VCS["1.5 VCS<br/>jj commit refs"]
+    XREF["1.75 XREF<br/>Cross-repo sync"]
+    THREAD["2.5 THREAD<br/>Auto-cluster<br/>+ build map"]
+    TRIAGE["3. TRIAGE<br/>Score + filter"]
+    DISPATCH["4. DISPATCH<br/>Spawn in worktree"]
+    VERIFY["5. VERIFY<br/>Tiered checks"]
+    ADVANCE["5.5 ADVANCE<br/>Phase + handoff"]
 
-    SCAN --> TRIAGE --> DISPATCH --> VERIFY --> REPORT --> SLEEP --> SCAN
+    SCAN --> VCS --> XREF --> THREAD --> TRIAGE --> DISPATCH --> VERIFY --> ADVANCE
 ```
+
+### Triage Filters (Constraint Stack)
+
+1. State check (must be Open)
+1. Severity floor (configurable min priority)
+1. Skip epics (planning beads, not actionable)
+1. Dependency check (blocked beads deferred)
+1. Per-repo busy check (one agent per repo)
+1. **Thread sequencing** (same-thread beads wait for thread-mate)
+1. Semantic dedup (`epic::is_dominated_by`)
+1. **File/directory overlap** (`epic::has_file_overlap` — prefix matching for directory scopes)
 
 ## Bead State Machine
 
@@ -68,7 +140,7 @@ flowchart LR
 stateDiagram-v2
     [*] --> open
 
-    open --> queued : triage selects<br/>(score >= threshold)
+    open --> queued : triage selects
     queued --> dispatched : semaphore acquired
     dispatched --> verifying : agent exits
     verifying --> done : all tiers pass
@@ -79,107 +151,89 @@ stateDiagram-v2
     blocked --> open : human /resume
 
     done --> [*]
-
-    note right of rejected
-        Exponential backoff:
-        30s * 2^retries
-        (cap 30min, max 5)
-    end note
 ```
+
+## Pipeline Phase Advancement
+
+```mermaid
+flowchart LR
+    DEV[dev-agent<br/>Phase 0]
+    STAGE[staging-agent<br/>Phase 1]
+    PROD[prod-agent<br/>Phase 2]
+
+    DEV -->|handoff| STAGE -->|handoff| PROD -->|merge_or_pr| DONE[Done]
+```
+
+Pipeline per issue type:
+
+| Type            | Pipeline             |
+| --------------- | -------------------- |
+| bug             | dev → staging        |
+| feature         | dev → staging → prod |
+| task/chore      | dev                  |
+| review          | staging              |
+| design/research | architect            |
+| epic            | pm                   |
+
+Handoff files (`.rsry-handoff-N.json`) carry summary, files_changed, review_hints, verdict, and thread_id between phases. The workspace is **reused** across phases — each agent sees the previous agent's commits and handoff chain.
 
 ## Module Layout
 
 ```mermaid
 graph LR
     subgraph "Core Loop"
-        reconcile["reconcile.rs<br/>loop orchestrator"]
+        reconcile["reconcile.rs<br/>loop + triage"]
         scanner["scanner.rs<br/>multi-repo scan"]
         queue["queue.rs<br/>priority queue"]
-        dispatch["dispatch.rs<br/>AgentProvider + AgentSession"]
+        dispatch["dispatch.rs<br/>AgentProvider"]
         verify["verify.rs<br/>tiered checks"]
     end
 
     subgraph "Execution"
-        backend["backend.rs<br/>ComputeProvider trait"]
         workspace["workspace.rs<br/>jj/git isolation"]
-        session["session.rs<br/>session registry"]
-        sprites["sprites.rs<br/>sprites.dev client"]
-        sprites_prov["sprites_provider.rs<br/>SpritesProvider"]
+        backend["backend.rs<br/>ComputeProvider"]
+        handoff["handoff.rs<br/>phase context"]
+        manifest["manifest.rs<br/>dispatch SBOM"]
     end
 
     subgraph "Data"
         bead["bead.rs<br/>data model"]
         dolt["dolt.rs<br/>MySQL client"]
         pool["pool.rs<br/>RepoPool"]
-        epic["epic.rs<br/>bead clustering"]
+        epic["epic.rs<br/>clustering + overlap"]
+        store["store.rs<br/>HierarchyStore trait"]
+        store_dolt["store_dolt.rs<br/>DoltBackend"]
     end
 
     subgraph "Integration"
-        linear["linear.rs<br/>Linear sync CLI"]
-        linear_tracker["linear_tracker.rs<br/>IssueTracker impl"]
-        sync["sync.rs<br/>bidi sync engine"]
-        thread["thread.rs<br/>cross-repo xrefs"]
+        linear["linear.rs<br/>Linear sync"]
+        linear_tracker["linear_tracker.rs<br/>IssueTracker"]
+        sync["sync.rs<br/>bidi engine"]
+        xref["xref.rs<br/>cross-repo refs"]
     end
 
     subgraph "Interface"
-        main["main.rs<br/>CLI (clap)"]
-        serve["serve.rs<br/>MCP + webhooks"]
+        main["main.rs<br/>CLI"]
+        serve["serve.rs<br/>MCP 26 tools"]
         config["config.rs<br/>TOML config"]
-        acp["acp.rs<br/>Agent Client Protocol"]
-        vcs["vcs.rs<br/>jj state versioning"]
+    end
+
+    subgraph "BDR (crate)"
+        bdr_parse["parse.rs<br/>markdown → atoms"]
+        bdr_decompose["decompose.rs<br/>atoms → beads"]
+        bdr_harmony["harmony.rs<br/>Harmony tokens"]
+        bdr_accrete["accrete.rs<br/>completion → status"]
     end
 
     reconcile --> scanner --> dolt
     reconcile --> queue --> bead
     reconcile --> dispatch --> workspace --> backend
-    dispatch --> session
-    backend --> sprites_prov --> sprites
     reconcile --> verify
-    reconcile --> sync --> linear_tracker
+    reconcile --> store --> store_dolt
     serve --> pool --> dolt
-    main --> reconcile
-    main --> serve
+    linear --> sync --> linear_tracker
+    main --> reconcile & serve
 ```
-
-## Dispatch Architecture
-
-Two orthogonal axes compose for agent execution:
-
-```mermaid
-graph TB
-    subgraph "AgentProvider (WHICH model)"
-        claude[ClaudeProvider]
-        gemini[GeminiProvider]
-        acp_cli[AcpCliProvider]
-    end
-
-    subgraph "ComputeProvider (WHERE it runs)"
-        local[LocalProvider<br/>host subprocess]
-        sprites_be[SpritesProvider<br/>sprites.dev containers]
-    end
-
-    subgraph "AgentSession (HOW to talk)"
-        cli_session[CliSession<br/>wraps Child]
-    end
-
-    AgentProvider -->|"spawn_agent()"| AgentSession
-    Workspace -->|"provision()"| ComputeProvider
-```
-
-`AgentProvider` decides the model and returns a `Box<dyn AgentSession>`.
-`ComputeProvider` decides the infrastructure (local process vs remote container).
-`Workspace` manages VCS isolation (jj > git worktree > in-place).
-
-## Triage Scoring
-
-```
-score = 0.4 * priority_score    # P0=1.0, P4=0.2
-      + 0.3 * dependency_score  # 1.0 if ready, 0.0 if blocked
-      + 0.2 * age_score         # linear ramp over 1 week
-      + 0.1 * retry_penalty     # 1/(1+retries)
-```
-
-Higher score = dispatched first. Beads in backoff are skipped until `not_before` expires.
 
 ## Verification Pipeline
 
@@ -203,91 +257,72 @@ flowchart LR
 
 Language-aware: Rust gets `cargo check/test/clippy`, Go gets `go vet/test/golangci-lint`.
 
-## Stopping Conditions
-
-| Condition | Default | Scope |
-|-----------|---------|-------|
-| Max retries per bead | 5 | Per-bead, then deadletter |
-| Consecutive reverts | 3 | Per-bead, then deadletter |
-| Agent timeout | 10 min | Per-dispatch, kill process |
-
-## Data Flow
-
-```mermaid
-sequenceDiagram
-    participant R as Reconciler
-    participant D as Dolt Server
-    participant W as Workspace
-    participant A as Agent (Claude/Gemini)
-    participant V as Verifier
-    participant S as Session Registry
-
-    R->>D: scan_repos()
-    D-->>R: Vec<Bead>
-    R->>R: triage_score() → enqueue()
-    R->>W: Workspace::create(bead_id)
-    W-->>R: isolated work_dir
-    R->>D: update_status("dispatched")
-    R->>S: register(bead_id, pid)
-    R->>A: spawn_agent(prompt, work_dir)
-    Note over A: Agent works in<br/>isolated workspace
-    A-->>R: session completes
-    R->>V: verify(work_dir)
-    V-->>R: VerifySummary
-    alt all pass
-        R->>D: update_status("done")
-        R->>W: teardown()
-    else tier fails
-        R->>R: record_backoff()
-        R->>D: update_status("open")
-    end
-    R->>S: unregister(bead_id)
-```
-
 ## Dolt Connection Model
 
-Each repo has a `.beads/` directory with a running Dolt server:
+Two tiers of Dolt databases:
 
-```
-repo/.beads/
-├── dolt-server.port     # TCP port
-├── metadata.json        # {"dolt_database": "rosary", ...}
-├── dolt/                # Dolt data directory
-│   └── (versioned SQL database)
-├── config.yaml          # bd configuration
-└── interactions.jsonl   # agent interaction log
+```mermaid
+graph TB
+    subgraph "Per-Repo (beads)"
+        R1["rosary/.beads/dolt/rosary"]
+        R2["mache/.beads/dolt/mache"]
+        RN[".../.beads/dolt/..."]
+    end
+
+    subgraph "Orchestrator (hierarchy)"
+        BE["~/.rsry/dolt/rosary<br/>decades, threads,<br/>thread_members,<br/>pipelines, dispatches,<br/>linear_links"]
+    end
+
+    POOL["RepoPool"] --> R1 & R2 & RN
+    HS["HierarchyStore"] --> BE
 ```
 
-Connected via MySQL wire protocol: `mysql://root@127.0.0.1:{port}/{database}`
+Connection safety: `dolt_transaction_commit=1` (auto-commit per statement), `max_connections=1` (session variable consistency), bail on known dead port (no silent empty DB).
+
+## MCP Tools (26)
+
+| Category   | Tools                                                                                                                                              |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_comment`, `rsry_bead_close`, `rsry_bead_link`                               |
+| Status     | `rsry_status`, `rsry_list_beads`, `rsry_scan`, `rsry_active`                                                                                       |
+| Dispatch   | `rsry_dispatch`, `rsry_run_once`, `rsry_decompose`, `rsry_pipeline_upsert`, `rsry_pipeline_query`, `rsry_dispatch_record`, `rsry_dispatch_history` |
+| Workspaces | `rsry_workspace_create`, `rsry_workspace_checkpoint`, `rsry_workspace_cleanup`, `rsry_workspace_merge`                                             |
+| Hierarchy  | `rsry_decade_list`, `rsry_thread_list`, `rsry_thread_assign`                                                                                       |
 
 ## Linear Integration
 
-Bidirectional sync with Linear as the human-facing UI:
+Bidirectional sync with sub-issue projection:
 
-- **Push**: `persist_status()` mirrors every bead state transition to Linear
-- **Pull**: `/webhook` endpoint receives Linear webhooks (HMAC-SHA256 verified)
-- **State mapping**: type-based (`started`/`unstarted`/`completed`), not name-based
-- **Labels**: agent perspectives (`perspective:dev`, etc.) flow through as Linear labels
-- **Phases**: `[linear.phases]` maps beads to Linear projects
+| BDR Tier | Linear Entity | `linear_type` |
+| -------- | ------------- | ------------- |
+| Decade   | Project       | —             |
+| Thread   | Parent Issue  | `issue`       |
+| Bead     | Sub-Issue     | `sub_issue`   |
 
-## Cross-Repo Bead Tracking
+Beads with thread assignments sync as sub-issues of the thread's parent issue. Beads without threads create flat issues (backwards compatible).
 
-Beads reference work in other repos via `external_ref`. The `thread.rs` module:
+## File/Directory Scoping
 
-1. **Parse** — find all beads with `external_ref` set
-2. **Mirror** — create corresponding bead in target repo with back-reference
-3. **Sync** — propagate status changes (source wins on drift)
+All bead types require scopes for parallel dispatch:
 
-## Selective Field Encryption (rosary-crypto)
+- **Files**: `src/reconcile.rs` (exact path)
+- **Directories**: `crates/bdr/` (trailing slash = prefix match)
+- **Repo-wide**: `./` (blocks all dispatch in that repo)
 
-`crates/crypto/` provides ChaCha20-Poly1305 AEAD for Wasteland federation:
+`has_file_overlap()` uses prefix matching — `crates/bdr/` overlaps `crates/bdr/src/harmony.rs`. This enables design beads to scope to subtrees while implementation beads scope to exact files.
 
-- **Public** (cleartext): id, title, status, priority, issue_type
-- **Private** (encrypted): description, owner, branch, pr_url
-- **Nonce**: SHA-256(bead_id || field_name)[0..12] — deterministic per field
+## Stopping Conditions
+
+| Condition            | Default | Scope                      |
+| -------------------- | ------- | -------------------------- |
+| Max retries per bead | 5       | Per-bead, then deadletter  |
+| Consecutive reverts  | 3       | Per-bead, then deadletter  |
+| Agent timeout        | 10 min  | Per-dispatch, kill process |
 
 ## Design Influences
 
 - **Kubernetes controllers**: desired state reconciliation, generation tracking
 - **driftlessaf** (Chainguard): workqueue with priority, NotBefore scheduling, exponential backoff
-- **beads** (steveyegge): AI-native issue tracking, Dolt-backed, VCS-agnostic
+- **beads** (steveyegge): AI-native issue tracking, Dolt-backed
+- **OpenAI Symphony**: OTP supervision patterns, Elixir conductor
+- **OpenAI Harmony**: 3-channel progressive disclosure (analysis/commentary/final → decade/thread/bead)
