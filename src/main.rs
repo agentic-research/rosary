@@ -351,7 +351,21 @@ async fn main() -> Result<()> {
         }
         Command::Sync { dry_run, repo } => {
             let repo_filter = parse_repo_filter(&repo);
-            linear::sync(dry_run, repo_filter.as_deref()).await?;
+            // Connect hierarchy store for thread → sub-issue projection
+            let sync_cfg = config::load_merged(&config::resolve_config_path())?;
+            let hierarchy: Option<Box<dyn store::HierarchyStore>> =
+                if let Some(ref backend_cfg) = sync_cfg.backend {
+                    match store_dolt::DoltBackend::connect(backend_cfg).await {
+                        Ok(b) => Some(Box::new(b)),
+                        Err(e) => {
+                            eprintln!("[sync] hierarchy unavailable ({e}), no sub-issue grouping");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+            linear::sync(dry_run, repo_filter.as_deref(), hierarchy.as_deref()).await?;
         }
         Command::Status { repo } => {
             let cfg = config::load_merged(&config::resolve_config_path())?;

@@ -352,7 +352,11 @@ async fn connect_repo_dolt(repo: &crate::config::RepoConfig) -> Result<crate::do
 /// 3. Close: update Linear issues for closed beads
 ///
 /// If `repo_filter` is provided, only beads from those repos are synced.
-pub async fn sync(dry_run: bool, repo_filter: Option<&[String]>) -> Result<()> {
+pub async fn sync(
+    dry_run: bool,
+    repo_filter: Option<&[String]>,
+    hierarchy: Option<&dyn crate::store::HierarchyStore>,
+) -> Result<()> {
     let api_key = match get_api_key() {
         Some(k) => k,
         None => return Ok(()),
@@ -495,6 +499,10 @@ pub async fn sync(dry_run: bool, repo_filter: Option<&[String]>) -> Result<()> {
     }
 
     // --- PUSH: create Linear issues for unlinked beads, store external_ref ---
+    // Track thread → Linear parent issue ID for sub-issue creation.
+    // TODO: populate thread_parent_ids when create_linear_issue returns UUIDs
+    // (Linear parentId requires UUID, not identifier like AGE-123)
+    let thread_parent_ids: HashMap<String, String> = HashMap::new();
     let mut created = 0;
     for bead in &beads {
         if bead.external_ref.is_some() || linked_ids.contains(&bead.id) {
@@ -527,8 +535,31 @@ pub async fn sync(dry_run: bool, repo_filter: Option<&[String]>) -> Result<()> {
         let project_id =
             resolve_phase_project_id(&client, bead, &phase_map, &mut project_cache).await?;
 
+        // Resolve thread → Linear parent issue UUID for sub-issue creation.
+        // thread_parent_ids maps thread_id → Linear issue UUID.
+        let parent_linear_uuid: Option<String> = if let Some(hier) = hierarchy {
+            let bead_ref = crate::store::BeadRef {
+                repo: bead.repo.clone(),
+                bead_id: bead.id.clone(),
+            };
+            if let Ok(Some(thread_id)) = hier.find_thread_for_bead(&bead_ref).await {
+                thread_parent_ids.get(&thread_id).cloned()
+                // If no parent exists yet, first bead in the thread creates
+                // the parent issue below and stores its UUID for siblings.
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         if dry_run {
-            println!("  {dry_prefix} create: {full_title}");
+            let sub = if parent_linear_uuid.is_some() {
+                " (sub-issue)"
+            } else {
+                ""
+            };
+            println!("  {dry_prefix} create: {full_title}{sub}");
             created += 1;
         } else {
             match create_linear_issue(
@@ -541,6 +572,7 @@ pub async fn sync(dry_run: bool, repo_filter: Option<&[String]>) -> Result<()> {
                 &bead.repo,
                 &perspective_labels,
                 project_id.as_deref(),
+                parent_linear_uuid.as_deref(),
             )
             .await
             {
@@ -675,6 +707,7 @@ async fn create_linear_issue(
     repo_name: &str,
     perspective_labels: &[String],
     project_id: Option<&str>,
+    parent_id: Option<&str>,
 ) -> Result<String> {
     // Tag the description with bead ID for bidirectional linkage
     let tagged_description = format!("{description}\n\n<!-- bead:{bead_id} repo:{repo_name} -->",);
@@ -723,6 +756,11 @@ async fn create_linear_issue(
     // Attach to Linear project if phase mapping resolved
     if let Some(pid) = project_id {
         input["projectId"] = json!(pid);
+    }
+
+    // Create as sub-issue if parent specified (thread → parent issue)
+    if let Some(pid) = parent_id {
+        input["parentId"] = json!(pid);
     }
 
     let variables = json!({ "input": input });
