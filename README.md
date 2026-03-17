@@ -4,7 +4,7 @@
 
 Autonomous work orchestrator for AI agents across multiple code repos.
 
-Rosary structures work as **beads** — small, trackable units stored in each repo via [Dolt](https://www.dolthub.com/). A reconciliation loop scans for ready beads, dispatches AI agents (Claude, Gemini) to execute them in isolated workspaces, verifies the results, and syncs status to [Linear](https://linear.app) for human review.
+Rosary structures work as **[beads](https://github.com/steveyegge/beads)** — small, trackable units stored in each repo via [Dolt](https://www.dolthub.com/). A reconciliation loop scans for ready beads, dispatches AI agents (Claude, Gemini) to execute them in isolated workspaces, verifies the results, and syncs status to [Linear](https://linear.app) for human review.
 
 The human reviews 5-10 feature PRs a day. The agents handle the atoms.
 
