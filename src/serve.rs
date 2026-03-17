@@ -370,6 +370,45 @@ fn tool_definitions() -> Value {
                     },
                     "required": []
                 }
+            },
+            {
+                "name": "rsry_decade_list",
+                "description": "List decades (ADR-level organizing primitives). Optionally filter by status (proposed, active, completed, superseded).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status": { "type": "string", "description": "Filter by status (optional)" }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "rsry_thread_list",
+                "description": "List threads within a decade, or find the thread a bead belongs to.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "decade_id": { "type": "string", "description": "Decade ID to list threads for" },
+                        "bead_id": { "type": "string", "description": "Find thread for this bead (alternative to decade_id)" },
+                        "repo": { "type": "string", "description": "Repo name for bead lookup (required with bead_id)" }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "rsry_thread_assign",
+                "description": "Assign a bead to a thread. Creates the thread if it doesn't exist. Use to build ordered progressions of related beads.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "thread_id": { "type": "string", "description": "Thread ID (e.g. 'ADR-003/pipeline-quality')" },
+                        "thread_name": { "type": "string", "description": "Thread display name (for new threads)" },
+                        "decade_id": { "type": "string", "description": "Decade this thread belongs to (for new threads)" },
+                        "bead_id": { "type": "string", "description": "Bead ID to assign to the thread" },
+                        "repo": { "type": "string", "description": "Repo name for the bead" }
+                    },
+                    "required": ["thread_id", "bead_id", "repo"]
+                }
             }
         ]
     })
@@ -420,6 +459,9 @@ async fn call_tool(
         "rsry_pipeline_query" => tool_pipeline_query(args, backend).await,
         "rsry_dispatch_record" => tool_dispatch_record(args, backend).await,
         "rsry_dispatch_history" => tool_dispatch_history(args, backend).await,
+        "rsry_decade_list" => tool_decade_list(args, backend).await,
+        "rsry_thread_list" => tool_thread_list(args, backend).await,
+        "rsry_thread_assign" => tool_thread_assign(args, backend).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
 }
@@ -1300,6 +1342,118 @@ async fn tool_dispatch_history(args: &Value, backend: Option<&DoltBackend>) -> R
         .collect();
 
     Ok(json!({ "count": items.len(), "dispatches": items }))
+}
+
+// ---------------------------------------------------------------------------
+// Hierarchy tools (decades, threads, bead membership)
+// ---------------------------------------------------------------------------
+
+async fn tool_decade_list(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+    let status = args.get("status").and_then(|v| v.as_str());
+
+    use crate::store::HierarchyStore;
+    let decades = backend.list_decades(status).await?;
+
+    let items: Vec<Value> = decades
+        .iter()
+        .map(|d| {
+            json!({
+                "id": d.id,
+                "title": d.title,
+                "source_path": d.source_path,
+                "status": d.status,
+            })
+        })
+        .collect();
+
+    Ok(json!({ "count": items.len(), "decades": items }))
+}
+
+async fn tool_thread_list(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+    use crate::store::HierarchyStore;
+
+    // Option 1: list threads for a decade
+    if let Some(decade_id) = args.get("decade_id").and_then(|v| v.as_str()) {
+        let threads = backend.list_threads(decade_id).await?;
+        let items: Vec<Value> = threads
+            .iter()
+            .map(|t| {
+                json!({
+                    "id": t.id,
+                    "name": t.name,
+                    "decade_id": t.decade_id,
+                    "feature_branch": t.feature_branch,
+                })
+            })
+            .collect();
+        return Ok(json!({ "count": items.len(), "threads": items }));
+    }
+
+    // Option 2: find thread for a specific bead
+    if let (Some(bead_id), Some(repo)) = (
+        args.get("bead_id").and_then(|v| v.as_str()),
+        args.get("repo").and_then(|v| v.as_str()),
+    ) {
+        let bead_ref = crate::store::BeadRef {
+            repo: repo.to_string(),
+            bead_id: bead_id.to_string(),
+        };
+        let thread_id = backend.find_thread_for_bead(&bead_ref).await?;
+        return Ok(json!({ "bead_id": bead_id, "thread_id": thread_id }));
+    }
+
+    anyhow::bail!("provide either decade_id or (bead_id + repo)")
+}
+
+async fn tool_thread_assign(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+    use crate::store::{BeadRef, HierarchyStore, ThreadRecord};
+
+    let thread_id = args["thread_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("thread_id required"))?;
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let repo = args["repo"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo required"))?;
+
+    // Create thread if it doesn't exist
+    let thread_name = args
+        .get("thread_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(thread_id);
+    let decade_id = args
+        .get("decade_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("ungrouped");
+
+    backend
+        .upsert_thread(&ThreadRecord {
+            id: thread_id.to_string(),
+            name: thread_name.to_string(),
+            decade_id: decade_id.to_string(),
+            feature_branch: None,
+        })
+        .await?;
+
+    let bead_ref = BeadRef {
+        repo: repo.to_string(),
+        bead_id: bead_id.to_string(),
+    };
+    backend.add_bead_to_thread(thread_id, &bead_ref).await?;
+
+    let members = backend.list_beads_in_thread(thread_id).await?;
+
+    Ok(json!({
+        "thread_id": thread_id,
+        "bead_id": bead_id,
+        "action": "assigned",
+        "thread_size": members.len(),
+    }))
 }
 
 // ---------------------------------------------------------------------------
