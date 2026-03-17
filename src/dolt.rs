@@ -100,9 +100,14 @@ impl DoltClient {
     /// 3. Wait for it to accept connections
     /// 4. Retry the MySQL connection
     pub async fn connect(config: &DoltConfig) -> Result<Self> {
-        // Fast path — server already running
+        // If a port file specified a non-zero port, the server should be running.
+        // Use a longer timeout (10s) and don't auto-start — connecting to a
+        // fresh empty server instead of the existing one causes silent data loss.
+        let has_known_server = config.port > 0;
+        let connect_timeout = if has_known_server { 10 } else { 3 };
+
         if let Ok(Ok(pool)) = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
+            std::time::Duration::from_secs(connect_timeout),
             pool_options().connect(&config.url()),
         )
         .await
@@ -112,7 +117,18 @@ impl DoltClient {
             return Ok(client);
         }
 
-        // Server not running — auto-start from the dolt data directory
+        // If we had a known server port but couldn't connect, error out
+        // instead of auto-starting a fresh empty server.
+        if has_known_server {
+            anyhow::bail!(
+                "Dolt server on port {} not responding ({}s timeout). \
+                 Kill stale servers with: pkill -f 'dolt sql-server'",
+                config.port,
+                connect_timeout
+            );
+        }
+
+        // No port file (port=0) — auto-start from the dolt data directory
         let dolt_dir = config.dolt_dir();
         if !dolt_dir.exists() {
             anyhow::bail!("Dolt database directory not found: {}", dolt_dir.display());
