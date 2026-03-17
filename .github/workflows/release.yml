@@ -14,7 +14,8 @@ on:
 permissions:
   contents: write
   packages: write
-  id-token: write  # cosign keyless signing
+  id-token: write   # cosign keyless + SLSA provenance
+  actions: read      # SLSA provenance detection
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
@@ -84,7 +85,11 @@ jobs:
     if: always()
     needs: build
     runs-on: ubuntu-latest
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
     steps:
+      - uses: actions/checkout@v6
+
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
@@ -95,6 +100,20 @@ jobs:
         working-directory: release-assets
         run: sha256sum rsry-* > checksums-sha256.txt
 
+      - name: Generate subject hashes for SLSA
+        id: hash
+        working-directory: release-assets
+        run: |
+          echo "hashes=$(sha256sum rsry-* | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      # --- SBOM ---
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: release-assets/rsry.spdx.json
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -102,6 +121,7 @@ jobs:
           generate_release_notes: true
           files: release-assets/*
 
+      # --- Cosign ---
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
@@ -109,7 +129,10 @@ jobs:
         working-directory: release-assets
         run: |
           for f in rsry-*; do
-            cosign sign-blob --yes "$f" --output-signature "${f}.sig" --output-certificate "${f}.cert"
+            [ -f "$f" ] || continue
+            cosign sign-blob --yes "$f" \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.cert"
           done
 
       - name: Upload signatures to release
@@ -119,3 +142,17 @@ jobs:
           files: |
             release-assets/*.sig
             release-assets/*.cert
+
+  # --- SLSA Provenance (Level 3) ---
+  provenance:
+    name: SLSA Provenance
+    needs: release
+    if: always()
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: "${{ needs.release.outputs.hashes }}"
+      upload-assets: true

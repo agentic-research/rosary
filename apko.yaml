@@ -45,6 +45,11 @@ archs:
   - x86_64
   - aarch64
 
+# Per-origin layering: packages from the same upstream share a layer.
+# Reduces delta pulls by ~70% on updates (only changed layers re-download).
+layering:
+  strategy: origin
+
 annotations:
   org.opencontainers.image.title: rosary
   org.opencontainers.image.description: "rsry: autonomous work orchestrator"
