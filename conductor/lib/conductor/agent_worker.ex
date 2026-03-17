@@ -471,7 +471,20 @@ defmodule Conductor.AgentWorker do
     # pass --resume to preserve agent context across retries
     previous_session = state && state.session_id
 
-    base_args = ["-p", prompt, "--output-format", "json"]
+    # Permission profile: derive from issue_type, same as Rust PermissionProfile
+    allowed_tools =
+      case pipeline.issue_type do
+        t when t in ["review", "survey", "audit"] ->
+          "Read,Glob,Grep,mcp__mache__*,mcp__rsry__*"
+
+        t when t in ["epic", "plan", "triage"] ->
+          "Read,Glob,Grep,mcp__mache__*,mcp__rsry__*"
+
+        _ ->
+          "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git *),Bash(task *),Glob,Grep,mcp__mache__*,mcp__rsry__*"
+      end
+
+    base_args = ["-p", prompt, "--allowedTools", allowed_tools, "--output-format", "json"]
 
     args =
       if previous_session do
