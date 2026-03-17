@@ -728,7 +728,7 @@ impl Reconciler {
 
             if let Some(ws) = self.completed_workspaces.get(bead_id.as_str()) {
                 let work = crate::manifest::Work::from_git(&ws.work_dir, None);
-                let handoff = crate::handoff::Handoff::new(
+                let mut handoff = crate::handoff::Handoff::new(
                     phase,
                     &from_agent,
                     Some(next_agent),
@@ -736,6 +736,7 @@ impl Reconciler {
                     self.provider.name(),
                     &work,
                 );
+                handoff.thread_id = thread_map.get(bead_id.as_str()).cloned();
                 if let Err(e) = handoff.write_to(&ws.work_dir) {
                     eprintln!("[handoff] {bead_id}: failed to write phase handoff: {e}");
                 }
@@ -1119,7 +1120,7 @@ impl Reconciler {
                     )
                 })
                 .unwrap_or_else(|| ("dev-agent".to_string(), 0));
-            let handoff = crate::handoff::Handoff::new(
+            let mut handoff = crate::handoff::Handoff::new(
                 phase,
                 &agent,
                 None,
@@ -1127,6 +1128,16 @@ impl Reconciler {
                 self.provider.name(),
                 &work,
             );
+            // Look up thread_id from hierarchy if available
+            if let Some(ref hierarchy) = self.hierarchy {
+                let bead_ref = crate::store::BeadRef {
+                    repo: repo.clone(),
+                    bead_id: bead_id.to_string(),
+                };
+                if let Ok(Some(tid)) = hierarchy.find_thread_for_bead(&bead_ref).await {
+                    handoff.thread_id = Some(tid);
+                }
+            }
             if let Err(e) = handoff.write_to(work_dir) {
                 eprintln!("[handoff] {bead_id}: failed to write: {e}");
             }

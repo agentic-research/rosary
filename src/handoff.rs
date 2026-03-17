@@ -20,6 +20,10 @@ pub struct Handoff {
     pub to_agent: Option<String>,
     pub bead_id: String,
     pub provider: String,
+    /// Thread this bead belongs to (from HierarchyStore). Gives agents
+    /// context about their position in a larger progression of work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
 
     /// One-line summary of what this phase accomplished.
     pub summary: String,
@@ -113,6 +117,7 @@ impl Handoff {
             to_agent: to_agent.map(|s| s.to_string()),
             bead_id: bead_id.to_string(),
             provider: provider.to_string(),
+            thread_id: None, // Set by reconciler when hierarchy is available
             summary,
             files_changed: work.files_changed.clone(),
             lines_changed: LinesChanged {
@@ -171,6 +176,9 @@ impl Handoff {
                 "### Phase {} ({} via {})\n",
                 h.phase, h.from_agent, h.provider
             ));
+            if let Some(ref tid) = h.thread_id {
+                out.push_str(&format!("Thread: {tid}\n"));
+            }
             out.push_str(&format!("Summary: {}\n", h.summary));
             if !h.files_changed.is_empty() {
                 out.push_str(&format!("Files: {}\n", h.files_changed.join(", ")));
