@@ -485,7 +485,7 @@ async fn tool_run_once(config_path: &str, dry_run: bool) -> Result<Value> {
         ..Default::default()
     };
 
-    let mut reconciler = Reconciler::new(reconciler_config);
+    let mut reconciler = Reconciler::new(reconciler_config).await;
     let summary = reconciler.iterate().await?;
 
     Ok(json!({

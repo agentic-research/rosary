@@ -36,6 +36,8 @@ pub struct ReconcilerConfig {
     pub overnight: bool,
     /// Compute provider config (from [compute] in rosary.toml).
     pub compute: Option<crate::config::ComputeConfig>,
+    /// Backend storage for orchestrator state (decades, threads, pipeline).
+    pub backend: Option<crate::config::BackendConfig>,
 }
 
 impl Default for ReconcilerConfig {
@@ -51,6 +53,7 @@ impl Default for ReconcilerConfig {
             provider: "claude".to_string(),
             overnight: false,
             compute: None,
+            backend: None,
         }
     }
 }
@@ -92,6 +95,10 @@ pub struct Reconciler {
     compute: Box<dyn crate::backend::ComputeProvider>,
     /// Path to agent definitions directory (from self_managed repo).
     agents_dir: Option<PathBuf>,
+    /// Hierarchy store (decades, threads, bead membership).
+    /// When set, enables thread-aware dedup and phase context.
+    #[allow(dead_code)] // Wired in next phase: thread-aware triage
+    hierarchy: Option<Box<dyn crate::store::HierarchyStore>>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -129,7 +136,7 @@ impl std::fmt::Display for IterationSummary {
 }
 
 impl Reconciler {
-    pub fn new(config: ReconcilerConfig) -> Self {
+    pub async fn new(config: ReconcilerConfig) -> Self {
         let mut repo_info = HashMap::new();
 
         // Build repo info map from config
@@ -176,6 +183,28 @@ impl Reconciler {
             );
         }
 
+        // Connect hierarchy store (DoltBackend) if backend config is present.
+        // Best-effort: hierarchy features degrade gracefully when unavailable.
+        let hierarchy: Option<Box<dyn crate::store::HierarchyStore>> =
+            if let Some(ref backend_cfg) = config.backend {
+                match crate::store_dolt::DoltBackend::connect(backend_cfg).await {
+                    Ok(backend) => {
+                        eprintln!("[reconcile] hierarchy store connected (DoltBackend)");
+                        Some(Box::new(backend))
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[reconcile] hierarchy store unavailable ({e}), \
+                             thread-aware features disabled"
+                        );
+                        None
+                    }
+                }
+            } else {
+                eprintln!("[reconcile] no [backend] config, hierarchy store disabled");
+                None
+            };
+
         Reconciler {
             config,
             queue: WorkQueue::new(),
@@ -189,6 +218,7 @@ impl Reconciler {
             issue_tracker: None,
             compute,
             agents_dir,
+            hierarchy,
         }
     }
 
@@ -1281,10 +1311,11 @@ pub async fn run(
         provider: provider.to_string(),
         overnight,
         compute: cfg.compute,
+        backend: cfg.backend,
         ..Default::default()
     };
 
-    let mut reconciler = Reconciler::new(reconciler_config);
+    let mut reconciler = Reconciler::new(reconciler_config).await;
     if let Ok(api_key) = std::env::var("LINEAR_API_KEY") {
         match crate::linear_tracker::LinearTracker::with_overrides(
             &api_key,
@@ -1360,8 +1391,8 @@ mod tests {
         assert_eq!(cfg.provider, "claude");
     }
 
-    #[test]
-    fn severity_floor_blocks_p3_with_min_priority_2() {
+    #[tokio::test]
+    async fn severity_floor_blocks_p3_with_min_priority_2() {
         // A P3 bead should not pass the severity floor when min_priority=2.
         // This tests the integration point: queue::passes_severity_floor is
         // called in iterate() with self.queue.min_priority (default=2).
@@ -1388,7 +1419,7 @@ mod tests {
         };
 
         let config = ReconcilerConfig::default();
-        let r = Reconciler::new(config);
+        let r = Reconciler::new(config).await;
         // Default min_priority is 2, so P3 (priority=3) should be blocked
         assert!(
             !queue::passes_severity_floor(&bead, r.queue.min_priority),
@@ -1406,20 +1437,20 @@ mod tests {
             ..Default::default()
         };
 
-        let mut reconciler = Reconciler::new(config);
+        let mut reconciler = Reconciler::new(config).await;
         let summary = reconciler.iterate().await.unwrap();
         assert_eq!(summary.scanned, 0);
         assert_eq!(summary.dispatched, 0);
     }
 
-    #[test]
-    fn on_pass_clears_state() {
+    #[tokio::test]
+    async fn on_pass_clears_state() {
         let config = ReconcilerConfig {
             once: true,
             repo: Vec::new(),
             ..Default::default()
         };
-        let mut r = Reconciler::new(config);
+        let mut r = Reconciler::new(config).await;
 
         r.trackers.insert(
             "x".into(),
@@ -1438,15 +1469,15 @@ mod tests {
         assert_eq!(r.trackers["x"].consecutive_reverts, 0);
     }
 
-    #[test]
-    fn on_fail_exit_deadletters_after_max() {
+    #[tokio::test]
+    async fn on_fail_exit_deadletters_after_max() {
         let config = ReconcilerConfig {
             max_retries: 3,
             once: true,
             repo: Vec::new(),
             ..Default::default()
         };
-        let mut r = Reconciler::new(config);
+        let mut r = Reconciler::new(config).await;
 
         // Retries increment: 1, 2, 3 — deadletter at 3 == max_retries
         assert!(!r.on_fail_exit("x")); // retries=1
@@ -1454,15 +1485,15 @@ mod tests {
         assert!(r.on_fail_exit("x")); // retries=3 == max, deadletter
     }
 
-    #[test]
-    fn on_fail_consecutive_reverts_deadletter() {
+    #[tokio::test]
+    async fn on_fail_consecutive_reverts_deadletter() {
         let config = ReconcilerConfig {
             max_retries: 100, // won't hit this
             once: true,
             repo: Vec::new(),
             ..Default::default()
         };
-        let mut r = Reconciler::new(config);
+        let mut r = Reconciler::new(config).await;
 
         // Set initial high tier
         r.trackers.insert(
@@ -1506,7 +1537,7 @@ mod tests {
             repo: Vec::new(),
             ..Default::default()
         };
-        let mut r = Reconciler::new(config);
+        let mut r = Reconciler::new(config).await;
 
         // Simulate: bead "x" was dispatched at generation 42, then failed
         r.trackers.insert(
@@ -1646,8 +1677,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn repo_busy_check_uses_trackers() {
+    #[tokio::test]
+    async fn repo_busy_check_uses_trackers() {
         // When an agent is active on repo "mache", no other bead from
         // "mache" should be triaged. This tests the tracker lookup logic.
         let config = ReconcilerConfig {
@@ -1655,7 +1686,7 @@ mod tests {
             repo: Vec::new(),
             ..Default::default()
         };
-        let mut r = Reconciler::new(config);
+        let mut r = Reconciler::new(config).await;
 
         // Simulate an active agent on repo "mache"
         r.trackers.insert(
