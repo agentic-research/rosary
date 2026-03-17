@@ -82,23 +82,28 @@ defmodule Conductor.AgentWorker do
           repo
       end
 
-    case start_agent_process(pipeline, nil) do
+    # Build partial state so build_prompt can access title/description on first spawn
+    init_state = %__MODULE__{
+      pipeline: pipeline,
+      bead_title: title,
+      bead_description: description,
+      work_dir: work_dir,
+      started_at: DateTime.utc_now()
+    }
+
+    case start_agent_process(pipeline, init_state) do
       {:ok, port, os_pid} ->
         step = Pipeline.current_step(pipeline)
         timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
         validate_ref = schedule_validation(step)
 
         {:ok,
-         %__MODULE__{
-           pipeline: pipeline,
+         %{init_state |
            port: port,
            os_pid: os_pid,
            timeout_ref: timeout_ref,
            validate_ref: validate_ref,
-           started_at: DateTime.utc_now(),
-           work_dir: work_dir,
-           bead_title: title,
-           bead_description: description
+           started_at: DateTime.utc_now()
          }}
 
       {:error, reason} ->
