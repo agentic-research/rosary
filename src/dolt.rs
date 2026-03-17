@@ -697,9 +697,9 @@ impl DoltClient {
     }
 
     #[allow(dead_code)] // API surface for rsry bead search
-    /// Search beads by title or description substring match.
+    /// Search beads by title or description substring match (case-insensitive).
     pub async fn search_beads(&self, query_str: &str, repo_name: &str) -> Result<Vec<Bead>> {
-        let pattern = format!("%{query_str}%");
+        let pattern = format!("%{}%", query_str.to_lowercase());
         let rows = query(
             r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                       i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
@@ -713,7 +713,7 @@ impl DoltClient {
                     ON deps.issue_id = i.id
                LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
                     ON cmt.issue_id = i.id
-               WHERE i.title LIKE ? OR i.description LIKE ?
+               WHERE LOWER(i.title) LIKE ? OR LOWER(i.description) LIKE ?
                ORDER BY i.priority ASC, i.created_at DESC
                LIMIT 50"#,
         )
