@@ -80,10 +80,11 @@ fn pool_options() -> PoolOptions<MySql> {
         .acquire_timeout(std::time::Duration::from_secs(5))
         // Close idle connections after 5 minutes (prevents stale connections).
         .idle_timeout(Some(std::time::Duration::from_secs(300)))
-        // Single connection: MCP stdio is sequential, and session variables
-        // (like @@dolt_transaction_commit) are per-connection. Multiple
-        // connections would require SET on each via after_connect callback.
-        .max_connections(1)
+        // Small pool: multiple rsry processes may share the same Dolt server
+        // (e.g., MCP stdio + HTTP + agent-spawned MCP). Each needs its own
+        // connection. dolt_transaction_commit is set per-connection at
+        // connect time via enable_auto_dolt_commit().
+        .max_connections(3)
 }
 
 /// Client for querying beads from a Dolt server.
@@ -204,19 +205,18 @@ impl DoltClient {
         Ok(client)
     }
 
-    /// Enable dolt_transaction_commit so every SQL transaction auto-creates
-    /// a Dolt commit. This replaces explicit DOLT_COMMIT calls, which were
-    /// a hang risk (slow on large repos, blocks the single-threaded MCP server).
+    /// Enable dolt_transaction_commit at the server level (GLOBAL) so ALL
+    /// connections auto-create Dolt commits. This handles multiple rsry
+    /// processes sharing the same Dolt server (MCP stdio + HTTP + agent MCP).
     ///
     /// With this set, writes are immediately visible to other connections
     /// without a separate commit step — no data loss on timeout.
     async fn enable_auto_dolt_commit(&self) {
-        let result = query("SET @@dolt_transaction_commit = 1")
+        let result = query("SET GLOBAL dolt_transaction_commit = 1")
             .execute(&self.pool)
             .await;
         if let Err(e) = result {
             eprintln!("[dolt] warning: failed to enable dolt_transaction_commit: {e}");
-            eprintln!("[dolt] falling back to explicit DOLT_COMMIT (risk of hangs)");
         }
     }
 
