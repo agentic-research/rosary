@@ -128,13 +128,16 @@ fn classify_section(heading: &str) -> SectionKind {
 /// Extract atoms from a classified section.
 fn extract_atoms_from_section(section: &Section, kind: SectionKind) -> Vec<Atom> {
     match kind {
-        // These sections don't produce actionable atoms
-        SectionKind::References | SectionKind::Status | SectionKind::Other => Vec::new(),
+        // These sections don't produce actionable atoms — they're observations,
+        // rejected paths, or metadata. Creating beads from them produces noise.
+        SectionKind::References
+        | SectionKind::Status
+        | SectionKind::Other
+        | SectionKind::Consequences
+        | SectionKind::Alternatives => Vec::new(),
 
         SectionKind::Context => extract_block_atoms(section, AtomKind::FrictionPoint),
         SectionKind::Decision => extract_block_atoms(section, AtomKind::Decision),
-        SectionKind::Consequences => extract_subsection_atoms(section, AtomKind::Consequence),
-        SectionKind::Alternatives => extract_subsection_atoms(section, AtomKind::Alternative),
         SectionKind::OpenQuestions => extract_list_atoms(section, AtomKind::OpenQuestion),
         SectionKind::Implementation => extract_subsection_atoms(section, AtomKind::Phase),
         SectionKind::Validation => extract_list_atoms(section, AtomKind::ValidationPoint),
@@ -432,13 +435,17 @@ Use OpenAI's `Harmony` token format for a 3-tier lattice.
     }
 
     #[test]
-    fn consequences_split_positive_negative() {
+    fn consequences_skipped_not_actionable() {
         let atoms = parse_adr(SAMPLE_ADR);
         let consequences: Vec<_> = atoms
             .iter()
             .filter(|a| a.kind == AtomKind::Consequence)
             .collect();
-        assert_eq!(consequences.len(), 2, "should split positive and negative");
+        assert_eq!(
+            consequences.len(),
+            0,
+            "consequences are observations, not actionable work"
+        );
     }
 
     #[test]
