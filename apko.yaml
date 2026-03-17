@@ -1,0 +1,41 @@
+# apko.yaml — assemble rsry OCI image
+#
+# apko build apko.yaml rosary:latest rosary.tar
+#
+# Result: distroless OCI image with just the rsry binary.
+# No shell, no package manager. Minimal attack surface.
+
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - ca-certificates-bundle
+    - wolfi-baselayout
+    - rosary
+
+accounts:
+  groups:
+    - groupname: rosary
+      gid: 65533
+  users:
+    - username: rosary
+      uid: 65533
+      gid: 65533
+  run-as: 65533
+
+entrypoint:
+  command: /usr/bin/rsry
+
+cmd: serve
+
+archs:
+  - x86_64
+  - aarch64
+
+annotations:
+  org.opencontainers.image.title: rosary
+  org.opencontainers.image.description: "rsry: autonomous work orchestrator"
+  org.opencontainers.image.source: https://github.com/agentic-research/rosary
+  org.opencontainers.image.licenses: Apache-2.0

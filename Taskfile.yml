@@ -6,6 +6,10 @@ vars:
   LEY_LINE_DIR: '{{.ROOT_DIR}}/../ley-line'
   FUSE_PKG_CONFIG_PATH:
     sh: 'if [ "$(uname)" = "Darwin" ]; then echo "{{.LEY_LINE_DIR}}/rs/pkgconfig"; fi'
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  UNAME_M:
+    sh: uname -m
 
 env:
   PKG_CONFIG_PATH: '{{.FUSE_PKG_CONFIG_PATH}}'
@@ -78,6 +82,22 @@ tasks:
     deps: [build]
     cmds:
       - ./scripts/e2e-sandbox.sh
+
+  apk:
+    desc: Build distroless OCI image via melange + apko (release)
+    cmds:
+      - melange keygen melange.rsa
+      - |
+        melange build melange.yaml \
+          --arch {{.UNAME_M}} \
+          --signing-key melange.rsa \
+          --out-dir ./packages
+      - |
+        apko build apko.yaml \
+          rosary:{{.VERSION}} \
+          rosary.tar \
+          --keyring-append melange.rsa.pub
+      - echo "Built rosary.tar (load with docker load < rosary.tar)"
 
   all:
     desc: fmt + check + lint + test

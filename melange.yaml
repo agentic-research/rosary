@@ -1,0 +1,31 @@
+# melange.yaml — build rsry from source as an APK
+#
+# melange build melange.yaml --arch x86_64,aarch64 \
+#   --signing-key melange.rsa
+
+package:
+  name: rosary
+  version: 0.1.0
+  epoch: 0
+  description: "rsry — autonomous work orchestrator for beads, repos, and review layers"
+  copyright:
+    - license: Apache-2.0
+  dependencies:
+    runtime:
+      - ca-certificates-bundle
+      - libgcc
+
+environment:
+  contents:
+    packages:
+      - build-base
+      - ca-certificates-bundle
+      - rust
+      - cargo
+      - openssl-dev
+
+pipeline:
+  - runs: |
+      cargo build --release --bin rsry
+      install -Dm755 target/release/rsry \
+        "${{targets.destdir}}/usr/bin/rsry"
