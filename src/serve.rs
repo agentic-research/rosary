@@ -301,7 +301,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_decompose",
-                "description": "Decompose a markdown document (ADR, README, etc.) into a decade of threaded beads. Returns the decomposition structure without creating beads.",
+                "description": "EXPERIMENTAL: Decompose a markdown document into a decade of threaded beads. Parser misclassifies ~35% of atoms — review output before creating beads. Returns structure without creating beads.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
