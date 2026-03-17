@@ -343,6 +343,25 @@ impl Reconciler {
         let completed = self.check_completed();
         summary.completed = completed.len();
 
+        // Phase 2.5: BUILD THREAD MAP — pre-compute bead→thread for triage.
+        // Done before triage to avoid async calls inside the triage loop
+        // (which would make iterate() non-Send due to AgentHandle borrows).
+        let thread_map: HashMap<String, String> = if let Some(ref hierarchy) = self.hierarchy {
+            let mut map = HashMap::new();
+            for bead in &beads {
+                let bead_ref = crate::store::BeadRef {
+                    repo: bead.repo.clone(),
+                    bead_id: bead.id.clone(),
+                };
+                if let Ok(Some(thread_id)) = hierarchy.find_thread_for_bead(&bead_ref).await {
+                    map.insert(bead.id.clone(), thread_id);
+                }
+            }
+            map
+        } else {
+            HashMap::new()
+        };
+
         // Phase 3: TRIAGE — score open beads, enqueue above threshold
         let now = chrono::Utc::now();
         for bead in &beads {
@@ -383,6 +402,22 @@ impl Reconciler {
             });
             if repo_busy {
                 continue;
+            }
+
+            // Thread-aware sequencing: same-thread beads are sequential work,
+            // not duplicates. Defer if a thread-mate is currently active.
+            if let Some(thread_id) = thread_map.get(&bead.id) {
+                let thread_mate_active = self
+                    .active
+                    .keys()
+                    .any(|active_id| thread_map.get(active_id).is_some_and(|at| at == thread_id));
+                if thread_mate_active {
+                    eprintln!(
+                        "[thread] deferring {} — thread-mate active (thread {thread_id})",
+                        bead.id
+                    );
+                    continue;
+                }
             }
 
             // Dedup: skip if semantically dominated by an active or queued bead.
