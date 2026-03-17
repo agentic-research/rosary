@@ -1103,6 +1103,64 @@ mod tests {
         assert_eq!(bead.status, "closed", "close_bead must auto_commit");
     }
 
+    /// Regression: when a port file exists, reconnecting must use THAT server,
+    /// not auto-start a fresh empty one. This was the root cause of beads
+    /// "disappearing" after /mcp reconnect — rsry connected to a new empty DB.
+    #[tokio::test]
+    async fn reconnect_uses_existing_server_not_fresh() {
+        let sandbox = match SandboxBeads::new().await {
+            Some(s) => s,
+            None => return,
+        };
+
+        // Create a bead on the original server
+        let client = sandbox.fresh_client().await;
+        client
+            .create_bead("reconnect-1", "Reconnect test", "must survive", 1, "bug")
+            .await
+            .unwrap();
+        drop(client);
+
+        // Simulate /mcp reconnect: fresh_client reads the SAME port file
+        // and must connect to the SAME server, finding the bead.
+        let client2 = sandbox.fresh_client().await;
+        let found = client2.get_bead("reconnect-1", "test").await.unwrap();
+        assert!(
+            found.is_some(),
+            "bead created before reconnect must be visible after reconnect — \
+             if this fails, connect() is auto-starting a fresh empty server \
+             instead of using the existing one on port {}",
+            sandbox.config.port
+        );
+        assert_eq!(found.unwrap().title, "Reconnect test");
+    }
+
+    /// Regression: connect must bail (not auto-start) when port file points
+    /// to a dead server.
+    #[tokio::test]
+    async fn connect_fails_when_known_port_dead() {
+        let tmp = TempDir::new().unwrap();
+        let beads = tmp.path();
+
+        // Write a port file pointing to a port nothing is listening on
+        std::fs::write(beads.join("dolt-server.port"), "19999").unwrap();
+        std::fs::write(beads.join("metadata.json"), r#"{"dolt_database": "beads"}"#).unwrap();
+
+        // Create the dolt data dir so auto-start would try to use it
+        let dolt_dir = beads.join("dolt").join("beads");
+        std::fs::create_dir_all(&dolt_dir).unwrap();
+
+        let config = DoltConfig::from_beads_dir(beads).unwrap();
+        assert_eq!(config.port, 19999);
+
+        let result = DoltClient::connect(&config).await;
+        assert!(
+            result.is_err(),
+            "connect must FAIL when port file exists but server is dead — \
+             not silently auto-start a fresh empty server"
+        );
+    }
+
     // ── Existing tests ──────────────────────────────────────
 
     #[test]
