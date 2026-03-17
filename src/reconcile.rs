@@ -18,8 +18,8 @@ use crate::epic;
 use crate::queue::{self, QueueEntry, WorkQueue};
 use crate::scanner;
 use crate::sync::IssueTracker;
-use crate::thread;
 use crate::verify::{Verifier, VerifySummary};
+use crate::xref;
 
 /// Configuration for the reconciliation loop.
 pub struct ReconcilerConfig {
@@ -286,9 +286,9 @@ impl Reconciler {
         summary.vcs_transitions = self.scan_vcs(&beads).await;
 
         // Phase 1.75: CROSS-REPO SYNC — propagate external refs across repos
-        let ext_refs = thread::find_external_refs(&beads);
+        let ext_refs = xref::find_external_refs(&beads);
         if !ext_refs.is_empty() {
-            thread::sync_external_refs(&ext_refs, &self.dolt_clients, &beads).await;
+            xref::sync_external_refs(&ext_refs, &self.dolt_clients, &beads).await;
         }
 
         // Phase 1.75: AUTO-ASSIGN — set owner on beads without one
