@@ -500,9 +500,9 @@ pub async fn sync(
 
     // --- PUSH: create Linear issues for unlinked beads, store external_ref ---
     // Track thread → Linear parent issue ID for sub-issue creation.
-    // TODO: populate thread_parent_ids when create_linear_issue returns UUIDs
-    // (Linear parentId requires UUID, not identifier like AGE-123)
-    let thread_parent_ids: HashMap<String, String> = HashMap::new();
+    // Maps thread_id → Linear issue UUID. First bead synced in a thread
+    // stores its UUID here; siblings use it as parentId (sub-issues).
+    let mut thread_parent_ids: HashMap<String, String> = HashMap::new();
     let mut created = 0;
     for bead in &beads {
         if bead.external_ref.is_some() || linked_ids.contains(&bead.id) {
@@ -576,13 +576,25 @@ pub async fn sync(
             )
             .await
             {
-                Ok(ident) => {
+                Ok((ident, uuid)) => {
                     crate::cli::sync_created(&ident, &full_title);
                     created += 1;
                     if let Some(dc) = dolt_clients.get(&bead.repo)
                         && let Err(e) = dc.set_external_ref(&bead.id, &ident).await
                     {
                         crate::cli::sync_error(&bead.id, &format!("store ref: {e}"));
+                    }
+                    // Store UUID so siblings in the same thread get this as parentId
+                    if let Some(hier) = hierarchy {
+                        let bead_ref = crate::store::BeadRef {
+                            repo: bead.repo.clone(),
+                            bead_id: bead.id.clone(),
+                        };
+                        if let Ok(Some(thread_id)) = hier.find_thread_for_bead(&bead_ref).await
+                            && !uuid.is_empty()
+                        {
+                            thread_parent_ids.entry(thread_id).or_insert(uuid);
+                        }
                     }
                 }
                 Err(e) => {
@@ -695,7 +707,8 @@ async fn find_or_create_label(
 }
 
 /// Create a new issue in Linear with bead ID tagged in description.
-/// Returns the issue identifier (e.g., "AGE-5").
+/// Returns (identifier, uuid) — e.g., ("AGE-5", "abc-def-123").
+/// The UUID is needed for parentId when creating sub-issues.
 #[allow(clippy::too_many_arguments)]
 async fn create_linear_issue(
     client: &reqwest::Client,
@@ -708,7 +721,7 @@ async fn create_linear_issue(
     perspective_labels: &[String],
     project_id: Option<&str>,
     parent_id: Option<&str>,
-) -> Result<String> {
+) -> Result<(String, String)> {
     // Tag the description with bead ID for bidirectional linkage
     let tagged_description = format!("{description}\n\n<!-- bead:{bead_id} repo:{repo_name} -->",);
     let mutation = r#"
@@ -716,6 +729,7 @@ async fn create_linear_issue(
             issueCreate(input: $input) {
                 success
                 issue {
+                    id
                     identifier
                     title
                 }
@@ -779,9 +793,16 @@ async fn create_linear_issue(
     let identifier = resp
         .pointer("/data/issueCreate/issue/identifier")
         .and_then(|v| v.as_str())
-        .unwrap_or("???");
+        .unwrap_or("???")
+        .to_string();
 
-    Ok(identifier.to_string())
+    let uuid = resp
+        .pointer("/data/issueCreate/issue/id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Ok((identifier, uuid))
 }
 
 /// Update a Linear issue's workflow state.
