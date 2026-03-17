@@ -150,7 +150,8 @@ fn tool_definitions() -> Value {
                         "issue_type": { "type": "string", "description": "Issue type (bug, task, feature, review, epic)", "default": "task" },
                         "owner": { "type": "string", "description": "Agent owner (dev-agent, staging-agent, etc.). Auto-assigned from issue_type if omitted." },
                         "files": { "type": "array", "items": { "type": "string" }, "description": "Source files this bead touches. CRITICAL: these scope parallel dispatch — has_file_overlap() (epic.rs:386-393) blocks concurrent beads sharing files, and reconcile.rs:372-380 enforces it at dispatch time. Set scopes ONLY after reading the code; guessed scopes cause false-negative overlap and agent collisions. Include both files being modified AND files needing wiring changes (imports, call sites). New files are safe — no overlap possible." },
-                        "test_files": { "type": "array", "items": { "type": "string" }, "description": "Test files to validate the change. Also checked for overlap — two beads sharing a test file will be serialized, not parallelized." }
+                        "test_files": { "type": "array", "items": { "type": "string" }, "description": "Test files to validate the change. Also checked for overlap — two beads sharing a test file will be serialized, not parallelized." },
+                        "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Bead IDs this bead depends on (blocked until they complete). Creates entries in the dependencies table." }
                     },
                     "required": ["repo_path", "title"]
                 }
@@ -197,6 +198,20 @@ fn tool_definitions() -> Value {
                         "body": { "type": "string", "description": "Comment text" }
                     },
                     "required": ["repo_path", "id", "body"]
+                }
+            },
+            {
+                "name": "rsry_bead_link",
+                "description": "Add or remove a dependency between beads. Use to express 'A depends on B' (A is blocked until B completes).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "id": { "type": "string", "description": "Bead ID that depends on another" },
+                        "depends_on": { "type": "string", "description": "Bead ID that must complete first" },
+                        "remove": { "type": "boolean", "description": "If true, removes the dependency instead of adding", "default": false }
+                    },
+                    "required": ["repo_path", "id", "depends_on"]
                 }
             },
             {
@@ -392,6 +407,7 @@ async fn call_tool(
         "rsry_bead_update" => tool_bead_update(args, pool).await,
         "rsry_bead_close" => tool_bead_close(args, pool).await,
         "rsry_bead_comment" => tool_bead_comment(args, pool).await,
+        "rsry_bead_link" => tool_bead_link(args, pool).await,
         "rsry_bead_search" => tool_bead_search(args, pool).await,
         "rsry_dispatch" => tool_dispatch(args, config_path).await,
         "rsry_active" => tool_active().await,
@@ -581,6 +597,20 @@ async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
         client.set_files(&id, &files, &test_files).await?;
     }
 
+    // Wire dependencies if provided
+    let depends_on: Vec<String> = args
+        .get("depends_on")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for dep_id in &depends_on {
+        client.add_dependency(&id, dep_id).await?;
+    }
+
     Ok(json!({ "id": id, "title": title, "priority": priority, "owner": owner }))
 }
 
@@ -671,6 +701,32 @@ async fn tool_bead_comment(args: &Value, pool: &RepoPool) -> Result<Value> {
     }
 
     Ok(json!({ "id": id, "comment_added": true }))
+}
+
+async fn tool_bead_link(args: &Value, pool: &RepoPool) -> Result<Value> {
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    let id = args["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("id required"))?;
+    let depends_on = args["depends_on"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("depends_on required"))?;
+    let remove = args
+        .get("remove")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let client = get_client(repo_path, pool).await?;
+
+    if remove {
+        client.remove_dependency(id, depends_on).await?;
+        Ok(json!({ "id": id, "depends_on": depends_on, "action": "removed" }))
+    } else {
+        client.add_dependency(id, depends_on).await?;
+        Ok(json!({ "id": id, "depends_on": depends_on, "action": "added" }))
+    }
 }
 
 async fn tool_bead_search(args: &Value, pool: &RepoPool) -> Result<Value> {
