@@ -494,14 +494,19 @@ defmodule Conductor.AgentWorker do
       end
 
     try do
+      # Use /bin/sh with stdin from /dev/null. Claude Code hangs if
+      # stdin is an Erlang pipe (waits for interactive permission input).
+      # Shell-escape each arg to handle newlines/quotes in prompts.
+      escaped_args = Enum.map_join([binary | args], " ", &shell_escape/1)
+
       port =
         Port.open(
-          {:spawn_executable, System.find_executable(binary)},
+          {:spawn_executable, ~c"/bin/sh"},
           [
             :binary,
             :exit_status,
             {:line, 65_536},
-            args: args,
+            args: ["-c", "exec #{escaped_args} < /dev/null"],
             cd: to_charlist(work_dir)
           ]
         )
@@ -817,5 +822,10 @@ defmodule Conductor.AgentWorker do
   defp agent_binary(_agent_name) do
     provider = Application.get_env(:conductor, :agent_provider, "claude")
     Map.get(@provider_binaries, provider, provider)
+  end
+
+  # Shell-escape a string with single quotes (POSIX-safe).
+  defp shell_escape(s) do
+    "'" <> String.replace(s, "'", "'\\''") <> "'"
   end
 end
