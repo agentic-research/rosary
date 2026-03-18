@@ -10,7 +10,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-#[cfg(feature = "leyline")]
 use leyline_vcs::JjIntegration;
 
 #[allow(dead_code)] // API surface — wired when main.rs calls ensure_state_dir on startup
@@ -32,7 +31,6 @@ pub fn ensure_state_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-#[cfg(feature = "leyline")]
 #[allow(dead_code)]
 /// Initialize a jj repo in the state directory if one doesn't exist.
 ///
