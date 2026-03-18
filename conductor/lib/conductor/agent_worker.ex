@@ -505,7 +505,7 @@ defmodule Conductor.AgentWorker do
       # interactive permission input (same effect as < /dev/null).
       port =
         Port.open(
-          {:spawn_executable, to_charlist(binary)},
+          {:spawn_executable, System.find_executable(binary)},
           [
             :binary,
             :exit_status,
@@ -828,5 +828,4 @@ defmodule Conductor.AgentWorker do
     provider = Application.get_env(:conductor, :agent_provider, "claude")
     Map.get(@provider_binaries, provider, provider)
   end
-
 end

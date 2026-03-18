@@ -11,7 +11,7 @@ repos:
 
   # Basic file hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
@@ -22,7 +22,7 @@ repos:
       - id: check-case-conflict
       - id: mixed-line-ending
 
-  # Rust-specific checks (all use locally installed tools)
+  # Rust-specific checks (Incremental, Full-Crate Check)
   - repo: local
     hooks:
       - id: cargo-fmt
@@ -44,5 +44,29 @@ repos:
         entry: bash -c 'ROOT="$(git rev-parse --show-toplevel)" && cd "$ROOT" && PKG_CONFIG_PATH="${LEY_LINE_DIR:-$ROOT/../ley-line}/rs/pkgconfig" cargo test --quiet'
         language: system
         files: \.rs$
+        pass_filenames: false
+        stages: [pre-push]
+
+      # Elixir-specific checks (Lightning fast, targeting modified files)
+      - id: mix-format
+        name: mix format
+        # "${@#conductor/}" strips the 'conductor/' prefix from the file paths passed by pre-commit
+        entry: bash -c 'cd "$(git rev-parse --show-toplevel)/conductor" && exec mix format --check-formatted "${@#conductor/}"' --
+        language: system
+        files: ^conductor/.*\.exs?$
+        pass_filenames: true
+
+      - id: mix-credo
+        name: mix credo
+        entry: bash -c 'cd "$(git rev-parse --show-toplevel)/conductor" && exec mix credo --strict "${@#conductor/}"' --
+        language: system
+        files: ^conductor/.*\.exs?$
+        pass_filenames: true
+
+      - id: mix-test
+        name: mix test
+        entry: bash -c 'cd "$(git rev-parse --show-toplevel)/conductor" && mix test --color'
+        language: system
+        files: ^conductor/.*\.exs?$
         pass_filenames: false
         stages: [pre-push]
