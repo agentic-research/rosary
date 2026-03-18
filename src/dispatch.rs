@@ -168,6 +168,12 @@ impl AgentProvider for ClaudeProvider {
                 "json",
             ])
             .current_dir(work_dir)
+            // Prevent git env vars from leaking into the agent — these override
+            // cwd-based repo discovery and can cause the agent to resolve to the
+            // main repo instead of its isolated worktree.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::inherit())
@@ -217,6 +223,9 @@ impl AgentProvider for GeminiProvider {
         }
         let child = cmd
             .current_dir(work_dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::inherit())
@@ -259,6 +268,9 @@ impl AgentProvider for AcpCliProvider {
             .with_context(|| format!("creating stream log {}", log_path.display()))?;
         let child = tokio::process::Command::new(&self.binary)
             .current_dir(work_dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .stdin(std::process::Stdio::piped())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log_file))
@@ -359,11 +371,18 @@ pub fn build_prompt(bead: &Bead, repo_path: &str, workspace: Option<&Path>) -> S
         })
         .unwrap_or_default();
 
+    // Use workspace path for Repo: line (agent's actual working directory)
+    // to prevent agents from resolving absolute paths against the main repo.
+    // Keep repo_path for MCP bead tools where .beads/ lives.
+    let work_repo = workspace
+        .map(|ws| ws.display().to_string())
+        .unwrap_or_else(|| repo_path.to_string());
+
     format!(
         "Fix this issue. Make the minimal change needed.\n\
          \n\
          Bead ID: {bead_id}\n\
-         Repo: {repo}\n\
+         Repo: {work_repo}\n\
          Title: {title}\n\
          Description: {desc}\n\
          {handoff}\
@@ -371,10 +390,11 @@ pub fn build_prompt(bead: &Bead, repo_path: &str, workspace: Option<&Path>) -> S
          After fixing:\n\
          1. Run tests via `task test` (not raw cargo/go test)\n\
          2. Commit your changes (git add + git commit with bead:{bead_id} in message)\n\
-         3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"{repo}\" and id=\"{bead_id}\"\n\
+         3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"{bead_repo}\" and id=\"{bead_id}\"\n\
          4. Report what you changed",
         bead_id = bead.id,
-        repo = repo_path,
+        bead_repo = repo_path,
+        work_repo = work_repo,
         title = bead.title,
         desc = bead.description,
         handoff = handoff_context,
@@ -783,6 +803,55 @@ mod tests {
         assert!(
             prompt.contains("rsry_bead_close"),
             "prompt should instruct agent to close bead"
+        );
+    }
+
+    /// Regression: when a workspace is provided, the Repo: line must point
+    /// to the workspace (where the agent works), NOT the main repo.
+    /// The MCP bead_close instruction must still use the main repo path
+    /// (where .beads/ lives). This prevents agents from writing changes
+    /// to the main working tree instead of their isolated worktree.
+    #[test]
+    fn build_prompt_uses_workspace_for_repo_line() {
+        let bead = Bead {
+            id: "iso-1".into(),
+            title: "Test isolation".into(),
+            description: "Ensure workspace isolation".into(),
+            status: "open".into(),
+            priority: 1,
+            issue_type: "bug".into(),
+            owner: None,
+            repo: "test".into(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            dependency_count: 0,
+            dependent_count: 0,
+            comment_count: 0,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
+            external_ref: None,
+            files: Vec::new(),
+            test_files: Vec::new(),
+        };
+
+        let ws = PathBuf::from("/home/user/.rsry/worktrees/myrepo/iso-1");
+        let prompt = build_prompt(&bead, "/home/user/repos/myrepo", Some(&ws));
+
+        // Repo: line must show the WORKSPACE path (agent's working directory)
+        assert!(
+            prompt.contains("Repo: /home/user/.rsry/worktrees/myrepo/iso-1"),
+            "Repo: line must point to workspace, not main repo. Got:\n{prompt}"
+        );
+        // MCP bead_close must still use the MAIN repo path (where .beads/ lives)
+        assert!(
+            prompt.contains("repo_path=\"/home/user/repos/myrepo\""),
+            "bead_close repo_path must point to main repo. Got:\n{prompt}"
+        );
+        // Repo: line must NOT contain the main repo path
+        assert!(
+            !prompt.contains("Repo: /home/user/repos/myrepo"),
+            "Repo: line must NOT show main repo path when workspace exists. Got:\n{prompt}"
         );
     }
 
