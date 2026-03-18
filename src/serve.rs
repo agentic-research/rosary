@@ -2299,7 +2299,10 @@ mod tests {
 
     #[test]
     fn validate_origin_allows_extra_origins_from_env() {
-        std::env::set_var("RSRY_ALLOWED_ORIGINS", "https://mcp.q-q.dev,https://other.example.com");
+        std::env::set_var(
+            "RSRY_ALLOWED_ORIGINS",
+            "https://mcp.q-q.dev,https://other.example.com",
+        );
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("origin", "https://mcp.q-q.dev".parse().unwrap());
         assert!(validate_origin(&headers).is_ok());
