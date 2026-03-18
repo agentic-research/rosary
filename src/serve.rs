@@ -1559,10 +1559,14 @@ fn validate_origin(
     use axum::response::IntoResponse;
     if let Some(origin) = headers.get("origin") {
         let o = origin.to_str().unwrap_or("");
+        let extra_origins = std::env::var("RSRY_ALLOWED_ORIGINS").unwrap_or_default();
         let allowed = o.starts_with("http://localhost")
             || o.starts_with("http://127.0.0.1")
             || o.starts_with("https://localhost")
-            || o.starts_with("https://127.0.0.1");
+            || o.starts_with("https://127.0.0.1")
+            || extra_origins
+                .split(',')
+                .any(|a| !a.trim().is_empty() && o.starts_with(a.trim()));
         if !allowed {
             return Err((axum::http::StatusCode::FORBIDDEN, "Origin not allowed").into_response());
         }
@@ -1962,9 +1966,10 @@ async fn run_http(config_path: &str, port: u16) -> Result<()> {
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    let bind = std::env::var("RSRY_BIND").unwrap_or_else(|_| "127.0.0.1".into());
+    let listener = tokio::net::TcpListener::bind((bind.as_str(), port)).await?;
     eprintln!(
-        "[rsry-mcp] HTTP server listening on http://127.0.0.1:{port}/mcp ({} repos: {})",
+        "[rsry-mcp] HTTP server listening on http://{bind}:{port}/mcp ({} repos: {})",
         pool.len(),
         pool.repo_names().join(", ")
     );
@@ -2290,6 +2295,21 @@ mod tests {
     fn validate_origin_allows_no_origin() {
         let headers = axum::http::HeaderMap::new();
         assert!(validate_origin(&headers).is_ok());
+    }
+
+    #[test]
+    fn validate_origin_allows_extra_origins_from_env() {
+        std::env::set_var("RSRY_ALLOWED_ORIGINS", "https://mcp.q-q.dev,https://other.example.com");
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("origin", "https://mcp.q-q.dev".parse().unwrap());
+        assert!(validate_origin(&headers).is_ok());
+
+        headers.insert("origin", "https://other.example.com/path".parse().unwrap());
+        assert!(validate_origin(&headers).is_ok());
+
+        headers.insert("origin", "https://evil.com".parse().unwrap());
+        assert!(validate_origin(&headers).is_err());
+        std::env::remove_var("RSRY_ALLOWED_ORIGINS");
     }
 
     #[test]
