@@ -140,10 +140,6 @@ defmodule Conductor.AgentWorker do
       "[worker] #{bead_id}: #{agent} exited (code=#{code}, acp=#{state.acp_stop_reason || "n/a"}, #{elapsed}s)"
     )
 
-    # With :nouse_stdio, session_id isn't captured from pipe output.
-    # TODO: capture from .rsry-stream.jsonl when we add file-based output.
-    # For now, retry starts a fresh session (no --resume).
-
     if effective_success do
       on_success(state)
     else
@@ -503,17 +499,18 @@ defmodule Conductor.AgentWorker do
       end
 
     try do
-      # :nouse_stdio — no pipes. stdin/stdout are NOT connected to the
-      # Port, so Claude Code gets /dev/null stdin (no interactive hang)
-      # and writes stdout to its own stream log. We only need :exit_status
-      # from the Port. Agent output is read from .rsry-stream.jsonl
-      # post-completion (same file the Rust dispatcher writes to).
+      # Spawn the executable directly (no /bin/sh wrapper) so the Port
+      # sees the real process exit_status. Use :out (output-only) so
+      # stdin is not connected — prevents Claude Code from hanging on
+      # interactive permission input (same effect as < /dev/null).
       port =
         Port.open(
           {:spawn_executable, System.find_executable(binary)},
           [
-            :nouse_stdio,
+            :binary,
             :exit_status,
+            :out,
+            {:line, 65_536},
             args: args,
             cd: to_charlist(work_dir)
           ]
@@ -831,5 +828,4 @@ defmodule Conductor.AgentWorker do
     provider = Application.get_env(:conductor, :agent_provider, "claude")
     Map.get(@provider_binaries, provider, provider)
   end
-
 end
