@@ -2299,10 +2299,13 @@ mod tests {
 
     #[test]
     fn validate_origin_allows_extra_origins_from_env() {
-        std::env::set_var(
-            "RSRY_ALLOWED_ORIGINS",
-            "https://mcp.q-q.dev,https://other.example.com",
-        );
+        // SAFETY: test is single-threaded; no other code reads this env var concurrently
+        unsafe {
+            std::env::set_var(
+                "RSRY_ALLOWED_ORIGINS",
+                "https://mcp.q-q.dev,https://other.example.com",
+            );
+        }
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("origin", "https://mcp.q-q.dev".parse().unwrap());
         assert!(validate_origin(&headers).is_ok());
@@ -2312,7 +2315,10 @@ mod tests {
 
         headers.insert("origin", "https://evil.com".parse().unwrap());
         assert!(validate_origin(&headers).is_err());
-        std::env::remove_var("RSRY_ALLOWED_ORIGINS");
+        // SAFETY: test is single-threaded; no other code reads this env var concurrently
+        unsafe {
+            std::env::remove_var("RSRY_ALLOWED_ORIGINS");
+        }
     }
 
     #[test]
