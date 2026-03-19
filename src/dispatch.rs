@@ -362,9 +362,7 @@ impl AgentHandle {
 /// role-appropriate instructions rather than a generic "fix this" prompt.
 fn task_framing(agent_name: Option<&str>) -> &'static str {
     match agent_name.unwrap_or("dev-agent") {
-        "staging-agent" => {
-            "Review this change. Verify tests validate real behavior, not mocks."
-        }
+        "staging-agent" => "Review this change. Verify tests validate real behavior, not mocks.",
         "prod-agent" => {
             "Audit this code for production readiness: resource leaks, error handling, concurrency."
         }
@@ -437,10 +435,8 @@ pub fn build_prompt(
          3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"{bead_repo}\" and id=\"{bead_id}\"\n\
          4. Report what you changed\n\
          </instructions>",
-        framing = framing,
         bead_id = bead.id,
         bead_repo = repo_path,
-        work_repo = work_repo,
         title = bead.title,
         desc = bead.description,
         handoff = handoff_section,
