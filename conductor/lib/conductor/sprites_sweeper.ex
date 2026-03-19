@@ -86,8 +86,7 @@ defmodule Conductor.SpritesSweeper do
             []
         end
 
-      active_sprite_names =
-        MapSet.new(active_bead_ids, &Conductor.SpritesClient.sprite_name/1)
+      active_sprite_names = MapSet.new(active_bead_ids, &Conductor.SpritesClient.sprite_name/1)
 
       sprites_client =
         Application.get_env(:conductor, :sprites_client_mod, Conductor.SpritesClient)

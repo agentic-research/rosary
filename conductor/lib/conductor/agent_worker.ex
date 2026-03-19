@@ -99,8 +99,7 @@ defmodule Conductor.AgentWorker do
         validate_ref = schedule_validation(step)
 
         # For sprites, os_pid is the sprite name (string)
-        sprite_name =
-          if is_binary(os_pid), do: os_pid, else: (init_state.sprite_name || nil)
+        sprite_name = if is_binary(os_pid), do: os_pid, else: init_state.sprite_name || nil
 
         {:ok,
          %{
@@ -181,8 +180,7 @@ defmodule Conductor.AgentWorker do
         timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
         validate_ref = schedule_validation(step)
 
-        sprite_name =
-          if is_binary(os_pid), do: os_pid, else: state.sprite_name
+        sprite_name = if is_binary(os_pid), do: os_pid, else: state.sprite_name
 
         {:noreply,
          %{
@@ -337,7 +335,9 @@ defmodule Conductor.AgentWorker do
 
     # Destroy sprite on terminal exit (success or deadletter)
     if state.sprite_name && reason == :normal do
-      sprites_client = Application.get_env(:conductor, :sprites_client_mod, Conductor.SpritesClient)
+      sprites_client =
+        Application.get_env(:conductor, :sprites_client_mod, Conductor.SpritesClient)
+
       sprites_client.destroy_sprite(state.sprite_name)
       Logger.info("[worker] #{bead_id}: destroyed sprite #{state.sprite_name}")
     end
@@ -403,8 +403,7 @@ defmodule Conductor.AgentWorker do
             timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
             validate_ref = schedule_validation(step)
 
-            sprite_name =
-              if is_binary(os_pid), do: os_pid, else: state.sprite_name
+            sprite_name = if is_binary(os_pid), do: os_pid, else: state.sprite_name
 
             {:noreply,
              %{
@@ -626,7 +625,8 @@ defmodule Conductor.AgentWorker do
       else
         with {:ok, _} <- sprites_client.create_sprite(sprite_name, %{}),
              :ok <- sprites_client.set_network_policy(sprite_name),
-             clone_cmd = "git clone --depth=1 https://#{github_token}@github.com/#{repo_to_github_path(repo)} /workspace",
+             clone_cmd =
+               "git clone --depth=1 https://#{github_token}@github.com/#{repo_to_github_path(repo)} /workspace",
              {:ok, _} <- sprites_client.exec_sync(sprite_name, clone_cmd, %{}) do
           :ok
         end

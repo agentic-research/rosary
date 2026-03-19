@@ -119,9 +119,7 @@ defmodule Conductor.SpritesExec do
 
   @impl true
   def handle_disconnect(%{reason: {:remote, code, _}}, state) do
-    Logger.warning(
-      "[sprites_exec] #{state.sprite_name}: disconnected (code=#{code})"
-    )
+    Logger.warning("[sprites_exec] #{state.sprite_name}: disconnected (code=#{code})")
 
     # If we never got an exit frame, treat disconnect as crash
     send(state.worker_pid, {self(), {:exit_status, 1}})
@@ -129,9 +127,7 @@ defmodule Conductor.SpritesExec do
   end
 
   def handle_disconnect(%{reason: reason}, state) do
-    Logger.warning(
-      "[sprites_exec] #{state.sprite_name}: disconnected (#{inspect(reason)})"
-    )
+    Logger.warning("[sprites_exec] #{state.sprite_name}: disconnected (#{inspect(reason)})")
 
     send(state.worker_pid, {self(), {:exit_status, 1}})
     {:ok, state}

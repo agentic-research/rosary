@@ -384,7 +384,9 @@ defmodule Conductor.AgentWorkerTest do
       # verify it started successfully with a pid-based agent
       state = AgentWorker.get_state(worker_pid)
       assert state.bead_id == "bead-sprite-name-1"
-      assert is_pid(state.os_pid) or is_binary(state.os_pid) or is_binary("rsry-bead-sprite-name-1")
+
+      assert is_pid(state.os_pid) or is_binary(state.os_pid) or
+               is_binary("rsry-bead-sprite-name-1")
 
       cleanup_worker(worker_pid)
     end
