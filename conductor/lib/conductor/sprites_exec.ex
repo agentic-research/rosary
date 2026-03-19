@@ -52,6 +52,17 @@ defmodule Conductor.SpritesExec do
     )
   end
 
+  @doc """
+  Send data to the remote process stdin via WebSocket.
+
+  Uses 0x00 prefix to signal stdin data to the Sprites exec endpoint,
+  mirroring the 0x01 (stdout) / 0x02 (stderr) output prefixes.
+  """
+  def send_input(pid, data) do
+    binary_data = IO.iodata_to_binary(data)
+    WebSockex.send_frame(pid, {:binary, <<0x00, binary_data::binary>>})
+  end
+
   defp sprites_client do
     Application.get_env(:conductor, :sprites_client_mod, Conductor.SpritesClient)
   end

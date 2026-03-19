@@ -68,7 +68,7 @@ defmodule Conductor.SpritesSweeper do
     else
       # Get active worker bead IDs
       active_bead_ids =
-        case Conductor.AgentSupervisor.which_children() do
+        case Conductor.AgentSupervisor.which_agents() do
           children when is_list(children) ->
             children
             |> Enum.flat_map(fn {_, pid, _, _} ->

@@ -55,18 +55,7 @@ defmodule Conductor.AcpClient do
     Logger.info("[acp] started #{binary} (pid=#{os_pid})")
 
     # Initialize the ACP session
-    send_jsonrpc(port, 0, "initialize", %{
-      protocolVersion: 1,
-      clientCapabilities: %{
-        fs: %{readTextFile: true, writeTextFile: true},
-        terminal: true
-      },
-      clientInfo: %{
-        name: "conductor",
-        title: "Rosary Conductor",
-        version: "0.1.0"
-      }
-    })
+    send_initialize(port)
 
     notify_pid = opts[:notify_pid]
     if notify_pid, do: send(notify_pid, {:acp, :initialized, os_pid})
@@ -209,11 +198,36 @@ defmodule Conductor.AcpClient do
     end
   end
 
-  # -- Private --
+  @doc """
+  Send the ACP initialize message to a handle.
 
-  # ACP adapters are separate binaries, not CLI flags.
-  # The binary IS the ACP server — no args needed.
-  defp acp_args(_binary), do: []
+  Previously done inside `start/3`, now called separately so the provider
+  handles spawning and we handle protocol.
+  """
+  def send_initialize(handle) do
+    send_jsonrpc(handle, 0, "initialize", %{
+      protocolVersion: 1,
+      clientCapabilities: %{
+        fs: %{readTextFile: true, writeTextFile: true},
+        terminal: true
+      },
+      clientInfo: %{
+        name: "conductor",
+        title: "Rosary Conductor",
+        version: "0.1.0"
+      }
+    })
+  end
+
+  @doc """
+  Return command-line args for an ACP binary.
+
+  ACP adapters are separate binaries, not CLI flags.
+  The binary IS the ACP server — no args needed.
+  """
+  def acp_args(_binary), do: []
+
+  # -- Private --
 
   defp parse_acp_message(%{
          "method" => "session/request_permission",
@@ -260,13 +274,20 @@ defmodule Conductor.AcpClient do
     {:ok, {:unknown, other}}
   end
 
-  defp send_jsonrpc(port, id, method, params) do
+  defp send_jsonrpc(handle, id, method, params) do
     msg = Jason.encode!(%{jsonrpc: "2.0", id: id, method: method, params: params})
-    Port.command(port, msg <> "\n")
+    send_to(handle, msg <> "\n")
   end
 
-  defp send_jsonrpc_response(port, id, result) do
+  defp send_jsonrpc_response(handle, id, result) do
     msg = Jason.encode!(%{jsonrpc: "2.0", id: id, result: result})
-    Port.command(port, msg <> "\n")
+    send_to(handle, msg <> "\n")
   end
+
+  # Dispatch to the right transport based on handle type.
+  # Port handles use Port.command; pid handles (SpritesExec) use WebSocket.
+  defp send_to(handle, data) when is_port(handle), do: Port.command(handle, data)
+
+  defp send_to(handle, data) when is_pid(handle),
+    do: Conductor.SpritesExec.send_input(handle, data)
 end

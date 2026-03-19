@@ -362,7 +362,7 @@ defmodule Conductor.AgentWorkerTest do
       assert comment =~ "Pipeline complete"
     end
 
-    test "worker stores sprite_name when os_pid is a string" do
+    test "worker stores provider_name when os_pid is a string" do
       Application.put_env(:conductor, :agent_spawn_fn, fn pipeline ->
         agent = Conductor.Pipeline.current_agent(pipeline)
         send(self(), {:agent_spawned, pipeline.bead_id, agent})
@@ -380,7 +380,7 @@ defmodule Conductor.AgentWorkerTest do
       {:ok, worker_pid} = AgentWorker.start_link(bead)
       assert_receive {:agent_spawned, _, _}, 1_000
 
-      # The worker doesn't expose sprite_name in get_state, but we can
+      # The worker doesn't expose provider_name in get_state, but we can
       # verify it started successfully with a pid-based agent
       state = AgentWorker.get_state(worker_pid)
       assert state.bead_id == "bead-sprite-name-1"
