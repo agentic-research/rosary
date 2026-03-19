@@ -89,7 +89,8 @@ defmodule Conductor.AgentWorker do
       bead_title: title,
       bead_description: description,
       work_dir: work_dir,
-      started_at: DateTime.utc_now()
+      started_at: DateTime.utc_now(),
+      provider_name: provider_name(bead_id)
     }
 
     case start_agent_process(pipeline, init_state) do

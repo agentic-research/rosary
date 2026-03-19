@@ -22,7 +22,7 @@ defmodule Conductor.Provider do
   """
 
   @type handle :: port() | pid()
-  @type identifier :: integer() | String.t()
+  @type provider_id :: integer() | String.t()
 
   @doc "Set up compute environment (create VM, clone repo, etc.). No-op for local."
   @callback provision(name :: String.t(), repo :: String.t(), opts :: map()) ::
@@ -41,7 +41,7 @@ defmodule Conductor.Provider do
               work_dir :: String.t(),
               env :: map(),
               worker_pid :: pid()
-            ) :: {:ok, handle(), identifier()} | {:error, term()}
+            ) :: {:ok, handle(), provider_id()} | {:error, term()}
 
   @doc "Send data to process stdin. Used by ACP for JSON-RPC messages."
   @callback send_input(handle(), data :: iodata()) :: :ok | {:error, term()}
