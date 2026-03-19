@@ -451,8 +451,7 @@ pub const PROMPT_VERSION: &str = "v0.2.0";
 /// Tells agents about available MCP tools, workflow expectations,
 /// and bead lifecycle management.
 const AGENT_SYSTEM_PROMPT: &str = "\
-You are a rosary-dispatched agent working on a bead (work item). \
-Prompt version: v0.2.0\n\
+You are a rosary-dispatched agent working on a bead (work item).\n\
 \n\
 ## Available Tools\n\
 - **mache MCP** (`mcp__mache__*`): Structural code navigation — \
@@ -527,7 +526,9 @@ fn load_golden_rules(agents_dir: &Path) -> Option<String> {
 ///
 /// Falls back gracefully — missing files produce warnings, not errors.
 pub fn build_system_prompt(agent_name: Option<&str>, agents_dir: Option<&Path>) -> String {
-    let mut parts = vec![AGENT_SYSTEM_PROMPT.to_string()];
+    let mut parts = vec![format!(
+        "Prompt version: {PROMPT_VERSION}\n\n{AGENT_SYSTEM_PROMPT}"
+    )];
 
     if let Some(dir) = agents_dir {
         if let Some(rules) = load_golden_rules(dir) {
@@ -968,9 +969,10 @@ mod tests {
             PROMPT_VERSION.starts_with('v'),
             "PROMPT_VERSION should start with 'v'"
         );
+        let assembled = build_system_prompt(None, None);
         assert!(
-            AGENT_SYSTEM_PROMPT.contains(PROMPT_VERSION),
-            "system prompt should contain version"
+            assembled.contains(PROMPT_VERSION),
+            "assembled system prompt should contain version"
         );
     }
 
