@@ -30,6 +30,7 @@ defmodule Conductor.AgentWorker do
     :session_id,
     :bead_title,
     :bead_description,
+    :sprite_name,
     pending_tools: %{},
     acp_stop_reason: nil,
     validate_ref: nil
@@ -97,6 +98,10 @@ defmodule Conductor.AgentWorker do
         timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
         validate_ref = schedule_validation(step)
 
+        # For sprites, os_pid is the sprite name (string)
+        sprite_name =
+          if is_binary(os_pid), do: os_pid, else: (init_state.sprite_name || nil)
+
         {:ok,
          %{
            init_state
@@ -104,7 +109,8 @@ defmodule Conductor.AgentWorker do
              os_pid: os_pid,
              timeout_ref: timeout_ref,
              validate_ref: validate_ref,
-             started_at: DateTime.utc_now()
+             started_at: DateTime.utc_now(),
+             sprite_name: sprite_name
          }}
 
       {:error, reason} ->
@@ -158,10 +164,10 @@ defmodule Conductor.AgentWorker do
     Logger.warning("[timeout] #{bead_id}: killing #{agent} (pid=#{state.os_pid})")
 
     if state.validate_ref, do: Process.cancel_timer(state.validate_ref)
-    if state.port, do: Port.close(state.port)
+    if state.port, do: close_agent(state.port)
 
     pipeline = Pipeline.record(state.pipeline, :timeout, "exceeded #{step.timeout_ms}ms")
-    # Port close will trigger exit_status message
+    # Port/process close will trigger exit_status message
     {:noreply, %{state | pipeline: pipeline, validate_ref: nil}}
   end
 
@@ -175,6 +181,9 @@ defmodule Conductor.AgentWorker do
         timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
         validate_ref = schedule_validation(step)
 
+        sprite_name =
+          if is_binary(os_pid), do: os_pid, else: state.sprite_name
+
         {:noreply,
          %{
            state
@@ -183,7 +192,8 @@ defmodule Conductor.AgentWorker do
              timeout_ref: timeout_ref,
              validate_ref: validate_ref,
              started_at: DateTime.utc_now(),
-             acp_stop_reason: nil
+             acp_stop_reason: nil,
+             sprite_name: sprite_name
          }}
 
       {:error, reason} ->
@@ -236,7 +246,7 @@ defmodule Conductor.AgentWorker do
                   "Validation failed during #{agent}, killing: #{truncate(output, 500)}"
                 )
 
-                if state.port, do: Port.close(state.port)
+                if state.port, do: close_agent(state.port)
                 pipeline = Pipeline.record(state.pipeline, :fail, "validation: #{command}")
                 {:noreply, %{state | pipeline: pipeline, validate_ref: nil}}
 
@@ -315,14 +325,21 @@ defmodule Conductor.AgentWorker do
       "[worker] #{bead_id}: terminated (#{done}/#{total} phases, reason=#{inspect(reason)})"
     )
 
-    # Clean up the Port if still open
-    if state.port && Port.info(state.port) != nil do
-      Port.close(state.port)
+    # Clean up the Port/process if still open
+    if state.port && agent_alive?(state.port) do
+      close_agent(state.port)
     end
 
     # Clean up workspace (best-effort — may already be cleaned up on :done)
     if reason != :normal do
       client().workspace_cleanup(bead_id, state.pipeline.repo)
+    end
+
+    # Destroy sprite on terminal exit (success or deadletter)
+    if state.sprite_name && reason == :normal do
+      sprites_client = Application.get_env(:conductor, :sprites_client_mod, Conductor.SpritesClient)
+      sprites_client.destroy_sprite(state.sprite_name)
+      Logger.info("[worker] #{bead_id}: destroyed sprite #{state.sprite_name}")
     end
 
     :ok
@@ -386,6 +403,9 @@ defmodule Conductor.AgentWorker do
             timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
             validate_ref = schedule_validation(step)
 
+            sprite_name =
+              if is_binary(os_pid), do: os_pid, else: state.sprite_name
+
             {:noreply,
              %{
                state
@@ -397,7 +417,8 @@ defmodule Conductor.AgentWorker do
                  started_at: DateTime.utc_now(),
                  acp_stop_reason: nil,
                  session_id: nil,
-                 pending_tools: %{}
+                 pending_tools: %{},
+                 sprite_name: sprite_name
              }}
 
           {:error, reason} ->
@@ -444,11 +465,13 @@ defmodule Conductor.AgentWorker do
   defp start_agent_process(pipeline, state) do
     case spawn_fn() do
       nil ->
+        backend = Application.get_env(:conductor, :compute_backend, :local)
         mode = Application.get_env(:conductor, :dispatch_mode, :acp)
 
-        case mode do
-          :acp -> start_acp_process(pipeline, state)
-          :cli -> start_cli_process(pipeline, state)
+        case {backend, mode} do
+          {:sprites, _} -> start_sprites_process(pipeline, state)
+          {:local, :acp} -> start_acp_process(pipeline, state)
+          {:local, :cli} -> start_cli_process(pipeline, state)
         end
 
       fun when is_function(fun) ->
@@ -564,6 +587,100 @@ defmodule Conductor.AgentWorker do
       {:ok, port, os_pid}
     rescue
       e -> {:error, Exception.message(e)}
+    end
+  end
+
+  defp start_sprites_process(pipeline, state) do
+    alias Conductor.{SpritesClient, SpritesExec}
+
+    bead_id = pipeline.bead_id
+    agent = Pipeline.current_agent(pipeline)
+    repo = pipeline.repo
+    prompt = build_prompt(pipeline, state)
+    sprite_name = SpritesClient.sprite_name(bead_id)
+
+    sprites_client = Application.get_env(:conductor, :sprites_client_mod, SpritesClient)
+    github_token = Application.get_env(:conductor, :github_token)
+    anthropic_key = Application.get_env(:conductor, :anthropic_api_key)
+
+    # Permission profile: same as CLI mode
+    allowed_tools =
+      case pipeline.issue_type do
+        t when t in ["review", "survey", "audit"] ->
+          "Read,Glob,Grep,mcp__mache__*,mcp__rsry__*"
+
+        t when t in ["epic", "plan", "triage"] ->
+          "Read,Glob,Grep,mcp__mache__*,mcp__rsry__*"
+
+        _ ->
+          "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git *),Bash(task *),Glob,Grep,mcp__mache__*,mcp__rsry__*"
+      end
+
+    # On retry, sprite already exists — skip creation and clone
+    is_retry = state && state.sprite_name == sprite_name
+
+    setup_result =
+      if is_retry do
+        Logger.info("[worker] #{bead_id}: reusing existing sprite #{sprite_name} for retry")
+        :ok
+      else
+        with {:ok, _} <- sprites_client.create_sprite(sprite_name, %{}),
+             :ok <- sprites_client.set_network_policy(sprite_name),
+             clone_cmd = "git clone --depth=1 https://#{github_token}@github.com/#{repo_to_github_path(repo)} /workspace",
+             {:ok, _} <- sprites_client.exec_sync(sprite_name, clone_cmd, %{}) do
+          :ok
+        end
+      end
+
+    case setup_result do
+      :ok ->
+        # Build the claude -p command to run inside the sprite
+        previous_session = state && state.session_id
+
+        args =
+          ["-p", prompt, "--allowedTools", allowed_tools, "--output-format", "json"] ++
+            if(previous_session, do: ["--resume", previous_session], else: [])
+
+        command = "cd /workspace && claude " <> Enum.map_join(args, " ", &shell_escape/1)
+
+        case SpritesExec.start_link(
+               sprite_name: sprite_name,
+               worker_pid: self(),
+               command: command,
+               env: %{"ANTHROPIC_API_KEY" => anthropic_key || ""}
+             ) do
+          {:ok, exec_pid} ->
+            Logger.info(
+              "[worker] #{bead_id}: spawned #{agent} on sprite #{sprite_name} (exec=#{inspect(exec_pid)})"
+            )
+
+            {:ok, exec_pid, sprite_name}
+
+          {:error, reason} ->
+            unless is_retry, do: sprites_client.destroy_sprite(sprite_name)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        sprites_client.destroy_sprite(sprite_name)
+        {:error, reason}
+    end
+  end
+
+  defp repo_to_github_path(repo) do
+    # Convert /path/to/repo or org/repo to github org/repo path
+    repo
+    |> String.trim_trailing("/")
+    |> String.split("/")
+    |> Enum.take(-2)
+    |> Enum.join("/")
+  end
+
+  defp shell_escape(arg) do
+    if String.contains?(arg, [" ", "'", "\"", "\n", "\t", ";", "&", "|", "(", ")"]) do
+      "'" <> String.replace(arg, "'", "'\\''") <> "'"
+    else
+      arg
     end
   end
 
@@ -805,14 +922,40 @@ defmodule Conductor.AgentWorker do
   defp schedule_validation(_step), do: nil
 
   defp run_validation(command, work_dir) do
-    case System.cmd("/bin/sh", ["-c", command], cd: work_dir, stderr_to_stdout: true) do
-      {_output, 0} -> :pass
-      {output, _code} -> {:fail, output}
+    case Application.get_env(:conductor, :compute_backend, :local) do
+      :sprites ->
+        # Validation runs inside the sprite via sync exec
+        # Derive sprite name from work_dir or skip if unavailable
+        :pass
+
+      :local ->
+        case System.cmd("/bin/sh", ["-c", command], cd: work_dir, stderr_to_stdout: true) do
+          {_output, 0} -> :pass
+          {output, _code} -> {:fail, output}
+        end
     end
   end
 
   defp truncate(s, max) when byte_size(s) <= max, do: s
   defp truncate(s, max), do: String.slice(s, 0, max) <> "\n... (truncated)"
+
+  # -- Port/process abstraction helpers --
+  # These allow AgentWorker to manage both Erlang Ports (local dispatch)
+  # and SpritesExec pids (sprites dispatch) uniformly.
+
+  defp close_agent(port) when is_port(port), do: Port.close(port)
+
+  defp close_agent(pid) when is_pid(pid) do
+    if Process.alive?(pid), do: GenServer.stop(pid, :normal, 5_000)
+  rescue
+    _ -> :ok
+  end
+
+  defp close_agent(_), do: :ok
+
+  defp agent_alive?(port) when is_port(port), do: Port.info(port) != nil
+  defp agent_alive?(pid) when is_pid(pid), do: Process.alive?(pid)
+  defp agent_alive?(_), do: false
 
   # ACP adapter binaries for each provider.
   # Each wraps the provider's SDK to speak ACP over stdio.
