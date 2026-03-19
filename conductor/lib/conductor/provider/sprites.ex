@@ -72,10 +72,11 @@ defmodule Conductor.Provider.Sprites do
 
   @impl true
   def stop_process(pid) when is_pid(pid) do
-    if Process.alive?(pid), do: GenServer.stop(pid, :normal, 5_000)
+    if Process.alive?(pid) do
+      Process.exit(pid, :shutdown)
+    end
+
     :ok
-  rescue
-    _ -> :ok
   end
 
   @impl true
