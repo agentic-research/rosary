@@ -100,12 +100,12 @@ rsry_bead_create with:
 
 ## Tools Available
 
-- `rsry_bead_search` / `rsry_list_beads` — find existing work across repos
-- `rsry_bead_create` / `rsry_bead_update` — create and manage beads
-- `rsry_decompose` — BDR decomposition of ADR text
-- mache `get_overview` / `search` / `find_callers` — structural analysis
-- mache `get_communities` — discover code clusters
-- `rsry_status` — ecosystem-wide bead counts
+- `mcp__rsry__rsry_bead_search` / `mcp__rsry__rsry_list_beads` — find existing work across repos
+- `mcp__rsry__rsry_bead_create` / `mcp__rsry__rsry_bead_update` — create and manage beads
+- `mcp__rsry__rsry_decompose` — BDR decomposition of ADR text
+- `mcp__mache__get_overview` / `mcp__mache__search` / `mcp__mache__find_callers` — structural analysis
+- `mcp__mache__get_communities` — discover code clusters
+- `mcp__rsry__rsry_status` — ecosystem-wide bead counts
 
 ## Rules
 

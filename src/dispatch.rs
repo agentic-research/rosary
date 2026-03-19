@@ -358,12 +358,43 @@ impl AgentHandle {
     }
 }
 
+/// Task framing varies by agent perspective so dispatched agents receive
+/// role-appropriate instructions rather than a generic "fix this" prompt.
+fn task_framing(agent_name: Option<&str>) -> &'static str {
+    match agent_name.unwrap_or("dev-agent") {
+        "staging-agent" => {
+            "Review this change. Verify tests validate real behavior, not mocks."
+        }
+        "prod-agent" => {
+            "Audit this code for production readiness: resource leaks, error handling, concurrency."
+        }
+        "feature-agent" => {
+            "Check cross-file coherence: dependencies, API contracts, error consistency."
+        }
+        "architect-agent" => {
+            "Analyze this problem. Evaluate approaches, write an ADR, decompose into beads."
+        }
+        "pm-agent" => {
+            "Assess from a strategic perspective: scope, cross-repo overlap, prioritization."
+        }
+        _ => "Fix this issue. Make the minimal change needed.",
+    }
+}
+
 /// Build the prompt for a bead.
 ///
 /// Includes the bead ID and repo path so the agent can self-manage its
 /// lifecycle via MCP tools (comment, close). When a workspace path is
 /// provided, reads the handoff chain for context from previous phases.
-pub fn build_prompt(bead: &Bead, repo_path: &str, workspace: Option<&Path>) -> String {
+///
+/// The prompt uses XML tags to separate sections so the model can
+/// unambiguously parse task, context, and instructions.
+pub fn build_prompt(
+    bead: &Bead,
+    repo_path: &str,
+    workspace: Option<&Path>,
+    agent_name: Option<&str>,
+) -> String {
     let handoff_context = workspace
         .map(|ws| {
             let chain = crate::handoff::Handoff::read_chain(ws);
@@ -378,52 +409,77 @@ pub fn build_prompt(bead: &Bead, repo_path: &str, workspace: Option<&Path>) -> S
         .map(|ws| ws.display().to_string())
         .unwrap_or_else(|| repo_path.to_string());
 
+    let framing = task_framing(agent_name);
+
+    let handoff_section = if handoff_context.is_empty() {
+        String::new()
+    } else {
+        format!("\n<handoff>\n{handoff_context}</handoff>\n")
+    };
+
     format!(
-        "Fix this issue. Make the minimal change needed.\n\
+        "<task>\n\
+         {framing}\n\
+         </task>\n\
          \n\
+         <bead>\n\
          Bead ID: {bead_id}\n\
          Repo: {work_repo}\n\
          Title: {title}\n\
          Description: {desc}\n\
+         </bead>\n\
          {handoff}\
          \n\
-         After fixing:\n\
-         1. Run tests via `task test` (not raw cargo/go test)\n\
+         <instructions>\n\
+         After completing your work:\n\
+         1. Run tests via `task test`\n\
          2. Commit your changes (git add + git commit with bead:{bead_id} in message)\n\
          3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"{bead_repo}\" and id=\"{bead_id}\"\n\
-         4. Report what you changed",
+         4. Report what you changed\n\
+         </instructions>",
+        framing = framing,
         bead_id = bead.id,
         bead_repo = repo_path,
         work_repo = work_repo,
         title = bead.title,
         desc = bead.description,
-        handoff = handoff_context,
+        handoff = handoff_section,
     )
 }
 
-/// System prompt appended to all dispatched agents.
-/// Tells agents about available MCP tools and workflow expectations.
+/// Prompt version for traceability — agents include this in bead comments
+/// so output can be traced back to the prompt configuration that produced it.
+pub const PROMPT_VERSION: &str = "v0.2.0";
+
+/// System prompt prepended to all dispatched agents.
+/// Tells agents about available MCP tools, workflow expectations,
+/// and bead lifecycle management.
 const AGENT_SYSTEM_PROMPT: &str = "\
-You are a rosary-dispatched agent working on a bead (work item).\n\
+You are a rosary-dispatched agent working on a bead (work item). \
+Prompt version: v0.2.0\n\
 \n\
 ## Available Tools\n\
-- **mache MCP**: Use mcp__mache__* tools for structural code navigation \
-  (find_definition, find_callers, find_callees, search, get_overview). \
+- **mache MCP** (`mcp__mache__*`): Structural code navigation — \
+  find_definition, find_callers, find_callees, search, get_overview. \
   Prefer mache over grep for understanding code structure.\n\
-- **rsry MCP**: Use mcp__rsry__* tools for bead management \
-  (bead_create, bead_close, bead_comment, bead_search).\n\
+- **rsry MCP** (`mcp__rsry__*`): Bead management — \
+  bead_create, bead_close, bead_comment, bead_search, bead_link.\n\
 \n\
 ## Workflow\n\
-- Use `task build` / `task test` instead of raw `cargo` or `go` commands\n\
-- Make minimal, focused changes\n\
-- Commit with descriptive messages including bead:ID reference\n\
-- Do NOT add co-author lines to commits\n\
+- Use `task build` / `task test` — never raw `cargo` or `go` commands. \
+  The Taskfile runs linters and sets required env vars that raw commands skip.\n\
+- Read the relevant code before making claims about it. \
+  If you haven't opened a file, don't assert what it contains.\n\
+- Make minimal, focused changes.\n\
+- Commit with descriptive messages including `bead:ID` reference.\n\
+- Do NOT add co-author lines to commits.\n\
 \n\
-## Bead Lifecycle (IMPORTANT)\n\
-Your prompt includes a Bead ID and Repo path. You MUST manage the bead:\n\
-1. **Comment** progress via mcp__rsry__rsry_bead_comment as you work\n\
-2. **Close** the bead via mcp__rsry__rsry_bead_close when done (after tests pass and commit is made)\n\
-3. If you cannot fix the issue, comment explaining why — do NOT close it\n\
+## Bead Lifecycle\n\
+Your prompt includes a Bead ID and Repo path. Manage the bead throughout:\n\
+1. **Comment progress** via `mcp__rsry__rsry_bead_comment` as you work — \
+   not just at the end. Other agents and humans read these for context.\n\
+2. **Close** the bead via `mcp__rsry__rsry_bead_close` after tests pass and commit is made.\n\
+3. If you cannot fix the issue, comment explaining what you tried and why — do NOT close it.\n\
 ";
 
 // ---------------------------------------------------------------------------
@@ -573,7 +629,12 @@ pub async fn spawn(
         .with_context(|| format!("creating workspace for {}", bead.id))?;
 
     let work_dir = workspace.work_dir.clone();
-    let prompt = build_prompt(bead, &path.display().to_string(), Some(&work_dir));
+    let prompt = build_prompt(
+        bead,
+        &path.display().to_string(),
+        Some(&work_dir),
+        bead.owner.as_deref(),
+    );
 
     // Build agent-aware system prompt from bead.owner
     let system_prompt = build_system_prompt(bead.owner.as_deref(), agents_dir);
@@ -791,10 +852,10 @@ mod tests {
             test_files: Vec::new(),
         };
 
-        let prompt = build_prompt(&bead, "/tmp/test-repo", None);
+        let prompt = build_prompt(&bead, "/tmp/test-repo", None, None);
         assert!(prompt.contains("Fix the widget"));
         assert!(prompt.contains("The widget is broken"));
-        assert!(prompt.contains("Run tests via"));
+        assert!(prompt.contains("task test"));
         assert!(prompt.contains("test-1"), "prompt should include bead ID");
         assert!(
             prompt.contains("/tmp/test-repo"),
@@ -803,6 +864,13 @@ mod tests {
         assert!(
             prompt.contains("rsry_bead_close"),
             "prompt should instruct agent to close bead"
+        );
+        // XML structure
+        assert!(prompt.contains("<task>"), "prompt should use XML tags");
+        assert!(prompt.contains("<bead>"), "prompt should wrap bead in XML");
+        assert!(
+            prompt.contains("<instructions>"),
+            "prompt should wrap instructions in XML"
         );
     }
 
@@ -836,22 +904,77 @@ mod tests {
         };
 
         let ws = PathBuf::from("/home/user/.rsry/worktrees/myrepo/iso-1");
-        let prompt = build_prompt(&bead, "/home/user/repos/myrepo", Some(&ws));
+        let prompt = build_prompt(&bead, "/home/user/repos/myrepo", Some(&ws), None);
 
         // Repo: line must show the WORKSPACE path (agent's working directory)
         assert!(
-            prompt.contains("Repo: /home/user/.rsry/worktrees/myrepo/iso-1"),
-            "Repo: line must point to workspace, not main repo. Got:\n{prompt}"
+            prompt.contains("/home/user/.rsry/worktrees/myrepo/iso-1"),
+            "Repo line must point to workspace, not main repo. Got:\n{prompt}"
         );
         // MCP bead_close must still use the MAIN repo path (where .beads/ lives)
         assert!(
             prompt.contains("repo_path=\"/home/user/repos/myrepo\""),
             "bead_close repo_path must point to main repo. Got:\n{prompt}"
         );
-        // Repo: line must NOT contain the main repo path
+        // Repo: line must NOT contain the main repo path as the workspace repo
         assert!(
-            !prompt.contains("Repo: /home/user/repos/myrepo"),
-            "Repo: line must NOT show main repo path when workspace exists. Got:\n{prompt}"
+            !prompt.contains("Repo: /home/user/repos/myrepo\n"),
+            "Repo line must NOT show main repo path when workspace exists. Got:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn build_prompt_varies_framing_by_agent() {
+        let bead = Bead {
+            id: "framing-1".into(),
+            title: "Test framing".into(),
+            description: "Agent framing varies".into(),
+            status: "open".into(),
+            priority: 1,
+            issue_type: "bug".into(),
+            owner: None,
+            repo: "test".into(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            dependency_count: 0,
+            dependent_count: 0,
+            comment_count: 0,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
+            external_ref: None,
+            files: Vec::new(),
+            test_files: Vec::new(),
+        };
+
+        // Default (dev-agent) framing
+        let dev = build_prompt(&bead, "/tmp/repo", None, None);
+        assert!(dev.contains("Fix this issue"), "dev framing: {dev}");
+
+        // Staging-agent framing
+        let staging = build_prompt(&bead, "/tmp/repo", None, Some("staging-agent"));
+        assert!(
+            staging.contains("Review this change"),
+            "staging framing: {staging}"
+        );
+
+        // Architect-agent framing
+        let arch = build_prompt(&bead, "/tmp/repo", None, Some("architect-agent"));
+        assert!(
+            arch.contains("Analyze this problem"),
+            "architect framing: {arch}"
+        );
+    }
+
+    #[test]
+    fn prompt_version_is_set() {
+        assert!(
+            PROMPT_VERSION.starts_with('v'),
+            "PROMPT_VERSION should start with 'v'"
+        );
+        assert!(
+            AGENT_SYSTEM_PROMPT.contains(PROMPT_VERSION),
+            "system prompt should contain version"
         );
     }
 

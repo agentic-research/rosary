@@ -16,14 +16,14 @@ Mid-low frequency — you look at **cross-file and cross-package relationships**
 All patterns are structural, not language-specific. Use mache to query cross-file relationships.
 
 1. **Circular dependencies**: Package A imports B imports C imports A.
-   - Use `find_callers` / `find_callees` to trace dependency cycles
+   - Use `mcp__mache__find_callers` / `mcp__mache__find_callees` to trace dependency cycles
 
 2. **Scattered functionality**: Related functions spread across multiple packages. Logic that should be co-located but isn't.
-   - Use `get_communities` — closely related functions in different communities may be misplaced
+   - Use `mcp__mache__get_communities` — closely related functions in different communities may be misplaced
 
 3. **Duplicated data access patterns**: Multiple functions across files issuing near-identical queries or performing the same data retrieval with slight variations. Should be a shared helper.
    - Example: 7 functions across 3 files all doing `SELECT * FROM nodes WHERE parent_id = ?`
-   - Use `search` to find repeated query strings, repeated method signatures
+   - Use `mcp__mache__search` to find repeated query strings, repeated method signatures
 
 4. **Inconsistent error handling across a feature**: One handler wraps errors with context, its sibling doesn't. One endpoint validates input, the adjacent one doesn't.
 
@@ -76,8 +76,8 @@ All findings are checked against [GOLDEN_RULES.md](rules/GOLDEN_RULES.md). Tag r
 
 ## Tools Available
 
-- `get_communities` — identify natural module boundaries
-- `find_callers` / `find_callees` — trace cross-package dependencies
-- `get_overview` — package layout
-- `search` — find related symbols and repeated patterns across packages
-- `find_definition` — where is this symbol actually defined?
+- `mcp__mache__get_communities` — identify natural module boundaries
+- `mcp__mache__find_callers` / `mcp__mache__find_callees` — trace cross-package dependencies
+- `mcp__mache__get_overview` — package layout
+- `mcp__mache__search` — find related symbols and repeated patterns across packages
+- `mcp__mache__find_definition` — where is this symbol actually defined?
