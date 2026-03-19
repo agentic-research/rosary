@@ -329,6 +329,8 @@ defmodule Conductor.AgentWorkerTest do
     test "worker handles pid-based agent (sprites mode) completing successfully" do
       # Simulate a sprites dispatch: spawn_fn returns a pid instead of a port.
       # The pid sends Port-compatible messages to the worker.
+      test_pid = self()
+
       Application.put_env(:conductor, :agent_spawn_fn, fn pipeline ->
         agent = Conductor.Pipeline.current_agent(pipeline)
         worker = self()
@@ -344,7 +346,7 @@ defmodule Conductor.AgentWorkerTest do
             Process.sleep(500)
           end)
 
-        send(self(), {:agent_spawned, pipeline.bead_id, agent})
+        send(test_pid, {:agent_spawned, pipeline.bead_id, agent})
         {:ok, pid, "rsry-#{pipeline.bead_id}"}
       end)
 
@@ -363,9 +365,11 @@ defmodule Conductor.AgentWorkerTest do
     end
 
     test "worker stores provider_name when os_pid is a string" do
+      test_pid = self()
+
       Application.put_env(:conductor, :agent_spawn_fn, fn pipeline ->
         agent = Conductor.Pipeline.current_agent(pipeline)
-        send(self(), {:agent_spawned, pipeline.bead_id, agent})
+        send(test_pid, {:agent_spawned, pipeline.bead_id, agent})
 
         pid =
           spawn(fn ->
