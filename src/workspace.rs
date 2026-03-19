@@ -716,17 +716,28 @@ mod tests {
             .current_dir(repo)
             .output()
             .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
         std::fs::write(repo.join("src.rs"), "fn main() {}").unwrap();
         std::process::Command::new("git")
             .args(["add", "."])
             .current_dir(repo)
             .output()
             .unwrap();
-        std::process::Command::new("git")
+        let commit = std::process::Command::new("git")
             .args(["commit", "-m", "initial"])
             .current_dir(repo)
             .output()
             .unwrap();
+        assert!(commit.status.success(), "git commit must succeed");
 
         // Simulate .beads/ (Dolt creates its own git repo inside)
         std::fs::create_dir_all(repo.join(".beads").join("dolt")).unwrap();

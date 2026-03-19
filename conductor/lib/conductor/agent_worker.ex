@@ -98,12 +98,13 @@ defmodule Conductor.AgentWorker do
         validate_ref = schedule_validation(step)
 
         {:ok,
-         %{init_state |
-           port: port,
-           os_pid: os_pid,
-           timeout_ref: timeout_ref,
-           validate_ref: validate_ref,
-           started_at: DateTime.utc_now()
+         %{
+           init_state
+           | port: port,
+             os_pid: os_pid,
+             timeout_ref: timeout_ref,
+             validate_ref: validate_ref,
+             started_at: DateTime.utc_now()
          }}
 
       {:error, reason} ->

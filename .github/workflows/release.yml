@@ -20,6 +20,7 @@ permissions:
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/rosary
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
   build:
@@ -41,6 +42,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Configure git auth for private deps
+        run: git config --global url."https://x-access-token:${{ secrets.LEYLINE_PAT }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
