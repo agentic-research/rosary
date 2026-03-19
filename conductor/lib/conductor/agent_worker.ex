@@ -30,6 +30,7 @@ defmodule Conductor.AgentWorker do
     :session_id,
     :bead_title,
     :bead_description,
+    :provider_name,
     pending_tools: %{},
     acp_stop_reason: nil,
     validate_ref: nil
@@ -88,7 +89,8 @@ defmodule Conductor.AgentWorker do
       bead_title: title,
       bead_description: description,
       work_dir: work_dir,
-      started_at: DateTime.utc_now()
+      started_at: DateTime.utc_now(),
+      provider_name: provider_name(bead_id)
     }
 
     case start_agent_process(pipeline, init_state) do
@@ -97,6 +99,9 @@ defmodule Conductor.AgentWorker do
         timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
         validate_ref = schedule_validation(step)
 
+        # Provider identifier: string for remote (sprite name), integer for local (OS pid)
+        provider_name = if is_binary(os_pid), do: os_pid, else: init_state.provider_name
+
         {:ok,
          %{
            init_state
@@ -104,7 +109,8 @@ defmodule Conductor.AgentWorker do
              os_pid: os_pid,
              timeout_ref: timeout_ref,
              validate_ref: validate_ref,
-             started_at: DateTime.utc_now()
+             started_at: DateTime.utc_now(),
+             provider_name: provider_name
          }}
 
       {:error, reason} ->
@@ -158,10 +164,10 @@ defmodule Conductor.AgentWorker do
     Logger.warning("[timeout] #{bead_id}: killing #{agent} (pid=#{state.os_pid})")
 
     if state.validate_ref, do: Process.cancel_timer(state.validate_ref)
-    if state.port, do: Port.close(state.port)
+    if state.port, do: provider().stop_process(state.port)
 
     pipeline = Pipeline.record(state.pipeline, :timeout, "exceeded #{step.timeout_ms}ms")
-    # Port close will trigger exit_status message
+    # Port/process close will trigger exit_status message
     {:noreply, %{state | pipeline: pipeline, validate_ref: nil}}
   end
 
@@ -175,6 +181,8 @@ defmodule Conductor.AgentWorker do
         timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
         validate_ref = schedule_validation(step)
 
+        provider_name = if is_binary(os_pid), do: os_pid, else: state.provider_name
+
         {:noreply,
          %{
            state
@@ -183,7 +191,8 @@ defmodule Conductor.AgentWorker do
              timeout_ref: timeout_ref,
              validate_ref: validate_ref,
              started_at: DateTime.utc_now(),
-             acp_stop_reason: nil
+             acp_stop_reason: nil,
+             provider_name: provider_name
          }}
 
       {:error, reason} ->
@@ -204,7 +213,7 @@ defmodule Conductor.AgentWorker do
         {:noreply, state}
 
       %{command: command, on_fail: on_fail} = validation ->
-        case run_validation(command, state.work_dir) do
+        case run_validation(command, state.work_dir, state.provider_name) do
           :pass ->
             ref = Process.send_after(self(), :validate, validation.interval_ms)
             {:noreply, %{state | validate_ref: ref}}
@@ -236,7 +245,7 @@ defmodule Conductor.AgentWorker do
                   "Validation failed during #{agent}, killing: #{truncate(output, 500)}"
                 )
 
-                if state.port, do: Port.close(state.port)
+                if state.port, do: provider().stop_process(state.port)
                 pipeline = Pipeline.record(state.pipeline, :fail, "validation: #{command}")
                 {:noreply, %{state | pipeline: pipeline, validate_ref: nil}}
 
@@ -315,14 +324,20 @@ defmodule Conductor.AgentWorker do
       "[worker] #{bead_id}: terminated (#{done}/#{total} phases, reason=#{inspect(reason)})"
     )
 
-    # Clean up the Port if still open
-    if state.port && Port.info(state.port) != nil do
-      Port.close(state.port)
+    # Clean up the agent process if still open
+    if state.port && provider().alive?(state.port) do
+      provider().stop_process(state.port)
     end
 
     # Clean up workspace (best-effort — may already be cleaned up on :done)
     if reason != :normal do
       client().workspace_cleanup(bead_id, state.pipeline.repo)
+    end
+
+    # Deprovision compute environment on terminal exit (success or deadletter)
+    if state.provider_name && reason == :normal do
+      provider().deprovision(state.provider_name)
+      Logger.info("[worker] #{bead_id}: deprovisioned #{state.provider_name}")
     end
 
     :ok
@@ -386,6 +401,8 @@ defmodule Conductor.AgentWorker do
             timeout_ref = Process.send_after(self(), :timeout, step.timeout_ms)
             validate_ref = schedule_validation(step)
 
+            provider_name = if is_binary(os_pid), do: os_pid, else: state.provider_name
+
             {:noreply,
              %{
                state
@@ -397,7 +414,8 @@ defmodule Conductor.AgentWorker do
                  started_at: DateTime.utc_now(),
                  acp_stop_reason: nil,
                  session_id: nil,
-                 pending_tools: %{}
+                 pending_tools: %{},
+                 provider_name: provider_name
              }}
 
           {:error, reason} ->
@@ -439,16 +457,52 @@ defmodule Conductor.AgentWorker do
     end
   end
 
-  # -- Agent process spawning --
+  # -- Agent process spawning (via Provider abstraction) --
 
   defp start_agent_process(pipeline, state) do
     case spawn_fn() do
       nil ->
         mode = Application.get_env(:conductor, :dispatch_mode, :acp)
+        prov = provider()
+        name = provider_name(pipeline.bead_id)
 
-        case mode do
-          :acp -> start_acp_process(pipeline, state)
-          :cli -> start_cli_process(pipeline, state)
+        # Provision compute environment (no-op for local, creates VM for remote)
+        is_retry = state && state.provider_name == name
+
+        provision_result =
+          if is_retry do
+            Logger.info("[worker] #{pipeline.bead_id}: reusing provider #{name} for retry")
+            :ok
+          else
+            prov.provision(name, pipeline.repo, %{})
+          end
+
+        case provision_result do
+          :ok ->
+            {binary, args, work_dir} = build_agent_command(pipeline, state, mode)
+
+            case prov.spawn_process(name, binary, args, work_dir, %{}, self()) do
+              {:ok, handle, id} ->
+                # For ACP, send the initialize + prompt after spawn
+                if mode == :acp do
+                  send_acp_init(handle, pipeline, state)
+                end
+
+                Logger.info(
+                  "[worker] #{pipeline.bead_id}: spawned #{Pipeline.current_agent(pipeline)} " <>
+                    "via #{mode} on #{inspect(prov)} (id=#{id})"
+                )
+
+                {:ok, handle, id}
+
+              {:error, reason} ->
+                unless is_retry, do: prov.deprovision(name)
+                {:error, reason}
+            end
+
+          {:error, reason} ->
+            prov.deprovision(name)
+            {:error, reason}
         end
 
       fun when is_function(fun) ->
@@ -456,28 +510,20 @@ defmodule Conductor.AgentWorker do
     end
   end
 
-  # Fallback: claude -p via Port. No ACP protocol, just fire-and-forget.
-  # Uses Claude Code's built-in OAuth auth — no API key needed.
-  # MCP servers available. Exit code only (no mid-execution feedback).
-  # Stdout is captured via {:line, ...} to extract session_id from JSON output.
-  defp start_cli_process(pipeline, state) do
-    agent = Pipeline.current_agent(pipeline)
-    bead_id = pipeline.bead_id
-    # Use workspace work_dir if available, fall back to repo
-    work_dir = (state && state.work_dir) || pipeline.repo
-    prompt = build_prompt(pipeline, state)
-
+  # Build command + args based on protocol mode.
+  # CLI mode: claude -p with --allowedTools and --output-format json
+  # ACP mode: agent binary with ACP args (JSON-RPC protocol via stdin/stdout)
+  defp build_agent_command(pipeline, state, :cli) do
     binary =
       case Application.get_env(:conductor, :agent_provider, "claude") do
         "gemini" -> "gemini"
         _ -> "claude"
       end
 
-    # Session resume: if retrying and we have a previous session_id,
-    # pass --resume to preserve agent context across retries
+    executable = System.find_executable(binary) || binary
+    prompt = build_prompt(pipeline, state)
     previous_session = state && state.session_id
 
-    # Permission profile: derive from issue_type, same as Rust PermissionProfile
     allowed_tools =
       case pipeline.issue_type do
         t when t in ["review", "survey", "audit"] ->
@@ -491,79 +537,38 @@ defmodule Conductor.AgentWorker do
       end
 
     base_args = ["-p", prompt, "--allowedTools", allowed_tools, "--output-format", "json"]
+    args = if previous_session, do: base_args ++ ["--resume", previous_session], else: base_args
+    work_dir = (state && state.work_dir) || pipeline.repo
 
-    args =
-      if previous_session do
-        base_args ++ ["--resume", previous_session]
-      else
-        base_args
-      end
-
-    try do
-      # Spawn the executable directly (no /bin/sh wrapper) so the Port
-      # sees the real process exit_status. Use :out (output-only) so
-      # stdin is not connected — prevents Claude Code from hanging on
-      # interactive permission input (same effect as < /dev/null).
-      port =
-        Port.open(
-          {:spawn_executable, System.find_executable(binary)},
-          [
-            :binary,
-            :exit_status,
-            :out,
-            {:line, 65_536},
-            args: args,
-            cd: to_charlist(work_dir)
-          ]
-        )
-
-      {:os_pid, os_pid} = Port.info(port, :os_pid)
-
-      if previous_session do
-        Logger.info(
-          "[worker] #{bead_id}: resumed #{agent} via CLI (#{binary} -p --resume #{previous_session}, pid=#{os_pid})"
-        )
-      else
-        Logger.info("[worker] #{bead_id}: spawned #{agent} via CLI (#{binary} -p, pid=#{os_pid})")
-      end
-
-      {:ok, port, os_pid}
-    rescue
-      e -> {:error, Exception.message(e)}
-    end
+    {executable, args, work_dir}
   end
 
-  defp start_acp_process(pipeline, state) do
+  defp build_agent_command(pipeline, state, :acp) do
+    binary = agent_binary(Pipeline.current_agent(pipeline))
+    executable = System.find_executable(binary) || binary
+    args = Conductor.AcpClient.acp_args(binary)
+    work_dir = (state && state.work_dir) || pipeline.repo
+
+    {executable, args, work_dir}
+  end
+
+  # Send ACP initialize + session/new + prompt after process is spawned.
+  # This was previously done inside AcpClient.start/2, but now the provider
+  # handles spawning and we handle protocol separately.
+  defp send_acp_init(handle, pipeline, state) do
     alias Conductor.AcpClient
 
-    agent = Pipeline.current_agent(pipeline)
-    bead_id = pipeline.bead_id
-    # Use workspace work_dir if available, fall back to repo
     work_dir = (state && state.work_dir) || pipeline.repo
-    binary = agent_binary(agent)
     prompt = build_prompt(pipeline, state)
-
-    # Session resume: if retrying and we have a previous session_id,
-    # resume instead of starting fresh (preserves agent context)
     previous_session = state && state.session_id
 
-    try do
-      {:ok, port, os_pid} = AcpClient.start(binary, work_dir)
+    # Initialize ACP protocol
+    AcpClient.send_initialize(handle)
 
-      if previous_session do
-        AcpClient.resume(port, previous_session, prompt)
-
-        Logger.info(
-          "[worker] #{bead_id}: resumed #{agent} session=#{previous_session} (pid=#{os_pid})"
-        )
-      else
-        _sid = AcpClient.prompt(port, nil, work_dir, prompt)
-        Logger.info("[worker] #{bead_id}: spawned #{agent} via ACP (#{binary}, pid=#{os_pid})")
-      end
-
-      {:ok, port, os_pid}
-    rescue
-      e -> {:error, Exception.message(e)}
+    if previous_session do
+      AcpClient.resume(handle, previous_session, prompt)
+    else
+      AcpClient.prompt(handle, nil, work_dir, prompt)
     end
   end
 
@@ -804,15 +809,27 @@ defmodule Conductor.AgentWorker do
 
   defp schedule_validation(_step), do: nil
 
-  defp run_validation(command, work_dir) do
-    case System.cmd("/bin/sh", ["-c", command], cd: work_dir, stderr_to_stdout: true) do
-      {_output, 0} -> :pass
-      {output, _code} -> {:fail, output}
+  defp run_validation(command, work_dir, prov_name) do
+    case provider().exec_sync(prov_name || "local", command, work_dir) do
+      {:ok, {_output, 0}} -> :pass
+      {:ok, {output, _code}} -> {:fail, output}
+      {:error, reason} -> {:fail, inspect(reason)}
     end
   end
 
   defp truncate(s, max) when byte_size(s) <= max, do: s
   defp truncate(s, max), do: String.slice(s, 0, max) <> "\n... (truncated)"
+
+  # -- Provider helpers --
+
+  defp provider, do: Conductor.Provider.module()
+
+  defp provider_name(bead_id) do
+    case Application.get_env(:conductor, :compute_backend, :local) do
+      :sprites -> Conductor.SpritesClient.sprite_name(bead_id)
+      :local -> bead_id
+    end
+  end
 
   # ACP adapter binaries for each provider.
   # Each wraps the provider's SDK to speak ACP over stdio.

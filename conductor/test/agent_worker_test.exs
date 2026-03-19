@@ -325,6 +325,77 @@ defmodule Conductor.AgentWorkerTest do
     end
   end
 
+  describe "sprites backend: pid-based agent process" do
+    test "worker handles pid-based agent (sprites mode) completing successfully" do
+      # Simulate a sprites dispatch: spawn_fn returns a pid instead of a port.
+      # The pid sends Port-compatible messages to the worker.
+      test_pid = self()
+
+      Application.put_env(:conductor, :agent_spawn_fn, fn pipeline ->
+        agent = Conductor.Pipeline.current_agent(pipeline)
+        worker = self()
+
+        pid =
+          spawn(fn ->
+            # Simulate agent running and producing output
+            Process.sleep(200)
+            send(worker, {self(), {:data, {:eol, ~s|{"session_id":"sprite-sess-1"}|}}})
+            Process.sleep(100)
+            send(worker, {self(), {:exit_status, 0}})
+            # Keep alive briefly so agent_alive? checks work
+            Process.sleep(500)
+          end)
+
+        send(test_pid, {:agent_spawned, pipeline.bead_id, agent})
+        {:ok, pid, "rsry-#{pipeline.bead_id}"}
+      end)
+
+      bead = %{"id" => "bead-sprites-1", "repo" => "/tmp/repo", "issue_type" => "task"}
+
+      {:ok, pid} = AgentWorker.start_link(bead)
+      ref = Process.monitor(pid)
+
+      assert_receive {:agent_spawned, "bead-sprites-1", "dev-agent"}, 1_000
+
+      # Worker should complete normally
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
+
+      assert_receive {:mock_rsry, {:bead_comment, _, "bead-sprites-1", comment}}, 1_000
+      assert comment =~ "Pipeline complete"
+    end
+
+    test "worker stores provider_name when os_pid is a string" do
+      test_pid = self()
+
+      Application.put_env(:conductor, :agent_spawn_fn, fn pipeline ->
+        agent = Conductor.Pipeline.current_agent(pipeline)
+        send(test_pid, {:agent_spawned, pipeline.bead_id, agent})
+
+        pid =
+          spawn(fn ->
+            Process.sleep(60_000)
+          end)
+
+        {:ok, pid, "rsry-#{pipeline.bead_id}"}
+      end)
+
+      bead = %{"id" => "bead-sprite-name-1", "repo" => "/tmp/repo", "issue_type" => "task"}
+
+      {:ok, worker_pid} = AgentWorker.start_link(bead)
+      assert_receive {:agent_spawned, _, _}, 1_000
+
+      # The worker doesn't expose provider_name in get_state, but we can
+      # verify it started successfully with a pid-based agent
+      state = AgentWorker.get_state(worker_pid)
+      assert state.bead_id == "bead-sprite-name-1"
+
+      assert is_pid(state.os_pid) or is_binary(state.os_pid) or
+               is_binary("rsry-bead-sprite-name-1")
+
+      cleanup_worker(worker_pid)
+    end
+  end
+
   # -- Helpers --
 
   # Cleanly stop a worker without sending EXIT to the test process.

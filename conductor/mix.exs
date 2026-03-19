@@ -23,6 +23,7 @@ defmodule Conductor.MixProject do
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
       {:acpex, "~> 0.1.0"},
+      {:websockex, "~> 0.4"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
