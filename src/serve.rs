@@ -1096,8 +1096,8 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
 
     let markdown = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
 
-    let atoms = bdr::parse::parse_adr(&markdown);
-    if atoms.is_empty() {
+    let parsed = bdr::parse::parse_adr_full(&markdown);
+    if parsed.atoms.is_empty() {
         return Ok(json!({
             "decade": null,
             "message": "No decomposable atoms found",
@@ -1117,7 +1117,7 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
                 .unwrap_or_else(|| path.to_string())
         });
 
-    let decade = bdr::thread::build_decade(path, &title, &atoms);
+    let decade = bdr::thread::build_decade_with_meta(path, &title, &parsed.atoms, &parsed.meta);
 
     Ok(json!({
         "decade": {
@@ -1127,6 +1127,7 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
             "thread_count": decade.threads.len(),
             "bead_count": decade.threads.iter().map(|t| t.beads.len()).sum::<usize>(),
         },
+        "meta": decade.meta,
         "threads": decade.threads.iter().map(|t| json!({
             "id": t.id,
             "name": t.name,
@@ -1138,9 +1139,12 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
                 "priority": b.priority,
                 "channel": b.channel.as_str(),
                 "thread_group": b.thread_group,
+                "target_repo": b.target_repo,
+                "depends_on": b.depends_on,
+                "success_criteria": b.success_criteria,
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
-        "atom_count": atoms.len(),
+        "atom_count": parsed.atoms.len(),
     }))
 }
 

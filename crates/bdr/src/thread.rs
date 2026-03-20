@@ -1,7 +1,8 @@
 // Thread grouping + cross-repo routing
 
 use crate::atom::Atom;
-use crate::decompose::{BeadSpec, decompose, group_by_thread};
+use crate::decompose::{BeadSpec, decompose_with_meta, group_by_thread};
+use crate::parse::AdrMeta;
 use serde::{Deserialize, Serialize};
 
 /// A thread is a semantic grouping of related beads within a decade.
@@ -22,6 +23,9 @@ pub struct Decade {
     pub source_path: String,
     pub threads: Vec<Thread>,
     pub status: DecadeStatus,
+    /// ADR metadata (frontmatter: depends_on, relates_to, target repo).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<AdrMeta>,
 }
 
 /// Overall status of a decade.
@@ -45,10 +49,20 @@ const THREAD_ORDER: &[&str] = &[
     "general",
 ];
 
-/// Build a decade from parsed atoms.
+/// Build a decade from parsed atoms (backward-compatible, no meta).
 pub fn build_decade(adr_path: &str, adr_title: &str, atoms: &[Atom]) -> Decade {
+    build_decade_with_meta(adr_path, adr_title, atoms, &AdrMeta::default())
+}
+
+/// Build a decade from parsed atoms with ADR metadata.
+pub fn build_decade_with_meta(
+    adr_path: &str,
+    adr_title: &str,
+    atoms: &[Atom],
+    meta: &AdrMeta,
+) -> Decade {
     let adr_id = derive_adr_id(adr_path);
-    let specs = decompose(atoms, &adr_id);
+    let specs = decompose_with_meta(atoms, &adr_id, meta);
     let groups = group_by_thread(&specs);
 
     let mut threads: Vec<Thread> = groups
@@ -76,12 +90,15 @@ pub fn build_decade(adr_path: &str, adr_title: &str, atoms: &[Atom]) -> Decade {
             .unwrap_or(THREAD_ORDER.len())
     });
 
+    let has_meta = meta != &AdrMeta::default();
+
     Decade {
         id: adr_id,
         title: adr_title.to_string(),
         source_path: adr_path.to_string(),
         threads,
         status: DecadeStatus::Proposed,
+        meta: if has_meta { Some(meta.clone()) } else { None },
     }
 }
 
