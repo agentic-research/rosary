@@ -164,11 +164,22 @@ defmodule Conductor.AgentWorker do
     Logger.warning("[timeout] #{bead_id}: killing #{agent} (pid=#{state.os_pid})")
 
     if state.validate_ref, do: Process.cancel_timer(state.validate_ref)
-    if state.port, do: provider().stop_process(state.port)
+
+    # Kill the OS process directly. Port.close does NOT deliver {:exit_status, _}
+    # because it invalidates the port handle before the signal propagates.
+    # Instead: kill the process, close the port, then handle failure inline.
+    if is_integer(state.os_pid) do
+      System.cmd("kill", ["-TERM", to_string(state.os_pid)], stderr_to_stdout: true)
+    end
+
+    if state.port && provider().alive?(state.port) do
+      provider().stop_process(state.port)
+    end
 
     pipeline = Pipeline.record(state.pipeline, :timeout, "exceeded #{step.timeout_ms}ms")
-    # Port/process close will trigger exit_status message
-    {:noreply, %{state | pipeline: pipeline, validate_ref: nil}}
+
+    # Handle failure inline — don't wait for exit_status that will never come
+    on_failure(%{state | pipeline: pipeline, validate_ref: nil, port: nil, os_pid: nil}, 124)
   end
 
   # -- Retry (after backoff) --
