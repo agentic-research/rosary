@@ -15,7 +15,8 @@ dolt-server.lock
 dolt-server.log
 dolt-server.pid
 dolt-server.port
-dolt/
+# Dolt data directories (inside .beads/, not src/dolt/)
+.beads/dolt/
 .envrc
 .env
 
