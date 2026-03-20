@@ -66,7 +66,8 @@ pub(crate) fn tool_definitions() -> Value {
                         "owner": { "type": "string", "description": "Agent owner (dev-agent, staging-agent, etc.). Auto-assigned from issue_type if omitted." },
                         "files": { "type": "array", "items": { "type": "string" }, "description": "Source files this bead touches. CRITICAL: these scope parallel dispatch — has_file_overlap() (epic.rs:386-393) blocks concurrent beads sharing files, and reconcile.rs:372-380 enforces it at dispatch time. Set scopes ONLY after reading the code; guessed scopes cause false-negative overlap and agent collisions. Include both files being modified AND files needing wiring changes (imports, call sites). New files are safe — no overlap possible." },
                         "test_files": { "type": "array", "items": { "type": "string" }, "description": "Test files to validate the change. Also checked for overlap — two beads sharing a test file will be serialized, not parallelized." },
-                        "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Bead IDs this bead depends on (blocked until they complete). Creates entries in the dependencies table." }
+                        "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Bead IDs this bead depends on (blocked until they complete). Creates entries in the dependencies table." },
+                        "owner_type": { "type": "string", "enum": ["agent", "human"], "description": "Whether this bead is agent-dispatchable ('agent', default) or requires human action ('human'). Human beads are skipped during autonomous triage.", "default": "agent" }
                     },
                     "required": ["repo_path", "title"]
                 }
@@ -85,7 +86,8 @@ pub(crate) fn tool_definitions() -> Value {
                         "issue_type": { "type": "string", "description": "New issue type" },
                         "owner": { "type": "string", "description": "New owner/assignee" },
                         "files": { "type": "array", "items": { "type": "string" }, "description": "Updated source files list. These scope parallel dispatch — see has_file_overlap() (epic.rs:386-393). Verify against actual code before setting; inaccurate scopes cause agent collisions or missed overlap detection." },
-                        "test_files": { "type": "array", "items": { "type": "string" }, "description": "Updated test files list. Also checked for overlap at dispatch time (reconcile.rs:372-380)." }
+                        "test_files": { "type": "array", "items": { "type": "string" }, "description": "Updated test files list. Also checked for overlap at dispatch time (reconcile.rs:372-380)." },
+                        "owner_type": { "type": "string", "enum": ["agent", "human"], "description": "Whether this bead is agent-dispatchable ('agent') or requires human action ('human')." }
                     },
                     "required": ["repo_path", "id"]
                 }

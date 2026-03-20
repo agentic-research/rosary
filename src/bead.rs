@@ -160,6 +160,7 @@ pub struct BeadUpdate {
     pub owner: Option<String>,
     pub files: Option<Vec<String>>,
     pub test_files: Option<Vec<String>>,
+    pub owner_type: Option<String>,
 }
 
 impl BeadUpdate {
@@ -172,6 +173,7 @@ impl BeadUpdate {
             && self.owner.is_none()
             && self.files.is_none()
             && self.test_files.is_none()
+            && self.owner_type.is_none()
     }
 }
 
@@ -207,6 +209,14 @@ pub struct Bead {
     /// Test files to validate the change.
     #[serde(default)]
     pub test_files: Vec<String>,
+    /// Whether this bead requires a human ("human") or can be agent-dispatched ("agent").
+    /// Defaults to "agent". Human beads are skipped during autonomous triage.
+    #[serde(default = "default_owner_type")]
+    pub owner_type: String,
+}
+
+fn default_owner_type() -> String {
+    "agent".to_string()
 }
 
 impl Bead {
@@ -302,11 +312,21 @@ impl Bead {
                         .collect()
                 })
                 .unwrap_or_default(),
+            owner_type: value
+                .get("owner_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("agent")
+                .to_string(),
         })
     }
 
     pub fn is_ready(&self) -> bool {
-        self.status == "open" && self.dependency_count == 0
+        self.status == "open" && self.dependency_count == 0 && self.owner_type != "human"
+    }
+
+    /// Whether this bead requires human action (not agent-dispatchable).
+    pub fn is_human(&self) -> bool {
+        self.owner_type == "human"
     }
 
     /// A bead is blocked if it has unresolved dependencies OR its status is explicitly "blocked".

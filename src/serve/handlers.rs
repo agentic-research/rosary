@@ -127,6 +127,7 @@ async fn tool_status(config_path: &str) -> Result<Value> {
     let in_progress = beads.iter().filter(|b| b.status == "in_progress").count();
     let blocked = beads.iter().filter(|b| b.is_blocked()).count();
     let ready = beads.iter().filter(|b| b.is_ready()).count();
+    let human = beads.iter().filter(|b| b.is_human()).count();
     let total = beads.len();
 
     Ok(json!({
@@ -135,6 +136,7 @@ async fn tool_status(config_path: &str) -> Result<Value> {
         "ready": ready,
         "in_progress": in_progress,
         "blocked": blocked,
+        "human": human,
     }))
 }
 
@@ -145,6 +147,7 @@ async fn tool_list_beads(config_path: &str, status: Option<&str>) -> Result<Valu
     let filtered: Vec<_> = match status {
         Some("blocked") => beads.into_iter().filter(|b| b.is_blocked()).collect(),
         Some("ready") => beads.into_iter().filter(|b| b.is_ready()).collect(),
+        Some("human") => beads.into_iter().filter(|b| b.is_human()).collect(),
         Some(s) => beads.into_iter().filter(|b| b.status == s).collect(),
         None => beads,
     };
@@ -230,6 +233,8 @@ async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
         );
     }
 
+    let owner_type = args["owner_type"].as_str().unwrap_or("agent");
+
     let client = get_client(repo_path, pool).await?;
     let repo_name = repo_name_from_path(repo_path);
     let id = crate::generate_bead_id(&repo_name);
@@ -257,10 +262,11 @@ async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
             &files,
             &test_files,
             &depends_on,
+            owner_type,
         )
         .await?;
 
-    Ok(json!({ "id": id, "title": title, "priority": priority, "owner": owner }))
+    Ok(json!({ "id": id, "title": title, "priority": priority, "owner": owner, "owner_type": owner_type }))
 }
 
 async fn tool_bead_update(args: &Value, pool: &RepoPool) -> Result<Value> {
@@ -299,6 +305,10 @@ async fn tool_bead_update(args: &Value, pool: &RepoPool) -> Result<Value> {
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
             }),
+        owner_type: args
+            .get("owner_type")
+            .and_then(|v| v.as_str())
+            .map(String::from),
     };
 
     if update.is_empty() {

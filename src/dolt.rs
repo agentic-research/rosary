@@ -334,7 +334,9 @@ impl DoltClient {
     }
 
     /// Parse files and test_files from the notes JSON column.
-    fn parse_files_from_notes(row: &sqlx_mysql::MySqlRow) -> (Vec<String>, Vec<String>) {
+    /// Parse structured metadata from the notes JSON column.
+    /// Returns (files, test_files, owner_type).
+    fn parse_notes_metadata(row: &sqlx_mysql::MySqlRow) -> (Vec<String>, Vec<String>, String) {
         let notes: Option<String> = row.try_get("notes").ok();
         let parsed: Option<serde_json::Value> = notes.and_then(|s| serde_json::from_str(&s).ok());
         let files = parsed
@@ -357,7 +359,13 @@ impl DoltClient {
                     .collect()
             })
             .unwrap_or_default();
-        (files, test_files)
+        let owner_type = parsed
+            .as_ref()
+            .and_then(|v| v.get("owner_type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("agent")
+            .to_string();
+        (files, test_files, owner_type)
     }
 
     /// List all open issues as Beads.
@@ -385,7 +393,7 @@ impl DoltClient {
         let beads = rows
             .iter()
             .map(|row| {
-                let (files, test_files) = Self::parse_files_from_notes(row);
+                let (files, test_files, owner_type) = Self::parse_notes_metadata(row);
                 Bead {
                     id: row.get("id"),
                     title: row.get("title"),
@@ -408,6 +416,7 @@ impl DoltClient {
                     external_ref: row.try_get("external_ref").ok(),
                     files,
                     test_files,
+                    owner_type,
                 }
             })
             .collect();
@@ -432,7 +441,7 @@ impl DoltClient {
         .with_context(|| format!("querying issue {id}"))?;
 
         Ok(row.map(|row| {
-            let (files, test_files) = Self::parse_files_from_notes(&row);
+            let (files, test_files, owner_type) = Self::parse_notes_metadata(&row);
             Bead {
                 id: row.get("id"),
                 title: row.get("title"),
@@ -455,6 +464,7 @@ impl DoltClient {
                 jj_change_id: None,
                 files,
                 test_files,
+                owner_type,
             }
         }))
     }
@@ -534,6 +544,7 @@ impl DoltClient {
         files: &[String],
         test_files: &[String],
         depends_on: &[String],
+        owner_type: &str,
     ) -> Result<()> {
         let mut tx = self
             .pool
@@ -563,18 +574,21 @@ impl DoltClient {
             .await
             .with_context(|| format!("setting assignee for {id}"))?;
 
-        // 3. Set files if provided
-        if !files.is_empty() || !test_files.is_empty() {
-            let file_json = serde_json::json!({
+        // 3. Set notes metadata (files, test_files, owner_type)
+        if !files.is_empty() || !test_files.is_empty() || owner_type != "agent" {
+            let mut notes = serde_json::json!({
                 "files": files,
                 "test_files": test_files,
             });
+            if owner_type != "agent" {
+                notes["owner_type"] = serde_json::json!(owner_type);
+            }
             query("UPDATE issues SET notes = ?, updated_at = NOW() WHERE id = ?")
-                .bind(file_json.to_string())
+                .bind(notes.to_string())
                 .bind(id)
                 .execute(&mut *tx)
                 .await
-                .with_context(|| format!("setting files for {id}"))?;
+                .with_context(|| format!("setting notes for {id}"))?;
         }
 
         // 4. Add dependencies
@@ -646,8 +660,8 @@ impl DoltClient {
             bind_values.push(owner.clone());
             updated_fields.push("owner".to_string());
         }
-        if update.files.is_some() || update.test_files.is_some() {
-            // Files/test_files are stored as JSON in the notes column.
+        if update.files.is_some() || update.test_files.is_some() || update.owner_type.is_some() {
+            // Notes column stores JSON metadata (files, test_files, owner_type).
             // Read existing notes first to preserve fields not being updated.
             let existing_notes: serde_json::Value = {
                 let row = query("SELECT notes FROM issues WHERE id = ?")
@@ -683,10 +697,20 @@ impl DoltClient {
                         .unwrap_or(serde_json::json!([]))
                 });
 
-            let notes_json = serde_json::json!({
+            let mut notes_json = serde_json::json!({
                 "files": files,
                 "test_files": test_files,
             });
+            // Preserve or update owner_type
+            let ot = update
+                .owner_type
+                .as_deref()
+                .or_else(|| existing_notes.get("owner_type").and_then(|v| v.as_str()));
+            if let Some(ot) = ot {
+                if ot != "agent" {
+                    notes_json["owner_type"] = serde_json::json!(ot);
+                }
+            }
             set_clauses.push("notes = ?");
             bind_values.push(notes_json.to_string());
             if update.files.is_some() {
@@ -694,6 +718,9 @@ impl DoltClient {
             }
             if update.test_files.is_some() {
                 updated_fields.push("test_files".to_string());
+            }
+            if update.owner_type.is_some() {
+                updated_fields.push("owner_type".to_string());
             }
         }
 
@@ -850,7 +877,7 @@ impl DoltClient {
         let beads = rows
             .iter()
             .map(|row| {
-                let (files, test_files) = Self::parse_files_from_notes(row);
+                let (files, test_files, owner_type) = Self::parse_notes_metadata(row);
                 Bead {
                     id: row.get("id"),
                     title: row.get("title"),
@@ -873,6 +900,7 @@ impl DoltClient {
                     external_ref: row.try_get("external_ref").ok(),
                     files,
                     test_files,
+                    owner_type,
                 }
             })
             .collect();
@@ -959,6 +987,7 @@ impl DoltClient {
                 external_ref: row.try_get("external_ref").ok(),
                 files: Vec::new(),
                 test_files: Vec::new(),
+                owner_type: "agent".to_string(),
             })
             .collect();
 

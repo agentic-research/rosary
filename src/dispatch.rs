@@ -879,6 +879,7 @@ mod tests {
             external_ref: None,
             files: Vec::new(),
             test_files: Vec::new(),
+            owner_type: "agent".to_string(),
         };
 
         let prompt = build_prompt(&bead, "/tmp/test-repo", None, None);
@@ -930,6 +931,7 @@ mod tests {
             external_ref: None,
             files: Vec::new(),
             test_files: Vec::new(),
+            owner_type: "agent".to_string(),
         };
 
         let ws = PathBuf::from("/home/user/.rsry/worktrees/myrepo/iso-1");
@@ -974,6 +976,7 @@ mod tests {
             external_ref: None,
             files: Vec::new(),
             test_files: Vec::new(),
+            owner_type: "agent".to_string(),
         };
 
         // Default (dev-agent) framing

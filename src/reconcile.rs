@@ -458,6 +458,11 @@ impl Reconciler {
                 continue;
             }
 
+            // Skip human beads — they require manual action, not agent dispatch
+            if bead.is_human() {
+                continue;
+            }
+
             // (Smart triage) Dependency-aware: hard-filter beads with unresolved deps.
             // triage_score already penalizes these, but we skip them entirely to
             // avoid dispatching work whose prerequisites aren't done yet.
@@ -1535,6 +1540,7 @@ mod tests {
             external_ref: None,
             files: Vec::new(),
             test_files: Vec::new(),
+            owner_type: "agent".to_string(),
         };
 
         let config = ReconcilerConfig::default();
@@ -1696,6 +1702,7 @@ mod tests {
             external_ref: None,
             files: Vec::new(),
             test_files: Vec::new(),
+            owner_type: "agent".to_string(),
             branch: None,
             pr_url: None,
             jj_change_id: None,
@@ -1746,6 +1753,7 @@ mod tests {
             external_ref: None,
             files: Vec::new(),
             test_files: Vec::new(),
+            owner_type: "agent".to_string(),
         };
 
         // is_blocked returns true for open beads with deps
@@ -1781,6 +1789,7 @@ mod tests {
             external_ref: None,
             files: Vec::new(),
             test_files: Vec::new(),
+            owner_type: "agent".to_string(),
         };
 
         let base_score = queue::triage_score(&bead, 0, now);

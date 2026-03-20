@@ -570,6 +570,7 @@ async fn main() -> Result<()> {
                                 &[], // TODO: populate from BeadSpec.references
                                 &[],
                                 &[], // TODO: populate from thread ordering
+                                "agent",
                             )
                             .await?;
                         created += 1;
@@ -626,6 +627,7 @@ async fn main() -> Result<()> {
                             &files,
                             &test_files,
                             &[], // CLI doesn't support depends_on yet
+                            "agent",
                         )
                         .await?;
                     cli::bead_created(&id, &title);
