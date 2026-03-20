@@ -70,14 +70,31 @@ tasks:
         fi
 
   install:
-    desc: Build, codesign, and install rsry to ~/.local/bin
+    desc: Build, codesign, install rsry, and set up HTTP MCP service
     cmds:
       - cargo build --release
-      - mkdir -p ~/.local/bin
+      - mkdir -p ~/.local/bin ~/.rsry
       - cp target/release/rsry ~/.local/bin/rsry
       - codesign -s - --force --deep --entitlements entitlements.plist ~/.local/bin/rsry
       - echo "Installed rsry to ~/.local/bin/rsry (codesigned)"
-      - 'echo "Installed. Running rsry processes use old binary until next MCP reconnect."'
+      - task: install-service
+
+  install-service:
+    desc: Install/update launchd service for rsry HTTP MCP server (macOS)
+    platforms: [darwin]
+    cmds:
+      - |
+        PLIST="$HOME/Library/LaunchAgents/com.rosary.serve.plist"
+        BIN="$HOME/.local/bin/rsry"
+        LOG="$HOME/.rsry/http.log"
+        sed -e "s|__RSRY_BIN__|$BIN|g" -e "s|__RSRY_LOG__|$LOG|g" \
+          scripts/com.rosary.serve.plist.template > "$PLIST"
+        # Reload: unload old, load new
+        launchctl unload "$PLIST" 2>/dev/null || true
+        launchctl load "$PLIST"
+        echo "HTTP MCP server installed (launchd: com.rosary.serve, port 8383)"
+        echo "  Restarts automatically when ~/.local/bin/rsry changes"
+        echo "  Log: $LOG"
 
   overnight:
     desc: Start overnight loop (concurrency=1, bugs first, caffeinate)

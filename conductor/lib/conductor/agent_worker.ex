@@ -186,7 +186,10 @@ defmodule Conductor.AgentWorker do
         end)
 
       unless dead do
-        Logger.warning("[timeout] #{bead_id}: SIGTERM didn't kill #{state.os_pid}, sending SIGKILL")
+        Logger.warning(
+          "[timeout] #{bead_id}: SIGTERM didn't kill #{state.os_pid}, sending SIGKILL"
+        )
+
         System.cmd("kill", ["-9", pid_str], stderr_to_stdout: true)
         Process.sleep(100)
       end

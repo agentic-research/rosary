@@ -710,7 +710,8 @@ async fn tool_workspace_merge(args: &Value) -> Result<Value> {
     Ok(json!({
         "bead_id": bead_id,
         "branch": branch,
-        "result": result,
+        "result": result.message,
+        "pr_url": result.pr_url,
     }))
 }
 
@@ -1072,12 +1073,20 @@ async fn tool_thread_assign(args: &Value, backend: Option<&DoltBackend>) -> Resu
         .and_then(|v| v.as_str())
         .unwrap_or("ungrouped");
 
+    // Derive feature branch from config prefix + thread name.
+    let prefix = crate::config::load_global()
+        .ok()
+        .and_then(|c| c.github)
+        .map(|g| g.agent_branch_prefix)
+        .unwrap_or_else(|| "rosary".to_string());
+    let feature_branch = crate::workspace::thread_branch_name(&prefix, thread_name);
+
     backend
         .upsert_thread(&ThreadRecord {
             id: thread_id.to_string(),
             name: thread_name.to_string(),
             decade_id: decade_id.to_string(),
-            feature_branch: None,
+            feature_branch: Some(feature_branch.clone()),
         })
         .await?;
 

@@ -132,6 +132,11 @@ pub struct GitHubConfig {
     /// Auto-create PR when pipeline completes.
     #[serde(default)]
     pub auto_pr: bool,
+    /// Branch prefix for thread feature branches (default: "rosary").
+    /// Dev agents PR `fix/<bead>` into `<prefix>/<thread>`,
+    /// feature-agent PRs `<prefix>/<thread>` into main.
+    #[serde(default = "default_agent_branch_prefix")]
+    pub agent_branch_prefix: String,
     /// GitHub App ID (from app registration page).
     pub app_id: Option<u64>,
     /// GitHub App installation ID (from org/repo installation).
@@ -144,6 +149,10 @@ pub struct GitHubConfig {
 
 fn default_base_branch() -> String {
     "main".to_string()
+}
+
+fn default_agent_branch_prefix() -> String {
+    "rosary".to_string()
 }
 
 /// Dispatch pipeline behavior.
@@ -1086,5 +1095,36 @@ path = "~/remotes/art/rosary"
         let config = BackendConfig::default_config();
         assert_eq!(config.provider, "dolt");
         assert!(config.path.to_string_lossy().contains(".rsry/dolt/rosary"));
+    }
+
+    #[test]
+    fn parse_github_agent_branch_prefix() {
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[github]
+token = "ghp_test"
+agent_branch_prefix = "agent"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let gh = config.github.unwrap();
+        assert_eq!(gh.agent_branch_prefix, "agent");
+    }
+
+    #[test]
+    fn parse_github_agent_branch_prefix_default() {
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[github]
+token = "ghp_test"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let gh = config.github.unwrap();
+        assert_eq!(gh.agent_branch_prefix, "rosary");
     }
 }
