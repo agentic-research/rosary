@@ -349,6 +349,17 @@ pub async fn merge_or_pr_with_base(
     // Golden Rule 11: every commit must reference a bead.
     enforce_bead_refs(repo_path, branch, bead_id).await;
 
+    // Rebase onto latest base to avoid stale-base PRs (git-k8s desired state).
+    // Without this, worktrees created hours ago include already-merged changes in the diff.
+    let rebase_target = base.unwrap_or("main");
+    match rebase_onto_latest(repo_path, bead_id, rebase_target).await {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("[terminal] {bead_id}: rebase failed ({e}), PR will have stale base");
+            // Continue anyway — a stale PR is better than no PR. Human can rebase.
+        }
+    }
+
     // Push the branch to origin
     let push = tokio::process::Command::new("git")
         .args(["push", "-u", "origin", branch])
@@ -545,6 +556,74 @@ fn load_github_config_best_effort() -> Result<crate::config::GitHubConfig> {
     config
         .github
         .context("[github] section not found in config.toml")
+}
+
+/// Rebase the current branch onto the latest remote base.
+///
+/// Fetches `origin/{base}`, then rebases. If the rebase has conflicts,
+/// aborts and returns an error — the bead should be marked blocked.
+async fn rebase_onto_latest(repo_path: &Path, bead_id: &str, base: &str) -> Result<()> {
+    // Fetch latest base
+    let fetch = tokio::process::Command::new("git")
+        .args(["fetch", "origin", base])
+        .current_dir(repo_path)
+        .output()
+        .await
+        .context("fetching latest base")?;
+
+    if !fetch.status.success() {
+        // No remote or fetch failed — skip rebase (local repo)
+        return Ok(());
+    }
+
+    // Check if we're already up-to-date
+    let merge_base = tokio::process::Command::new("git")
+        .args(["merge-base", "HEAD", &format!("origin/{base}")])
+        .current_dir(repo_path)
+        .output()
+        .await;
+
+    let remote_head = tokio::process::Command::new("git")
+        .args(["rev-parse", &format!("origin/{base}")])
+        .current_dir(repo_path)
+        .output()
+        .await;
+
+    if let (Ok(mb), Ok(rh)) = (&merge_base, &remote_head)
+        && mb.status.success()
+        && rh.status.success()
+    {
+        let mb_sha = String::from_utf8_lossy(&mb.stdout).trim().to_string();
+        let rh_sha = String::from_utf8_lossy(&rh.stdout).trim().to_string();
+        if mb_sha == rh_sha {
+            eprintln!("[rebase] {bead_id}: already up-to-date with origin/{base}");
+            return Ok(());
+        }
+    }
+
+    eprintln!("[rebase] {bead_id}: rebasing onto origin/{base}");
+    let rebase = tokio::process::Command::new("git")
+        .args(["rebase", &format!("origin/{base}")])
+        .current_dir(repo_path)
+        .output()
+        .await
+        .context("git rebase")?;
+
+    if rebase.status.success() {
+        eprintln!("[rebase] {bead_id}: rebase succeeded");
+        return Ok(());
+    }
+
+    // Rebase failed — abort and report
+    let stderr = String::from_utf8_lossy(&rebase.stderr);
+    eprintln!("[rebase] {bead_id}: conflict detected, aborting rebase");
+    let _ = tokio::process::Command::new("git")
+        .args(["rebase", "--abort"])
+        .current_dir(repo_path)
+        .output()
+        .await;
+
+    anyhow::bail!("rebase conflict onto origin/{base}: {stderr}")
 }
 
 /// Parse owner/repo from the `origin` remote URL.
