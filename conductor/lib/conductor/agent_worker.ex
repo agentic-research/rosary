@@ -165,11 +165,31 @@ defmodule Conductor.AgentWorker do
 
     if state.validate_ref, do: Process.cancel_timer(state.validate_ref)
 
-    # Kill the OS process directly. Port.close does NOT deliver {:exit_status, _}
-    # because it invalidates the port handle before the signal propagates.
-    # Instead: kill the process, close the port, then handle failure inline.
+    # Kill the OS process and wait for it to die before proceeding.
+    # Port.close does NOT deliver {:exit_status, _} — it invalidates the
+    # handle first. So we kill + confirm death + call on_failure inline.
     if is_integer(state.os_pid) do
-      System.cmd("kill", ["-TERM", to_string(state.os_pid)], stderr_to_stdout: true)
+      pid_str = to_string(state.os_pid)
+
+      # SIGTERM first (graceful)
+      System.cmd("kill", ["-TERM", pid_str], stderr_to_stdout: true)
+
+      # Wait up to 5s for process to die, then SIGKILL
+      dead =
+        Enum.reduce_while(1..10, false, fn _, _acc ->
+          Process.sleep(500)
+
+          case System.cmd("kill", ["-0", pid_str], stderr_to_stdout: true) do
+            {_, 1} -> {:halt, true}
+            _ -> {:cont, false}
+          end
+        end)
+
+      unless dead do
+        Logger.warning("[timeout] #{bead_id}: SIGTERM didn't kill #{state.os_pid}, sending SIGKILL")
+        System.cmd("kill", ["-9", pid_str], stderr_to_stdout: true)
+        Process.sleep(100)
+      end
     end
 
     if state.port && provider().alive?(state.port) do
@@ -178,7 +198,7 @@ defmodule Conductor.AgentWorker do
 
     pipeline = Pipeline.record(state.pipeline, :timeout, "exceeded #{step.timeout_ms}ms")
 
-    # Handle failure inline — don't wait for exit_status that will never come
+    # Process is confirmed dead — safe to retry or deadletter
     on_failure(%{state | pipeline: pipeline, validate_ref: nil, port: nil, os_pid: nil}, 124)
   end
 
