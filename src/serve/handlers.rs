@@ -710,7 +710,8 @@ async fn tool_workspace_merge(args: &Value) -> Result<Value> {
     Ok(json!({
         "bead_id": bead_id,
         "branch": branch,
-        "result": result,
+        "result": result.message,
+        "pr_url": result.pr_url,
     }))
 }
 

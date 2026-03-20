@@ -1018,15 +1018,11 @@ impl Reconciler {
                     .map(|t| t.repo.clone())
                     .unwrap_or_default();
 
-                // Agent-first: skip verification if agent already closed the bead
-                if self.is_bead_agent_closed(bead_id, &repo).await {
-                    self.completed_work_dirs.remove(bead_id);
-                    self.on_pass(bead_id);
-                    self.checkpoint_and_cleanup(bead_id).await;
-                    continue;
-                }
+                // Agent-closed beads still run verification — the agent's word
+                // is not enough when the terminal step creates a PR.
+                let agent_closed = self.is_bead_agent_closed(bead_id, &repo).await;
 
-                if *exit_success {
+                if *exit_success || agent_closed {
                     let verify_result = self.verify_agent(bead_id);
                     match verify_result {
                         Some(vs) if vs.passed() => {
@@ -1258,8 +1254,18 @@ impl Reconciler {
             } else {
                 "task".to_string()
             };
-            let _ =
-                crate::workspace::merge_or_pr(&ws_repo_path, &branch, bead_id, &issue_type).await;
+            if let Ok(result) =
+                crate::workspace::merge_or_pr(&ws_repo_path, &branch, bead_id, &issue_type).await
+            {
+                // Record PR URL on the bead as a comment
+                if let Some(ref pr_url) = result.pr_url
+                    && let Some(client) = self.dolt_client(&repo).await
+                {
+                    let _ = client
+                        .add_comment(bead_id, &format!("PR: {pr_url}"), "rosary")
+                        .await;
+                }
+            }
         }
 
         self.cleanup_workspace(bead_id);
