@@ -69,7 +69,18 @@ Beads whose `files` reference paths that no longer exist.
 - Use `mcp__mache__list_directory` to verify paths exist
 - Comment on drifted beads with corrected paths
 
-### 6. Doc Drift
+### 6. Pattern Inconsistency
+
+The same operation done different ways across the codebase. Root-cause one instance, then sweep for all variations.
+
+- Pick a code pattern (path resolution, error handling, serialization, etc.)
+- Use `mcp__mache__search` to find all call sites
+- Check if they use the same approach or diverge
+- Example: `canonicalize()` vs `expand_path()` vs `shellexpand::tilde()` — three ways to resolve paths, only one is correct
+- Create bead: `issue_type: "task"`, `action: "standardize"`, list all divergent call sites and the canonical pattern
+- **Key heuristic**: if a bug fix touches one call site, grep for the same API — the same bug likely exists at every other site
+
+### 7. Doc Drift
 
 Claims in README.md or CLAUDE.md that don't match current code.
 
@@ -82,7 +93,7 @@ Claims in README.md or CLAUDE.md that don't match current code.
 
 For each finding:
 
-- **Type**: god_file | dead_code | stale_bead | dead_session | scope_drift | doc_drift
+- **Type**: god_file | dead_code | stale_bead | dead_session | scope_drift | pattern_inconsistency | doc_drift
 - **Location**: file:line or bead_id
 - **Severity**: low (cleanup) / medium (should fix) / high (blocking dispatch)
 - **Action**: create_bead | comment_on_bead | skip
