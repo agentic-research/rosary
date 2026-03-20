@@ -653,11 +653,11 @@ mod tests {
         unsafe {
             std::env::set_var(
                 "RSRY_ALLOWED_ORIGINS",
-                "https://mcp.q-q.dev,https://other.example.com",
+                "https://mcp.rosary.bot,https://other.example.com",
             );
         }
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert("origin", "https://mcp.q-q.dev".parse().unwrap());
+        headers.insert("origin", "https://mcp.rosary.bot".parse().unwrap());
         assert!(validate_origin(&headers).is_ok());
 
         headers.insert("origin", "https://other.example.com/path".parse().unwrap());
