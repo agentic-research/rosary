@@ -224,8 +224,8 @@ mod tests {
     }
 
     #[test]
-    fn session_lifecycle_register_close_gone() {
-        // Simulates: dispatch → agent works → bead closed → session should be removed
+    fn session_lifecycle_register_unregister() {
+        // Simulates: dispatch → agent works → bead closed → unregister called
         let mut reg = SessionRegistry::default();
 
         // 1. Dispatch registers the session
@@ -245,18 +245,20 @@ mod tests {
         });
         assert_eq!(reg.active().len(), 1);
 
-        // 2. Agent finishes, bead_close calls unregister
+        // 2. bead_close / workspace_merge calls unregister()
+        // (save will fail in test env — no ~/.rsry/, so call retain directly
+        // which is what unregister does internally)
         reg.sessions.retain(|s| s.bead_id != "rsry-lifecycle");
         assert!(
             reg.active().is_empty(),
-            "session should be gone after close"
+            "session should be gone after unregister"
         );
     }
 
     #[test]
-    fn dead_session_stays_until_explicit_close() {
+    fn dead_session_stays_until_explicit_unregister() {
         // Dead PID sessions stay in registry (worktree may have unmerged work)
-        // Only removed when bead_close or workspace_merge is called
+        // Only removed when bead_close or workspace_merge calls unregister()
         let mut reg = SessionRegistry::default();
 
         reg.sessions.push(SessionEntry {
@@ -274,11 +276,11 @@ mod tests {
             last_comment: None,
         });
 
-        // Dead session still in registry (not auto-cleaned)
+        // Dead session still in registry (not auto-cleaned on load)
         assert_eq!(reg.active().len(), 1);
         assert!(!is_pid_alive(99_999_999));
 
-        // Explicit close removes it
+        // Only explicit unregister (via bead_close/workspace_merge) removes it
         reg.sessions.retain(|s| s.bead_id != "rsry-dead");
         assert!(reg.active().is_empty());
     }
