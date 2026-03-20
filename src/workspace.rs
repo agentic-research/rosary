@@ -581,6 +581,54 @@ pub async fn merge_or_pr(
     bead_id: &str,
     issue_type: &str,
 ) -> Result<String> {
+    // Golden Rule 11: every commit must reference a bead.
+    // Check all commits on this branch that aren't on main.
+    let log_output = tokio::process::Command::new("git")
+        .args(["log", "main..HEAD", "--format=%H %s"])
+        .current_dir(repo_path)
+        .output()
+        .await
+        .context("checking commit messages for bead refs")?;
+    if log_output.status.success() {
+        let log = String::from_utf8_lossy(&log_output.stdout);
+        let missing_refs: Vec<&str> = log
+            .lines()
+            .filter(|line| {
+                let lower = line.to_lowercase();
+                !lower.contains("bead:") && !lower.contains("bead ")
+            })
+            .collect();
+        if !missing_refs.is_empty() {
+            eprintln!(
+                "[workspace] WARNING: {} commit(s) on {branch} missing bead reference (Golden Rule 11):",
+                missing_refs.len()
+            );
+            for line in &missing_refs {
+                eprintln!("[workspace]   {line}");
+            }
+            // Amend the most recent commit to include the bead ref
+            let amend_msg = format!(
+                "{}\n\nbead:{}",
+                log.lines()
+                    .next()
+                    .unwrap_or("")
+                    .split_once(' ')
+                    .map(|(_, msg)| msg)
+                    .unwrap_or(""),
+                bead_id
+            );
+            if let Ok(out) = tokio::process::Command::new("git")
+                .args(["commit", "--amend", "-m", &amend_msg])
+                .current_dir(repo_path)
+                .output()
+                .await
+                && out.status.success()
+            {
+                eprintln!("[workspace] auto-amended last commit with bead:{bead_id}");
+            }
+        }
+    }
+
     let needs_pr = matches!(issue_type, "feature" | "epic");
 
     if needs_pr {

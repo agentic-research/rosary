@@ -22,6 +22,16 @@ repos:
       - id: check-case-conflict
       - id: mixed-line-ending
 
+  # Bead traceability (Golden Rule 11)
+  - repo: local
+    hooks:
+      - id: bead-ref
+        name: bead reference in commit
+        entry: scripts/check-bead-ref.sh
+        language: script
+        stages: [commit-msg]
+        always_run: true
+
   # Rust-specific checks (Incremental, Full-Crate Check)
   - repo: local
     hooks:
