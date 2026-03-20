@@ -31,6 +31,22 @@ impl DoltConfig {
     /// Discover connection details from a repo's `.beads/` directory.
     pub fn from_beads_dir(beads_dir: &Path) -> Result<Self> {
         let port_file = beads_dir.join("dolt-server.port");
+        let pid_file = beads_dir.join("dolt-server.pid");
+
+        // Clean stale PID/port files before reading — a dead server's port file
+        // causes a 10s timeout on every connect attempt.
+        if pid_file.exists()
+            && port_file.exists()
+            && let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = pid_str.trim().parse::<u32>()
+            && !crate::session::is_pid_alive(pid)
+        {
+            eprintln!("[dolt] cleaning stale server files (pid {pid} dead)");
+            let _ = std::fs::remove_file(&pid_file);
+            let _ = std::fs::remove_file(&port_file);
+            let _ = std::fs::remove_file(beads_dir.join("dolt-server.lock"));
+        }
+
         let port: u16 = if port_file.exists() {
             let port_str = std::fs::read_to_string(&port_file)
                 .with_context(|| format!("reading {}", port_file.display()))?;

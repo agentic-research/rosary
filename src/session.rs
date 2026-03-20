@@ -110,7 +110,7 @@ impl SessionRegistry {
 
 /// Check if a PID is alive via kill(pid, 0).
 #[allow(dead_code)]
-fn is_pid_alive(pid: u32) -> bool {
+pub(crate) fn is_pid_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
