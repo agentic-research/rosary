@@ -87,6 +87,15 @@ pub(super) async fn create_git_worktree(repo_path: &Path, id: &str) -> Result<Pa
     let branch_name = format!("fix/{id}");
     let worktree_path = workspace_dir(repo_path, id);
 
+    // Fetch latest origin/main so the worktree branches from current remote HEAD,
+    // not stale local HEAD. Without this, agents include already-merged changes
+    // in their diffs — the root cause of every duplicate PR in the overnight session.
+    let _ = tokio::process::Command::new("git")
+        .args(["fetch", "origin", "main"])
+        .current_dir(repo_path)
+        .output()
+        .await;
+
     let output = tokio::process::Command::new("git")
         .args([
             "worktree",
@@ -94,6 +103,7 @@ pub(super) async fn create_git_worktree(repo_path: &Path, id: &str) -> Result<Pa
             &worktree_path.to_string_lossy(),
             "-b",
             &branch_name,
+            "origin/main",
         ])
         .current_dir(repo_path)
         .output()
