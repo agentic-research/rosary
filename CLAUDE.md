@@ -134,6 +134,7 @@ File overlap is also re-checked in Phase 4 (dispatch loop) to catch beads queued
 | 0005 | Proposed | Reactive persistent store ("local firebase" for agent IPC)              |
 | 0006 | Proposed | Declarative tool registry (unified MCP/CLI/pipeline from single source) |
 | 0007 | Proposed | BDR enrichment pipeline (mache + haiku + sqlite-vec dedup)              |
+| 0008 | Proposed | Agent hierarchy dispatch model (dev/feature/orchestrator tiers)         |
 
 ## BDR Hierarchy (Decade → Thread → Bead)
 
