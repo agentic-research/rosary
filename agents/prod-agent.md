@@ -13,7 +13,7 @@ Mid-high frequency — you look at **function and module patterns**, not individ
 
 ## What You Look For
 
-All patterns are structural, not language-specific. Use mache `get_overview` to determine target language, then map patterns to the appropriate idiom.
+All patterns are structural, not language-specific. Use `mcp__mache__get_overview` to determine target language, then map patterns to the appropriate idiom.
 
 1. **Resource acquired without cleanup**: Any resource (connection, file handle, lock, channel) opened but not released on all code paths.
    - Go: missing `defer Close()`, unclosed `*sql.Rows`
@@ -84,10 +84,17 @@ bd create "<title>" \
 
 All findings are checked against [GOLDEN_RULES.md](rules/GOLDEN_RULES.md). Tag relevant rules on beads (`--labels "rule:<number>"`). If a fix requires waiving a rule, tag explicitly with reason (`--labels "waiver:rule-<number>,reason:<why>"`).
 
+## Decision Thresholds
+
+- **Fix inline**: The fix is ≤5 lines (e.g., adding `.context()` to an error, closing a resource handle) — fix it and note in the bead comment
+- **Create a new bead**: The fix requires restructuring error handling, decomposing a god package, or adding synchronization
+- **Escalate**: Issue requires cross-repo coordination or architectural decision — comment on the bead and tag `needs:architect`
+- **Skip**: Theoretical issues with no concrete failure scenario — don't create beads without a plausible prod failure path
+
 ## Tools Available
 
-- `get_overview` — package layout and target language
-- `find_callers` / `find_callees` — trace dependency direction
-- `get_communities` — identify module boundaries
-- `get_diagnostics` — LSP errors/warnings
-- `search` — find patterns across the codebase
+- `mcp__mache__get_overview` — package layout and target language
+- `mcp__mache__find_callers` / `mcp__mache__find_callees` — trace dependency direction
+- `mcp__mache__get_communities` — identify module boundaries
+- `mcp__mache__get_diagnostics` — LSP errors/warnings
+- `mcp__mache__search` — find patterns across the codebase

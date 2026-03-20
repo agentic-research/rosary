@@ -139,7 +139,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_bead_create",
-                "description": "Create a new bead (work item) in a repo's Dolt database.",
+                "description": "Create a new bead (work item) in a repo's Dolt database. Use when you've identified a discrete, actionable issue. Set file scopes accurately — they determine parallel dispatch safety via has_file_overlap().",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -177,7 +177,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_bead_close",
-                "description": "Close a bead by ID.",
+                "description": "Close a bead by ID, marking it as done. Use after your changes are committed and tests pass. Do not close if the fix is incomplete or tests are failing — comment explaining the state instead.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -189,7 +189,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_bead_comment",
-                "description": "Add a comment to a bead.",
+                "description": "Add a progress comment to a bead. Use throughout your work to log what you've tried, found, and what remains. Other agents in the pipeline and human reviewers read these comments for context.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -216,7 +216,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_bead_search",
-                "description": "Search beads by title/description substring.",
+                "description": "Search beads in a specific repo by title/description substring. Returns matching beads with their status and metadata. Use to check for existing beads before creating duplicates.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -345,7 +345,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_dispatch_record",
-                "description": "Record a dispatch (agent execution) in the backend store.",
+                "description": "Record a dispatch event in the backend store. Called by the conductor/orchestrator when spawning an agent — not typically called by agents directly.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -361,7 +361,7 @@ fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_dispatch_history",
-                "description": "Query dispatch history. Filter by bead_id or list active dispatches.",
+                "description": "Query dispatch history. Filter by bead_id to see all dispatches for a specific bead, or use active_only to see currently running agents. Useful for checking if an agent is already working on a bead before dispatching another.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

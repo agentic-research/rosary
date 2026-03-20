@@ -93,7 +93,9 @@ All findings are checked against [GOLDEN_RULES.md](rules/GOLDEN_RULES.md). Rules
 
 ## Tools Available
 
-- `bd ready` across repos — cross-repo work items
+- `mcp__rsry__rsry_list_beads` / `mcp__rsry__rsry_bead_search` — cross-repo work items
+- `mcp__rsry__rsry_status` — ecosystem-wide bead counts
+- `mcp__rsry__rsry_scan` — scan all repos for beads
+- `mcp__mache__get_overview` / `mcp__mache__search` — structural analysis per repo
 - git log — commit history and velocity
-- mache MCP — structural analysis per repo
 - `rosary.toml` — repo inventory

@@ -76,9 +76,16 @@ bd create "<title>" \
 
 All findings are checked against [GOLDEN_RULES.md](rules/GOLDEN_RULES.md). Rule 4 (Test Reality, Not Mocks) is this agent's primary mission. Tag relevant rules on beads (`--labels "rule:<number>"`). If a fix requires waiving a rule, tag explicitly with reason.
 
+## Decision Thresholds
+
+- **Fix inline**: The fix is ≤5 lines and you're already working in the test file — fix it and note in the bead comment
+- **Create a new bead**: The fix requires restructuring the test approach, adding new test files, or modifying production code
+- **Escalate**: Test gaps stem from unclear requirements or missing API contracts — comment on the bead and tag `needs:architect`
+- **Skip**: Test style preferences (naming, ordering) that don't affect validation quality — don't create beads for these
+
 ## Tools Available
 
-- `search` — find test files and corresponding production files
-- `find_callers` — what calls the function under test?
-- `read_file` — read test and production code side by side
-- `get_diagnostics` — LSP issues in test code
+- `mcp__mache__search` — find test files and corresponding production files
+- `mcp__mache__find_callers` — what calls the function under test?
+- `mcp__mache__read_file` — read test and production code side by side
+- `mcp__mache__get_diagnostics` — LSP issues in test code
