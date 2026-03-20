@@ -1,21 +1,26 @@
 defmodule Conductor.Provider.Local do
   @moduledoc """
   Local compute provider. Runs agent processes on the conductor's machine
-  via Erlang Ports with PTY-backed bidirectional stdio.
+  via Erlang Ports.
 
-  The key insight: `claude -p` reads stdin for ACP commands and writes
-  stdout for responses. Erlang Ports give us `{port, {:exit_status, code}}`
-  for instant death detection. But we need bidirectional stdio — not just
-  read-only stdout or write-only stdin.
+  ## Why two spawn paths
 
-  Architecture:
-  - `spawn_process/6` creates a PTY pair via a small C helper (`pty_spawn`)
-  - The slave side becomes the agent's stdin/stdout (looks like a terminal)
-  - The master side is wrapped in an Erlang Port
-  - `send_input/2` writes to the master → agent reads from slave stdin
-  - Agent stdout flows: slave → master → Port → `{port, {:data, ...}}`
-  - Agent exit flows: kernel → Port → `{port, {:exit_status, code}}`
-  - When no input is needed, the master is silent (no "no stdin" warning)
+  CLI mode (`claude -p "prompt"`):
+    The agent gets its prompt from command-line args and does not read stdin.
+    However, if stdin is an open pipe with no data, claude CLI warns "no stdin
+    data received in 3s." Redirecting stdin from /dev/null (immediate EOF)
+    silences this. We use `priv/exec-null-stdin.sh` which does
+    `exec "$@" < /dev/null` -- the `exec` replaces the shell so the Port
+    monitors the real agent process and receives its exit code.
+
+  ACP mode (bidirectional JSON-RPC):
+    The agent speaks ACP over stdin/stdout. The conductor writes JSON-RPC
+    requests via `Port.command/2` and reads responses from Port data messages.
+    Standard bidirectional Port -- no wrapper needed.
+
+  Both modes preserve:
+    - `{port, {:exit_status, code}}` for instant death detection
+    - `{port, {:data, {:eol, line}}}` for stdout capture
   """
   @behaviour Conductor.Provider
 
@@ -26,60 +31,71 @@ defmodule Conductor.Provider.Local do
 
   @impl true
   def spawn_process(_name, binary, args, work_dir, _env, _worker_pid) do
-    # Build the command for the PTY wrapper to exec
-    full_args = [binary | args]
-
-    # Use `script` as a portable PTY wrapper (available on macOS and Linux).
-    # `script -q /dev/null` allocates a PTY and execs the command.
-    # This gives us:
-    #   1. Agent sees a real terminal on stdin (no "no stdin data" warning)
-    #   2. Port gets stdout data via {:data, ...} messages
-    #   3. Port gets exit status via {:exit_status, ...} messages
-    #   4. Port.command/2 writes to agent's stdin (for ACP)
-    {script_bin, script_args} = pty_wrapper(full_args)
+    mode = Application.get_env(:conductor, :dispatch_mode, :cli)
 
     try do
-      port =
-        Port.open(
-          {:spawn_executable, script_bin},
-          [
-            :binary,
-            :exit_status,
-            {:line, 65_536},
-            args: script_args,
-            cd: to_charlist(work_dir)
-          ]
-        )
+      port = open_port(mode, binary, args, work_dir)
 
       {:os_pid, os_pid} = Port.info(port, :os_pid)
-      Logger.info("[provider:local] started #{Path.basename(binary)} (pid=#{os_pid})")
+      Logger.info("[provider:local] started #{Path.basename(binary)} (pid=#{os_pid}, mode=#{mode})")
       {:ok, port, os_pid}
     rescue
       e -> {:error, Exception.message(e)}
     end
   end
 
-  # macOS: `script -q /dev/null cmd args...`
-  # Linux: `script -qfc "cmd args..." /dev/null`
-  defp pty_wrapper(cmd_and_args) do
-    script = System.find_executable("script") || "/usr/bin/script"
-
-    case :os.type() do
-      {:unix, :darwin} ->
-        {script, ["-q", "/dev/null"] ++ cmd_and_args}
-
-      {:unix, _linux} ->
-        # Linux `script` uses -c for command
-        full_cmd = Enum.map_join(cmd_and_args, " ", &shell_escape/1)
-        {script, ["-qfc", full_cmd, "/dev/null"]}
-    end
+  # ACP mode: bidirectional pipes. Conductor writes JSON-RPC to stdin,
+  # reads JSON-RPC from stdout. No wrapper needed.
+  defp open_port(:acp, binary, args, work_dir) do
+    Port.open(
+      {:spawn_executable, binary},
+      [
+        :binary,
+        :exit_status,
+        {:line, 65_536},
+        args: args,
+        cd: to_charlist(work_dir)
+      ]
+    )
   end
 
-  defp shell_escape(arg) do
-    if String.contains?(arg, [" ", "'", "\"", "\\", "$", "`"]) do
-      "'" <> String.replace(arg, "'", "'\\''") <> "'"
+  # CLI mode: stdin from /dev/null via exec wrapper.
+  #
+  # The wrapper script does `exec "$@" < /dev/null` which:
+  #   1. Redirects stdin from /dev/null (agent sees EOF, no "no stdin" warning)
+  #   2. `exec` replaces the shell process with the agent binary
+  #   3. Therefore Port.info(:os_pid) returns the agent's PID (after exec)
+  #   4. Port receives the agent's real exit code via {:exit_status, code}
+  #   5. Arguments pass through `$@` -- no shell escaping needed
+  #
+  # stdout remains piped through the Port for --output-format json capture.
+  defp open_port(:cli, binary, args, work_dir) do
+    wrapper = wrapper_path()
+
+    Port.open(
+      {:spawn_executable, wrapper},
+      [
+        :binary,
+        :exit_status,
+        {:line, 65_536},
+        args: [binary | args],
+        cd: to_charlist(work_dir)
+      ]
+    )
+  end
+
+  # Resolve the exec-null-stdin.sh wrapper path.
+  # Prefers the priv/ path from the compiled application. Falls back to
+  # the source tree path for development / mix test.
+  defp wrapper_path do
+    priv_path = Application.app_dir(:conductor, "priv/exec-null-stdin.sh")
+
+    if File.exists?(priv_path) do
+      priv_path
     else
-      arg
+      # Development fallback: relative to source
+      Path.join([__DIR__, "..", "..", "..", "priv", "exec-null-stdin.sh"])
+      |> Path.expand()
     end
   end
 
