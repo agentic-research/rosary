@@ -247,7 +247,10 @@ mod tests {
 
         // 2. Agent finishes, bead_close calls unregister
         reg.sessions.retain(|s| s.bead_id != "rsry-lifecycle");
-        assert!(reg.active().is_empty(), "session should be gone after close");
+        assert!(
+            reg.active().is_empty(),
+            "session should be gone after close"
+        );
     }
 
     #[test]
