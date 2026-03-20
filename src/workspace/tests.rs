@@ -32,12 +32,12 @@ fn detect_vcs_none() {
 #[tokio::test]
 async fn workspace_create_no_isolation() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let canonical = tmp.path().canonicalize().unwrap();
     let ws = Workspace::create("test-1", "repo", tmp.path(), false)
         .await
         .unwrap();
     assert_eq!(ws.vcs, VcsKind::None);
-    assert_eq!(ws.work_dir, canonical);
+    // work_dir should match the input path (expand_path, no symlink resolution)
+    assert_eq!(ws.work_dir, tmp.path().to_path_buf());
     assert!(ws.exec_handle.is_none());
 }
 
@@ -56,13 +56,12 @@ async fn workspace_create_no_vcs_with_isolate_errors() {
 #[tokio::test]
 async fn workspace_create_no_vcs_without_isolate_falls_through() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let canonical = tmp.path().canonicalize().unwrap();
     // No .jj or .git — isolate=false allows in-place execution
     let ws = Workspace::create("test-1", "repo", tmp.path(), false)
         .await
         .unwrap();
     assert_eq!(ws.vcs, VcsKind::None);
-    assert_eq!(ws.work_dir, canonical);
+    assert_eq!(ws.work_dir, tmp.path().to_path_buf());
 }
 
 #[tokio::test]
