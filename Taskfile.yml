@@ -114,6 +114,32 @@ tasks:
           --keyring-append melange.rsa.pub
       - echo "Built rosary.tar (load with docker load < rosary.tar)"
 
+  setup:
+    desc: First-time setup — install git hooks, conductor deps
+    cmds:
+      - |
+        if command -v pre-commit >/dev/null 2>&1; then
+          pre-commit install
+          pre-commit install --hook-type commit-msg
+          echo "✓ Git hooks installed (pre-commit + commit-msg)"
+        else
+          echo "SKIP: pre-commit not found (brew install pre-commit)"
+        fi
+      - |
+        if command -v mix >/dev/null 2>&1; then
+          cd conductor && mix deps.get
+          echo "✓ Conductor deps installed"
+        else
+          echo "SKIP: Elixir not found (conductor is optional)"
+        fi
+      - |
+        if command -v rsry >/dev/null 2>&1; then
+          rsry enable .
+          echo "✓ Repo registered with rosary"
+        else
+          echo "SKIP: rsry not found (brew install rosary — coming soon)"
+        fi
+
   all:
     desc: fmt + check + lint + test
     cmds:
