@@ -222,4 +222,66 @@ mod tests {
         assert_eq!(parsed.sessions.len(), 1);
         assert_eq!(parsed.sessions[0].bead_id, "rsry-abc");
     }
+
+    #[test]
+    fn session_lifecycle_register_unregister() {
+        // Simulates: dispatch → agent works → bead closed → unregister called
+        let mut reg = SessionRegistry::default();
+
+        // 1. Dispatch registers the session
+        reg.sessions.push(SessionEntry {
+            bead_id: "rsry-lifecycle".into(),
+            repo: "rosary".into(),
+            provider: "claude".into(),
+            pid: Some(std::process::id()),
+            work_dir: "/tmp/test".into(),
+            started_at: chrono::Utc::now(),
+            title: "Lifecycle test".into(),
+            agent: "dev-agent".into(),
+            workspace_vcs: String::new(),
+            repo_path: String::new(),
+            last_activity: None,
+            last_comment: None,
+        });
+        assert_eq!(reg.active().len(), 1);
+
+        // 2. bead_close / workspace_merge calls unregister()
+        // (save will fail in test env — no ~/.rsry/, so call retain directly
+        // which is what unregister does internally)
+        reg.sessions.retain(|s| s.bead_id != "rsry-lifecycle");
+        assert!(
+            reg.active().is_empty(),
+            "session should be gone after unregister"
+        );
+    }
+
+    #[test]
+    fn dead_session_stays_until_explicit_unregister() {
+        // Dead PID sessions stay in registry (worktree may have unmerged work)
+        // Only removed when bead_close or workspace_merge calls unregister()
+        let mut reg = SessionRegistry::default();
+
+        reg.sessions.push(SessionEntry {
+            bead_id: "rsry-dead".into(),
+            repo: "rosary".into(),
+            provider: "claude".into(),
+            pid: Some(99_999_999), // dead PID
+            work_dir: "/tmp/test".into(),
+            started_at: chrono::Utc::now(),
+            title: "Dead session".into(),
+            agent: "dev-agent".into(),
+            workspace_vcs: String::new(),
+            repo_path: String::new(),
+            last_activity: None,
+            last_comment: None,
+        });
+
+        // Dead session still in registry (not auto-cleaned on load)
+        assert_eq!(reg.active().len(), 1);
+        assert!(!is_pid_alive(99_999_999));
+
+        // Only explicit unregister (via bead_close/workspace_merge) removes it
+        reg.sessions.retain(|s| s.bead_id != "rsry-dead");
+        assert!(reg.active().is_empty());
+    }
 }

@@ -327,6 +327,12 @@ async fn tool_bead_close(args: &Value, pool: &RepoPool) -> Result<Value> {
     let client = get_client(repo_path, pool).await?;
     client.close_bead(id).await?;
 
+    // Unregister the session so rsry_active stops showing it.
+    // Best-effort — session may not exist if bead was closed manually.
+    if let Ok(mut registry) = crate::session::SessionRegistry::load() {
+        let _ = registry.unregister(id);
+    }
+
     Ok(json!({ "id": id, "status": "closed" }))
 }
 
@@ -695,6 +701,11 @@ async fn tool_workspace_merge(args: &Value) -> Result<Value> {
     let branch = format!("fix/{bead_id}");
 
     let result = crate::workspace::merge_or_pr(&root, &branch, bead_id, issue_type).await?;
+
+    // Unregister the session after merge — agent is done, work is landed.
+    if let Ok(mut registry) = crate::session::SessionRegistry::load() {
+        let _ = registry.unregister(bead_id);
+    }
 
     Ok(json!({
         "bead_id": bead_id,
