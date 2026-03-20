@@ -42,7 +42,8 @@ impl RepoPool {
                 continue;
             }
 
-            paths.insert(repo.name.clone(), path.clone());
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            paths.insert(repo.name.clone(), canonical);
 
             match DoltConfig::from_beads_dir(&beads_dir) {
                 Ok(dolt_config) => match DoltClient::connect(&dolt_config).await {
@@ -69,9 +70,13 @@ impl RepoPool {
     }
 
     /// Get a DoltClient by repo path (resolves name from path).
+    /// Canonicalizes the path to handle symlinks (e.g. ~/github → ~/remotes).
     pub fn get_by_path(&self, repo_path: &str) -> Option<(&str, &DoltClient)> {
         let target = Path::new(repo_path);
-        let root = config::discover_repo_root(target).unwrap_or_else(|| target.to_path_buf());
+        let discovered = config::discover_repo_root(target).unwrap_or_else(|| target.to_path_buf());
+        let root = discovered
+            .canonicalize()
+            .unwrap_or_else(|_| discovered.clone());
 
         for (name, path) in &self.paths {
             if *path == root
