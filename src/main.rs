@@ -84,6 +84,9 @@ enum Command {
         /// Filter to specific repos (comma-separated)
         #[arg(long)]
         repo: Option<String>,
+        /// Output as JSON (for scripts/statusline)
+        #[arg(long)]
+        json: bool,
     },
     /// Dispatch a bead to a Claude Code agent in an isolated worktree
     Dispatch {
@@ -367,13 +370,36 @@ async fn main() -> Result<()> {
                 };
             linear::sync(dry_run, repo_filter.as_deref(), hierarchy.as_deref()).await?;
         }
-        Command::Status { repo } => {
+        Command::Status { repo, json } => {
             let cfg = config::load_merged(&config::resolve_config_path())?;
             let repo_filter = parse_repo_filter(&repo);
             let repos = filter_repos(&cfg.repo, &repo_filter);
             let beads = scanner::scan_repos(&repos).await?;
-            cli::print_status_summary(&beads);
-            cli::print_ready_beads(&beads, 10);
+            if json {
+                let open = beads.iter().filter(|b| b.status == "open").count();
+                let in_progress = beads
+                    .iter()
+                    .filter(|b| b.status == "dispatched" || b.status == "in_progress")
+                    .count();
+                let blocked = beads.iter().filter(|b| b.status == "blocked").count();
+                let done = beads
+                    .iter()
+                    .filter(|b| b.status == "done" || b.status == "closed")
+                    .count();
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "total": beads.len(),
+                        "open": open,
+                        "in_progress": in_progress,
+                        "blocked": blocked,
+                        "done": done,
+                    })
+                );
+            } else {
+                cli::print_status_summary(&beads);
+                cli::print_ready_beads(&beads, 10);
+            }
         }
         Command::Dispatch {
             bead_id,

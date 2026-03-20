@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Golden Rule 11: every commit must reference a bead.
-# Used as a commit-msg pre-commit hook.
+# Format: [bead-id] type(scope): description
+# Example: [rosary-d3a3dd] fix(serve): rename domain
 
 msg=$(cat "$1")
 
@@ -9,12 +10,18 @@ if echo "$msg" | grep -qiE "^Merge |^initial commit"; then
     exit 0
 fi
 
-# Require bead: reference
+# Require [bead-id] prefix
+if echo "$msg" | grep -qE '^\[[-a-zA-Z0-9]+\] '; then
+    exit 0
+fi
+
+# Also allow bead: in body (backward compat during transition)
 if echo "$msg" | grep -qiE "bead:"; then
     exit 0
 fi
 
-echo "ERROR: commit message must contain bead:ID reference (Golden Rule 11)"
-echo "  Add e.g. bead:rosary-abc123 or closes bead:rosary-abc123"
-echo "  Got: $msg"
+echo "ERROR: commit message must start with [bead-id] (Golden Rule 11)"
+echo "  Format: [rosary-abc123] type(scope): description"
+echo "  Example: [rosary-d3a3dd] fix(serve): rename domain"
+echo "  Got: $(echo "$msg" | head -1)"
 exit 1
