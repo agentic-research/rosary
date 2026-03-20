@@ -594,8 +594,9 @@ pub async fn merge_or_pr(
         let missing_refs: Vec<&str> = log
             .lines()
             .filter(|line| {
-                let lower = line.to_lowercase();
-                !lower.contains("bead:") && !lower.contains("bead ")
+                // Check for [bead-id] prefix or bead: in body
+                let msg = line.split_once(' ').map(|(_, m)| m).unwrap_or(line);
+                !msg.starts_with('[') && !msg.to_lowercase().contains("bead:")
             })
             .collect();
         if !missing_refs.is_empty() {
@@ -606,17 +607,15 @@ pub async fn merge_or_pr(
             for line in &missing_refs {
                 eprintln!("[workspace]   {line}");
             }
-            // Amend the most recent commit to include the bead ref
-            let amend_msg = format!(
-                "{}\n\nbead:{}",
-                log.lines()
-                    .next()
-                    .unwrap_or("")
-                    .split_once(' ')
-                    .map(|(_, msg)| msg)
-                    .unwrap_or(""),
-                bead_id
-            );
+            // Amend the most recent commit to prepend [bead-id] prefix
+            let original_msg = log
+                .lines()
+                .next()
+                .unwrap_or("")
+                .split_once(' ')
+                .map(|(_, msg)| msg)
+                .unwrap_or("");
+            let amend_msg = format!("[{bead_id}] {original_msg}");
             if let Ok(out) = tokio::process::Command::new("git")
                 .args(["commit", "--amend", "-m", &amend_msg])
                 .current_dir(repo_path)
@@ -624,7 +623,7 @@ pub async fn merge_or_pr(
                 .await
                 && out.status.success()
             {
-                eprintln!("[workspace] auto-amended last commit with bead:{bead_id}");
+                eprintln!("[workspace] auto-amended last commit with [{bead_id}] prefix");
             }
         }
     }
