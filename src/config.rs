@@ -115,9 +115,14 @@ pub struct LinearConfig {
 }
 
 /// GitHub integration for PR creation from dispatch pipeline.
+///
+/// Supports two auth modes:
+/// 1. **GitHub App** (preferred): `app_id` + `installation_id` + `private_key_path`
+///    PRs/commits appear as `rosary-stringer[bot]`.
+/// 2. **PAT fallback**: `token` (fine-grained personal access token).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubConfig {
-    /// Personal access token (fine-grained PAT).
+    /// Personal access token (fine-grained PAT). Fallback when App is not configured.
     pub token: Option<String>,
     /// Default owner for PR creation (e.g., "agentic-research").
     pub owner: Option<String>,
@@ -127,6 +132,14 @@ pub struct GitHubConfig {
     /// Auto-create PR when pipeline completes.
     #[serde(default)]
     pub auto_pr: bool,
+    /// GitHub App ID (from app registration page).
+    pub app_id: Option<u64>,
+    /// GitHub App installation ID (from org/repo installation).
+    pub installation_id: Option<u64>,
+    /// OAuth client ID (informational, not used for auth flow).
+    pub client_id: Option<String>,
+    /// Path to the PEM private key file for JWT signing.
+    pub private_key_path: Option<String>,
 }
 
 fn default_base_branch() -> String {

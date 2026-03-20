@@ -39,6 +39,7 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 owo-colors = "4.3.0"
+jsonwebtoken = "9"
 
 [features]
 default = ["leyline"]
