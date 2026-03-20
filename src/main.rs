@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -384,16 +385,36 @@ async fn main() -> Result<()> {
             let repos = filter_repos(&cfg.repo, &repo_filter);
             let beads = scanner::scan_repos(&repos).await?;
             if json {
-                let open = beads.iter().filter(|b| b.status == "open").count();
-                let in_progress = beads
-                    .iter()
-                    .filter(|b| b.status == "dispatched" || b.status == "in_progress")
-                    .count();
-                let blocked = beads.iter().filter(|b| b.status == "blocked").count();
-                let done = beads
-                    .iter()
-                    .filter(|b| b.status == "done" || b.status == "closed")
-                    .count();
+                let count = |status: &[&str]| {
+                    beads
+                        .iter()
+                        .filter(|b| status.contains(&b.status.as_str()))
+                        .count()
+                };
+                let open = count(&["open"]);
+                let in_progress = count(&["dispatched", "in_progress"]);
+                let blocked = count(&["blocked"]);
+                let done = count(&["done", "closed"]);
+
+                // Per-repo breakdown
+                let mut per_repo = std::collections::BTreeMap::new();
+                for bead in &beads {
+                    let entry = per_repo
+                        .entry(bead.repo.clone())
+                        .or_insert_with(|| serde_json::json!({"open": 0, "in_progress": 0, "blocked": 0}));
+                    match bead.status.as_str() {
+                        "open" => entry["open"] = json!(entry["open"].as_u64().unwrap_or(0) + 1),
+                        "dispatched" | "in_progress" => {
+                            entry["in_progress"] =
+                                json!(entry["in_progress"].as_u64().unwrap_or(0) + 1)
+                        }
+                        "blocked" => {
+                            entry["blocked"] = json!(entry["blocked"].as_u64().unwrap_or(0) + 1)
+                        }
+                        _ => {}
+                    }
+                }
+
                 println!(
                     "{}",
                     serde_json::json!({
@@ -402,6 +423,7 @@ async fn main() -> Result<()> {
                         "in_progress": in_progress,
                         "blocked": blocked,
                         "done": done,
+                        "repos": per_repo,
                     })
                 );
             } else {
