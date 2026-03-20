@@ -399,9 +399,9 @@ async fn main() -> Result<()> {
                 // Per-repo breakdown
                 let mut per_repo = std::collections::BTreeMap::new();
                 for bead in &beads {
-                    let entry = per_repo
-                        .entry(bead.repo.clone())
-                        .or_insert_with(|| serde_json::json!({"open": 0, "in_progress": 0, "blocked": 0}));
+                    let entry = per_repo.entry(bead.repo.clone()).or_insert_with(
+                        || serde_json::json!({"open": 0, "in_progress": 0, "blocked": 0}),
+                    );
                     match bead.status.as_str() {
                         "open" => entry["open"] = json!(entry["open"].as_u64().unwrap_or(0) + 1),
                         "dispatched" | "in_progress" => {
