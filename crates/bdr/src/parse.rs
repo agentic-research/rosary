@@ -1,6 +1,31 @@
 // ADR markdown parser — extract atoms from markdown structure
 
 use crate::atom::{Atom, AtomKind};
+use serde::{Deserialize, Serialize};
+
+/// Metadata extracted from YAML frontmatter in an ADR.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AdrMeta {
+    /// ADR status (Proposed, Accepted, etc.)
+    pub status: Option<String>,
+    /// Author name
+    pub author: Option<String>,
+    /// Date string
+    pub date: Option<String>,
+    /// Target repo for beads from this ADR
+    pub repo: Option<String>,
+    /// ADR IDs this ADR depends on
+    pub depends_on: Vec<String>,
+    /// ADR IDs this ADR relates to
+    pub relates_to: Vec<String>,
+}
+
+/// Result of parsing an ADR: metadata from frontmatter + atoms from body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedAdr {
+    pub meta: AdrMeta,
+    pub atoms: Vec<Atom>,
+}
 
 /// Known ADR section types, mapped from heading text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,10 +42,16 @@ enum SectionKind {
     Other,
 }
 
-/// Parse an ADR markdown string into atoms.
+/// Parse an ADR markdown string into atoms (backward-compatible).
 pub fn parse_adr(markdown: &str) -> Vec<Atom> {
+    parse_adr_full(markdown).atoms
+}
+
+/// Parse an ADR markdown string into metadata + atoms.
+pub fn parse_adr_full(markdown: &str) -> ParsedAdr {
+    let (meta, body) = extract_frontmatter(markdown);
     let mut atoms = Vec::new();
-    let lines: Vec<&str> = markdown.lines().collect();
+    let lines: Vec<&str> = body.lines().collect();
     let sections = extract_sections(&lines);
 
     for section in &sections {
@@ -29,7 +60,141 @@ pub fn parse_adr(markdown: &str) -> Vec<Atom> {
         atoms.extend(section_atoms);
     }
 
-    atoms
+    ParsedAdr { meta, atoms }
+}
+
+/// Extract YAML-style frontmatter from markdown.
+/// Supports both `---` delimited YAML blocks and inline `**Key:** Value` patterns
+/// common in ADRs (e.g., `**Status:** Proposed`, `**Depends on:** ADR-A`).
+fn extract_frontmatter(markdown: &str) -> (AdrMeta, &str) {
+    let mut meta = AdrMeta::default();
+
+    // Try --- delimited YAML frontmatter first
+    let trimmed = markdown.trim_start();
+    if let Some(after_open) = trimmed.strip_prefix("---")
+        && let Some(end) = after_open.find("\n---")
+    {
+        let yaml_block = &after_open[..end];
+        meta = parse_frontmatter_lines(yaml_block);
+        let remaining = &after_open[end + 4..]; // skip closing ---\n
+        return (meta, remaining);
+    }
+
+    // Fall back to inline **Key:** Value patterns (scan until first ## heading)
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut body_start_line = 0;
+    let mut frontmatter_lines = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed_line = line.trim();
+        // Stop at first ## heading (the actual content)
+        if trimmed_line.starts_with("## ") {
+            body_start_line = i;
+            break;
+        }
+        // Collect **Key:** Value lines
+        if trimmed_line.starts_with("**") && trimmed_line.contains(":**") {
+            frontmatter_lines.push(*line);
+        }
+        body_start_line = i + 1;
+    }
+
+    if !frontmatter_lines.is_empty() {
+        let combined = frontmatter_lines.join("\n");
+        meta = parse_inline_frontmatter(&combined);
+    }
+
+    // Find the byte offset of body_start_line
+    let mut offset = 0;
+    for (i, line) in markdown.lines().enumerate() {
+        if i >= body_start_line {
+            break;
+        }
+        offset += line.len() + 1; // +1 for newline
+    }
+    let body = if offset < markdown.len() {
+        &markdown[offset..]
+    } else {
+        ""
+    };
+
+    (meta, body)
+}
+
+/// Parse --- delimited YAML frontmatter.
+fn parse_frontmatter_lines(yaml: &str) -> AdrMeta {
+    let mut meta = AdrMeta::default();
+    for line in yaml.lines() {
+        let trimmed = line.trim();
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let key = key.trim().to_lowercase();
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                continue;
+            }
+            apply_meta_field(&mut meta, &key, &value);
+        }
+    }
+    meta
+}
+
+/// Parse inline **Key:** Value frontmatter.
+fn parse_inline_frontmatter(text: &str) -> AdrMeta {
+    let mut meta = AdrMeta::default();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        // Pattern: **Key:** Value
+        if let Some(rest) = trimmed.strip_prefix("**")
+            && let Some((key_part, value)) = rest.split_once(":**")
+        {
+            let key = key_part.trim_end_matches('*').trim().to_lowercase();
+            let value = value.trim().to_string();
+            if !value.is_empty() {
+                apply_meta_field(&mut meta, &key, &value);
+            }
+        }
+    }
+    meta
+}
+
+/// Apply a key-value pair to AdrMeta.
+fn apply_meta_field(meta: &mut AdrMeta, key: &str, value: &str) {
+    match key {
+        "status" => meta.status = Some(value.to_string()),
+        "author" => meta.author = Some(value.to_string()),
+        "date" => meta.date = Some(value.to_string()),
+        "repo" => meta.repo = Some(value.to_string()),
+        k if k.starts_with("depends") => {
+            // "depends on", "depends_on", "depends-on"
+            meta.depends_on = parse_comma_or_ref_list(value);
+        }
+        k if k.starts_with("relates") => {
+            // "relates to", "relates_to"
+            meta.relates_to = parse_comma_or_ref_list(value);
+        }
+        _ => {} // ignore unknown keys
+    }
+}
+
+/// Parse a comma-separated or space-separated list of references.
+/// Handles: "ADR-A, ADR-B", "ADR-A (Sheaf Cache)", "ADR-A"
+fn parse_comma_or_ref_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .flat_map(|part| {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            // Extract ADR ID: take first word, strip parens
+            let id = trimmed
+                .split_whitespace()
+                .next()
+                .unwrap_or(trimmed)
+                .trim_matches(|c: char| c == '(' || c == ')');
+            Some(id.to_string())
+        })
+        .collect()
 }
 
 /// A parsed section from the markdown.
@@ -526,5 +691,69 @@ Use OpenAI's `Harmony` token format for a 3-tier lattice.
             SectionKind::Implementation
         );
         assert_eq!(classify_section("Random Section"), SectionKind::Other);
+    }
+
+    #[test]
+    fn parse_inline_frontmatter_extracts_status() {
+        let parsed = parse_adr_full(SAMPLE_ADR);
+        assert_eq!(parsed.meta.status.as_deref(), Some("Proposed"));
+    }
+
+    #[test]
+    fn parse_inline_frontmatter_extracts_date() {
+        let parsed = parse_adr_full(SAMPLE_ADR);
+        assert_eq!(parsed.meta.date.as_deref(), Some("2026-03-14"));
+    }
+
+    #[test]
+    fn parse_yaml_frontmatter() {
+        let adr = "---\nstatus: Proposed\nauthor: James\nrepo: leyline\ndepends on: ADR-A, ADR-B\nrelates to: ADR-C\n---\n\n## Context\n\nSome problem.\n";
+        let parsed = parse_adr_full(adr);
+        assert_eq!(parsed.meta.status.as_deref(), Some("Proposed"));
+        assert_eq!(parsed.meta.author.as_deref(), Some("James"));
+        assert_eq!(parsed.meta.repo.as_deref(), Some("leyline"));
+        assert_eq!(parsed.meta.depends_on, vec!["ADR-A", "ADR-B"]);
+        assert_eq!(parsed.meta.relates_to, vec!["ADR-C"]);
+        assert!(!parsed.atoms.is_empty());
+    }
+
+    #[test]
+    fn parse_adr_full_inline_depends_on() {
+        let adr = "# ADR-B: Merkle Sync\n\n**Status:** Proposed\n**Depends on:** ADR-A (Sheaf Cache)\n**Relates to:** mache, leyline-net\n\n## Context\n\nSync is slow.\n";
+        let parsed = parse_adr_full(adr);
+        assert_eq!(parsed.meta.status.as_deref(), Some("Proposed"));
+        assert_eq!(parsed.meta.depends_on, vec!["ADR-A"]);
+        assert_eq!(parsed.meta.relates_to, vec!["mache", "leyline-net"]);
+    }
+
+    #[test]
+    fn parse_adr_full_backward_compatible() {
+        // parse_adr still works and returns same atoms
+        let atoms = parse_adr(SAMPLE_ADR);
+        let parsed = parse_adr_full(SAMPLE_ADR);
+        assert_eq!(atoms.len(), parsed.atoms.len());
+    }
+
+    #[test]
+    fn parse_adr_full_no_frontmatter() {
+        let adr = "## Context\n\nJust a context section.\n";
+        let parsed = parse_adr_full(adr);
+        assert_eq!(parsed.meta, AdrMeta::default());
+        assert!(!parsed.atoms.is_empty());
+    }
+
+    #[test]
+    fn adr_meta_serde_roundtrip() {
+        let meta = AdrMeta {
+            status: Some("Proposed".into()),
+            author: Some("James".into()),
+            date: Some("2026-03-19".into()),
+            repo: Some("leyline".into()),
+            depends_on: vec!["ADR-A".into()],
+            relates_to: vec!["ADR-C".into(), "mache".into()],
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: AdrMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(meta, back);
     }
 }

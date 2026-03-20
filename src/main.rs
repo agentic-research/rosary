@@ -498,8 +498,8 @@ async fn main() -> Result<()> {
         } => {
             let markdown =
                 std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
-            let atoms = bdr::parse::parse_adr(&markdown);
-            if atoms.is_empty() {
+            let parsed = bdr::parse::parse_adr_full(&markdown);
+            if parsed.atoms.is_empty() {
                 println!("No decomposable atoms found in {path}");
                 return Ok(());
             }
@@ -512,7 +512,8 @@ async fn main() -> Result<()> {
                     .unwrap_or_else(|| path.clone())
             });
 
-            let decade = bdr::thread::build_decade(&path, &adr_title, &atoms);
+            let decade =
+                bdr::thread::build_decade_with_meta(&path, &adr_title, &parsed.atoms, &parsed.meta);
 
             cli::decompose_decade(
                 &decade.title,

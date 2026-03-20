@@ -142,8 +142,10 @@ impl From<&str> for BeadState {
 ///
 /// This enables parallel dispatch: beads with non-overlapping scopes can
 /// run concurrently, while overlapping scopes serialize execution.
-pub fn requires_files(_issue_type: &str) -> bool {
-    true
+pub fn requires_files(issue_type: &str) -> bool {
+    // Epics/design/research are planning beads — they don't touch code directly.
+    // They decompose into child beads that DO have file scopes.
+    !matches!(issue_type, "epic" | "design" | "research")
 }
 
 /// PATCH-style update for bead fields. Only `Some` fields are written;
@@ -588,16 +590,21 @@ mod tests {
     }
 
     #[test]
-    fn requires_files_for_all_types() {
-        // All types require scopes (files or directories) for overlap detection
+    fn requires_files_for_implementation_types() {
+        // Implementation types require scopes for overlap detection
         assert!(requires_files("bug"));
         assert!(requires_files("task"));
         assert!(requires_files("feature"));
         assert!(requires_files("chore"));
-        assert!(requires_files("epic"));
-        assert!(requires_files("design"));
-        assert!(requires_files("research"));
         assert!(requires_files("review"));
+    }
+
+    #[test]
+    fn planning_types_skip_file_requirement() {
+        // Planning beads decompose into children with scopes
+        assert!(!requires_files("epic"));
+        assert!(!requires_files("design"));
+        assert!(!requires_files("research"));
     }
 
     #[test]
