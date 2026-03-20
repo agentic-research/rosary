@@ -37,7 +37,11 @@ defmodule Conductor.Provider.Local do
       port = open_port(mode, binary, args, work_dir)
 
       {:os_pid, os_pid} = Port.info(port, :os_pid)
-      Logger.info("[provider:local] started #{Path.basename(binary)} (pid=#{os_pid}, mode=#{mode})")
+
+      Logger.info(
+        "[provider:local] started #{Path.basename(binary)} (pid=#{os_pid}, mode=#{mode})"
+      )
+
       {:ok, port, os_pid}
     rescue
       e -> {:error, Exception.message(e)}
