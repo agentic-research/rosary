@@ -236,7 +236,13 @@ impl DoltClient {
         // No port file (port=0) — auto-start from the dolt data directory
         let dolt_dir = config.dolt_dir();
         if !dolt_dir.exists() {
-            anyhow::bail!("Dolt database directory not found: {}", dolt_dir.display());
+            anyhow::bail!(
+                "Dolt database not initialized for this repo.\n\
+                 Expected database at: {}\n\
+                 \n\
+                 To initialize, run:\n  rsry enable <repo-path>",
+                dolt_dir.display()
+            );
         }
 
         eprintln!(

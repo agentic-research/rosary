@@ -91,7 +91,7 @@ Pipeline mapping: issue_type → agent sequence (dispatch.rs `agent_pipeline()`)
 Beads are the distributed work tracking system. Each repo has `.beads/` with a Dolt database.
 
 ```bash
-# MCP tools (via rsry serve) — 26 tools
+# MCP tools (via rsry serve) — 24 tools
 # Beads
 rsry_bead_create / rsry_bead_update / rsry_bead_search / rsry_bead_comment / rsry_bead_close
 rsry_bead_link / rsry_status / rsry_list_beads / rsry_scan / rsry_active
@@ -134,6 +134,7 @@ File overlap is also re-checked in Phase 4 (dispatch loop) to catch beads queued
 | 0005 | Proposed | Reactive persistent store ("local firebase" for agent IPC)              |
 | 0006 | Proposed | Declarative tool registry (unified MCP/CLI/pipeline from single source) |
 | 0007 | Proposed | BDR enrichment pipeline (mache + haiku + sqlite-vec dedup)              |
+| 0008 | Proposed | Agent hierarchy dispatch model (dev/feature/orchestrator tiers)         |
 
 ## BDR Hierarchy (Decade → Thread → Bead)
 
@@ -152,7 +153,7 @@ Current decades:
 
 ## MCP Integration
 
-Rosary exposes 26 MCP tools via `rsry serve`. Accessible from:
+Rosary exposes 24 MCP tools via `rsry serve`. Accessible from:
 
 - Claude Code (stdio transport, configured in MCP settings)
 - Claude web (HTTP transport via tunnel)

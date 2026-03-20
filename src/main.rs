@@ -47,7 +47,15 @@ mod xref;
 #[derive(Parser)]
 #[command(
     name = "rsry",
-    about = "Strings beads, repos, and review layers into coordinated work"
+    about = "Strings beads, repos, and review layers into coordinated work",
+    version = concat!(
+        env!("CARGO_PKG_VERSION"),
+        " (",
+        env!("RSRY_BUILD_HASH"),
+        " ",
+        env!("RSRY_BUILD_TIME"),
+        ")"
+    ),
 )]
 struct Cli {
     #[command(subcommand)]
