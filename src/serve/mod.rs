@@ -96,10 +96,40 @@ fn handle_initialize(id: Value) -> JsonRpcResponse {
                 "name": "rosary",
                 "version": env!("CARGO_PKG_VERSION"),
                 "buildHash": env!("RSRY_BUILD_HASH")
-            }
+            },
+            "instructions": SERVER_INSTRUCTIONS
         }),
     )
 }
+
+/// Instructions injected into every Claude session via MCP initialize.
+/// This is how rsry teaches new users/agents what it does and how to use it.
+const SERVER_INSTRUCTIONS: &str = "\
+Rosary (rsry) is an autonomous work orchestrator. It tracks work as **beads** \
+(small, actionable items stored in Dolt databases per repo) and dispatches AI agents to complete them.\n\
+\n\
+## On session start\n\
+- Run `rsry_status` to see open/in-progress/blocked bead counts\n\
+- Run `rsry_list_beads` to see what needs doing\n\
+\n\
+## Before starting work\n\
+- Search for existing beads with `rsry_bead_search` — don't duplicate work\n\
+- If no bead exists for your task, create one with `rsry_bead_create`\n\
+\n\
+## During work\n\
+- Comment progress with `rsry_bead_comment` — other agents and humans read these\n\
+- Commit with `[bead-id] type(scope): description` format (Golden Rule 11)\n\
+\n\
+## When done\n\
+- Close the bead with `rsry_bead_close` after tests pass and work is committed\n\
+- If you can't finish, comment explaining what you tried — don't close incomplete beads\n\
+\n\
+## Key concepts\n\
+- **Beads**: work items (bugs, tasks, features, epics) with file scopes for parallel dispatch\n\
+- **Threads**: ordered groups of related beads\n\
+- **Decades**: ADR-level groupings of threads\n\
+- **Dispatch**: `rsry_dispatch` assigns an agent to work on a bead in an isolated workspace\n\
+";
 
 fn handle_tools_list(id: Value) -> JsonRpcResponse {
     JsonRpcResponse::success(id, tools::tool_definitions())
