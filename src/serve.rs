@@ -235,7 +235,8 @@ fn tool_definitions() -> Value {
                         "bead_id": { "type": "string", "description": "Bead ID to dispatch" },
                         "repo_path": { "type": "string", "description": "Path to repo containing the bead" },
                         "provider": { "type": "string", "description": "Agent provider (claude, gemini, acp)", "default": "claude" },
-                        "agent": { "type": "string", "description": "Agent persona override (dev-agent, staging-agent, prod-agent, feature-agent, pm-agent). If omitted, uses bead owner." }
+                        "agent": { "type": "string", "description": "Agent persona override (dev-agent, staging-agent, prod-agent, feature-agent, pm-agent). If omitted, uses bead owner." },
+                        "isolate": { "type": "boolean", "description": "Create an isolated workspace (git worktree / jj workspace) before dispatch. Defaults to true. Set to false only for single-concurrency in-place execution.", "default": true }
                     },
                     "required": ["bead_id", "repo_path"]
                 }
@@ -799,6 +800,10 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     let provider_name = args["provider"].as_str().unwrap_or("claude");
     let agent_override = args.get("agent").and_then(|v| v.as_str());
+    let isolate = args
+        .get("isolate")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
     // Find the bead
     let path = std::path::Path::new(repo_path);
@@ -830,7 +835,7 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     let handle = crate::dispatch::spawn(
         &bead,
         &root,
-        true,
+        isolate,
         bead.generation(),
         provider.as_ref(),
         agents_dir.as_deref(),
@@ -935,7 +940,7 @@ fn check_agent_health(session: &crate::session::SessionEntry) -> &'static str {
     // Check if PID is alive
     let pid_alive = session
         .pid
-        .map(|pid| unsafe { libc::kill(pid as i32, 0) == 0 })
+        .map(crate::session::is_pid_alive)
         .unwrap_or(false);
     if !pid_alive {
         return "dead";

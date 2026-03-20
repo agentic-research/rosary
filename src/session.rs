@@ -92,7 +92,10 @@ impl SessionRegistry {
         self.save()
     }
 
-    /// List active sessions (pruned of dead PIDs).
+    /// List all registered sessions (including dead-PID sessions that may have
+    /// unmerged worktree work). Callers should use `is_pid_alive()` to check
+    /// liveness — dead sessions are kept because their worktrees may contain
+    /// uncommitted work that needs explicit merge/cleanup.
     pub fn active(&self) -> &[SessionEntry] {
         &self.sessions
     }
@@ -109,7 +112,6 @@ impl SessionRegistry {
 }
 
 /// Check if a PID is alive via kill(pid, 0).
-#[allow(dead_code)]
 pub(crate) fn is_pid_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }

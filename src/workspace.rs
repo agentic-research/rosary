@@ -144,6 +144,13 @@ impl Workspace {
                     (repo_path.to_path_buf(), VcsKind::None)
                 }
             },
+            VcsKind::None if isolate => {
+                anyhow::bail!(
+                    "workspace isolation failed for {id}: no VCS found in {} \
+                     (need .git or .jj for isolation)",
+                    repo_path.display()
+                );
+            }
             VcsKind::None => (repo_path.to_path_buf(), VcsKind::None),
         };
 
@@ -674,13 +681,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_create_no_vcs_falls_through() {
+    async fn workspace_create_no_vcs_with_isolate_errors() {
         let tmp = tempfile::TempDir::new().unwrap();
-        // No .jj or .git — even with isolate=true, falls to None
-        let ws = Workspace::create("test-1", "repo", tmp.path(), true)
+        // No .jj or .git — isolate=true must error, not silently fall back
+        let result = Workspace::create("test-1", "repo", tmp.path(), true).await;
+        assert!(
+            result.is_err(),
+            "Workspace::create with isolate=true must fail when no VCS is available, \
+             not silently fall back to in-place"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_create_no_vcs_without_isolate_falls_through() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let canonical = tmp.path().canonicalize().unwrap();
+        // No .jj or .git — isolate=false allows in-place execution
+        let ws = Workspace::create("test-1", "repo", tmp.path(), false)
             .await
             .unwrap();
         assert_eq!(ws.vcs, VcsKind::None);
+        assert_eq!(ws.work_dir, canonical);
     }
 
     #[tokio::test]
