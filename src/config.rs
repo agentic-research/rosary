@@ -25,6 +25,11 @@ pub struct Config {
     /// Dispatch pipeline behavior.
     #[serde(default)]
     pub dispatch: Option<DispatchConfig>,
+    /// Directory containing git hook scripts (default: ~/.rsry/hooks/).
+    /// These are installed into repos on `rsry enable` and always come from
+    /// this central location — not per-branch, not per-repo.
+    #[serde(default)]
+    pub hooks_dir: Option<PathBuf>,
 }
 
 /// Compute provider selection + backend-specific settings.
@@ -246,6 +251,13 @@ pub fn load(path: &str) -> Result<Config> {
     Ok(config)
 }
 
+/// Path to `~/.rsry/`.
+fn default_rsry_dir() -> PathBuf {
+    dirs_next::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".rsry")
+}
+
 /// Path to the single global config: `~/.rsry/config.toml`.
 /// This is the ONE config file. Repos, linear settings, everything.
 pub fn global_registry_path() -> Result<PathBuf> {
@@ -348,7 +360,84 @@ pub fn enable_repo(repo_path: &Path) -> Result<RepoConfig> {
     }
 
     save_global(&config)?;
+
+    // Install hooks from central hooks_dir into the repo
+    install_hooks(&entry.path, &config);
+
     Ok(entry)
+}
+
+/// Install git hooks from the central hooks_dir into a repo.
+/// Hooks live at ~/.rsry/hooks/ (or config.hooks_dir), not per-branch.
+fn install_hooks(repo_path: &Path, config: &Config) {
+    let hooks_dir = config
+        .hooks_dir
+        .clone()
+        .unwrap_or_else(|| default_rsry_dir().join("hooks"));
+
+    if !hooks_dir.exists() {
+        // First time — create the default hooks dir and seed it
+        if let Err(e) = std::fs::create_dir_all(&hooks_dir) {
+            eprintln!("[hooks] failed to create {}: {e}", hooks_dir.display());
+            return;
+        }
+        seed_default_hooks(&hooks_dir);
+    }
+
+    let git_hooks_dir = repo_path.join(".git").join("hooks");
+    if !git_hooks_dir.exists() {
+        return; // not a git repo
+    }
+
+    // Symlink each hook from central dir into .git/hooks/
+    if let Ok(entries) = std::fs::read_dir(&hooks_dir) {
+        for entry in entries.flatten() {
+            let src = entry.path();
+            if !src.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let dst = git_hooks_dir.join(&name);
+            // Don't overwrite existing hooks
+            if dst.exists() {
+                continue;
+            }
+            #[cfg(unix)]
+            {
+                if std::os::unix::fs::symlink(&src, &dst).is_ok() {
+                    eprintln!(
+                        "[hooks] installed {} → {}",
+                        name.to_string_lossy(),
+                        src.display()
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Seed the default hooks directory with rosary's standard hooks.
+fn seed_default_hooks(hooks_dir: &Path) {
+    // commit-msg hook: Golden Rule 11
+    let commit_msg = hooks_dir.join("commit-msg");
+    let script = r#"#!/usr/bin/env bash
+# Golden Rule 11: every commit must reference a bead.
+msg=$(cat "$1")
+if echo "$msg" | grep -qiE "^Merge |^initial commit"; then exit 0; fi
+if echo "$msg" | grep -qE '^\[[-a-zA-Z0-9]+\] '; then exit 0; fi
+if echo "$msg" | grep -qiE "bead:"; then exit 0; fi
+echo "ERROR: commit message must start with [bead-id] (Golden Rule 11)"
+echo "  Format: [rosary-abc123] type(scope): description"
+echo "  Got: $(echo "$msg" | head -1)"
+exit 1
+"#;
+    if let Ok(()) = std::fs::write(&commit_msg, script) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&commit_msg, std::fs::Permissions::from_mode(0o755));
+        }
+    }
 }
 
 /// Unregister a repo from the global registry by name or path.
