@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.rosary.serve</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__RSRY_BIN__</string>
+        <string>serve</string>
+        <string>--transport</string>
+        <string>http</string>
+        <string>--port</string>
+        <string>8383</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>WatchPaths</key>
+    <array>
+        <string>__RSRY_BIN__</string>
+    </array>
+    <key>StandardOutPath</key>
+    <string>__RSRY_LOG__</string>
+    <key>StandardErrorPath</key>
+    <string>__RSRY_LOG__</string>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
