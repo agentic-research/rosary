@@ -355,9 +355,9 @@ pub fn discover_repo_root(start: &Path) -> Option<PathBuf> {
 /// pyproject.toml discovery). This means `rsry enable` works from
 /// any subdirectory.
 pub fn enable_repo(repo_path: &Path) -> Result<RepoConfig> {
-    let start = repo_path
-        .canonicalize()
-        .with_context(|| format!("resolving {}", repo_path.display()))?;
+    // expand_path (tilde only) — NOT canonicalize, which resolves symlinks
+    // and breaks paths like ~/github → ~/remotes.
+    let start = crate::scanner::expand_path(repo_path);
     let abs = discover_repo_root(&start).unwrap_or(start);
 
     let name = abs

@@ -16,11 +16,9 @@ impl Workspace {
     ///
     /// Tries jj first, falls back to git worktree, then in-place.
     pub async fn create(id: &str, repo: &str, repo_path: &Path, isolate: bool) -> Result<Self> {
-        // Canonicalize to avoid relative path issues when MCP server
-        // runs from a different cwd than the repo root.
-        let repo_path = repo_path
-            .canonicalize()
-            .unwrap_or_else(|_| repo_path.to_path_buf());
+        // Expand tilde but do NOT canonicalize — that resolves symlinks
+        // and breaks paths like ~/github → ~/remotes.
+        let repo_path = crate::scanner::expand_path(repo_path);
         let repo_path = repo_path.as_path();
 
         let vcs = if isolate {
