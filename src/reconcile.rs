@@ -1254,8 +1254,40 @@ impl Reconciler {
             } else {
                 "task".to_string()
             };
-            if let Ok(result) =
-                crate::workspace::merge_or_pr(&ws_repo_path, &branch, bead_id, &issue_type).await
+            // Resolve the PR base: thread feature branch if bead belongs to a thread,
+            // otherwise default (main). BDR→git: bead PRs into thread branch.
+            let base: Option<String> = if let Some(ref hierarchy) = self.hierarchy {
+                let bead_ref = crate::store::BeadRef {
+                    repo: repo.clone(),
+                    bead_id: bead_id.to_string(),
+                };
+                if let Ok(Some(thread_id)) = hierarchy.find_thread_for_bead(&bead_ref).await {
+                    let decade_id = thread_id.split('/').next().unwrap_or(&thread_id);
+                    hierarchy
+                        .list_threads(decade_id)
+                        .await
+                        .ok()
+                        .and_then(|threads| {
+                            threads
+                                .iter()
+                                .find(|t| t.id == thread_id)
+                                .and_then(|t| t.feature_branch.clone())
+                        })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Ok(result) = crate::workspace::merge_or_pr_with_base(
+                &ws_repo_path,
+                &branch,
+                bead_id,
+                &issue_type,
+                base.as_deref(),
+            )
+            .await
             {
                 // Record PR URL on the bead as a comment
                 if let Some(ref pr_url) = result.pr_url

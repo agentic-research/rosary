@@ -426,6 +426,7 @@ mod tests {
             installation_id: None,
             client_id: None,
             private_key_path: None,
+            agent_branch_prefix: "rosary".into(),
         };
         let client = GitHubClient::from_config(&config).unwrap();
         assert!(!client.is_app_auth());
@@ -442,6 +443,7 @@ mod tests {
             installation_id: None,
             client_id: None,
             private_key_path: None,
+            agent_branch_prefix: "rosary".into(),
         };
         // Clear GITHUB_TOKEN to ensure no env fallback
         let result = GitHubClient::from_config(&config);
@@ -462,6 +464,7 @@ mod tests {
             installation_id: Some(67890),
             client_id: None,
             private_key_path: Some("/nonexistent/key.pem".into()),
+            agent_branch_prefix: "rosary".into(),
         };
         let result = GitHubClient::from_config(&config);
         let err = result.err().expect("should fail with missing key");

@@ -23,7 +23,7 @@ use crate::backend::ExecHandle;
 
 // Re-export public API from submodules.
 pub(crate) use sweep::{cleanup_git_worktree, cleanup_jj_workspace, workspace_dir};
-pub use sweep::{merge_or_pr, sweep_orphaned};
+pub use sweep::{merge_or_pr, merge_or_pr_with_base, sweep_orphaned, thread_branch_name};
 
 /// VCS backend for code isolation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

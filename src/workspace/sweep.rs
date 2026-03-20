@@ -233,18 +233,118 @@ pub struct TerminalResult {
     pub pr_url: Option<String>,
 }
 
+/// Derive the feature branch name for a thread.
+///
+/// Format: `{prefix}/{thread_name}` where prefix comes from config
+/// (default "rosary"). Thread name is slugified.
+pub fn thread_branch_name(prefix: &str, thread_name: &str) -> String {
+    let slug: String = thread_name
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .replace("--", "-")
+        .trim_matches('-')
+        .to_string();
+    format!("{prefix}/{slug}")
+}
+
+/// Ensure a feature branch exists for a thread, creating from base if needed.
+pub async fn ensure_thread_branch(repo_path: &Path, branch: &str, base: &str) -> Result<()> {
+    // Check if branch already exists (local or remote)
+    let check = tokio::process::Command::new("git")
+        .args(["rev-parse", "--verify", branch])
+        .current_dir(repo_path)
+        .output()
+        .await;
+
+    if let Ok(ref out) = check
+        && out.status.success()
+    {
+        return Ok(()); // Already exists locally
+    }
+
+    // Try remote
+    let remote_ref = format!("origin/{branch}");
+    let check_remote = tokio::process::Command::new("git")
+        .args(["rev-parse", "--verify", &remote_ref])
+        .current_dir(repo_path)
+        .output()
+        .await;
+
+    if let Ok(ref out) = check_remote
+        && out.status.success()
+    {
+        // Track the remote branch locally
+        let _ = tokio::process::Command::new("git")
+            .args(["checkout", "-b", branch, &remote_ref])
+            .current_dir(repo_path)
+            .output()
+            .await;
+        // Switch back to original branch
+        let _ = tokio::process::Command::new("git")
+            .args(["checkout", "-"])
+            .current_dir(repo_path)
+            .output()
+            .await;
+        return Ok(());
+    }
+
+    // Create new branch from base
+    let create = tokio::process::Command::new("git")
+        .args(["branch", branch, base])
+        .current_dir(repo_path)
+        .output()
+        .await
+        .context("creating thread branch")?;
+
+    if !create.status.success() {
+        let stderr = String::from_utf8_lossy(&create.stderr);
+        anyhow::bail!("failed to create thread branch {branch} from {base}: {stderr}");
+    }
+
+    // Push to remote so dev agents can branch from it
+    let _ = tokio::process::Command::new("git")
+        .args(["push", "-u", "origin", branch])
+        .current_dir(repo_path)
+        .output()
+        .await;
+
+    eprintln!("[thread] created branch {branch} from {base}");
+    Ok(())
+}
+
 /// Terminal step: push branch and create a PR.
 ///
 /// Called after an agent completes work and passes verification. Always pushes
 /// the branch and creates a PR — branch protection rules require it.
 ///
 /// `repo_path` should be the MAIN repo (not the worktree).
-/// `bead_title` is used for the PR title.
+/// `base` is the PR target branch (thread branch for dev-agents, main for feature-agent).
 pub async fn merge_or_pr(
     repo_path: &Path,
     branch: &str,
     bead_id: &str,
     issue_type: &str,
+) -> Result<TerminalResult> {
+    merge_or_pr_with_base(repo_path, branch, bead_id, issue_type, None).await
+}
+
+/// Terminal step with explicit base branch override.
+///
+/// When `base` is None, reads from GitHub config (defaults to "main").
+pub async fn merge_or_pr_with_base(
+    repo_path: &Path,
+    branch: &str,
+    bead_id: &str,
+    issue_type: &str,
+    base: Option<&str>,
 ) -> Result<TerminalResult> {
     // Golden Rule 11: every commit must reference a bead.
     enforce_bead_refs(repo_path, branch, bead_id).await;
@@ -271,7 +371,7 @@ pub async fn merge_or_pr(
     eprintln!("[terminal] {bead_id}: pushed {branch}");
 
     // Try to create PR via GitHub App or PAT
-    let pr_url = match create_pr_for_bead(repo_path, branch, bead_id, issue_type).await {
+    let pr_url = match create_pr_for_bead(repo_path, branch, bead_id, issue_type, base).await {
         Ok(url) => Some(url),
         Err(e) => {
             eprintln!(
@@ -319,6 +419,7 @@ async fn create_pr_for_bead(
     branch: &str,
     bead_id: &str,
     issue_type: &str,
+    base_override: Option<&str>,
 ) -> Result<String> {
     let github_config = load_github_config_best_effort()?;
     let gh = crate::github::GitHubClient::from_config(&github_config)?;
@@ -327,7 +428,9 @@ async fn create_pr_for_bead(
         .await
         .context("could not determine GitHub owner/repo from git remote")?;
 
-    let base = github_config.base.clone();
+    let base = base_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| github_config.base.clone());
 
     // Build PR title and body
     let title = format!("[{bead_id}] {issue_type}: agent-generated changes");

@@ -933,3 +933,27 @@ fn parse_owner_repo_https_no_git_suffix() {
 fn parse_owner_repo_invalid() {
     assert!(sweep::parse_owner_repo("https://gitlab.com/foo/bar").is_err());
 }
+
+#[test]
+fn thread_branch_name_simple() {
+    assert_eq!(
+        sweep::thread_branch_name("rosary", "unified-query"),
+        "rosary/unified-query"
+    );
+}
+
+#[test]
+fn thread_branch_name_slugifies() {
+    assert_eq!(
+        sweep::thread_branch_name("rosary", "GitHub App Auth"),
+        "rosary/github-app-auth"
+    );
+}
+
+#[test]
+fn thread_branch_name_custom_prefix() {
+    assert_eq!(
+        sweep::thread_branch_name("agent", "core/pipeline"),
+        "agent/core-pipeline"
+    );
+}
