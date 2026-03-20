@@ -7,11 +7,10 @@
 I didn't write a line of Rust today. I've never written Rust before. But by the end of the session, autonomous AI agents had:
 
 - Merged **10 PRs** to rosary's main branch
-- Split a 2,716-line god file into 4 clean modules
-- Fixed 5 dispatch-blocking bugs
+- Split a 2,716-line god file into clean modules
+- Fixed 5 dispatch-blocking bugs and 2 conductor P0s
 - Organized 371 open beads into 4 decades and 13 threads
-- Written an ADR and designed a 4-stage enrichment pipeline
-- Codified 3 of 11 Golden Rules as automated pre-commit hooks
+- Written an ADR, designed a 4-stage enrichment pipeline, and codified Golden Rules as pre-commit hooks
 - Dispatched themselves, reviewed their own work, and opened their own PRs
 
 And this was only 1/4 terminal windows.
@@ -33,27 +32,31 @@ It started with a broken `git stash`. The jj+git colocated repo had a desync —
 From that bug, we unraveled a chain of infrastructure issues:
 - **Symlink split-brain**: `~/github` → `~/remotes` symlink caused beads created via one path to be invisible from the other. Same Dolt DB, different path strings. Fixed by canonicalizing paths in the connection pool.
 - **Stale Dolt PIDs**: Dead Dolt servers left PID/port files behind, causing 10-second timeouts on every startup. Fixed by checking if PIDs are alive before trusting port files.
-- **Hooks blocking their own fix**: We added a pre-commit hook to enforce bead references in commit messages. Then we couldn't commit the hook update because the branch had the *old* hook that didn't understand the new format. The fix for the hook was blocked by the hook. (We ended up using `--no-verify` to bootstrap, then moved hooks to `~/.rsry/hooks/` — central, not per-branch.)
+- **Hooks blocking their own fix**: We added a pre-commit hook to enforce bead references in commit messages. Then we couldn't commit the hook update because the branch had the *old* hook that didn't understand the new format. The fix for the hook was blocked by the hook. We ended up using `--no-verify` to bootstrap, then moved hooks to `~/.rsry/hooks/` — central, not per-branch.
 
 ## The dispatch loop
 
 Once the infrastructure was stable, we started dispatching:
 
-**Level 1** — A trivial test: add a line to CLAUDE.md. Agent completed in 30 seconds, committed, closed its own bead, and we ff-merged to main. Proof of life.
+**Level 1** — A trivial test: add a line to CLAUDE.md. Agent completed in 30 seconds, committed, closed its own bead, and we merged to main. Proof of life.
 
 **Level 3** — Split serve.rs (2,716 lines) into 4 modules. Agent ran for 10 minutes, created `serve/mod.rs`, `serve/tools.rs`, `serve/handlers.rs`, `serve/webhook.rs`. All 385 tests passed. Merged.
 
-**Parallel dispatch** — Three agents simultaneously refactoring three god files (reconcile.rs, dolt.rs, dispatch.rs) in isolated worktrees. Non-overlapping file scopes, no collisions.
+**Parallel dispatch** — Three agents simultaneously refactoring god files in isolated worktrees. Non-overlapping file scopes, no collisions. But — two of them branched from old main and independently re-did the serve.rs split that was already merged. Duplicate work. We caught it in review, closed the duped PRs, and re-dispatched from current main. This is exactly why the feature agent layer matters (more on that below).
 
-**Conductor** — The Elixir/OTP conductor manages agent lifecycles. We started it and it immediately dispatched 3 agents. No "no stdin data" warning (we fixed the PTY/stdin issue). But it picked P0 beads that were too ambitious for dev-agents — the triage needs work.
+**Conductor** — The Elixir/OTP conductor manages agent lifecycles. We started it and it immediately dispatched 3 agents with zero stdin warnings (after fixing the stdio issue). But it picked P0 beads that were too ambitious for dev-agents — the triage needs work. And then it got stuck.
 
 ## What broke
 
-**The conductor didn't detect dead agents.** We first tried wrapping the agent spawn in `script` for PTY allocation. `script` stayed alive after the child exited, masking the exit status from Erlang's Port. The fix: `exec "$@" < /dev/null` — `exec` replaces the shell so the Port tracks the real PID, and stdin comes from /dev/null (no warning, no PTY needed for CLI mode).
+**The conductor timeout handler hung forever.** After an agent timed out, `Port.close` was called to kill it. But `Port.close` invalidates the Erlang port handle *before* the signal propagates — the `{port, {:exit_status, code}}` message never arrives. The GenServer sat in `:noreply` state forever, the DynamicSupervisor still counted it as an active child, the slot was never freed. The fix: SIGTERM the OS process directly, poll for death (up to 5s), SIGKILL if stubborn, then call `on_failure` inline. No waiting for a message that will never come.
 
-**Branch protection fought ff-merge.** Agents committed to isolated worktrees and we ff-merged to main. But GitHub's branch protection rules require PRs. The system was fighting itself. The fix: agents should *never* merge to main. They push branches, the feature agent (or human) opens a PR. This became ADR-0008 — the three-tier agent hierarchy.
+**PTY was categorically wrong.** Our first attempt at fixing the stdin issue used `script` to allocate a PTY. Bad idea — PTYs do CR/LF conversion (corrupts JSON), echo input back as output, and `script` stays alive after the child exits (masking exit status). The correct fix was embarrassingly simple: `exec "$@" < /dev/null` in a wrapper script. `exec` replaces the shell so the Port tracks the real PID. Stdin from `/dev/null` gives immediate EOF (no "no stdin data" warning). For ACP mode (bidirectional JSON-RPC), use a standard Port with no wrapper.
 
-**Beads piled up faster than dispatch could clear them.** Every conversation generated 10-20 beads. Dispatch handled 3-5. Without admission control, the backlog grows unbounded. The answer isn't "stop filing beads" — it's triage harder, cap per type, and let stale beads age out.
+**Agents that branch from old main duplicate work.** When we dispatched three god file splits in parallel, two of them independently re-did the serve.rs split because they branched before it merged. This is the core problem ADR-0008 addresses: dev agents don't see each other's work. The feature agent layer would coordinate — "serve.rs is already split, just do dolt.rs."
+
+**Branch protection fought ff-merge.** Agents committed to worktrees and we ff-merged to main. GitHub's branch protection requires PRs. The system fought itself. Now agents push branches and the human (or feature agent) opens PRs.
+
+**Beads piled up faster than dispatch could clear them.** Every conversation generated 10-20 beads. Dispatch handled maybe 10. Without admission control, the backlog grows unbounded. The answer isn't "stop filing beads" — it's triage harder, cap per type, and let stale beads age out.
 
 ## The architecture that emerged
 
@@ -72,21 +75,18 @@ Dev agents don't know about each other. Feature agents compose their work. The o
 
 | Metric | Count |
 |--------|-------|
-| PRs opened | 10 (#26-35) |
-| PRs merged | 8 (#17-24) |
-| Beads closed | ~15 |
-| Beads created | ~25 |
+| PRs merged | 10 (#29-37, #40) |
+| PRs closed as dupes | 4 (#26-28, #39) |
 | Agent dispatches | 20+ |
-| God files split | 4 (serve, reconcile, workspace, dispatch) |
-| Lines refactored | ~7,000 |
-| Tests passing | 385 (Rust) + 110 (BDR) + 5 (conductor) |
-| Golden Rules codified | 3 of 11 |
-| ADRs written | 2 (0007, 0008) |
+| God files split | 2 confirmed (serve, workspace) + 2 in flight (dolt, dispatch) |
+| Conductor P0 bugs fixed | 2 (stdin wrapper, timeout hang) |
+| Infrastructure bugs fixed | 5 (symlink, stale PID, hooks, search, enable) |
+| BDR Phase 1 | built + 110 tests on real ADRs |
+| ADRs written | 2 (0007 enrichment pipeline, 0008 agent hierarchy) |
+| Golden Rules codified | 3 of 11 (hooks) |
 | Decades organized | 4 |
 | Threads organized | 13 |
-| Duplicates closed | 5 |
-| Infrastructure bugs fixed | 5 (symlink, stale PID, hooks, search, enable) |
-| Conductor bugs found | 2 (stdin, exit detection) |
+| Tests passing | 385 (Rust) + 110 (BDR) + 106 (conductor) |
 
 ## What it feels like
 
@@ -100,7 +100,7 @@ By midnight, you're not coding. You're reviewing PRs that agents wrote, filed, a
 
 ## What's next
 
-The gap is the feature agent. Right now a human (me, or Claude in a chat session) plays that role — dispatching dev agents, reviewing their output, opening PRs. When the feature agent is built, the human reviews releases, not PRs. That's the path from "review 10 PRs a day" to "review 1 release a week."
+The gap is the feature agent. Right now a human (me, or Claude in a chat session) plays that role — dispatching dev agents, reviewing their output, catching duplicate work, opening PRs. When the feature agent is built, the human reviews releases, not PRs. That's the path from "review 10 PRs a day" to "review 1 release a week."
 
 The hosted endpoint at `mcp.rosary.bot` is next. One URL, any MCP client, structural code intelligence for free. The conductor runs on Fly. Agents work overnight. You review in the morning.
 
