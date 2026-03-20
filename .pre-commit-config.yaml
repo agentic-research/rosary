@@ -22,11 +22,26 @@ repos:
       - id: check-case-conflict
       - id: mixed-line-ending
 
-  # Bead traceability (Golden Rule 11)
+  # Golden Rules enforcement
   - repo: local
     hooks:
+      # Rule 1: No versioned files
+      - id: no-versioned-files
+        name: no versioned files (Rule 1)
+        entry: scripts/check-versioned-files.sh
+        language: script
+        types: [file]
+
+      # Rule 2: File length limit
+      - id: file-length
+        name: file length check (Rule 2)
+        entry: scripts/check-file-length.sh
+        language: script
+        types_or: [rust, python, go, javascript, elixir]
+
+      # Rule 11: Every commit references a bead
       - id: bead-ref
-        name: bead reference in commit
+        name: bead reference in commit (Rule 11)
         entry: scripts/check-bead-ref.sh
         language: script
         stages: [commit-msg]
