@@ -163,7 +163,14 @@ fn apply_meta_field(meta: &mut AdrMeta, key: &str, value: &str) {
         "status" => meta.status = Some(value.to_string()),
         "author" => meta.author = Some(value.to_string()),
         "date" => meta.date = Some(value.to_string()),
-        "repo" => meta.repo = Some(value.to_string()),
+        "repo" => {
+            // Strip parenthetical: "leyline (crates: ...)" → "leyline"
+            let repo = value
+                .split_once('(')
+                .map(|(r, _)| r.trim())
+                .unwrap_or(value);
+            meta.repo = Some(repo.to_string());
+        }
         k if k.starts_with("depends") => {
             // "depends on", "depends_on", "depends-on"
             meta.depends_on = parse_comma_or_ref_list(value);
