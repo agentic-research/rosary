@@ -710,7 +710,39 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
     if success {
         eprintln!("[dispatch] {bead_id} completed successfully");
     } else {
-        eprintln!("warning: agent exited with failure for {bead_id}");
+        // Check if agent produced any artifacts (commits in worktree)
+        let has_commits = if let Some(ref ws_path) = handle.workspace_path {
+            std::process::Command::new("git")
+                .args(["log", "--oneline", "-1", "HEAD", "--not", "HEAD~1"])
+                .current_dir(ws_path)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if has_commits {
+            eprintln!("[dispatch] {bead_id} failed but left commits — marking blocked for review");
+            let _ = client
+                .add_comment(
+                    bead_id,
+                    "agent",
+                    "Agent exited with failure but produced commits. Needs human review.",
+                )
+                .await;
+            let _ = client.update_status(bead_id, "blocked").await;
+        } else {
+            eprintln!("[dispatch] {bead_id} crashed silently — no commits, no artifacts");
+            let _ = client
+                .add_comment(
+                    bead_id,
+                    "agent",
+                    "Agent crashed silently — no commits produced. Returning to open for retry.",
+                )
+                .await;
+            let _ = client.update_status(bead_id, "open").await;
+        }
     }
 
     Ok(())

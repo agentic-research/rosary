@@ -103,6 +103,94 @@ fn pool_options() -> PoolOptions<MySql> {
         .max_connections(3)
 }
 
+/// Initialize a `.beads/` directory with Dolt database and schema.
+/// Called by `rsry enable` when a repo has no `.beads/` yet.
+pub async fn init_beads_db(repo_path: &Path) -> Result<()> {
+    let beads_dir = repo_path.join(".beads");
+    let db_name = repo_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "beads".into());
+    let db_dir = beads_dir.join("dolt").join(&db_name);
+
+    if beads_dir.exists() {
+        let config = DoltConfig::from_beads_dir(&beads_dir)?;
+        if let Ok(_client) = DoltClient::connect(&config).await {
+            eprintln!("[dolt] .beads/ already initialized for {db_name}");
+            return Ok(());
+        }
+    }
+
+    std::fs::create_dir_all(&db_dir).with_context(|| format!("creating {}", db_dir.display()))?;
+
+    let status = std::process::Command::new("dolt")
+        .args(["init"])
+        .current_dir(&db_dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("running dolt init")?;
+    if !status.success() {
+        anyhow::bail!("dolt init failed in {}", db_dir.display());
+    }
+
+    std::fs::write(
+        beads_dir.join("metadata.json"),
+        format!(r#"{{"dolt_database": "{db_name}"}}"#),
+    )?;
+
+    let config = DoltConfig::from_beads_dir(&beads_dir)?;
+    let client = DoltClient::connect(&config).await?;
+
+    for sql in BEADS_SCHEMA {
+        client.execute_raw(sql).await?;
+    }
+
+    client
+        .execute_raw("CALL DOLT_COMMIT('-Am', 'init schema', '--allow-empty')")
+        .await?;
+
+    eprintln!("[dolt] initialized .beads/ for {db_name}");
+    Ok(())
+}
+
+/// Schema for a beads database — used by init and tests.
+const BEADS_SCHEMA: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS issues (
+        id VARCHAR(128) PRIMARY KEY,
+        title VARCHAR(512) NOT NULL,
+        description TEXT,
+        design TEXT DEFAULT '',
+        acceptance_criteria TEXT DEFAULT '',
+        notes TEXT DEFAULT '',
+        status VARCHAR(32) NOT NULL DEFAULT 'open',
+        priority INT NOT NULL DEFAULT 2,
+        issue_type VARCHAR(32) NOT NULL DEFAULT 'task',
+        assignee VARCHAR(128),
+        external_ref VARCHAR(128),
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS comments (
+        issue_id VARCHAR(128) NOT NULL,
+        text TEXT NOT NULL,
+        author VARCHAR(128) NOT NULL,
+        created_at DATETIME NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS dependencies (
+        issue_id VARCHAR(128) NOT NULL,
+        depends_on_id VARCHAR(128) NOT NULL,
+        PRIMARY KEY (issue_id, depends_on_id)
+    )",
+    "CREATE TABLE IF NOT EXISTS events (
+        issue_id VARCHAR(128) NOT NULL,
+        event_type VARCHAR(64) NOT NULL,
+        actor VARCHAR(128) NOT NULL,
+        comment TEXT,
+        created_at DATETIME NOT NULL
+    )",
+];
+
 /// Client for querying beads from a Dolt server.
 pub struct DoltClient {
     pool: MySqlPool,
@@ -715,8 +803,23 @@ impl DoltClient {
     #[allow(dead_code)] // API surface for rsry bead search
     /// Search beads by title or description substring match (case-insensitive).
     pub async fn search_beads(&self, query_str: &str, repo_name: &str) -> Result<Vec<Bead>> {
-        let pattern = format!("%{}%", query_str.to_lowercase());
-        let rows = query(
+        let words: Vec<String> = query_str
+            .split_whitespace()
+            .map(|w| format!("%{}%", w.to_lowercase()))
+            .collect();
+
+        // Build WHERE clause: each word must appear in title OR description
+        let where_clause = if words.is_empty() {
+            "1=1".to_string()
+        } else {
+            words
+                .iter()
+                .map(|_| "(LOWER(i.title) LIKE ? OR LOWER(i.description) LIKE ?)".to_string())
+                .collect::<Vec<_>>()
+                .join(" AND ")
+        };
+
+        let sql = format!(
             r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                       i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
                       COALESCE(dep.cnt, 0) as dep_count,
@@ -729,15 +832,20 @@ impl DoltClient {
                     ON deps.issue_id = i.id
                LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
                     ON cmt.issue_id = i.id
-               WHERE LOWER(i.title) LIKE ? OR LOWER(i.description) LIKE ?
+               WHERE {where_clause}
                ORDER BY i.priority ASC, i.created_at DESC
                LIMIT 50"#,
-        )
-        .bind(&pattern)
-        .bind(&pattern)
-        .fetch_all(&self.pool)
-        .await
-        .with_context(|| format!("searching beads for '{query_str}'"))?;
+        );
+
+        let mut q = query(&sql);
+        for word in &words {
+            q = q.bind(word).bind(word);
+        }
+
+        let rows = q
+            .fetch_all(&self.pool)
+            .await
+            .with_context(|| format!("searching beads for '{query_str}'"))?;
 
         let beads = rows
             .iter()
@@ -1343,5 +1451,80 @@ mod tests {
         let bead = client.get_bead(&test_id, "test").await.unwrap();
         assert!(bead.is_some());
         assert_eq!(bead.unwrap().status, "closed");
+    }
+
+    /// Multi-word search should match words appearing non-contiguously.
+    /// "human agent" must match "Human vs agent task delineation".
+    #[tokio::test]
+    async fn search_multi_word_non_contiguous() {
+        let sandbox = match SandboxBeads::new().await {
+            Some(s) => s,
+            None => return,
+        };
+
+        let client = sandbox.fresh_client().await;
+
+        // Create beads with different title patterns
+        client
+            .create_bead(
+                "mw-1",
+                "Human vs agent task delineation",
+                "How humans and agents split work",
+                2,
+                "task",
+            )
+            .await
+            .unwrap();
+        client
+            .create_bead(
+                "mw-2",
+                "Pure automation pipeline",
+                "No involvement at all",
+                2,
+                "task",
+            )
+            .await
+            .unwrap();
+        client
+            .create_bead(
+                "mw-3",
+                "Agent routing logic",
+                "Human review step included",
+                2,
+                "task",
+            )
+            .await
+            .unwrap();
+        drop(client);
+
+        let client = sandbox.fresh_client().await;
+
+        // "human agent" — words are non-contiguous in title of mw-1
+        let results = client.search_beads("human agent", "test").await.unwrap();
+        assert!(
+            results.iter().any(|b| b.id == "mw-1"),
+            "should match 'Human vs agent task delineation' (words non-contiguous in title)"
+        );
+        // mw-3 has "Agent" in title and "Human" in description — should also match
+        assert!(
+            results.iter().any(|b| b.id == "mw-3"),
+            "should match when one word is in title and other in description"
+        );
+        // mw-2 has neither "human" nor "agent" anywhere
+        assert!(
+            !results.iter().any(|b| b.id == "mw-2"),
+            "should NOT match 'Pure automation pipeline' — missing both search words"
+        );
+
+        // Single word search still works
+        let results = client.search_beads("pipeline", "test").await.unwrap();
+        assert!(
+            results.iter().any(|b| b.id == "mw-2"),
+            "single word search should still work"
+        );
+
+        // Empty query returns all beads
+        let results = client.search_beads("", "test").await.unwrap();
+        assert!(results.len() >= 3, "empty query should return all beads");
     }
 }

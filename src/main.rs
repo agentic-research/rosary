@@ -484,6 +484,10 @@ async fn main() -> Result<()> {
         }
         Command::Enable { path } => {
             let entry = config::enable_repo(Path::new(&path))?;
+            // Init .beads/ Dolt DB if not present
+            if !entry.path.join(".beads").exists() {
+                dolt::init_beads_db(&entry.path).await?;
+            }
             cli::repo_enabled(&entry.name, &entry.path.to_string_lossy());
         }
         Command::Disable { name_or_path } => match config::disable_repo(&name_or_path)? {
