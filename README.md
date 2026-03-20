@@ -76,7 +76,7 @@ rsry run
 
 ## MCP server
 
-Rosary exposes 26 tools as MCP. Any AI agent or human with an MCP client can scan beads, dispatch work, manage threads, and track progress.
+Rosary exposes 24 tools as MCP. Any AI agent or human with an MCP client can scan beads, dispatch work, manage threads, and track progress.
 
 ```bash
 # Add to Claude Code (one-time)
@@ -86,7 +86,7 @@ claude mcp add -s user rsry -- rsry serve --transport stdio
 rsry serve --transport http --port 8383
 ```
 
-**26 tools** across five categories:
+**24 tools** across five categories:
 
 | Category   | Tools                                                                                                                                              |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |

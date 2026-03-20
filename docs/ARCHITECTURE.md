@@ -214,7 +214,7 @@ graph LR
 
     subgraph "Interface"
         main["main.rs<br/>CLI"]
-        serve["serve.rs<br/>MCP 26 tools"]
+        serve["serve.rs<br/>MCP 24 tools"]
         config["config.rs<br/>TOML config"]
     end
 
