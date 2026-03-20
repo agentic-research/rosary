@@ -90,21 +90,23 @@ pub(super) async fn create_git_worktree(repo_path: &Path, id: &str) -> Result<Pa
     // Fetch latest origin/main so the worktree branches from current remote HEAD,
     // not stale local HEAD. Without this, agents include already-merged changes
     // in their diffs — the root cause of every duplicate PR in the overnight session.
-    let _ = tokio::process::Command::new("git")
+    let has_remote = tokio::process::Command::new("git")
         .args(["fetch", "origin", "main"])
         .current_dir(repo_path)
         .output()
-        .await;
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    // Branch from origin/main if available, otherwise HEAD (local repos without remotes)
+    let wt_str = worktree_path.to_string_lossy().to_string();
+    let mut args: Vec<&str> = vec!["worktree", "add", &wt_str, "-b", &branch_name];
+    if has_remote {
+        args.push("origin/main");
+    }
 
     let output = tokio::process::Command::new("git")
-        .args([
-            "worktree",
-            "add",
-            &worktree_path.to_string_lossy(),
-            "-b",
-            &branch_name,
-            "origin/main",
-        ])
+        .args(&args)
         .current_dir(repo_path)
         .output()
         .await

@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+#[cfg(feature = "leyline")]
 use leyline_vcs::JjIntegration;
 
 #[allow(dead_code)] // API surface — wired when main.rs calls ensure_state_dir on startup
@@ -34,11 +35,25 @@ pub fn ensure_state_dir() -> Result<PathBuf> {
 #[allow(dead_code)]
 /// Initialize a jj repo in the state directory if one doesn't exist.
 ///
-/// Uses leyline-vcs's JjIntegration (jj-lib native) instead of shelling
-/// out to the jj CLI. init_or_open handles both fresh init and re-open.
+/// With `leyline` feature: uses leyline-vcs's JjIntegration (jj-lib native).
+/// Without: falls back to `jj init` CLI.
 pub fn init_jj(state_path: &Path) -> Result<()> {
-    JjIntegration::init_or_open(state_path)
-        .with_context(|| format!("jj init_or_open at {}", state_path.display()))?;
+    #[cfg(feature = "leyline")]
+    {
+        JjIntegration::init_or_open(state_path)
+            .with_context(|| format!("jj init_or_open at {}", state_path.display()))?;
+    }
+    #[cfg(not(feature = "leyline"))]
+    {
+        if !state_path.join(".jj").exists() {
+            let _ = std::process::Command::new("jj")
+                .args(["init"])
+                .current_dir(state_path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
     Ok(())
 }
 
@@ -294,6 +309,7 @@ mod tests {
         assert!(dir.exists());
     }
 
+    #[cfg(feature = "leyline")]
     #[test]
     fn init_jj_creates_repo() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -303,6 +319,7 @@ mod tests {
         assert!(tmp.path().join(".jj").exists());
     }
 
+    #[cfg(feature = "leyline")]
     #[test]
     fn init_jj_idempotent() {
         let tmp = tempfile::TempDir::new().unwrap();
