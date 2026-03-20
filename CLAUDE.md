@@ -78,6 +78,7 @@ agents/
 ├── feature-agent.md      # Cross-file coherence
 ├── architect-agent.md    # System architecture, ADRs, BDR decomposition
 ├── pm-agent.md           # Strategic perspective (cross-repo)
+├── janitor-agent.md      # Codebase hygiene (repo-wide scheduled sweeps)
 └── rules/
     └── GOLDEN_RULES.md   # 11 rules all agents operate under
 ```
