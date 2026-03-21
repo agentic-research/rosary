@@ -37,7 +37,7 @@ repos:
         name: file length check (Rule 2)
         entry: scripts/check-file-length.sh
         language: script
-        types_or: [rust, python, go, javascript, elixir]
+        types_or: [rust, python, go, javascript]
         # Pre-existing large files — splitting tracked by janitor beads.
         # Remove entries here as files are refactored under the limit.
         exclude: '^src/(reconcile(/mod)?|config|dispatch|main|serve/(mod|handlers)|store_dolt|epic)\.rs$'
@@ -75,26 +75,4 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
-      # Elixir-specific checks (Lightning fast, targeting modified files)
-      - id: mix-format
-        name: mix format
-        # "${@#conductor/}" strips the 'conductor/' prefix from the file paths passed by pre-commit
-        entry: bash -c 'cd "$(git rev-parse --show-toplevel)/conductor" && exec mix format --check-formatted "${@#conductor/}"' --
-        language: system
-        files: ^conductor/.*\.exs?$
-        pass_filenames: true
-
-      - id: mix-credo
-        name: mix credo
-        entry: bash -c 'cd "$(git rev-parse --show-toplevel)/conductor" && exec mix credo --strict "${@#conductor/}"' --
-        language: system
-        files: ^conductor/.*\.exs?$
-        pass_filenames: true
-
-      - id: mix-test
-        name: mix test
-        entry: bash -c 'cd "$(git rev-parse --show-toplevel)/conductor" && mix test --color'
-        language: system
-        files: ^conductor/.*\.exs?$
-        pass_filenames: false
-        stages: [pre-push]
+      # Conductor (Elixir) moved to rig repo — see rig-962ca4
