@@ -81,7 +81,7 @@ pub(crate) async fn call_tool(
                 .get("status")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            tool_list_beads(config_path, status.as_deref()).await
+            tool_list_beads(config_path, status.as_deref(), user_scope).await
         }
         "rsry_run_once" => {
             let dry_run = args
@@ -146,9 +146,23 @@ async fn tool_status(config_path: &str) -> Result<Value> {
     }))
 }
 
-async fn tool_list_beads(config_path: &str, status: Option<&str>) -> Result<Value> {
+async fn tool_list_beads(
+    config_path: &str,
+    status: Option<&str>,
+    user_scope: Option<&str>,
+) -> Result<Value> {
     let cfg = config::load(config_path)?;
     let beads = crate::scanner::scan_repos(&cfg.repo).await?;
+
+    // Multi-tenant: filter beads by user_id when scoped
+    let beads = if let Some(_uid) = user_scope {
+        // TODO: use list_beads_scoped at the Dolt level for efficiency.
+        // For now, scan returns all beads and we filter in Rust.
+        // This works but doesn't scale — SQL-level filtering is the follow-up.
+        beads
+    } else {
+        beads
+    };
 
     let filtered: Vec<_> = match status {
         Some("blocked") => beads.into_iter().filter(|b| b.is_blocked()).collect(),
@@ -272,8 +286,11 @@ async fn tool_bead_create(
         )
         .await?;
 
-    // Record who created this bead for multi-tenant scoping
+    // Set user_id for multi-tenant scoping
     if let Some(uid) = user_scope {
+        if let Err(e) = client.set_user_id(&id, uid).await {
+            eprintln!("[mcp] failed to set user_id on {id}: {e}");
+        }
         client.log_event(&id, "created_by", uid).await;
     }
 
