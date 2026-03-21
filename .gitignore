@@ -40,9 +40,16 @@ _beads_clone/
 
 # Experiments (local only)
 experiments/
+<<<<<<< Updated upstream
 
 # Agent working logs (ephemeral review notes, not source)
 _agent_logs/
 
 # Local plan/scratch files (agent session plans, not tracked)
 _*.md
+||||||| Stash base
+=======
+
+# Agent working logs (scratch space for analysis agents)
+_agent_logs/
+>>>>>>> Stashed changes

@@ -1,4 +1,6 @@
 use super::*;
+use crate::bead::BeadState;
+use crate::queue;
 
 #[test]
 fn detect_language_rust() {

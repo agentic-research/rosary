@@ -86,7 +86,7 @@ impl PermissionProfile {
 /// Abstract session to a running agent. Decouples from tokio::process::Child
 /// so we can support CLI subprocesses, ACP sockets, raw API calls, etc.
 #[async_trait::async_trait]
-pub trait AgentSession: Send {
+pub trait AgentSession: Send + Sync {
     /// Non-blocking check: has the session completed? Returns true on success.
     fn try_wait(&mut self) -> Result<Option<bool>>;
 
