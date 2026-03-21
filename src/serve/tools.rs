@@ -325,6 +325,27 @@ pub(crate) fn tool_definitions() -> Value {
                     },
                     "required": ["thread_id", "bead_id", "repo"]
                 }
+            },
+            {
+                "name": "rsry_repo_register",
+                "description": "Register a repo for the current user. Stores the repo URL so rsry can clone and dispatch agents to it. Requires backend store.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_url": { "type": "string", "description": "Git clone URL (https://github.com/org/repo.git)" },
+                        "repo_name": { "type": "string", "description": "Short name for the repo (e.g. 'rosary'). Defaults to last path component." }
+                    },
+                    "required": ["repo_url"]
+                }
+            },
+            {
+                "name": "rsry_repo_list",
+                "description": "List repos registered by the current user.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
             }
         ]
     })

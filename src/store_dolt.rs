@@ -209,6 +209,15 @@ impl DoltBackend {
                 PRIMARY KEY (repo, bead_id),
                 UNIQUE INDEX idx_linear_id (linear_id)
             )",
+            "CREATE TABLE IF NOT EXISTS user_repos (
+                user_id VARCHAR(128) NOT NULL,
+                repo_url VARCHAR(1024) NOT NULL,
+                repo_name VARCHAR(128) NOT NULL,
+                github_token_ref VARCHAR(256),
+                registered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_used DATETIME,
+                PRIMARY KEY (user_id, repo_name)
+            )",
         ];
 
         for sql in statements {
@@ -599,6 +608,53 @@ impl LinkageStore for DoltBackend {
             linear_id: r.get("linear_id"),
             linear_type: r.get("linear_type"),
         }))
+    }
+}
+
+#[async_trait]
+impl UserRepoStore for DoltBackend {
+    async fn register_repo(&self, repo: &UserRepo) -> Result<()> {
+        query(
+            "INSERT INTO user_repos (user_id, repo_url, repo_name, github_token_ref, registered_at)
+             VALUES (?, ?, ?, ?, NOW())
+             ON DUPLICATE KEY UPDATE repo_url = VALUES(repo_url), github_token_ref = VALUES(github_token_ref)",
+        )
+        .bind(&repo.user_id)
+        .bind(&repo.repo_url)
+        .bind(&repo.repo_name)
+        .bind(&repo.github_token_ref)
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("registering repo {} for {}", repo.repo_name, repo.user_id))?;
+        Ok(())
+    }
+
+    async fn list_user_repos(&self, user_id: &str) -> Result<Vec<UserRepo>> {
+        let rows = query("SELECT user_id, repo_url, repo_name, github_token_ref FROM user_repos WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await
+            .context("listing user repos")?;
+
+        Ok(rows
+            .iter()
+            .map(|r| UserRepo {
+                user_id: r.get("user_id"),
+                repo_url: r.get("repo_url"),
+                repo_name: r.get("repo_name"),
+                github_token_ref: r.try_get("github_token_ref").ok(),
+            })
+            .collect())
+    }
+
+    async fn unregister_repo(&self, user_id: &str, repo_name: &str) -> Result<()> {
+        query("DELETE FROM user_repos WHERE user_id = ? AND repo_name = ?")
+            .bind(user_id)
+            .bind(repo_name)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("unregistering {repo_name} for {user_id}"))?;
+        Ok(())
     }
 }
 
