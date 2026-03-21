@@ -15,8 +15,10 @@ use crate::config::{self, RepoConfig};
 use crate::dispatch::{self, AgentHandle};
 use crate::dolt::{DoltClient, DoltConfig};
 use crate::epic;
+use crate::pipeline::{CompletionAction, PipelineEngine};
 use crate::queue::{self, QueueEntry, WorkQueue};
 use crate::scanner;
+use crate::store::BeadRef;
 use crate::sync::IssueTracker;
 use crate::verify::{Verifier, VerifySummary};
 use crate::xref;
@@ -40,6 +42,8 @@ pub struct ReconcilerConfig {
     pub backend: Option<crate::config::BackendConfig>,
     /// Target a specific bead — skip triage, only dispatch this one.
     pub target_bead: Option<String>,
+    /// Pipeline definitions: issue_type → agent sequence (from config).
+    pub pipelines: HashMap<String, Vec<String>>,
 }
 
 impl Default for ReconcilerConfig {
@@ -57,6 +61,7 @@ impl Default for ReconcilerConfig {
             compute: None,
             backend: None,
             target_bead: None,
+            pipelines: crate::config::default_pipelines(),
         }
     }
 }
@@ -73,6 +78,9 @@ struct BeadTracker {
     current_agent: Option<String>,
     /// Current pipeline phase index (0-based). Advances on phase completion.
     phase_index: u32,
+    /// Bead's issue type (e.g. "bug", "task"). Captured at dispatch time so
+    /// wait_and_verify can determine pipeline advancement without a fresh scan.
+    issue_type: String,
 }
 
 /// The reconciliation loop orchestrator.
@@ -102,6 +110,9 @@ pub struct Reconciler {
     /// When set, enables thread-aware dedup and phase context.
     #[allow(dead_code)] // Wired in next phase: thread-aware triage
     hierarchy: Option<Box<dyn crate::store::HierarchyStore>>,
+    /// Schema-driven pipeline engine. Replaces hardcoded agent_pipeline() match.
+    /// Uses DispatchStore for persistent pipeline state (survives crashes).
+    pipeline: PipelineEngine,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -186,27 +197,46 @@ impl Reconciler {
             );
         }
 
-        // Connect hierarchy store (DoltBackend) if backend config is present.
-        // Best-effort: hierarchy features degrade gracefully when unavailable.
-        let hierarchy: Option<Box<dyn crate::store::HierarchyStore>> =
-            if let Some(ref backend_cfg) = config.backend {
-                match crate::store_dolt::DoltBackend::connect(backend_cfg).await {
-                    Ok(backend) => {
-                        eprintln!("[reconcile] hierarchy store connected (DoltBackend)");
-                        Some(Box::new(backend))
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "[reconcile] hierarchy store unavailable ({e}), \
-                             thread-aware features disabled"
-                        );
-                        None
-                    }
+        // Connect backend (DoltBackend) if config is present.
+        // Provides both HierarchyStore and DispatchStore from the same database.
+        // Best-effort: features degrade gracefully when unavailable.
+        #[allow(clippy::type_complexity)]
+        let (hierarchy, dispatch_store): (
+            Option<Box<dyn crate::store::HierarchyStore>>,
+            Option<Box<dyn crate::store::DispatchStore>>,
+        ) = if let Some(ref backend_cfg) = config.backend {
+            // Connect twice — sqlx pools are Arc-based so this shares the connection pool.
+            let hierarchy = match crate::store_dolt::DoltBackend::connect(backend_cfg).await {
+                Ok(backend) => {
+                    eprintln!("[reconcile] hierarchy store connected (DoltBackend)");
+                    Some(Box::new(backend) as Box<dyn crate::store::HierarchyStore>)
                 }
-            } else {
-                eprintln!("[reconcile] no [backend] config, hierarchy store disabled");
-                None
+                Err(e) => {
+                    eprintln!(
+                        "[reconcile] hierarchy store unavailable ({e}), \
+                         thread-aware features disabled"
+                    );
+                    None
+                }
             };
+            let dispatch = match crate::store_dolt::DoltBackend::connect(backend_cfg).await {
+                Ok(backend) => {
+                    eprintln!("[reconcile] dispatch store connected (DoltBackend)");
+                    Some(Box::new(backend) as Box<dyn crate::store::DispatchStore>)
+                }
+                Err(e) => {
+                    eprintln!("[reconcile] dispatch store unavailable ({e})");
+                    None
+                }
+            };
+            (hierarchy, dispatch)
+        } else {
+            eprintln!("[reconcile] no [backend] config, backend stores disabled");
+            (None, None)
+        };
+
+        // Build pipeline engine from config + backend store.
+        let pipeline = PipelineEngine::new(config.pipelines.clone(), dispatch_store);
 
         Reconciler {
             config,
@@ -222,6 +252,7 @@ impl Reconciler {
             compute,
             agents_dir,
             hierarchy,
+            pipeline,
         }
     }
 
@@ -237,6 +268,7 @@ impl Reconciler {
     /// This is the "agent-first" fast path: when agents self-close beads,
     /// we skip the full verification pipeline (compile+test+lint+diff-sanity),
     /// which is the main consumption throughput bottleneck.
+    #[allow(dead_code)] // Used when agents have bead_close permission
     async fn is_bead_agent_closed(&mut self, bead_id: &str, repo: &str) -> bool {
         if let Some(client) = self.dolt_client(repo).await {
             match client.get_status(bead_id).await {
@@ -663,10 +695,22 @@ impl Reconciler {
                                     highest_tier: None,
                                     current_agent: None,
                                     phase_index: 0,
+                                    issue_type: bead.issue_type.clone(),
                                 });
                         tracker.last_generation = entry.generation;
                         tracker.repo = entry.repo.clone();
                         tracker.current_agent = agent_name;
+                        tracker.issue_type = bead.issue_type.clone();
+
+                        // Persist initial pipeline state to backend store
+                        let bead_ref = BeadRef {
+                            repo: entry.repo.clone(),
+                            bead_id: entry.bead_id.clone(),
+                        };
+                        let pipeline_state =
+                            self.pipeline.initial_state(bead_ref, &bead.issue_type);
+                        self.pipeline.upsert_state(&pipeline_state).await;
+
                         summary.dispatched += 1;
                     }
                     Err(e) => {
@@ -678,92 +722,108 @@ impl Reconciler {
 
         // Phase 5: VERIFY completed agents
         // Runs after dispatch so new agents execute in parallel with verification.
+        // Uses PipelineEngine.decide() for advance/terminal/retry/deadletter.
         let mut status_updates: Vec<(String, String, String)> = Vec::new();
         let mut phase_advances: Vec<(String, String, String)> = Vec::new();
 
         for (bead_id, exit_success) in &completed {
-            let repo = self
+            let (repo, issue_type, current_agent) = self
                 .trackers
                 .get(bead_id.as_str())
-                .map(|t| t.repo.clone())
-                .unwrap_or_default();
+                .map(|t| {
+                    (
+                        t.repo.clone(),
+                        t.issue_type.clone(),
+                        t.current_agent.clone(),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    // Fallback: look up from scan results
+                    beads
+                        .iter()
+                        .find(|b| b.id == *bead_id)
+                        .map(|b| (b.repo.clone(), b.issue_type.clone(), b.owner.clone()))
+                        .unwrap_or_default()
+                });
 
-            let bead_info = beads
-                .iter()
-                .find(|b| b.id == *bead_id)
-                .map(|b| (b.issue_type.clone(), b.owner.clone()));
+            let retries = self
+                .trackers
+                .get(bead_id.as_str())
+                .map(|t| t.retries)
+                .unwrap_or(0);
 
-            // Agents no longer have bead_close permission — the reconciler
-            // owns the bead lifecycle. Always verify, then advance or close.
-            if *exit_success {
-                let verify_result = self.verify_agent(bead_id);
-                match verify_result {
-                    Some(vs) if vs.passed() => {
-                        summary.passed += 1;
-                        self.on_pass(bead_id);
-
-                        if let Some((ref issue_type, Some(ref current_agent))) = bead_info {
-                            if let Some(next) = dispatch::next_agent(issue_type, current_agent) {
-                                // Keep workspace for next pipeline phase
-                                self.checkpoint_workspace(bead_id).await;
-                                phase_advances.push((
-                                    bead_id.clone(),
-                                    repo.clone(),
-                                    next.to_string(),
-                                ));
-                            } else {
-                                self.checkpoint_and_cleanup(bead_id).await;
-                                status_updates.push((bead_id.clone(), repo, "closed".into()));
-                            }
-                        } else {
-                            self.checkpoint_and_cleanup(bead_id).await;
-                            status_updates.push((bead_id.clone(), repo, "closed".into()));
-                        }
-                    }
-                    Some(vs) => {
-                        summary.failed += 1;
-                        let deadlettered = self.on_fail(bead_id, &vs);
-                        if deadlettered {
-                            summary.deadlettered += 1;
-                            self.cleanup_workspace(bead_id);
-                            status_updates.push((bead_id.clone(), repo, "blocked".into()));
-                        } else {
-                            status_updates.push((bead_id.clone(), repo, "open".into()));
-                        }
-                    }
-                    None => {
-                        summary.passed += 1;
-                        self.on_pass(bead_id);
-
-                        if let Some((ref issue_type, Some(ref current_agent))) = bead_info {
-                            if let Some(next) = dispatch::next_agent(issue_type, current_agent) {
-                                // Keep workspace for next pipeline phase
-                                self.checkpoint_workspace(bead_id).await;
-                                phase_advances.push((
-                                    bead_id.clone(),
-                                    repo.clone(),
-                                    next.to_string(),
-                                ));
-                            } else {
-                                self.checkpoint_and_cleanup(bead_id).await;
-                                status_updates.push((bead_id.clone(), repo, "closed".into()));
-                            }
-                        } else {
-                            self.checkpoint_and_cleanup(bead_id).await;
-                            status_updates.push((bead_id.clone(), repo, "closed".into()));
-                        }
-                    }
+            // Determine verification result
+            let (verify_passed, verify_summary) = if *exit_success {
+                let vs = self.verify_agent(bead_id);
+                match &vs {
+                    Some(v) if v.passed() => (Some(true), vs),
+                    Some(_) => (Some(false), vs),
+                    None => (None, None),
                 }
             } else {
-                self.completed_work_dirs.remove(bead_id);
-                summary.failed += 1;
-                let deadlettered = self.on_fail_exit(bead_id);
-                if deadlettered {
-                    summary.deadlettered += 1;
-                    self.cleanup_workspace(bead_id);
-                    status_updates.push((bead_id.clone(), repo, "blocked".into()));
-                } else {
+                (Some(false), None)
+            };
+
+            // Use pipeline engine for the completion decision
+            let action = self.pipeline.decide(
+                &issue_type,
+                current_agent.as_deref(),
+                *exit_success,
+                verify_passed,
+                retries,
+                self.config.max_retries,
+            );
+
+            // Update tracker state (on_pass/on_fail) and execute the action
+            match action {
+                CompletionAction::Advance { ref next_agent, .. } => {
+                    summary.passed += 1;
+                    self.on_pass(bead_id);
+                    self.checkpoint_workspace(bead_id).await;
+                    phase_advances.push((bead_id.clone(), repo, next_agent.clone()));
+                }
+                CompletionAction::Terminal => {
+                    summary.passed += 1;
+                    self.on_pass(bead_id);
+                    self.checkpoint_and_cleanup(bead_id).await;
+                    let bead_ref = BeadRef {
+                        repo: repo.clone(),
+                        bead_id: bead_id.clone(),
+                    };
+                    self.pipeline.clear_state(&bead_ref).await;
+                    status_updates.push((bead_id.clone(), repo, "closed".into()));
+                }
+                CompletionAction::Retry => {
+                    summary.failed += 1;
+                    if *exit_success {
+                        // Verify failure — use on_fail for tier tracking
+                        if let Some(ref vs) = verify_summary {
+                            self.on_fail(bead_id, vs);
+                        }
+                    } else {
+                        self.completed_work_dirs.remove(bead_id);
+                        self.on_fail_exit(bead_id);
+                    }
                     status_updates.push((bead_id.clone(), repo, "open".into()));
+                }
+                CompletionAction::Deadletter => {
+                    summary.failed += 1;
+                    summary.deadlettered += 1;
+                    if *exit_success {
+                        if let Some(ref vs) = verify_summary {
+                            self.on_fail(bead_id, vs);
+                        }
+                    } else {
+                        self.completed_work_dirs.remove(bead_id);
+                        self.on_fail_exit(bead_id);
+                    }
+                    self.cleanup_workspace(bead_id);
+                    let bead_ref = BeadRef {
+                        repo: repo.clone(),
+                        bead_id: bead_id.clone(),
+                    };
+                    self.pipeline.clear_state(&bead_ref).await;
+                    status_updates.push((bead_id.clone(), repo, "blocked".into()));
                 }
             }
         }
@@ -810,6 +870,25 @@ impl Reconciler {
                 tracker.current_agent = Some(next_agent.clone());
                 tracker.phase_index = phase + 1;
             }
+
+            // Persist pipeline state to backend store
+            let bead_ref = BeadRef {
+                repo: repo.clone(),
+                bead_id: bead_id.clone(),
+            };
+            self.pipeline
+                .upsert_state(&crate::store::PipelineState {
+                    bead_ref,
+                    pipeline_phase: (phase + 1) as u8,
+                    pipeline_agent: next_agent.clone(),
+                    phase_status: "pending".to_string(),
+                    retries: 0,
+                    consecutive_reverts: 0,
+                    highest_verify_tier: None,
+                    last_generation: 0,
+                    backoff_until: None,
+                })
+                .await;
 
             if let Some(client) = self.dolt_client(repo).await {
                 client
@@ -978,6 +1057,8 @@ impl Reconciler {
     ///
     /// This is the "sub-loop" that closes the dispatch cycle: poll agents
     /// every 5 seconds until all finish, run verification, update bead status.
+    /// Supports multi-stage pipelines: on phase advance, re-dispatches the
+    /// next agent inline and continues the wait loop.
     async fn wait_and_verify(&mut self) -> Result<()> {
         let poll_interval = Duration::from_secs(5);
         let timeout = Duration::from_secs(1800); // 30 min max
@@ -1000,41 +1081,225 @@ impl Reconciler {
                 continue;
             }
 
-            // Verify + update status for each completed agent
+            // Verify + pipeline decision for each completed agent
             for (bead_id, exit_success) in &completed {
-                let repo = self
+                let (repo, issue_type, current_agent) = self
                     .trackers
                     .get(bead_id.as_str())
-                    .map(|t| t.repo.clone())
+                    .map(|t| {
+                        (
+                            t.repo.clone(),
+                            t.issue_type.clone(),
+                            t.current_agent.clone(),
+                        )
+                    })
                     .unwrap_or_default();
 
-                // Agent-closed beads still run verification — the agent's word
-                // is not enough when the terminal step creates a PR.
-                let agent_closed = self.is_bead_agent_closed(bead_id, &repo).await;
+                let retries = self
+                    .trackers
+                    .get(bead_id.as_str())
+                    .map(|t| t.retries)
+                    .unwrap_or(0);
 
-                if *exit_success || agent_closed {
-                    let verify_result = self.verify_agent(bead_id);
-                    match verify_result {
-                        Some(vs) if vs.passed() => {
-                            self.on_pass(bead_id);
-                            self.checkpoint_and_cleanup(bead_id).await;
-                            self.persist_status(bead_id, &repo, "closed").await;
-                        }
-                        Some(vs) => {
-                            self.on_fail(bead_id, &vs);
-                            self.persist_status(bead_id, &repo, "open").await;
-                        }
-                        None => {
-                            // No verifier — treat as pass
-                            self.on_pass(bead_id);
-                            self.checkpoint_and_cleanup(bead_id).await;
-                            self.persist_status(bead_id, &repo, "closed").await;
-                        }
+                // Determine verification result
+                let (verify_passed, verify_summary) = if *exit_success {
+                    let vs = self.verify_agent(bead_id);
+                    match &vs {
+                        Some(v) if v.passed() => (Some(true), vs),
+                        Some(_) => (Some(false), vs),
+                        None => (None, None),
                     }
                 } else {
-                    self.completed_work_dirs.remove(bead_id);
-                    self.on_fail_exit(bead_id);
-                    self.persist_status(bead_id, &repo, "open").await;
+                    (Some(false), None)
+                };
+
+                let action = self.pipeline.decide(
+                    &issue_type,
+                    current_agent.as_deref(),
+                    *exit_success,
+                    verify_passed,
+                    retries,
+                    self.config.max_retries,
+                );
+
+                match action {
+                    CompletionAction::Advance { ref next_agent, .. } => {
+                        self.on_pass(bead_id);
+
+                        // Write handoff
+                        let (from_agent, phase) = self
+                            .trackers
+                            .get(bead_id.as_str())
+                            .map(|t| {
+                                (
+                                    t.current_agent
+                                        .clone()
+                                        .unwrap_or_else(|| "dev-agent".to_string()),
+                                    t.phase_index,
+                                )
+                            })
+                            .unwrap_or_else(|| ("dev-agent".to_string(), 0));
+
+                        self.checkpoint_workspace(bead_id).await;
+
+                        if let Some(ws) = self.completed_workspaces.get(bead_id.as_str()) {
+                            let work = crate::manifest::Work::from_git(&ws.work_dir, None);
+                            let handoff = crate::handoff::Handoff::new(
+                                phase,
+                                &from_agent,
+                                Some(next_agent),
+                                bead_id,
+                                self.provider.name(),
+                                &work,
+                            );
+                            if let Err(e) = handoff.write_to(&ws.work_dir) {
+                                eprintln!(
+                                    "[handoff] {bead_id}: failed to write phase handoff: {e}"
+                                );
+                            }
+                        }
+
+                        // Advance tracker
+                        if let Some(tracker) = self.trackers.get_mut(bead_id.as_str()) {
+                            tracker.current_agent = Some(next_agent.clone());
+                            tracker.phase_index = phase + 1;
+                        }
+
+                        // Persist pipeline state
+                        let bead_ref = BeadRef {
+                            repo: repo.clone(),
+                            bead_id: bead_id.clone(),
+                        };
+                        self.pipeline
+                            .upsert_state(&crate::store::PipelineState {
+                                bead_ref,
+                                pipeline_phase: (phase + 1) as u8,
+                                pipeline_agent: next_agent.clone(),
+                                phase_status: "executing".to_string(),
+                                retries: 0,
+                                consecutive_reverts: 0,
+                                highest_verify_tier: None,
+                                last_generation: 0,
+                                backoff_until: None,
+                            })
+                            .await;
+
+                        // Update assignee in Dolt
+                        if let Some(client) = self.dolt_client(&repo).await {
+                            client
+                                .log_event(
+                                    bead_id,
+                                    "phase_complete",
+                                    &format!("{from_agent} → {next_agent}"),
+                                )
+                                .await;
+                            if let Err(e) = client.set_assignee(bead_id, next_agent).await {
+                                eprintln!("[phase] failed to advance {bead_id}: {e}");
+                            } else {
+                                println!("[phase] {bead_id} → {next_agent} (phase {})", phase + 1);
+                            }
+                        }
+                        self.persist_status(bead_id, &repo, "open").await;
+
+                        // Re-dispatch next agent inline. Build a synthetic Bead
+                        // from tracker state for dispatch::spawn().
+                        let path = self
+                            .repo_info
+                            .get(&repo)
+                            .map(|(p, _)| p.clone())
+                            .unwrap_or_default();
+                        let mut dispatch_bead = crate::bead::Bead {
+                            id: bead_id.clone(),
+                            title: String::new(),
+                            description: String::new(),
+                            status: "dispatched".into(),
+                            priority: 2,
+                            issue_type: issue_type.clone(),
+                            owner: Some(next_agent.clone()),
+                            repo: repo.clone(),
+                            created_at: chrono::Utc::now(),
+                            updated_at: chrono::Utc::now(),
+                            dependency_count: 0,
+                            dependent_count: 0,
+                            comment_count: 0,
+                            branch: None,
+                            pr_url: None,
+                            jj_change_id: None,
+                            external_ref: None,
+                            files: Vec::new(),
+                            test_files: Vec::new(),
+                        };
+                        // Try to get full bead info from Dolt for a richer prompt
+                        if let Some(client) = self.dolt_client(&repo).await
+                            && let Ok(Some(full)) = client.get_bead(bead_id, &repo).await
+                        {
+                            dispatch_bead.title = full.title;
+                            dispatch_bead.description = full.description;
+                            dispatch_bead.files = full.files;
+                            dispatch_bead.test_files = full.test_files;
+                        }
+                        dispatch_bead.owner = Some(next_agent.clone());
+
+                        match dispatch::spawn(
+                            &dispatch_bead,
+                            &path,
+                            true,
+                            0,
+                            self.provider.as_ref(),
+                            self.agents_dir.as_deref(),
+                        )
+                        .await
+                        {
+                            Ok(handle) => {
+                                println!("[dispatch] {bead_id} phase {} → {next_agent}", phase + 1);
+                                self.persist_status(bead_id, &repo, "dispatched").await;
+                                self.active.insert(bead_id.clone(), handle);
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[dispatch] failed to re-dispatch {bead_id} for {next_agent}: {e}"
+                                );
+                            }
+                        }
+                    }
+                    CompletionAction::Terminal => {
+                        self.on_pass(bead_id);
+                        self.checkpoint_and_cleanup(bead_id).await;
+                        let bead_ref = BeadRef {
+                            repo: repo.clone(),
+                            bead_id: bead_id.clone(),
+                        };
+                        self.pipeline.clear_state(&bead_ref).await;
+                        self.persist_status(bead_id, &repo, "closed").await;
+                    }
+                    CompletionAction::Retry => {
+                        if *exit_success {
+                            if let Some(ref vs) = verify_summary {
+                                self.on_fail(bead_id, vs);
+                            }
+                        } else {
+                            self.completed_work_dirs.remove(bead_id);
+                            self.on_fail_exit(bead_id);
+                        }
+                        self.persist_status(bead_id, &repo, "open").await;
+                    }
+                    CompletionAction::Deadletter => {
+                        if *exit_success {
+                            if let Some(ref vs) = verify_summary {
+                                self.on_fail(bead_id, vs);
+                            }
+                        } else {
+                            self.completed_work_dirs.remove(bead_id);
+                            self.on_fail_exit(bead_id);
+                        }
+                        self.cleanup_workspace(bead_id);
+                        let bead_ref = BeadRef {
+                            repo: repo.clone(),
+                            bead_id: bead_id.clone(),
+                        };
+                        self.pipeline.clear_state(&bead_ref).await;
+                        self.persist_status(bead_id, &repo, "blocked").await;
+                    }
                 }
             }
         }
@@ -1332,6 +1597,7 @@ impl Reconciler {
                 highest_tier: None,
                 current_agent: None,
                 phase_index: 0,
+                issue_type: "task".into(),
             });
 
         // Check for revert (regression from previous best)
@@ -1384,6 +1650,7 @@ impl Reconciler {
                 highest_tier: None,
                 current_agent: None,
                 phase_index: 0,
+                issue_type: "task".into(),
             });
         tracker.retries += 1;
 
@@ -1462,6 +1729,7 @@ pub async fn run(
         compute: cfg.compute,
         backend: cfg.backend,
         target_bead: target_bead.map(|s| s.to_string()),
+        pipelines: cfg.pipelines,
         ..Default::default()
     };
 
@@ -1612,6 +1880,7 @@ mod tests {
                 highest_tier: Some(3),
                 current_agent: None,
                 phase_index: 0,
+                issue_type: "task".into(),
             },
         );
 
@@ -1656,6 +1925,7 @@ mod tests {
                 highest_tier: Some(4),
                 current_agent: None,
                 phase_index: 0,
+                issue_type: "task".into(),
             },
         );
 
@@ -1700,6 +1970,7 @@ mod tests {
                 highest_tier: None,
                 current_agent: None,
                 phase_index: 0,
+                issue_type: "task".into(),
             },
         );
         // Record backoff (retry is pending)
@@ -1849,6 +2120,7 @@ mod tests {
                 highest_tier: None,
                 current_agent: None,
                 phase_index: 0,
+                issue_type: "task".into(),
             },
         );
         // Mark it as active (need a dummy handle — use the key presence)

@@ -614,6 +614,9 @@ pub fn permission_profile(issue_type: &str) -> PermissionProfile {
 }
 
 /// The next agent in the pipeline after `current`, or None if done.
+/// Note: reconciler now uses PipelineEngine.next_agent() for config-driven lookup.
+/// This remains as a convenience for callers that don't have a PipelineEngine.
+#[allow(dead_code)] // API surface — used in tests
 pub fn next_agent(issue_type: &str, current: &str) -> Option<&'static str> {
     let pipeline = agent_pipeline(issue_type);
     let idx = pipeline.iter().position(|&a| a == current)?;

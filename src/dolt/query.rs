@@ -7,6 +7,7 @@ use crate::bead::Bead;
 
 impl DoltClient {
     /// Get the current status of a bead by ID.
+    #[allow(dead_code)] // Used by is_bead_agent_closed (agent-first path)
     pub async fn get_status(&self, id: &str) -> Result<Option<String>> {
         let row = query("SELECT status FROM issues WHERE id = ?")
             .bind(id)

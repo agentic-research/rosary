@@ -30,6 +30,11 @@ pub struct Config {
     /// this central location — not per-branch, not per-repo.
     #[serde(default)]
     pub hooks_dir: Option<PathBuf>,
+    /// Pipeline definitions: issue_type → agent sequence.
+    /// Overrides the built-in defaults (bug → [dev, staging], etc.).
+    /// Example: `[pipelines]\nbug = ["dev-agent", "staging-agent"]`
+    #[serde(default = "default_pipelines")]
+    pub pipelines: HashMap<String, Vec<String>>,
 }
 
 /// Compute provider selection + backend-specific settings.
@@ -174,6 +179,31 @@ fn default_dispatch_provider() -> String {
 
 fn default_max_concurrent() -> usize {
     3
+}
+
+/// Built-in pipeline definitions: issue_type → ordered agent sequence.
+/// These are the defaults when no `[pipelines]` section is in config.
+pub fn default_pipelines() -> HashMap<String, Vec<String>> {
+    let mut m = HashMap::new();
+    m.insert(
+        "bug".into(),
+        vec!["dev-agent".into(), "staging-agent".into()],
+    );
+    m.insert(
+        "feature".into(),
+        vec![
+            "dev-agent".into(),
+            "staging-agent".into(),
+            "prod-agent".into(),
+        ],
+    );
+    m.insert("task".into(), vec!["dev-agent".into()]);
+    m.insert("chore".into(), vec!["dev-agent".into()]);
+    m.insert("review".into(), vec!["staging-agent".into()]);
+    m.insert("design".into(), vec!["architect-agent".into()]);
+    m.insert("research".into(), vec!["architect-agent".into()]);
+    m.insert("epic".into(), vec!["pm-agent".into()]);
+    m
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
