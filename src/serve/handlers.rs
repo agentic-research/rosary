@@ -403,6 +403,10 @@ async fn tool_bead_search(args: &Value, pool: &RepoPool) -> Result<Value> {
 // Dispatch / active
 // ---------------------------------------------------------------------------
 
+/// MCP dispatch: prepares workspace + prompt, returns everything the caller
+/// needs to spawn the agent. Does NOT spawn — the HTTP server is a data plane,
+/// not a compute plane. The caller (CC session, `rsry run`, conductor) does
+/// the actual spawn in its own environment (with API keys, PATH, etc.).
 async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     let bead_id = args["bead_id"]
         .as_str()
@@ -439,75 +443,67 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         bead.owner = Some(agent.to_string());
     }
 
-    let agent_label = bead.owner.as_deref().unwrap_or("generic");
+    let agent_label = bead
+        .owner
+        .as_deref()
+        .unwrap_or_else(|| crate::dispatch::default_agent(&bead.issue_type));
 
-    // Resolve agents_dir and provider, then dispatch
-    let agents_dir = crate::dispatch::resolve_agents_dir();
-    let provider = crate::dispatch::provider_by_name(provider_name)?;
-    let handle = crate::dispatch::spawn(
+    // Create isolated workspace (worktree/jj workspace) — this is safe to do
+    // from the server because it's just git operations, no process spawning.
+    let workspace = if isolate {
+        match crate::workspace::Workspace::create(bead_id, &repo_name, &root, true).await {
+            Ok(ws) => Some(ws),
+            Err(e) => {
+                eprintln!("[dispatch] workspace creation failed: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let work_dir = workspace
+        .as_ref()
+        .map(|ws| ws.work_dir.to_string_lossy().to_string())
+        .unwrap_or_else(|| root.to_string_lossy().to_string());
+
+    // Build the prompt the caller should pass to the agent
+    let _agents_dir = crate::dispatch::resolve_agents_dir();
+    let prompt = crate::dispatch::build_prompt(
         &bead,
-        &root,
-        isolate,
-        bead.generation(),
-        provider.as_ref(),
-        agents_dir.as_deref(),
-    )
-    .await?;
+        &work_dir,
+        workspace.as_ref().map(|ws| ws.work_dir.as_path()),
+        bead.owner.as_deref(),
+    );
 
-    // Update status — this is the linearization point for dispatch.
-    // Bead must be marked dispatched before pipeline state is written.
-    // Failure here means the dispatch did not happen from the bead's perspective.
+    // Build the CLI command the caller should run
+    let perms = crate::dispatch::permission_profile(&bead.issue_type);
+    let allowed_tools = perms.claude_allowed_tools();
+
+    // Derive the full command line
+    let cmd = format!(
+        "claude -p '{}' --allowedTools '{}' 2>&1 | tee .rsry-stream.jsonl",
+        work_dir.replace('\'', "'\\''"),
+        allowed_tools,
+    );
+
+    // Mark bead as dispatched
     client
         .update_status(bead_id, "dispatched")
         .await
         .with_context(|| format!("marking bead {bead_id} as dispatched"))?;
 
-    // Extract workspace metadata before handle is dropped (workspace has no Drop
-    // impl, so the on-disk workspace persists — we need metadata for cleanup).
-    let workspace_vcs = handle
-        .workspace
-        .as_ref()
-        .map(|ws| match ws.vcs {
-            crate::workspace::VcsKind::Jj => "jj",
-            crate::workspace::VcsKind::Git => "git",
-            crate::workspace::VcsKind::None => "",
-        })
-        .unwrap_or("")
-        .to_string();
-    let ws_repo_path = handle
-        .workspace
-        .as_ref()
-        .map(|ws| ws.repo_path.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    // Register in session registry (includes workspace info for cleanup on death)
-    let mut registry = crate::session::SessionRegistry::load().unwrap_or_default();
-    registry
-        .register(crate::session::SessionEntry {
-            bead_id: bead_id.to_string(),
-            repo: repo_name,
-            provider: provider_name.to_string(),
-            pid: handle.pid(),
-            work_dir: handle.work_dir.to_string_lossy().to_string(),
-            started_at: chrono::Utc::now(),
-            title: bead.title.clone(),
-            agent: agent_label.to_string(),
-            workspace_vcs,
-            repo_path: ws_repo_path,
-            last_activity: None,
-            last_comment: None,
-        })
-        .ok();
-
     Ok(json!({
         "bead_id": bead_id,
         "title": bead.title,
-        "external_ref": bead.external_ref,
         "status": "dispatched",
-        "provider": provider_name,
         "agent": agent_label,
-        "pid": handle.pid(),
-        "work_dir": handle.work_dir.to_string_lossy(),
+        "provider": provider_name,
+        "work_dir": work_dir,
+        "prompt": prompt,
+        "command": cmd,
+        "allowed_tools": allowed_tools,
+        "instructions": "Run the command in 'work_dir' to start the agent. The server prepared the workspace and prompt — you spawn the process in your environment.",
     }))
 }
 

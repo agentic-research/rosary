@@ -78,6 +78,7 @@ impl SessionRegistry {
     }
 
     /// Register a new session.
+    #[allow(dead_code)] // Used by reconciler path
     pub fn register(&mut self, entry: SessionEntry) -> Result<()> {
         // Remove any stale entry for the same bead
         self.sessions.retain(|s| s.bead_id != entry.bead_id);
