@@ -38,6 +38,8 @@ pub struct ReconcilerConfig {
     pub compute: Option<crate::config::ComputeConfig>,
     /// Backend storage for orchestrator state (decades, threads, pipeline).
     pub backend: Option<crate::config::BackendConfig>,
+    /// Target a specific bead — skip triage, only dispatch this one.
+    pub target_bead: Option<String>,
 }
 
 impl Default for ReconcilerConfig {
@@ -54,6 +56,7 @@ impl Default for ReconcilerConfig {
             overnight: false,
             compute: None,
             backend: None,
+            target_bead: None,
         }
     }
 }
@@ -436,9 +439,15 @@ impl Reconciler {
         };
 
         // Phase 3: TRIAGE — score open beads, enqueue above threshold
+        // If --bead is set, skip normal triage and only enqueue that bead.
+        let target_filter = self.config.target_bead.clone();
         let now = chrono::Utc::now();
         for bead in &beads {
-            if bead.state() != BeadState::Open {
+            if let Some(ref target) = target_filter {
+                if bead.id != *target {
+                    continue;
+                }
+            } else if bead.state() != BeadState::Open {
                 continue;
             }
             if self.active.contains_key(&bead.id) {
@@ -1435,6 +1444,7 @@ fn detect_language(path: &std::path::Path) -> String {
 }
 
 /// Entry point for `rsry run`.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     config_path: &str,
     concurrency: usize,
@@ -1443,6 +1453,7 @@ pub async fn run(
     dry_run: bool,
     provider: &str,
     overnight: bool,
+    target_bead: Option<&str>,
 ) -> Result<()> {
     let cfg = config::load(config_path)?;
 
@@ -1469,6 +1480,7 @@ pub async fn run(
         overnight,
         compute: cfg.compute,
         backend: cfg.backend,
+        target_bead: target_bead.map(|s| s.to_string()),
         ..Default::default()
     };
 

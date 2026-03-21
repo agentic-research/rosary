@@ -131,6 +131,9 @@ enum Command {
         /// Overnight mode: prefer small/mechanical beads, concurrency=1, interval=120s
         #[arg(long)]
         overnight: bool,
+        /// Target a specific bead (skip triage, dispatch only this bead)
+        #[arg(long)]
+        bead: Option<String>,
     },
     /// Start the reconciliation daemon in the background
     Start {
@@ -446,6 +449,7 @@ async fn main() -> Result<()> {
             dry_run,
             provider,
             overnight,
+            bead,
         } => {
             // --overnight sets defaults, but explicit --concurrency/--interval override
             let concurrency = if overnight && concurrency == 3 {
@@ -466,6 +470,7 @@ async fn main() -> Result<()> {
                 dry_run,
                 &provider,
                 overnight,
+                bead.as_deref(),
             )
             .await?;
         }
