@@ -992,8 +992,8 @@ impl Reconciler {
                     success = ok;
                 }
                 Ok(None) => {
-                    // Check timeout (10 min default)
-                    if handle.elapsed() > chrono::Duration::minutes(10) {
+                    // Check timeout (30 min — agents routinely take 15-20 min)
+                    if handle.elapsed() > chrono::Duration::minutes(30) {
                         eprintln!("[timeout] killing agent for {bead_id}");
                         let _ = handle.kill();
                         done = true;
