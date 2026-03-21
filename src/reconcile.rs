@@ -992,9 +992,16 @@ impl Reconciler {
                     success = ok;
                 }
                 Ok(None) => {
-                    // Check timeout (30 min — agents routinely take 15-20 min)
-                    if handle.elapsed() > chrono::Duration::minutes(30) {
-                        eprintln!("[timeout] killing agent for {bead_id}");
+                    let elapsed = handle.elapsed();
+                    // Soft timeout: warn but don't kill — agent may still be productive
+                    if elapsed > chrono::Duration::minutes(30)
+                        && elapsed < chrono::Duration::minutes(31)
+                    {
+                        eprintln!("[slow] {bead_id}: agent running for 30+ min");
+                    }
+                    // Hard timeout: safety valve for truly stuck agents (4 hours)
+                    if elapsed > chrono::Duration::hours(4) {
+                        eprintln!("[timeout] killing agent for {bead_id} (4h hard limit)");
                         let _ = handle.kill();
                         done = true;
                     }
