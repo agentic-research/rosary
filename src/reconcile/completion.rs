@@ -1,0 +1,192 @@
+//! Agent completion polling, verification, and retry/deadletter logic.
+//!
+//! Sentry breadcrumb: each on_fail/on_fail_exit records retry count + reason.
+
+use std::time::Instant;
+
+use super::{BeadTracker, Reconciler};
+use crate::verify::{Verifier, VerifySummary};
+
+impl Reconciler {
+    /// Poll active agents for completion. Returns vec of (bead_id, exit_success).
+    pub(super) fn check_completed(&mut self) -> Vec<(String, bool)> {
+        let mut completed = Vec::new();
+
+        let bead_ids: Vec<String> = self.active.keys().cloned().collect();
+        for bead_id in bead_ids {
+            let handle = self.active.get_mut(&bead_id).unwrap();
+            let mut done = false;
+            let mut success = false;
+
+            match handle.try_wait() {
+                Ok(Some(ok)) => {
+                    done = true;
+                    success = ok;
+                }
+                Ok(None) => {
+                    let elapsed = handle.elapsed();
+                    // Soft timeout: warn but don't kill — agent may still be productive
+                    if elapsed > chrono::Duration::minutes(30)
+                        && elapsed < chrono::Duration::minutes(31)
+                    {
+                        eprintln!("[slow] {bead_id}: agent running for 30+ min");
+                    }
+                    // Hard timeout: safety valve for truly stuck agents (4 hours)
+                    if elapsed > chrono::Duration::hours(4) {
+                        eprintln!("[timeout] killing agent for {bead_id} (4h hard limit)");
+                        let _ = handle.kill();
+                        done = true;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[error] polling agent for {bead_id}: {e}");
+                    done = true;
+                }
+            }
+
+            if done {
+                let mut handle = self.active.remove(&bead_id).unwrap();
+                let repo = self
+                    .trackers
+                    .get(&bead_id)
+                    .map(|t| t.repo.clone())
+                    .unwrap_or_default();
+                // Stash workspace for checkpoint + teardown
+                if let Some(ws) = handle.workspace.take() {
+                    self.completed_workspaces.insert(bead_id.clone(), ws);
+                }
+                self.completed_work_dirs
+                    .insert(bead_id.clone(), (handle.work_dir, repo));
+                completed.push((bead_id, success));
+            }
+        }
+
+        completed
+    }
+
+    /// Run verification tiers on an agent's work directory.
+    pub(super) fn verify_agent(&mut self, bead_id: &str) -> Option<VerifySummary> {
+        let (work_dir, repo) = self.completed_work_dirs.remove(bead_id)?;
+
+        // Look up language for this repo
+        let lang = self
+            .repo_info
+            .get(&repo)
+            .map(|(_, l)| l.as_str())
+            .unwrap_or("unknown");
+
+        let verifier = Verifier::for_language(lang);
+        match verifier.run(&work_dir) {
+            Ok(summary) => {
+                println!(
+                    "[verify] {bead_id}: {} (highest_tier={:?})",
+                    if summary.passed() { "PASS" } else { "FAIL" },
+                    summary.highest_passing_tier,
+                );
+                Some(summary)
+            }
+            Err(e) => {
+                eprintln!("[verify] {bead_id}: error running verification: {e}");
+                None
+            }
+        }
+    }
+
+    pub(super) fn on_pass(&mut self, bead_id: &str) {
+        println!("[pass] {bead_id}");
+        self.queue.clear_backoff(bead_id);
+        if let Some(tracker) = self.trackers.get_mut(bead_id) {
+            tracker.consecutive_reverts = 0;
+        }
+        // Cleanup happens after checkpoint (called from iterate)
+    }
+
+    /// Handle a verification failure. Returns true if deadlettered.
+    pub(super) fn on_fail(&mut self, bead_id: &str, summary: &VerifySummary) -> bool {
+        let tracker = self
+            .trackers
+            .entry(bead_id.to_string())
+            .or_insert(BeadTracker {
+                repo: String::new(),
+                last_generation: 0,
+                retries: 0,
+                consecutive_reverts: 0,
+                highest_tier: None,
+                current_agent: None,
+                phase_index: 0,
+                issue_type: "task".into(),
+            });
+
+        // Check for revert (regression from previous best)
+        if let (Some(prev), Some(curr)) = (tracker.highest_tier, summary.highest_passing_tier) {
+            if curr < prev {
+                tracker.consecutive_reverts += 1;
+            } else {
+                tracker.consecutive_reverts = 0;
+            }
+        }
+        tracker.highest_tier = summary.highest_passing_tier;
+        tracker.retries += 1;
+
+        // Stopping conditions
+        if tracker.retries >= self.config.max_retries {
+            println!("[deadletter] {bead_id}: max retries ({})", tracker.retries);
+            return true;
+        }
+        if tracker.consecutive_reverts >= 3 {
+            println!(
+                "[deadletter] {bead_id}: {} consecutive reverts",
+                tracker.consecutive_reverts
+            );
+            return true;
+        }
+
+        // Schedule retry with backoff
+        self.queue
+            .record_backoff(bead_id, tracker.retries, Instant::now());
+        if let Some((name, _)) = summary.first_failure() {
+            println!(
+                "[retry] {bead_id}: failed at tier '{name}', retry #{} scheduled",
+                tracker.retries
+            );
+        }
+
+        false
+    }
+
+    /// Handle agent exit failure (non-zero exit). Returns true if deadlettered.
+    pub(super) fn on_fail_exit(&mut self, bead_id: &str) -> bool {
+        let tracker = self
+            .trackers
+            .entry(bead_id.to_string())
+            .or_insert(BeadTracker {
+                repo: String::new(),
+                last_generation: 0,
+                retries: 0,
+                consecutive_reverts: 0,
+                highest_tier: None,
+                current_agent: None,
+                phase_index: 0,
+                issue_type: "task".into(),
+            });
+        tracker.retries += 1;
+
+        if tracker.retries >= self.config.max_retries {
+            println!(
+                "[deadletter] {bead_id}: max retries after exit failure ({})",
+                tracker.retries
+            );
+            return true;
+        }
+
+        self.queue
+            .record_backoff(bead_id, tracker.retries, Instant::now());
+        println!(
+            "[retry] {bead_id}: agent exited non-zero, retry #{} scheduled",
+            tracker.retries
+        );
+        self.cleanup_workspace(bead_id);
+
+        false
+    }
+}
