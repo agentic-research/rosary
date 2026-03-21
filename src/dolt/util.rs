@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, Result};
 use sqlx_core::query::query;
 use sqlx_core::row::Row;
 
@@ -80,5 +80,24 @@ impl DoltClient {
         if let Err(e) = result {
             eprintln!("warning: failed to log event for {issue_id}: {e}");
         }
+    }
+
+    /// Get the most recent event detail for a bead + event type.
+    /// Used by poll_pr_merges to find the PR URL recorded at dispatch time.
+    pub async fn get_latest_event(
+        &self,
+        issue_id: &str,
+        event_type: &str,
+    ) -> Result<Option<String>> {
+        let row = query(
+            "SELECT comment FROM events WHERE issue_id = ? AND event_type = ? ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(issue_id)
+        .bind(event_type)
+        .fetch_optional(&self.pool)
+        .await
+        .with_context(|| format!("querying latest {event_type} event for {issue_id}"))?;
+
+        Ok(row.map(|r| r.get("comment")))
     }
 }

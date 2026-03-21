@@ -177,13 +177,14 @@ impl Reconciler {
             )
             .await
             {
-                // Record PR URL on the bead as a comment
+                // Record PR URL on the bead as comment + event (event used by poll_pr_merges)
                 if let Some(ref pr_url) = result.pr_url
                     && let Some(client) = self.dolt_client(&repo).await
                 {
                     let _ = client
                         .add_comment(bead_id, &format!("PR: {pr_url}"), "rosary")
                         .await;
+                    client.log_event(bead_id, "pr_url", pr_url).await;
                 }
             }
         }

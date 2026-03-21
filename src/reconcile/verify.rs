@@ -97,15 +97,13 @@ impl Reconciler {
                 CompletionAction::Terminal => {
                     result.passed += 1;
                     self.on_pass(bead_id);
+                    // checkpoint_and_cleanup creates the PR — bead moves to
+                    // pr_open, NOT closed. Actual close happens when PR merges
+                    // (detected by poll_pr_merges in iterate).
                     self.checkpoint_and_cleanup(bead_id).await;
-                    let bead_ref = BeadRef {
-                        repo: repo.clone(),
-                        bead_id: bead_id.clone(),
-                    };
-                    self.pipeline.clear_state(&bead_ref).await;
                     result
                         .status_updates
-                        .push((bead_id.clone(), repo, "closed".into()));
+                        .push((bead_id.clone(), repo, "pr_open".into()));
                 }
                 CompletionAction::Retry => {
                     result.failed += 1;
@@ -437,12 +435,8 @@ impl Reconciler {
                     CompletionAction::Terminal => {
                         self.on_pass(bead_id);
                         self.checkpoint_and_cleanup(bead_id).await;
-                        let bead_ref = BeadRef {
-                            repo: repo.clone(),
-                            bead_id: bead_id.clone(),
-                        };
-                        self.pipeline.clear_state(&bead_ref).await;
-                        self.persist_status(bead_id, &repo, "closed").await;
+                        // Don't close — wait for PR merge
+                        self.persist_status(bead_id, &repo, "pr_open").await;
                     }
                     CompletionAction::Retry => {
                         if *exit_success {
