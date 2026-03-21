@@ -35,13 +35,37 @@ pub enum PermissionProfile {
 
 impl PermissionProfile {
     /// Claude `--allowedTools` flag value.
+    ///
+    /// rsry tools are scoped per role — agents cannot close beads or merge
+    /// workspaces. Only the reconciler/feature-agent does that.
     pub fn claude_allowed_tools(&self) -> &str {
         match self {
-            Self::ReadOnly => "Read,Glob,Grep,mcp__mache__*,mcp__rsry__*",
-            Self::Implement => {
-                "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git *),Bash(task *),Glob,Grep,mcp__mache__*,mcp__rsry__*"
-            }
-            Self::Plan => "Read,Glob,Grep,mcp__mache__*,mcp__rsry__*",
+            // Dev/implement: can read code, edit, commit, comment on beads.
+            // Cannot close beads, merge workspaces, or dispatch other agents.
+            Self::Implement => concat!(
+                "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git *),Bash(task *),Glob,Grep,",
+                "mcp__mache__*,",
+                "mcp__rsry__rsry_bead_comment,mcp__rsry__rsry_bead_search,",
+                "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,mcp__rsry__rsry_active"
+            ),
+            // Review/audit: read-only code access + bead comments.
+            Self::ReadOnly => concat!(
+                "Read,Glob,Grep,",
+                "mcp__mache__*,",
+                "mcp__rsry__rsry_bead_comment,mcp__rsry__rsry_bead_search,",
+                "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads"
+            ),
+            // Planning/triage: read code + full bead management (create, update, link).
+            // Can create/update beads but still cannot close or merge.
+            Self::Plan => concat!(
+                "Read,Glob,Grep,",
+                "mcp__mache__*,",
+                "mcp__rsry__rsry_bead_create,mcp__rsry__rsry_bead_update,",
+                "mcp__rsry__rsry_bead_comment,mcp__rsry__rsry_bead_search,",
+                "mcp__rsry__rsry_bead_link,",
+                "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,",
+                "mcp__rsry__rsry_decompose"
+            ),
         }
     }
 
@@ -852,6 +876,39 @@ mod tests {
                 .claude_allowed_tools()
                 .contains("mcp__rsry__")
         );
+    }
+
+    #[test]
+    fn implement_agents_cannot_close_beads() {
+        let tools = PermissionProfile::Implement.claude_allowed_tools();
+        assert!(
+            !tools.contains("bead_close"),
+            "dev-agents must not close beads — that's the reconciler's job"
+        );
+        assert!(
+            !tools.contains("workspace_merge"),
+            "dev-agents must not merge workspaces — that's the reconciler's job"
+        );
+        assert!(
+            tools.contains("bead_comment"),
+            "dev-agents should be able to comment on beads"
+        );
+    }
+
+    #[test]
+    fn readonly_agents_cannot_close_beads() {
+        let tools = PermissionProfile::ReadOnly.claude_allowed_tools();
+        assert!(!tools.contains("bead_close"));
+        assert!(!tools.contains("bead_create"));
+        assert!(tools.contains("bead_comment"));
+    }
+
+    #[test]
+    fn plan_agents_can_create_but_not_close() {
+        let tools = PermissionProfile::Plan.claude_allowed_tools();
+        assert!(tools.contains("bead_create"));
+        assert!(!tools.contains("bead_close"));
+        assert!(!tools.contains("workspace_merge"));
     }
 
     #[test]

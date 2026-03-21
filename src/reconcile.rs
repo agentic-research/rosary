@@ -693,27 +693,8 @@ impl Reconciler {
                 .find(|b| b.id == *bead_id)
                 .map(|b| (b.issue_type.clone(), b.owner.clone()));
 
-            // Agent-first fast path: if the agent already closed the bead via
-            // MCP, skip verification entirely. This is the main throughput win —
-            // verification (compile+test+lint) takes minutes per bead.
-            if self.is_bead_agent_closed(bead_id, &repo).await {
-                self.completed_work_dirs.remove(bead_id);
-                summary.agent_closed += 1;
-                summary.passed += 1;
-                self.on_pass(bead_id);
-
-                if let Some((ref issue_type, Some(ref current_agent))) = bead_info
-                    && let Some(next) = dispatch::next_agent(issue_type, current_agent)
-                {
-                    // Keep workspace for next pipeline phase
-                    self.checkpoint_workspace(bead_id).await;
-                    phase_advances.push((bead_id.clone(), repo.clone(), next.to_string()));
-                } else {
-                    self.checkpoint_and_cleanup(bead_id).await;
-                }
-                continue;
-            }
-
+            // Agents no longer have bead_close permission — the reconciler
+            // owns the bead lifecycle. Always verify, then advance or close.
             if *exit_success {
                 let verify_result = self.verify_agent(bead_id);
                 match verify_result {
