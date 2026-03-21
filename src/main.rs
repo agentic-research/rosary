@@ -602,7 +602,11 @@ async fn main() -> Result<()> {
             }
 
             if !dry_run {
-                let expanded = scanner::expand_path(Path::new(&repo));
+                let expanded = if repo == "." {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                } else {
+                    scanner::expand_path(Path::new(&repo))
+                };
                 let repo_root = config::discover_repo_root(&expanded).unwrap_or(expanded);
                 let beads_dir = repo_root.join(".beads");
                 let dolt_config = dolt::DoltConfig::from_beads_dir(&beads_dir)?;
@@ -644,7 +648,12 @@ async fn main() -> Result<()> {
         }
         Command::Bead { action, repo } => {
             // Walk up to find repo root (like uv's pyproject.toml discovery)
-            let expanded = scanner::expand_path(Path::new(&repo));
+            // Resolve "." to absolute cwd so file_name() returns the repo name, not ".".
+            let expanded = if repo == "." {
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            } else {
+                scanner::expand_path(Path::new(&repo))
+            };
             let repo_root = config::discover_repo_root(&expanded).unwrap_or(expanded);
             let beads_dir = resolve_beads_dir(&repo_root);
             let dolt_config = dolt::DoltConfig::from_beads_dir(&beads_dir)?;
