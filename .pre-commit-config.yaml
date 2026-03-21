@@ -40,7 +40,7 @@ repos:
         types_or: [rust, python, go, javascript, elixir]
         # Pre-existing large files — splitting tracked by janitor beads.
         # Remove entries here as files are refactored under the limit.
-        exclude: '^src/(reconcile|config|dispatch|main|serve/handlers|store_dolt|epic)\.rs$'
+        exclude: '^src/(reconcile(/mod)?|config|dispatch|main|serve/handlers|store_dolt|epic)\.rs$'
 
       # Rule 11: Every commit references a bead
       - id: bead-ref
