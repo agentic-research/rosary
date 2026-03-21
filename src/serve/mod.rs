@@ -292,81 +292,92 @@ fn json_response(
 }
 
 /// POST /mcp — main JSON-RPC handler.
-async fn handle_mcp_post(
+///
+/// Edition 2024 changes `impl Future` lifetime capture, which can make
+/// async handler futures `!Send`. The explicit return type ensures Send.
+#[allow(clippy::manual_async_fn)]
+fn handle_mcp_post(
     axum::extract::State(state): axum::extract::State<AppState>,
     headers: axum::http::HeaderMap,
     body: String,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
+) -> impl std::future::Future<Output = axum::response::Response> + Send {
+    async move {
+        use axum::response::IntoResponse;
 
-    if let Err(resp) = validate_origin(&headers) {
-        return resp;
-    }
-    if let Err(resp) = validate_accept(&headers) {
-        return resp;
-    }
-
-    let request: JsonRpcRequest = match serde_json::from_str(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            let err = JsonRpcResponse::error(Value::Null, -32700, format!("Parse error: {e}"));
-            return json_response(axum::http::StatusCode::OK, &err, None);
+        if let Err(resp) = validate_origin(&headers) {
+            return resp;
         }
-    };
+        if let Err(resp) = validate_accept(&headers) {
+            return resp;
+        }
 
-    if request.jsonrpc != "2.0" {
-        if let Some(id) = request.id {
-            let resp = JsonRpcResponse::error(
-                id,
-                -32600,
-                "Invalid Request: jsonrpc must be \"2.0\"".into(),
+        let request: JsonRpcRequest = match serde_json::from_str(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                let err = JsonRpcResponse::error(Value::Null, -32700, format!("Parse error: {e}"));
+                return json_response(axum::http::StatusCode::OK, &err, None);
+            }
+        };
+
+        if request.jsonrpc != "2.0" {
+            if let Some(id) = request.id {
+                let resp = JsonRpcResponse::error(
+                    id,
+                    -32600,
+                    "Invalid Request: jsonrpc must be \"2.0\"".into(),
+                );
+                return json_response(axum::http::StatusCode::OK, &resp, None);
+            }
+            return axum::http::StatusCode::BAD_REQUEST.into_response();
+        }
+
+        // Notifications (no id) — accept silently
+        if request.id.is_none() {
+            return axum::http::StatusCode::ACCEPTED.into_response();
+        }
+
+        let id = request.id.unwrap();
+        let is_initialize = request.method == "initialize";
+
+        // Session validation (skip for initialize).
+        // Split into two ifs intentionally — collapsing with `&&` makes the future !Send
+        // in edition 2024 due to temporary lifetime capture rules.
+        #[allow(clippy::collapsible_if)]
+        if !is_initialize {
+            if let Err(resp) = validate_session(&headers, &state.sessions).await {
+                return resp;
+            }
+        }
+
+        let response = match request.method.as_str() {
+            "initialize" => handle_initialize(id.clone()),
+            "tools/list" => handle_tools_list(id),
+            "tools/call" => {
+                handle_tools_call(
+                    id,
+                    &request.params,
+                    &state.config_path,
+                    &state.pool,
+                    state.backend.as_deref(),
+                )
+                .await
+            }
+            _ => JsonRpcResponse::method_not_found(id, &request.method),
+        };
+
+        if is_initialize {
+            let session_id = uuid::Uuid::new_v4().to_string();
+            state.sessions.write().await.insert(session_id.clone());
+            eprintln!("[rsry-mcp] new session: {session_id}");
+            return json_response(
+                axum::http::StatusCode::OK,
+                &response,
+                Some(("mcp-session-id", &session_id)),
             );
-            return json_response(axum::http::StatusCode::OK, &resp, None);
         }
-        return axum::http::StatusCode::BAD_REQUEST.into_response();
-    }
 
-    // Notifications (no id) — accept silently
-    if request.id.is_none() {
-        return axum::http::StatusCode::ACCEPTED.into_response();
-    }
-
-    let id = request.id.unwrap();
-    let is_initialize = request.method == "initialize";
-
-    // Session validation (skip for initialize)
-    if !is_initialize && let Err(resp) = validate_session(&headers, &state.sessions).await {
-        return resp;
-    }
-
-    let response = match request.method.as_str() {
-        "initialize" => handle_initialize(id.clone()),
-        "tools/list" => handle_tools_list(id),
-        "tools/call" => {
-            handle_tools_call(
-                id,
-                &request.params,
-                &state.config_path,
-                &state.pool,
-                state.backend.as_deref(),
-            )
-            .await
-        }
-        _ => JsonRpcResponse::method_not_found(id, &request.method),
-    };
-
-    if is_initialize {
-        let session_id = uuid::Uuid::new_v4().to_string();
-        state.sessions.write().await.insert(session_id.clone());
-        eprintln!("[rsry-mcp] new session: {session_id}");
-        return json_response(
-            axum::http::StatusCode::OK,
-            &response,
-            Some(("mcp-session-id", &session_id)),
-        );
-    }
-
-    json_response(axum::http::StatusCode::OK, &response, None)
+        json_response(axum::http::StatusCode::OK, &response, None)
+    } // async move
 }
 
 /// GET /mcp — SSE stream for server→client notifications (v1: not supported).
