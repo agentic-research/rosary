@@ -17,7 +17,11 @@ impl DoltClient {
                FROM issues i
                LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
                     ON dep.depends_on_id = i.id
-               LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM dependencies GROUP BY issue_id) deps
+               LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
+                         FROM dependencies d
+                         JOIN issues dep_i ON dep_i.id = d.depends_on_id
+                         WHERE dep_i.status NOT IN ('closed', 'done')
+                         GROUP BY d.issue_id) deps
                     ON deps.issue_id = i.id
                LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
                     ON cmt.issue_id = i.id
@@ -61,13 +65,88 @@ impl DoltClient {
         Ok(beads)
     }
 
+    /// List beads filtered by user_id (multi-tenant).
+    #[allow(dead_code)] // Used by MCP handlers when user_scope is set
+    /// When user_id is Some, only returns beads owned by that user.
+    /// When None, returns all (single-tenant / machine identity).
+    pub async fn list_beads_scoped(
+        &self,
+        repo_name: &str,
+        user_id: Option<&str>,
+    ) -> Result<Vec<Bead>> {
+        match user_id {
+            Some(uid) => {
+                let rows = query(
+                    r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
+                              i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                              COALESCE(dep.cnt, 0) as dep_count,
+                              COALESCE(deps.cnt, 0) as dependency_count,
+                              COALESCE(cmt.cnt, 0) as comment_count
+                       FROM issues i
+                       LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
+                            ON dep.depends_on_id = i.id
+                       LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
+                                 FROM dependencies d
+                                 JOIN issues dep_i ON dep_i.id = d.depends_on_id
+                                 WHERE dep_i.status NOT IN ('closed', 'done')
+                                 GROUP BY d.issue_id) deps
+                            ON deps.issue_id = i.id
+                       LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
+                            ON cmt.issue_id = i.id
+                       WHERE i.status != 'closed' AND i.user_id = ?
+                       ORDER BY i.priority ASC, i.created_at DESC"#,
+                )
+                .bind(uid)
+                .fetch_all(&self.pool)
+                .await
+                .context("querying issues (scoped)")?;
+
+                Ok(rows
+                    .iter()
+                    .map(|row| {
+                        let (files, test_files) = Self::parse_files_from_notes(row);
+                        Bead {
+                            id: row.get("id"),
+                            title: row.get("title"),
+                            description: row.try_get("description").unwrap_or_default(),
+                            status: row.get("status"),
+                            priority: row.try_get::<i32, _>("priority").unwrap_or(2) as u8,
+                            issue_type: row
+                                .try_get("issue_type")
+                                .unwrap_or_else(|_| "task".to_string()),
+                            owner: row.try_get("assignee").ok(),
+                            repo: repo_name.to_string(),
+                            created_at: row.try_get("created_at").unwrap_or_default(),
+                            updated_at: row.try_get("updated_at").unwrap_or_default(),
+                            dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0)
+                                as u32,
+                            dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
+                            comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0)
+                                as u32,
+                            branch: None,
+                            pr_url: None,
+                            jj_change_id: None,
+                            external_ref: row.try_get("external_ref").ok(),
+                            files,
+                            test_files,
+                        }
+                    })
+                    .collect())
+            }
+            None => self.list_beads(repo_name).await,
+        }
+    }
+
     /// Get a single bead by ID.
     pub async fn get_bead(&self, id: &str, repo_name: &str) -> Result<Option<Bead>> {
         let row = query(
             r#"SELECT id, title, description, status, priority, issue_type,
                       assignee, external_ref, notes, created_at, updated_at,
                       (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
-                      (SELECT COUNT(*) FROM dependencies d WHERE d.issue_id = i.id) as dependency_count,
+                      (SELECT COUNT(*) FROM dependencies d
+                              JOIN issues dep_i ON dep_i.id = d.depends_on_id
+                              WHERE d.issue_id = i.id
+                              AND dep_i.status NOT IN ('closed', 'done')) as dependency_count,
                       (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
                FROM issues i
                WHERE id = ?"#,
@@ -114,6 +193,17 @@ impl DoltClient {
             .await
             .with_context(|| format!("updating status for {id}"))?;
         self.auto_commit(&format!("{id}: status → {status}")).await;
+        Ok(())
+    }
+
+    /// Set the user_id (owner identity) for multi-tenant scoping.
+    pub async fn set_user_id(&self, id: &str, user_id: &str) -> Result<()> {
+        query("UPDATE issues SET user_id = ? WHERE id = ?")
+            .bind(user_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("setting user_id for {id}"))?;
         Ok(())
     }
 
