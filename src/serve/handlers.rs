@@ -66,10 +66,13 @@ pub(crate) async fn call_tool(
     backend: Option<&DoltBackend>,
     caller: &super::CallerIdentity,
 ) -> Result<Value> {
-    // Log caller identity for audit trail
-    let _user_scope = caller.user_scope();
-    // TODO: pass user_scope to individual tool handlers for per-user filtering
-    // For now, identity is extracted and logged but not yet enforced.
+    let user_scope = caller.user_scope();
+
+    // Audit log: record every MCP call with caller identity
+    if let Some(uid) = user_scope {
+        eprintln!("[mcp] {name} (user={uid})");
+    }
+
     match name {
         "rsry_scan" => tool_scan(config_path).await,
         "rsry_status" => tool_status(config_path).await,
@@ -87,12 +90,12 @@ pub(crate) async fn call_tool(
                 .unwrap_or(true);
             tool_run_once(config_path, dry_run).await
         }
-        "rsry_bead_create" => tool_bead_create(args, pool).await,
-        "rsry_bead_update" => tool_bead_update(args, pool).await,
-        "rsry_bead_close" => tool_bead_close(args, pool).await,
-        "rsry_bead_comment" => tool_bead_comment(args, pool).await,
+        "rsry_bead_create" => tool_bead_create(args, pool, user_scope).await,
+        "rsry_bead_update" => tool_bead_update(args, pool, user_scope).await,
+        "rsry_bead_close" => tool_bead_close(args, pool, user_scope).await,
+        "rsry_bead_comment" => tool_bead_comment(args, pool, user_scope).await,
         "rsry_bead_link" => tool_bead_link(args, pool).await,
-        "rsry_bead_search" => tool_bead_search(args, pool).await,
+        "rsry_bead_search" => tool_bead_search(args, pool, user_scope).await,
         "rsry_dispatch" => tool_dispatch(args, config_path).await,
         "rsry_active" => tool_active().await,
         "rsry_workspace_create" => tool_workspace_create(args).await,
@@ -195,7 +198,11 @@ async fn tool_run_once(config_path: &str, dry_run: bool) -> Result<Value> {
 // Bead CRUD
 // ---------------------------------------------------------------------------
 
-async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
+async fn tool_bead_create(
+    args: &Value,
+    pool: &RepoPool,
+    user_scope: Option<&str>,
+) -> Result<Value> {
     let repo_path = args["repo_path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
@@ -265,10 +272,19 @@ async fn tool_bead_create(args: &Value, pool: &RepoPool) -> Result<Value> {
         )
         .await?;
 
+    // Record who created this bead for multi-tenant scoping
+    if let Some(uid) = user_scope {
+        client.log_event(&id, "created_by", uid).await;
+    }
+
     Ok(json!({ "id": id, "title": title, "priority": priority, "owner": owner }))
 }
 
-async fn tool_bead_update(args: &Value, pool: &RepoPool) -> Result<Value> {
+async fn tool_bead_update(
+    args: &Value,
+    pool: &RepoPool,
+    _user_scope: Option<&str>,
+) -> Result<Value> {
     let repo_path = args["repo_path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
@@ -321,7 +337,11 @@ async fn tool_bead_update(args: &Value, pool: &RepoPool) -> Result<Value> {
     Ok(json!({ "id": id, "updated_fields": updated_fields }))
 }
 
-async fn tool_bead_close(args: &Value, pool: &RepoPool) -> Result<Value> {
+async fn tool_bead_close(
+    args: &Value,
+    pool: &RepoPool,
+    _user_scope: Option<&str>,
+) -> Result<Value> {
     let repo_path = args["repo_path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
@@ -341,7 +361,11 @@ async fn tool_bead_close(args: &Value, pool: &RepoPool) -> Result<Value> {
     Ok(json!({ "id": id, "status": "closed" }))
 }
 
-async fn tool_bead_comment(args: &Value, pool: &RepoPool) -> Result<Value> {
+async fn tool_bead_comment(
+    args: &Value,
+    pool: &RepoPool,
+    _user_scope: Option<&str>,
+) -> Result<Value> {
     let repo_path = args["repo_path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
@@ -389,7 +413,11 @@ async fn tool_bead_link(args: &Value, pool: &RepoPool) -> Result<Value> {
     }
 }
 
-async fn tool_bead_search(args: &Value, pool: &RepoPool) -> Result<Value> {
+async fn tool_bead_search(
+    args: &Value,
+    pool: &RepoPool,
+    _user_scope: Option<&str>,
+) -> Result<Value> {
     let repo_path = args["repo_path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
