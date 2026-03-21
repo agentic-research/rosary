@@ -5,6 +5,8 @@
 //!
 //! Modeled after driftlessaf's workqueue patterns and gem's tiered verification.
 
+mod helpers;
+
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -156,7 +158,10 @@ impl Reconciler {
         // Build repo info map from config
         for repo in &config.repo {
             let path = scanner::expand_path(&repo.path);
-            let lang = repo.lang.clone().unwrap_or_else(|| detect_language(&path));
+            let lang = repo
+                .lang
+                .clone()
+                .unwrap_or_else(|| helpers::detect_language(&path));
             repo_info.insert(repo.name.clone(), (path, lang));
         }
 
@@ -1683,21 +1688,6 @@ impl Reconciler {
 
 // merge_or_pr moved to workspace.rs as a shared function
 
-/// Detect language from repo contents.
-fn detect_language(path: &std::path::Path) -> String {
-    if path.join("Cargo.toml").exists() {
-        "rust".to_string()
-    } else if path.join("go.mod").exists() {
-        "go".to_string()
-    } else if path.join("package.json").exists() {
-        "javascript".to_string()
-    } else if path.join("pyproject.toml").exists() || path.join("setup.py").exists() {
-        "python".to_string()
-    } else {
-        "unknown".to_string()
-    }
-}
-
 /// Entry point for `rsry run`.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -1770,20 +1760,20 @@ mod tests {
     fn detect_language_rust() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
-        assert_eq!(detect_language(dir.path()), "rust");
+        assert_eq!(helpers::detect_language(dir.path()), "rust");
     }
 
     #[test]
     fn detect_language_go() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("go.mod"), "module test").unwrap();
-        assert_eq!(detect_language(dir.path()), "go");
+        assert_eq!(helpers::detect_language(dir.path()), "go");
     }
 
     #[test]
     fn detect_language_unknown() {
         let dir = tempfile::TempDir::new().unwrap();
-        assert_eq!(detect_language(dir.path()), "unknown");
+        assert_eq!(helpers::detect_language(dir.path()), "unknown");
     }
 
     #[test]
