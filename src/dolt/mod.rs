@@ -5,6 +5,7 @@
 
 mod bead_crud;
 mod deps;
+pub(crate) mod migrate;
 mod query;
 mod util;
 

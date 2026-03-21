@@ -505,6 +505,18 @@ async fn run_http(config_path: &str, port: u16) -> Result<()> {
     };
 
     let pool = Arc::new(RepoPool::from_config(config_path).await?);
+
+    // Run schema migrations on all connected repos (idempotent)
+    for (name, client) in pool.iter_clients() {
+        match client.migrate().await {
+            Ok(applied) if !applied.is_empty() => {
+                eprintln!("[rsry-mcp] {name}: applied {} migration(s)", applied.len());
+            }
+            Err(e) => eprintln!("[rsry-mcp] {name}: migration failed: {e}"),
+            _ => {}
+        }
+    }
+
     let state = AppState {
         pool: pool.clone(),
         config_path: Arc::from(config_path),
