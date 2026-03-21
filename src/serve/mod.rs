@@ -22,6 +22,73 @@ use crate::pool::RepoPool;
 use crate::store_dolt::DoltBackend;
 
 // ---------------------------------------------------------------------------
+// Caller identity — extracted from CF client cert or Authorization header
+// ---------------------------------------------------------------------------
+
+/// Who is making this MCP request.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Variants constructed as identity types are wired
+pub(crate) enum CallerIdentity {
+    /// Human user (CF client cert CN=user-{id})
+    User(String),
+    /// Machine acting on behalf of a user (API key → user_id)
+    MachineAsUser { user_id: String, service: String },
+    /// System-level service (signet cert CN=service-{name})
+    Machine(String),
+    /// No identity — localhost / development mode (single-tenant)
+    Anonymous,
+}
+
+impl CallerIdentity {
+    /// The user_id to scope queries by, or None for machine/anonymous.
+    pub fn user_scope(&self) -> Option<&str> {
+        match self {
+            Self::User(id) => Some(id),
+            Self::MachineAsUser { user_id, .. } => Some(user_id),
+            Self::Machine(_) => None, // system-level, no user scoping
+            Self::Anonymous => None,  // single-tenant, no scoping
+        }
+    }
+}
+
+/// Extract caller identity from request headers.
+///
+/// Priority:
+/// 1. CF client cert headers (Cf-Client-Cert-Subject-Dn) — user or machine
+/// 2. Authorization: Bearer <api_key> — machine-as-user (future: KV lookup)
+/// 3. Anonymous — localhost/development
+fn extract_identity(headers: &axum::http::HeaderMap) -> CallerIdentity {
+    // Try CF client cert first
+    let verified = headers
+        .get("cf-client-cert-verified")
+        .and_then(|v| v.to_str().ok());
+    let dn = headers
+        .get("cf-client-cert-subject-dn")
+        .and_then(|v| v.to_str().ok());
+
+    if let (Some("SUCCESS"), Some(dn)) = (verified, dn) {
+        // Parse CN from DN (e.g., "CN=user-abc123" or "CN=service-conductor")
+        let cn = dn
+            .split(',')
+            .find_map(|part| part.trim().strip_prefix("CN="))
+            .unwrap_or(dn);
+
+        if let Some(user_id) = cn.strip_prefix("user-") {
+            return CallerIdentity::User(user_id.to_string());
+        }
+        if let Some(service) = cn.strip_prefix("service-") {
+            return CallerIdentity::Machine(service.to_string());
+        }
+        // Unknown CN format — treat as user
+        return CallerIdentity::User(cn.to_string());
+    }
+
+    // TODO: Authorization: Bearer <api_key> → KV lookup for machine-as-user
+
+    CallerIdentity::Anonymous
+}
+
+// ---------------------------------------------------------------------------
 // JSON-RPC types
 // ---------------------------------------------------------------------------
 
@@ -141,12 +208,13 @@ async fn handle_tools_call(
     config_path: &str,
     pool: &RepoPool,
     backend: Option<&DoltBackend>,
+    caller: &CallerIdentity,
 ) -> JsonRpcResponse {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
-    match handlers::call_tool(name, &args, config_path, pool, backend).await {
+    match handlers::call_tool(name, &args, config_path, pool, backend, caller).await {
         Ok(result) => JsonRpcResponse::success(
             id,
             json!({
@@ -349,6 +417,9 @@ fn handle_mcp_post(
             }
         }
 
+        // Extract caller identity from CF cert headers or auth token
+        let caller = extract_identity(&headers);
+
         let response = match request.method.as_str() {
             "initialize" => handle_initialize(id.clone()),
             "tools/list" => handle_tools_list(id),
@@ -359,6 +430,7 @@ fn handle_mcp_post(
                     &state.config_path,
                     &state.pool,
                     state.backend.as_deref(),
+                    &caller,
                 )
                 .await
             }
@@ -597,7 +669,15 @@ async fn run_stdio(config_path: &str) -> Result<()> {
             "initialize" => handle_initialize(id),
             "tools/list" => handle_tools_list(id),
             "tools/call" => {
-                handle_tools_call(id, &request.params, config_path, &pool, backend.as_deref()).await
+                handle_tools_call(
+                    id,
+                    &request.params,
+                    config_path,
+                    &pool,
+                    backend.as_deref(),
+                    &CallerIdentity::Anonymous,
+                )
+                .await
             }
             _ => JsonRpcResponse::method_not_found(id, &request.method),
         };
