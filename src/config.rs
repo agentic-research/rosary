@@ -35,6 +35,11 @@ pub struct Config {
     /// Example: `[pipelines]\nbug = ["dev-agent", "staging-agent"]`
     #[serde(default = "default_pipelines")]
     pub pipelines: HashMap<String, Vec<String>>,
+    /// Maximum number of pipeline stages to execute per bead.
+    /// 0 = unlimited (default). 1 = single-agent only.
+    /// The hosted service sets this based on the customer's plan.
+    #[serde(default)]
+    pub max_pipeline_depth: usize,
 }
 
 /// Compute provider selection + backend-specific settings.

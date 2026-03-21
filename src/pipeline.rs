@@ -30,26 +30,40 @@ pub struct PipelineEngine {
     /// Dolt backend for persistent pipeline state. Optional — degrades to
     /// in-memory-only when unavailable.
     store: Option<Box<dyn DispatchStore>>,
+    /// Maximum pipeline stages to execute. 0 = unlimited.
+    max_depth: usize,
 }
 
 static DEFAULT_AGENT: &str = "dev-agent";
 
 impl PipelineEngine {
     /// Create a new engine from config-driven pipeline definitions.
+    /// `max_depth` of 0 means unlimited.
     pub fn new(
         definitions: HashMap<String, Vec<String>>,
         store: Option<Box<dyn DispatchStore>>,
+        max_depth: usize,
     ) -> Self {
-        Self { definitions, store }
+        Self {
+            definitions,
+            store,
+            max_depth,
+        }
     }
 
     /// Look up the agent sequence for an issue type.
     /// Falls back to `["dev-agent"]` for unknown types.
+    /// Truncates to `max_depth` stages when set (0 = unlimited).
     pub fn agents_for(&self, issue_type: &str) -> Vec<String> {
-        self.definitions
+        let mut agents = self
+            .definitions
             .get(issue_type)
             .cloned()
-            .unwrap_or_else(|| vec![DEFAULT_AGENT.to_string()])
+            .unwrap_or_else(|| vec![DEFAULT_AGENT.to_string()]);
+        if self.max_depth > 0 {
+            agents.truncate(self.max_depth);
+        }
+        agents
     }
 
     /// First agent in the pipeline for an issue type.
@@ -196,7 +210,7 @@ mod tests {
     use crate::config::default_pipelines;
 
     fn engine() -> PipelineEngine {
-        PipelineEngine::new(default_pipelines(), None)
+        PipelineEngine::new(default_pipelines(), None, 0)
     }
 
     #[test]
@@ -360,7 +374,7 @@ mod tests {
                 "prod-agent".into(),
             ],
         );
-        let e = PipelineEngine::new(defs, None);
+        let e = PipelineEngine::new(defs, None, 0);
         // Custom bug pipeline has 3 stages
         assert_eq!(
             e.next_agent("bug", "staging-agent"),
@@ -381,5 +395,50 @@ mod tests {
         assert_eq!(state.pipeline_agent, "dev-agent");
         assert_eq!(state.pipeline_phase, 0);
         assert_eq!(state.phase_status, "executing");
+    }
+
+    // -- max_depth gating tests --
+
+    #[test]
+    fn depth_zero_is_unlimited() {
+        let e = PipelineEngine::new(default_pipelines(), None, 0);
+        assert_eq!(e.agents_for("bug"), vec!["dev-agent", "staging-agent"]);
+        assert_eq!(
+            e.agents_for("feature"),
+            vec!["dev-agent", "staging-agent", "prod-agent"]
+        );
+    }
+
+    #[test]
+    fn depth_one_truncates_to_single_agent() {
+        let e = PipelineEngine::new(default_pipelines(), None, 1);
+        assert_eq!(e.agents_for("bug"), vec!["dev-agent"]);
+        assert_eq!(e.agents_for("feature"), vec!["dev-agent"]);
+        assert_eq!(e.agents_for("task"), vec!["dev-agent"]);
+    }
+
+    #[test]
+    fn depth_two_allows_two_stages() {
+        let e = PipelineEngine::new(default_pipelines(), None, 2);
+        assert_eq!(e.agents_for("bug"), vec!["dev-agent", "staging-agent"]);
+        assert_eq!(e.agents_for("feature"), vec!["dev-agent", "staging-agent"]);
+        assert_eq!(e.agents_for("task"), vec!["dev-agent"]);
+    }
+
+    #[test]
+    fn depth_gate_affects_next_agent() {
+        let e = PipelineEngine::new(default_pipelines(), None, 1);
+        // With depth=1, bug pipeline is just ["dev-agent"], so no next
+        assert_eq!(e.next_agent("bug", "dev-agent"), None);
+    }
+
+    #[test]
+    fn depth_gate_affects_decide() {
+        let e = PipelineEngine::new(default_pipelines(), None, 1);
+        // Bug with depth=1: dev-agent passes → Terminal (not Advance)
+        assert_eq!(
+            e.decide("bug", Some("dev-agent"), true, Some(true), 0, 3),
+            CompletionAction::Terminal
+        );
     }
 }
