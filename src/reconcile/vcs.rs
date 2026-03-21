@@ -72,4 +72,62 @@ impl Reconciler {
 
         transitions
     }
+
+    /// Poll beads in `pr_open` status — close when their PR merges.
+    /// Uses `gh pr view` (works locally and in CI). Falls back gracefully
+    /// if `gh` isn't available or the PR URL isn't recorded.
+    pub(super) async fn poll_pr_merges(&mut self, beads: &[crate::bead::Bead]) -> usize {
+        let pr_open_beads: Vec<&crate::bead::Bead> =
+            beads.iter().filter(|b| b.status == "pr_open").collect();
+
+        if pr_open_beads.is_empty() {
+            return 0;
+        }
+
+        let mut closed = 0;
+        for bead in &pr_open_beads {
+            // Look up PR URL from events log
+            let pr_url = if let Some(client) = self.dolt_client(&bead.repo).await {
+                client
+                    .get_latest_event(&bead.id, "pr_url")
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+
+            let Some(url) = pr_url else {
+                continue;
+            };
+
+            // Check PR state via `gh pr view`
+            let output = std::process::Command::new("gh")
+                .args(["pr", "view", &url, "--json", "state", "-q", ".state"])
+                .output();
+
+            let merged = match output {
+                Ok(o) if o.status.success() => {
+                    let state = String::from_utf8_lossy(&o.stdout);
+                    state.trim() == "MERGED"
+                }
+                _ => continue, // gh not available or API error — skip
+            };
+
+            if merged {
+                println!("[pr-merged] {} — PR merged, closing bead", bead.id);
+                self.persist_status(&bead.id, &bead.repo, "closed").await;
+
+                // Now clear pipeline state
+                let bead_ref = crate::store::BeadRef {
+                    repo: bead.repo.clone(),
+                    bead_id: bead.id.clone(),
+                };
+                self.pipeline.clear_state(&bead_ref).await;
+                closed += 1;
+            }
+        }
+
+        closed
+    }
 }
