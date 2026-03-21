@@ -34,12 +34,6 @@ tasks:
     desc: Run all tests (Rust + Elixir)
     cmds:
       - cargo test
-      - |
-        if [ -d conductor/deps ]; then
-          cd conductor && mix test
-        else
-          echo "SKIP: conductor tests (run 'cd conductor && mix deps.get' first)"
-        fi
 
   check:
     desc: Compile check without codegen
@@ -47,27 +41,15 @@ tasks:
       - cargo check
 
   lint:
-    desc: Run clippy + Elixir compile warnings
+    desc: Run clippy
     deps: [fmt]
     cmds:
       - cargo clippy -- -D warnings
-      - |
-        if [ -d conductor/deps ]; then
-          cd conductor && mix compile --warnings-as-errors
-        else
-          echo "SKIP: conductor lint (run 'cd conductor && mix deps.get' first)"
-        fi
 
   fmt:
-    desc: Format code (Rust + Elixir)
+    desc: Format code
     cmds:
       - cargo fmt
-      - |
-        if [ -d conductor/deps ]; then
-          cd conductor && mix format
-        else
-          echo "SKIP: conductor fmt (run 'cd conductor && mix deps.get' first)"
-        fi
 
   install:
     desc: Build, codesign, install rsry, and set up HTTP MCP service
@@ -156,13 +138,6 @@ tasks:
           echo "✓ Git hooks installed (pre-commit + commit-msg)"
         else
           echo "SKIP: pre-commit not found (brew install pre-commit)"
-        fi
-      - |
-        if command -v mix >/dev/null 2>&1; then
-          cd conductor && mix deps.get
-          echo "✓ Conductor deps installed"
-        else
-          echo "SKIP: Elixir not found (conductor is optional)"
         fi
       - |
         if command -v rsry >/dev/null 2>&1; then
