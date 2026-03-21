@@ -51,6 +51,8 @@ pub struct ReconcilerConfig {
     pub target_bead: Option<String>,
     /// Pipeline definitions: issue_type → agent sequence (from config).
     pub pipelines: HashMap<String, Vec<String>>,
+    /// Maximum pipeline stages per bead. 0 = unlimited.
+    pub max_pipeline_depth: usize,
 }
 
 impl Default for ReconcilerConfig {
@@ -69,6 +71,7 @@ impl Default for ReconcilerConfig {
             backend: None,
             target_bead: None,
             pipelines: crate::config::default_pipelines(),
+            max_pipeline_depth: 0,
         }
     }
 }
@@ -246,7 +249,11 @@ impl Reconciler {
         };
 
         // Build pipeline engine from config + backend store.
-        let pipeline = PipelineEngine::new(config.pipelines.clone(), dispatch_store);
+        let pipeline = PipelineEngine::new(
+            config.pipelines.clone(),
+            dispatch_store,
+            config.max_pipeline_depth,
+        );
 
         Reconciler {
             config,
@@ -521,6 +528,7 @@ pub async fn run(
         backend: cfg.backend,
         target_bead: target_bead.map(|s| s.to_string()),
         pipelines: cfg.pipelines,
+        max_pipeline_depth: cfg.max_pipeline_depth,
         ..Default::default()
     };
 
