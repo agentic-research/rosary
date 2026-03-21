@@ -458,8 +458,9 @@ pub fn build_prompt(
          After completing your work:\n\
          1. Run tests via `task test`\n\
          2. Commit your changes (git add + git commit with bead:{bead_id} in message)\n\
-         3. Close this bead: call mcp__rsry__rsry_bead_close with repo_path=\"{bead_repo}\" and id=\"{bead_id}\"\n\
+         3. Comment your status via mcp__rsry__rsry_bead_comment with repo_path=\"{bead_repo}\" and id=\"{bead_id}\"\n\
          4. Report what you changed\n\
+         Do NOT close the bead yourself — the reconciler verifies and closes it.\n\
          </instructions>",
         bead_id = bead.id,
         bead_repo = repo_path,
@@ -484,7 +485,7 @@ You are a rosary-dispatched agent working on a bead (work item).\n\
   find_definition, find_callers, find_callees, search, get_overview. \
   Prefer mache over grep for understanding code structure.\n\
 - **rsry MCP** (`mcp__rsry__*`): Bead management — \
-  bead_create, bead_close, bead_comment, bead_search, bead_link.\n\
+  bead_comment, bead_search, bead_link. You can comment and search but NOT close beads.\n\
 \n\
 ## Workflow\n\
 - Use `task build` / `task test` — never raw `cargo` or `go` commands. \
@@ -499,8 +500,8 @@ You are a rosary-dispatched agent working on a bead (work item).\n\
 Your prompt includes a Bead ID and Repo path. Manage the bead throughout:\n\
 1. **Comment progress** via `mcp__rsry__rsry_bead_comment` as you work — \
    not just at the end. Other agents and humans read these for context.\n\
-2. **Close** the bead via `mcp__rsry__rsry_bead_close` after tests pass and commit is made.\n\
-3. If you cannot fix the issue, comment explaining what you tried and why — do NOT close it.\n\
+2. Do NOT close the bead — the reconciler verifies your work and closes it.\n\
+3. If you cannot fix the issue, comment explaining what you tried and why.\n\
 ";
 
 // ---------------------------------------------------------------------------
@@ -614,6 +615,9 @@ pub fn permission_profile(issue_type: &str) -> PermissionProfile {
 }
 
 /// The next agent in the pipeline after `current`, or None if done.
+/// Note: reconciler now uses PipelineEngine.next_agent() for config-driven lookup.
+/// This remains as a convenience for callers that don't have a PipelineEngine.
+#[allow(dead_code)] // API surface — used in tests
 pub fn next_agent(issue_type: &str, current: &str) -> Option<&'static str> {
     let pipeline = agent_pipeline(issue_type);
     let idx = pipeline.iter().position(|&a| a == current)?;
@@ -954,8 +958,12 @@ mod tests {
             "prompt should include repo path"
         );
         assert!(
-            prompt.contains("rsry_bead_close"),
-            "prompt should instruct agent to close bead"
+            prompt.contains("rsry_bead_comment"),
+            "prompt should instruct agent to comment on bead"
+        );
+        assert!(
+            !prompt.contains("rsry_bead_close"),
+            "prompt must NOT instruct agent to close bead — reconciler owns lifecycle"
         );
         // XML structure
         assert!(prompt.contains("<task>"), "prompt should use XML tags");
@@ -968,7 +976,7 @@ mod tests {
 
     /// Regression: when a workspace is provided, the Repo: line must point
     /// to the workspace (where the agent works), NOT the main repo.
-    /// The MCP bead_close instruction must still use the main repo path
+    /// The MCP bead_comment instruction must still use the main repo path
     /// (where .beads/ lives). This prevents agents from writing changes
     /// to the main working tree instead of their isolated worktree.
     #[test]
@@ -1003,10 +1011,10 @@ mod tests {
             prompt.contains("/home/user/.rsry/worktrees/myrepo/iso-1"),
             "Repo line must point to workspace, not main repo. Got:\n{prompt}"
         );
-        // MCP bead_close must still use the MAIN repo path (where .beads/ lives)
+        // MCP bead_comment must still use the MAIN repo path (where .beads/ lives)
         assert!(
             prompt.contains("repo_path=\"/home/user/repos/myrepo\""),
-            "bead_close repo_path must point to main repo. Got:\n{prompt}"
+            "bead_comment repo_path must point to main repo. Got:\n{prompt}"
         );
         // Repo: line must NOT contain the main repo path as the workspace repo
         assert!(

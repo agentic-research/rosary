@@ -80,6 +80,9 @@ tasks:
       - cp target/release/rsry /tmp/rsry-staged
       - codesign -s - --force --deep --entitlements entitlements.plist /tmp/rsry-staged
       - mv /tmp/rsry-staged ~/.local/bin/rsry
+      # macOS WatchPaths doesn't trigger on rename(2). Touch ensures
+      # the launchd service restarts after atomic binary replacement.
+      - touch ~/.local/bin/rsry
       - echo "Installed rsry to ~/.local/bin/rsry (codesigned)"
       - task: install-service
 
