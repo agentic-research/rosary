@@ -442,15 +442,50 @@ async fn run_http(config_path: &str, port: u16) -> Result<()> {
         .with_state(state);
 
     let bind = std::env::var("RSRY_BIND").unwrap_or_else(|_| "127.0.0.1".into());
-    let listener = tokio::net::TcpListener::bind((bind.as_str(), port)).await?;
+    // SO_REUSEADDR: allow binding immediately after previous process exits.
+    // Without this, launchd restarts hit "Address already in use" for ~30s.
+    let addr: std::net::SocketAddr = format!("{bind}:{port}").parse()?;
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(addr),
+        socket2::Type::STREAM,
+        None,
+    )?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(128)?;
+    let listener = tokio::net::TcpListener::from_std(socket.into())?;
     eprintln!(
         "[rsry-mcp] HTTP server listening on http://{bind}:{port}/mcp ({} repos: {})",
         pool.len(),
         pool.repo_names().join(", ")
     );
 
-    axum::serve(listener, app).await?;
+    // Graceful shutdown on SIGTERM or SIGINT.
+    // launchd sends SIGTERM before SIGKILL — without handling it, the port
+    // stays bound until ExitTimeOut expires, causing "Address already in use".
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => eprintln!("[rsry-mcp] SIGINT received, shutting down"),
+            _ = sigterm.recv() => eprintln!("[rsry-mcp] SIGTERM received, shutting down"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
+        eprintln!("[rsry-mcp] shutdown signal received");
+    }
 }
 
 async fn run_stdio(config_path: &str) -> Result<()> {

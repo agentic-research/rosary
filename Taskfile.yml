@@ -74,8 +74,12 @@ tasks:
     cmds:
       - cargo build --release
       - mkdir -p ~/.local/bin ~/.rsry
-      - cp target/release/rsry ~/.local/bin/rsry
-      - codesign -s - --force --deep --entitlements entitlements.plist ~/.local/bin/rsry
+      # Stage + codesign in /tmp, then atomic rename to install path.
+      # This ensures WatchPaths sees exactly one change (the rename),
+      # not two (cp then codesign modifying in-place).
+      - cp target/release/rsry /tmp/rsry-staged
+      - codesign -s - --force --deep --entitlements entitlements.plist /tmp/rsry-staged
+      - mv /tmp/rsry-staged ~/.local/bin/rsry
       - echo "Installed rsry to ~/.local/bin/rsry (codesigned)"
       - task: install-service
 
@@ -87,14 +91,22 @@ tasks:
         PLIST="$HOME/Library/LaunchAgents/com.rosary.serve.plist"
         BIN="$HOME/.local/bin/rsry"
         LOG="$HOME/.rsry/http.log"
-        sed -e "s|__RSRY_BIN__|$BIN|g" -e "s|__RSRY_LOG__|$LOG|g" \
-          scripts/com.rosary.serve.plist.template > "$PLIST"
-        # Reload: unload old, load new
-        launchctl unload "$PLIST" 2>/dev/null || true
-        launchctl load "$PLIST"
-        echo "HTTP MCP server installed (launchd: com.rosary.serve, port 8383)"
-        echo "  Restarts automatically when ~/.local/bin/rsry changes"
-        echo "  Log: $LOG"
+        STAGED="/tmp/com.rosary.serve.plist.staged"
+        sed -e "s|__RSRY_BIN__|$BIN|g" -e "s|__RSRY_LOG__|$LOG|g" -e "s|__HOME__|$HOME|g" \
+          scripts/com.rosary.serve.plist.template > "$STAGED"
+        # Only reload launchd if the plist content has actually changed
+        # (or doesn't exist yet). On normal `task install`, the binary
+        # changes but the plist doesn't — WatchPaths handles the restart.
+        if [ ! -f "$PLIST" ] || ! diff -q "$STAGED" "$PLIST" >/dev/null 2>&1; then
+          cp "$STAGED" "$PLIST"
+          launchctl unload "$PLIST" 2>/dev/null || true
+          launchctl load "$PLIST"
+          echo "HTTP MCP service (re)loaded (plist changed)"
+        else
+          echo "HTTP MCP service plist unchanged — WatchPaths handles restart"
+        fi
+        rm -f "$STAGED"
+        echo "  Port: 8383 | Log: $LOG"
 
   overnight:
     desc: Start overnight loop (concurrency=1, bugs first, caffeinate)

@@ -14,13 +14,25 @@
         <string>8383</string>
     </array>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ExitTimeOut</key>
+    <integer>5</integer>
     <key>ThrottleInterval</key>
-    <integer>3</integer>
+    <integer>5</integer>
     <key>WatchPaths</key>
     <array>
         <string>__RSRY_BIN__</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>__RSRY_LOG__</string>
     <key>StandardErrorPath</key>
