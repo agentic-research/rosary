@@ -73,6 +73,7 @@ pub trait AgentSession: Send {
     fn kill(&mut self) -> Result<()>;
 
     /// Process ID (if applicable). For logging/debugging.
+    #[allow(dead_code)] // Used by reconciler path, not MCP
     fn pid(&self) -> Option<u32> {
         None
     }
@@ -341,6 +342,7 @@ impl AgentHandle {
     }
 
     /// Process ID (if applicable).
+    #[allow(dead_code)] // Used by reconciler path
     pub fn pid(&self) -> Option<u32> {
         self.session.pid()
     }
@@ -578,6 +580,15 @@ pub fn default_agent(issue_type: &str) -> &'static str {
         .unwrap_or("dev-agent")
 }
 
+/// Derive the permission profile from the bead's issue type.
+pub fn permission_profile(issue_type: &str) -> PermissionProfile {
+    match issue_type {
+        "review" | "survey" | "audit" => PermissionProfile::ReadOnly,
+        "epic" | "plan" | "triage" => PermissionProfile::Plan,
+        _ => PermissionProfile::Implement,
+    }
+}
+
 /// The next agent in the pipeline after `current`, or None if done.
 pub fn next_agent(issue_type: &str, current: &str) -> Option<&'static str> {
     let pipeline = agent_pipeline(issue_type);
@@ -636,12 +647,7 @@ pub async fn spawn(
     // Build agent-aware system prompt from bead.owner
     let system_prompt = build_system_prompt(bead.owner.as_deref(), agents_dir);
 
-    // Permissions come from the bead, not the provider.
-    let permissions = match bead.issue_type.as_str() {
-        "review" | "survey" | "audit" => PermissionProfile::ReadOnly,
-        "epic" | "plan" | "triage" => PermissionProfile::Plan,
-        _ => PermissionProfile::Implement,
-    };
+    let permissions = permission_profile(&bead.issue_type);
 
     let agent_label = bead.owner.as_deref().unwrap_or("generic");
     eprintln!(
