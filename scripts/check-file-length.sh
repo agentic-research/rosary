@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Golden Rule 2: Keep files under 200 lines.
-# Warns at 200. Does NOT fail — existing large files need refactoring,
-# but blocking commits on them would halt all work. The janitor agent
-# creates beads for files that need splitting.
+# Warns at 200. Fails at 500 — files beyond this hard limit must be
+# refactored before committing. The janitor agent creates beads for
+# files in the warning range that need splitting.
 
 WARN_LIMIT=200
+FAIL_LIMIT=500
+
+failed=0
 
 for file in "$@"; do
     # Skip non-text, generated, and lock files
@@ -18,10 +21,12 @@ for file in "$@"; do
 
     lines=$(wc -l < "$file")
 
-    if [ "$lines" -gt "$WARN_LIMIT" ]; then
+    if [ "$lines" -gt "$FAIL_LIMIT" ]; then
+        echo "FAIL: Golden Rule 2 — $file is $lines lines (hard limit: $FAIL_LIMIT)"
+        failed=1
+    elif [ "$lines" -gt "$WARN_LIMIT" ]; then
         echo "WARNING: Golden Rule 2 — $file is $lines lines (guideline: $WARN_LIMIT)"
     fi
 done
-# Always pass — this is advisory, not blocking.
-# Enforcement is via janitor agent creating refactor beads.
-exit 0
+
+exit $failed
