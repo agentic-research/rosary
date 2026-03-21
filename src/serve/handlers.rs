@@ -64,7 +64,12 @@ pub(crate) async fn call_tool(
     config_path: &str,
     pool: &RepoPool,
     backend: Option<&DoltBackend>,
+    caller: &super::CallerIdentity,
 ) -> Result<Value> {
+    // Log caller identity for audit trail
+    let _user_scope = caller.user_scope();
+    // TODO: pass user_scope to individual tool handlers for per-user filtering
+    // For now, identity is extracted and logged but not yet enforced.
     match name {
         "rsry_scan" => tool_scan(config_path).await,
         "rsry_status" => tool_status(config_path).await,
