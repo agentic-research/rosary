@@ -388,3 +388,103 @@ async fn repo_busy_check_uses_trackers() {
     });
     assert!(!other_busy, "repo without active agent should not be busy");
 }
+
+// ---------------------------------------------------------------------------
+// Level 2: Pipeline sequence integration tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pipeline_bug_three_phase_sequence() {
+    use crate::config::default_pipelines;
+    use crate::pipeline::{CompletionAction, PipelineEngine};
+
+    let e = PipelineEngine::new(default_pipelines(), None, 0);
+    // scoping → dev → staging → Terminal
+    assert_eq!(
+        e.decide("bug", Some("scoping-agent"), true, None, 0, 3),
+        CompletionAction::Advance {
+            next_agent: "dev-agent".into(),
+            phase: 1
+        }
+    );
+    assert_eq!(
+        e.decide("bug", Some("dev-agent"), true, Some(true), 0, 3),
+        CompletionAction::Advance {
+            next_agent: "staging-agent".into(),
+            phase: 2
+        }
+    );
+    assert_eq!(
+        e.decide("bug", Some("staging-agent"), true, None, 0, 3),
+        CompletionAction::Terminal
+    );
+}
+
+#[test]
+fn pipeline_feature_four_phase_with_retry() {
+    use crate::config::default_pipelines;
+    use crate::pipeline::{CompletionAction, PipelineEngine};
+
+    let e = PipelineEngine::new(default_pipelines(), None, 0);
+    assert_eq!(
+        e.decide("feature", Some("scoping-agent"), true, None, 0, 3),
+        CompletionAction::Advance {
+            next_agent: "dev-agent".into(),
+            phase: 1
+        }
+    );
+    // dev fails → retry
+    assert_eq!(
+        e.decide("feature", Some("dev-agent"), true, Some(false), 0, 3),
+        CompletionAction::Retry
+    );
+    // dev retry passes → advance
+    assert_eq!(
+        e.decide("feature", Some("dev-agent"), true, Some(true), 1, 3),
+        CompletionAction::Advance {
+            next_agent: "staging-agent".into(),
+            phase: 2
+        }
+    );
+    assert_eq!(
+        e.decide("feature", Some("staging-agent"), true, None, 0, 3),
+        CompletionAction::Advance {
+            next_agent: "prod-agent".into(),
+            phase: 3
+        }
+    );
+    assert_eq!(
+        e.decide("feature", Some("prod-agent"), true, Some(true), 0, 3),
+        CompletionAction::Terminal
+    );
+}
+
+#[test]
+fn pipeline_crash_retries_then_deadletters() {
+    use crate::config::default_pipelines;
+    use crate::pipeline::{CompletionAction, PipelineEngine};
+
+    let e = PipelineEngine::new(default_pipelines(), None, 0);
+    for retry in 0..3 {
+        assert_eq!(
+            e.decide("bug", Some("dev-agent"), false, None, retry, 3),
+            CompletionAction::Retry
+        );
+    }
+    assert_eq!(
+        e.decide("bug", Some("dev-agent"), false, None, 3, 3),
+        CompletionAction::Deadletter
+    );
+}
+
+#[test]
+fn pipeline_task_single_phase_terminal() {
+    use crate::config::default_pipelines;
+    use crate::pipeline::{CompletionAction, PipelineEngine};
+
+    let e = PipelineEngine::new(default_pipelines(), None, 0);
+    assert_eq!(
+        e.decide("task", Some("dev-agent"), true, Some(true), 0, 3),
+        CompletionAction::Terminal
+    );
+}
