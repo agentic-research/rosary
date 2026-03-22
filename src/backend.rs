@@ -158,6 +158,139 @@ impl ComputeProvider for LocalProvider {
 }
 
 // ---------------------------------------------------------------------------
+// DockerProvider — runs commands inside Docker containers
+// ---------------------------------------------------------------------------
+
+/// Compute provider that runs commands inside local Docker containers.
+///
+/// Lifecycle:
+/// - `provision()`: `docker create` a container from the configured image
+/// - `exec()`: `docker exec` inside the running container
+/// - `checkpoint()`: `docker commit` → returns image ID
+/// - `destroy()`: `docker rm -f`
+pub struct DockerProvider {
+    /// Docker image to use (default: built from rig Dockerfile).
+    pub image: String,
+}
+
+impl Default for DockerProvider {
+    fn default() -> Self {
+        Self {
+            image: "ghcr.io/agentic-research/rig:latest".to_string(),
+        }
+    }
+}
+
+impl DockerProvider {
+    pub fn with_image(image: &str) -> Self {
+        Self {
+            image: image.to_string(),
+        }
+    }
+
+    fn container_name(bead_id: &str) -> String {
+        format!("rsry-{bead_id}")
+    }
+}
+
+#[async_trait::async_trait]
+impl ComputeProvider for DockerProvider {
+    async fn provision(&self, opts: &ProvisionOpts) -> Result<ExecHandle> {
+        let name = Self::container_name(&opts.bead_id);
+
+        let mut args = vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            name.clone(),
+            "--label".to_string(),
+            format!("rsry.bead={}", opts.bead_id),
+            "--label".to_string(),
+            format!("rsry.repo={}", opts.repo),
+        ];
+
+        if let Some(cpu) = opts.cpu {
+            args.extend(["--cpus".to_string(), cpu.to_string()]);
+        }
+        if let Some(mem) = opts.memory_mb {
+            args.extend(["-m".to_string(), format!("{mem}m")]);
+        }
+
+        // Keep container alive (agent exec comes later)
+        args.push(self.image.clone());
+        args.extend(["sleep".to_string(), "infinity".to_string()]);
+
+        let output = tokio::process::Command::new("docker")
+            .args(&args)
+            .output()
+            .await
+            .with_context(|| format!("docker run for {}", opts.bead_id))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("docker run failed: {stderr}");
+        }
+
+        Ok(ExecHandle {
+            id: name,
+            backend: "docker".to_string(),
+        })
+    }
+
+    async fn exec(&self, handle: &ExecHandle, cmd: &[&str]) -> Result<ExecResult> {
+        anyhow::ensure!(!cmd.is_empty(), "empty command");
+
+        let mut args = vec!["exec", &handle.id];
+        args.extend(cmd);
+
+        let output = tokio::process::Command::new("docker")
+            .args(&args)
+            .output()
+            .await
+            .with_context(|| format!("docker exec in {}: {}", handle.id, cmd.join(" ")))?;
+
+        Ok(ExecResult {
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        })
+    }
+
+    async fn destroy(&self, handle: &ExecHandle) -> Result<()> {
+        let output = tokio::process::Command::new("docker")
+            .args(["rm", "-f", &handle.id])
+            .output()
+            .await
+            .with_context(|| format!("docker rm {}", handle.id))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("[docker] destroy {}: {stderr}", handle.id);
+        }
+        Ok(())
+    }
+
+    async fn checkpoint(&self, handle: &ExecHandle) -> Result<Option<String>> {
+        let output = tokio::process::Command::new("docker")
+            .args(["commit", &handle.id])
+            .output()
+            .await
+            .with_context(|| format!("docker commit {}", handle.id))?;
+
+        if output.status.success() {
+            let image_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            Ok(Some(image_id))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn name(&self) -> &str {
+        "docker"
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
