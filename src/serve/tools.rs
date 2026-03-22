@@ -53,10 +53,14 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_run_once",
-                "description": "Run a single reconciliation pass (scan, triage, dispatch, verify). Use dry_run=true to preview without spawning agents.",
+                "description": "Run a reconciliation pass. With bead_id: runs the full pipeline for that bead (dispatch → verify → advance → re-dispatch until terminal). Without bead_id: single pass across all beads. Use dry_run=true to preview.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
+                        "bead_id": {
+                            "type": "string",
+                            "description": "Target a specific bead. Runs the full pipeline until completion (blocks). Skip triage, dispatch only this bead."
+                        },
                         "dry_run": {
                             "type": "boolean",
                             "description": "If true, print what would be dispatched without actually spawning agents. Defaults to true.",

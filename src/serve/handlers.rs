@@ -100,7 +100,8 @@ pub(crate) async fn call_tool(
                 .get("dry_run")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            tool_run_once(config_path, dry_run).await
+            let bead_id = args.get("bead_id").and_then(|v| v.as_str());
+            tool_run_once(config_path, dry_run, bead_id).await
         }
         "rsry_bead_create" => tool_bead_create(args, pool, user_scope).await,
         "rsry_bead_update" => tool_bead_update(args, pool, user_scope).await,
@@ -197,35 +198,52 @@ async fn tool_list_beads(
     }))
 }
 
-async fn tool_run_once(config_path: &str, dry_run: bool) -> Result<Value> {
+async fn tool_run_once(config_path: &str, dry_run: bool, bead_id: Option<&str>) -> Result<Value> {
     use crate::reconcile::{Reconciler, ReconcilerConfig};
     use std::time::Duration;
 
     let cfg = config::load(config_path)?;
 
+    // When targeting a specific bead: run() does iterate() → wait_and_verify().
+    // wait_and_verify loops: dispatch → poll → verify → advance → re-dispatch → terminal.
+    // once=true so run() exits after the pipeline completes (not an infinite loop).
     let reconciler_config = ReconcilerConfig {
-        max_concurrent: 5,
-        scan_interval: Duration::from_secs(30),
+        max_concurrent: 1,
+        scan_interval: Duration::from_secs(5),
         repo: cfg.repo,
         once: true,
         dry_run,
         compute: cfg.compute,
+        target_bead: bead_id.map(|s| s.to_string()),
+        pipelines: cfg.pipelines,
+        max_pipeline_depth: cfg.max_pipeline_depth,
         ..Default::default()
     };
 
     let mut reconciler = Reconciler::new(reconciler_config).await;
-    let summary = reconciler.iterate().await?;
 
-    Ok(json!({
-        "scanned": summary.scanned,
-        "triaged": summary.triaged,
-        "dispatched": summary.dispatched,
-        "completed": summary.completed,
-        "passed": summary.passed,
-        "failed": summary.failed,
-        "deadlettered": summary.deadlettered,
-        "dry_run": dry_run,
-    }))
+    if bead_id.is_some() {
+        // Full pipeline: run() does iterate + wait_and_verify (blocks until done)
+        reconciler.run().await?;
+        Ok(json!({
+            "targeted_bead": bead_id,
+            "pipeline": true,
+            "status": "completed",
+        }))
+    } else {
+        // Single pass: just iterate (existing behavior)
+        let summary = reconciler.iterate().await?;
+        Ok(json!({
+            "scanned": summary.scanned,
+            "triaged": summary.triaged,
+            "dispatched": summary.dispatched,
+            "completed": summary.completed,
+            "passed": summary.passed,
+            "failed": summary.failed,
+            "deadlettered": summary.deadlettered,
+            "dry_run": dry_run,
+        }))
+    }
 }
 
 // ---------------------------------------------------------------------------
