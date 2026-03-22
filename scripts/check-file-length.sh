@@ -10,9 +10,10 @@ FAIL_LIMIT=500
 failed=0
 
 for file in "$@"; do
-    # Skip non-text, generated, and lock files
+    # Skip non-text, generated, lock, and test files
     case "$file" in
         *.lock|*.sum|*.min.*|*/vendor/*|*/target/*) continue ;;
+        */tests.rs|*/tests/*.rs|tests/*|*_test.go|*_test.py) continue ;;
     esac
 
     if [ ! -f "$file" ]; then

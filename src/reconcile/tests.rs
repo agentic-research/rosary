@@ -488,3 +488,75 @@ fn pipeline_task_single_phase_terminal() {
         CompletionAction::Terminal
     );
 }
+
+/// Level 2.6: Mock agent → verify → decide — proves the pieces compose.
+/// This simulates what wait_and_verify() does without needing a full Reconciler.
+#[test]
+fn mock_agent_verify_decide_compose_to_advance() {
+    use crate::config::default_pipelines;
+    use crate::dispatch::AgentProvider;
+    use crate::dispatch::tests::MockAgentProvider;
+    use crate::pipeline::{CompletionAction, PipelineEngine};
+    use crate::verify::{BeadRefCheck, CommitCheck, Verifier};
+
+    let repo = crate::testutil::TestRepo::new();
+    let pipeline = PipelineEngine::new(default_pipelines(), None, 0);
+
+    // Simulate scoping-agent (ReadOnly — skip verify, just decide)
+    let action = pipeline.decide("bug", Some("scoping-agent"), true, None, 0, 3);
+    assert_eq!(
+        action,
+        CompletionAction::Advance {
+            next_agent: "dev-agent".into(),
+            phase: 1
+        }
+    );
+
+    // Simulate dev-agent: mock provider creates a bead-ref commit
+    let provider = MockAgentProvider::with_commit("rsry-test1");
+    let _session = provider
+        .spawn_agent("prompt", repo.path(), &Default::default(), "sys")
+        .unwrap();
+
+    // Verify the commit (what the reconciler does after agent completes)
+    let verifier = Verifier::new(vec![Box::new(CommitCheck), Box::new(BeadRefCheck)]);
+    let summary = verifier.run(repo.path()).unwrap();
+    assert!(
+        summary.passed(),
+        "dev-agent commit should pass verification"
+    );
+
+    // Pipeline decides: dev passes → advance to staging
+    let action = pipeline.decide("bug", Some("dev-agent"), true, Some(summary.passed()), 0, 3);
+    assert_eq!(
+        action,
+        CompletionAction::Advance {
+            next_agent: "staging-agent".into(),
+            phase: 2
+        }
+    );
+
+    // Simulate staging-agent (ReadOnly — skip verify)
+    let action = pipeline.decide("bug", Some("staging-agent"), true, None, 0, 3);
+    assert_eq!(action, CompletionAction::Terminal);
+}
+
+/// Adversarial: mock agent creates commit WITHOUT bead ref → verify fails → retry
+#[test]
+fn mock_agent_bad_commit_verify_fails_triggers_retry() {
+    use crate::config::default_pipelines;
+    use crate::pipeline::{CompletionAction, PipelineEngine};
+    use crate::verify::{BeadRefCheck, CommitCheck, Verifier};
+
+    let repo = crate::testutil::TestRepo::new();
+    // Create a commit WITHOUT bead reference
+    repo.commit_plain("bad.rs", "fn bad() {}");
+
+    let verifier = Verifier::new(vec![Box::new(CommitCheck), Box::new(BeadRefCheck)]);
+    let summary = verifier.run(repo.path()).unwrap();
+    assert!(!summary.passed(), "commit without bead ref should fail");
+
+    let pipeline = PipelineEngine::new(default_pipelines(), None, 0);
+    let action = pipeline.decide("bug", Some("dev-agent"), true, Some(false), 0, 3);
+    assert_eq!(action, CompletionAction::Retry);
+}
