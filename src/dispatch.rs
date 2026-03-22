@@ -138,9 +138,11 @@ impl AgentSession for CliSession {
     }
 }
 
-/// Session for a container-dispatched agent. Currently exec() runs synchronously
-/// in spawn() — the session is already resolved when returned. Non-blocking
-/// background exec requires ComputeProvider: 'static + Clone (future work).
+/// Session for a container-dispatched agent.
+///
+/// Currently exec() runs synchronously in spawn(), so `result` is always
+/// `Some` at construction and `rx` is always `None`. The `rx` field exists
+/// for future non-blocking dispatch (requires ComputeProvider: 'static + Clone).
 struct ComputeSession {
     rx: Option<tokio::sync::oneshot::Receiver<bool>>,
     result: Option<bool>,
@@ -184,7 +186,8 @@ impl AgentSession for ComputeSession {
         }
     }
     fn kill(&mut self) -> Result<()> {
-        // Drop the receiver — the background task will see a closed channel
+        // In synchronous mode the container is already destroyed by spawn().
+        // For future async mode: dropping rx signals the background task.
         self.rx = None;
         self.result = Some(false);
         Ok(())
@@ -783,8 +786,9 @@ pub async fn spawn(
     );
 
     let session: Box<dyn AgentSession> = if let Some(compute) = compute {
-        // Container dispatch: build command, provision, exec in background task.
-        // spawn() returns immediately — the reconciler polls via try_wait().
+        // Container dispatch: provision → exec → destroy (synchronous).
+        // exec() blocks until the agent finishes. Non-blocking background
+        // exec requires ComputeProvider: 'static + Clone (future work).
         let (bin, args) = provider.build_command(&prompt, &permissions, &system_prompt);
         anyhow::ensure!(
             !bin.is_empty(),
@@ -803,16 +807,7 @@ pub async fn spawn(
 
         let bead_id_clone = bead.id.clone();
         let handle_id = exec_handle.id.clone();
-        let _backend_name = compute.name().to_string();
 
-        // Background task: exec → destroy (always, even on failure)
-        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        // We need to move the exec_handle into the spawned task, but
-        // compute is borrowed. Use the ExecHandle + backend name to
-        // call docker CLI directly in the task. This is a known limitation —
-        // the real fix is making ComputeProvider: 'static + Clone.
-        // For now, exec synchronously before spawning (same as before but
-        // with proper cleanup).
         let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
         let exec_result = compute.exec(&exec_handle, &cmd_refs).await;
 
@@ -838,12 +833,9 @@ pub async fn spawn(
             }
         };
 
-        // Send result — if rx was dropped (kill), this is a no-op
-        let _ = tx.send(success);
-
         Box::new(ComputeSession {
-            rx: Some(rx),
-            result: None,
+            rx: None,
+            result: Some(success),
         })
     } else {
         // Local dispatch: spawn agent process directly (existing behavior)
