@@ -349,17 +349,18 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_bead_import",
-                "description": "Import beads from a JSON array. Creates each bead in the target repo, skipping duplicates by exact title match. Use with rsry bead export for cross-instance migration.",
+                "description": "Import beads from a JSON array. Routes each bead to the correct repo using its 'repo' field (matched against configured repo names). Falls back to repo_path if no per-bead repo. Skips duplicates by exact title match. Use with `rsry bead export` for cross-instance migration.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "repo_path": { "type": "string", "description": "Default repo path — used for beads without a 'repo' field. Optional when all beads have 'repo' set." },
                         "beads": {
                             "type": "array",
                             "description": "Array of bead objects to import",
                             "items": {
                                 "type": "object",
                                 "properties": {
+                                    "repo": { "type": "string", "description": "Target repo name (e.g. 'rosary', 'mache'). Matched against configured repos. Falls back to repo_path param." },
                                     "title": { "type": "string" },
                                     "description": { "type": "string" },
                                     "priority": { "type": "integer" },
@@ -371,7 +372,7 @@ pub(crate) fn tool_definitions() -> Value {
                             }
                         }
                     },
-                    "required": ["repo_path", "beads"]
+                    "required": ["beads"]
                 }
             }
         ]
