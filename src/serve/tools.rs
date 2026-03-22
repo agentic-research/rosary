@@ -346,6 +346,33 @@ pub(crate) fn tool_definitions() -> Value {
                     "properties": {},
                     "required": []
                 }
+            },
+            {
+                "name": "rsry_bead_import",
+                "description": "Import beads from a JSON array. Creates each bead in the target repo, skipping duplicates by exact title match. Use with rsry bead export for cross-instance migration.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "beads": {
+                            "type": "array",
+                            "description": "Array of bead objects to import",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": { "type": "string" },
+                                    "description": { "type": "string" },
+                                    "priority": { "type": "integer" },
+                                    "issue_type": { "type": "string" },
+                                    "files": { "type": "array", "items": { "type": "string" } },
+                                    "test_files": { "type": "array", "items": { "type": "string" } }
+                                },
+                                "required": ["title"]
+                            }
+                        }
+                    },
+                    "required": ["repo_path", "beads"]
+                }
             }
         ]
     })

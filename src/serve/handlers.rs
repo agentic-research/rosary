@@ -112,6 +112,7 @@ pub(crate) async fn call_tool(
         "rsry_thread_assign" => tool_thread_assign(args, backend).await,
         "rsry_repo_register" => tool_repo_register(args, backend, user_scope).await,
         "rsry_repo_list" => tool_repo_list(backend, user_scope).await,
+        "rsry_bead_import" => tool_bead_import(args, pool, user_scope).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
 }
@@ -1164,6 +1165,95 @@ async fn tool_thread_assign(args: &Value, backend: Option<&DoltBackend>) -> Resu
         "bead_id": bead_id,
         "action": "assigned",
         "thread_size": members.len(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Bead import (cross-instance migration)
+// ---------------------------------------------------------------------------
+
+async fn tool_bead_import(
+    args: &Value,
+    pool: &RepoPool,
+    user_scope: Option<&str>,
+) -> Result<Value> {
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    let beads = args["beads"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("beads array required"))?;
+
+    let client = get_client(repo_path, pool).await?;
+    let repo_name = repo_name_from_path(repo_path);
+
+    let mut imported = 0;
+    let mut skipped = 0;
+    let mut ids = Vec::new();
+
+    for bead in beads {
+        let title = bead["title"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("bead title required"))?;
+
+        // Dedup: skip if exact title match exists
+        let existing = client.search_beads(title, &repo_name).await?;
+        if existing.iter().any(|b| b.title == title) {
+            skipped += 1;
+            continue;
+        }
+
+        let description = bead["description"].as_str().unwrap_or("");
+        let priority = bead["priority"].as_u64().unwrap_or(2) as u8;
+        let issue_type = bead["issue_type"].as_str().unwrap_or("task");
+        let owner = crate::dispatch::default_agent(issue_type);
+        let files: Vec<String> = bead
+            .get("files")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let test_files: Vec<String> = bead
+            .get("test_files")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let id = crate::generate_bead_id(&repo_name);
+        client
+            .create_bead_full(
+                &id,
+                title,
+                description,
+                priority,
+                issue_type,
+                owner,
+                &files,
+                &test_files,
+                &[],
+            )
+            .await?;
+
+        // Stamp user_id for multi-tenant
+        if let Some(uid) = user_scope {
+            let _ = client.set_user_id(&id, uid).await;
+        }
+
+        ids.push(id);
+        imported += 1;
+    }
+
+    Ok(json!({
+        "imported": imported,
+        "skipped": skipped,
+        "ids": ids,
     }))
 }
 
