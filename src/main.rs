@@ -42,6 +42,8 @@ mod store;
 mod store_dolt;
 #[allow(dead_code)]
 mod sync;
+#[cfg(test)]
+mod testutil;
 mod vcs;
 mod verify;
 #[allow(dead_code)] // API surface — replaces dispatch.rs worktree logic

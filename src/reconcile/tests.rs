@@ -388,3 +388,175 @@ async fn repo_busy_check_uses_trackers() {
     });
     assert!(!other_busy, "repo without active agent should not be busy");
 }
+
+// ---------------------------------------------------------------------------
+// Level 2: Pipeline sequence integration tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pipeline_bug_three_phase_sequence() {
+    use crate::config::default_pipelines;
+    use crate::pipeline::{CompletionAction, PipelineEngine};
+
+    let e = PipelineEngine::new(default_pipelines(), None, 0);
+    // scoping → dev → staging → Terminal
+    assert_eq!(
+        e.decide("bug", Some("scoping-agent"), true, None, 0, 3),
+        CompletionAction::Advance {
+            next_agent: "dev-agent".into(),
+            phase: 1
+        }
+    );
+    assert_eq!(
+        e.decide("bug", Some("dev-agent"), true, Some(true), 0, 3),
+        CompletionAction::Advance {
+            next_agent: "staging-agent".into(),
+            phase: 2
+        }
+    );
+    assert_eq!(
+        e.decide("bug", Some("staging-agent"), true, None, 0, 3),
+        CompletionAction::Terminal
+    );
+}
+
+#[test]
+fn pipeline_feature_four_phase_with_retry() {
+    use crate::config::default_pipelines;
+    use crate::pipeline::{CompletionAction, PipelineEngine};
+
+    let e = PipelineEngine::new(default_pipelines(), None, 0);
+    assert_eq!(
+        e.decide("feature", Some("scoping-agent"), true, None, 0, 3),
+        CompletionAction::Advance {
+            next_agent: "dev-agent".into(),
+            phase: 1
+        }
+    );
+    // dev fails → retry
+    assert_eq!(
+        e.decide("feature", Some("dev-agent"), true, Some(false), 0, 3),
+        CompletionAction::Retry
+    );
+    // dev retry passes → advance
+    assert_eq!(
+        e.decide("feature", Some("dev-agent"), true, Some(true), 1, 3),
+        CompletionAction::Advance {
+            next_agent: "staging-agent".into(),
+            phase: 2
+        }
+    );
+    assert_eq!(
+        e.decide("feature", Some("staging-agent"), true, None, 0, 3),
+        CompletionAction::Advance {
+            next_agent: "prod-agent".into(),
+            phase: 3
+        }
+    );
+    assert_eq!(
+        e.decide("feature", Some("prod-agent"), true, Some(true), 0, 3),
+        CompletionAction::Terminal
+    );
+}
+
+#[test]
+fn pipeline_crash_retries_then_deadletters() {
+    use crate::config::default_pipelines;
+    use crate::pipeline::{CompletionAction, PipelineEngine};
+
+    let e = PipelineEngine::new(default_pipelines(), None, 0);
+    for retry in 0..3 {
+        assert_eq!(
+            e.decide("bug", Some("dev-agent"), false, None, retry, 3),
+            CompletionAction::Retry
+        );
+    }
+    assert_eq!(
+        e.decide("bug", Some("dev-agent"), false, None, 3, 3),
+        CompletionAction::Deadletter
+    );
+}
+
+#[test]
+fn pipeline_task_single_phase_terminal() {
+    use crate::config::default_pipelines;
+    use crate::pipeline::{CompletionAction, PipelineEngine};
+
+    let e = PipelineEngine::new(default_pipelines(), None, 0);
+    assert_eq!(
+        e.decide("task", Some("dev-agent"), true, Some(true), 0, 3),
+        CompletionAction::Terminal
+    );
+}
+
+/// Level 2.6: Mock agent → verify → decide — proves the pieces compose.
+/// This simulates what wait_and_verify() does without needing a full Reconciler.
+#[test]
+fn mock_agent_verify_decide_compose_to_advance() {
+    use crate::config::default_pipelines;
+    use crate::dispatch::AgentProvider;
+    use crate::dispatch::tests::MockAgentProvider;
+    use crate::pipeline::{CompletionAction, PipelineEngine};
+    use crate::verify::{BeadRefCheck, CommitCheck, Verifier};
+
+    let repo = crate::testutil::TestRepo::new();
+    let pipeline = PipelineEngine::new(default_pipelines(), None, 0);
+
+    // Simulate scoping-agent (ReadOnly — skip verify, just decide)
+    let action = pipeline.decide("bug", Some("scoping-agent"), true, None, 0, 3);
+    assert_eq!(
+        action,
+        CompletionAction::Advance {
+            next_agent: "dev-agent".into(),
+            phase: 1
+        }
+    );
+
+    // Simulate dev-agent: mock provider creates a bead-ref commit
+    let provider = MockAgentProvider::with_commit("rsry-test1");
+    let _session = provider
+        .spawn_agent("prompt", repo.path(), &Default::default(), "sys")
+        .unwrap();
+
+    // Verify the commit (what the reconciler does after agent completes)
+    let verifier = Verifier::new(vec![Box::new(CommitCheck), Box::new(BeadRefCheck)]);
+    let summary = verifier.run(repo.path()).unwrap();
+    assert!(
+        summary.passed(),
+        "dev-agent commit should pass verification"
+    );
+
+    // Pipeline decides: dev passes → advance to staging
+    let action = pipeline.decide("bug", Some("dev-agent"), true, Some(summary.passed()), 0, 3);
+    assert_eq!(
+        action,
+        CompletionAction::Advance {
+            next_agent: "staging-agent".into(),
+            phase: 2
+        }
+    );
+
+    // Simulate staging-agent (ReadOnly — skip verify)
+    let action = pipeline.decide("bug", Some("staging-agent"), true, None, 0, 3);
+    assert_eq!(action, CompletionAction::Terminal);
+}
+
+/// Adversarial: mock agent creates commit WITHOUT bead ref → verify fails → retry
+#[test]
+fn mock_agent_bad_commit_verify_fails_triggers_retry() {
+    use crate::config::default_pipelines;
+    use crate::pipeline::{CompletionAction, PipelineEngine};
+    use crate::verify::{BeadRefCheck, CommitCheck, Verifier};
+
+    let repo = crate::testutil::TestRepo::new();
+    // Create a commit WITHOUT bead reference
+    repo.commit_plain("bad.rs", "fn bad() {}");
+
+    let verifier = Verifier::new(vec![Box::new(CommitCheck), Box::new(BeadRefCheck)]);
+    let summary = verifier.run(repo.path()).unwrap();
+    assert!(!summary.passed(), "commit without bead ref should fail");
+
+    let pipeline = PipelineEngine::new(default_pipelines(), None, 0);
+    let action = pipeline.decide("bug", Some("dev-agent"), true, Some(false), 0, 3);
+    assert_eq!(action, CompletionAction::Retry);
+}

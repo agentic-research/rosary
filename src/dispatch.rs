@@ -160,6 +160,20 @@ pub trait AgentProvider: Send + Sync {
         system_prompt: &str,
     ) -> Result<Box<dyn AgentSession>>;
 
+    /// Build the CLI command that would be passed to the agent, without spawning.
+    /// Returns (binary, args). Used by ComputeProvider to run in a container.
+    #[allow(dead_code)] // API surface — used when compute != local
+    fn build_command(
+        &self,
+        prompt: &str,
+        permissions: &PermissionProfile,
+        system_prompt: &str,
+    ) -> (String, Vec<String>) {
+        // Default: not supported — providers override if they can be containerized
+        let _ = (prompt, permissions, system_prompt);
+        (String::new(), Vec::new())
+    }
+
     /// Human-readable name of this provider.
     fn name(&self) -> &str;
 }
@@ -205,6 +219,27 @@ impl AgentProvider for ClaudeProvider {
             .spawn()
             .with_context(|| format!("spawning claude CLI in {}", work_dir.display()))?;
         Ok(Box::new(CliSession::new(child)))
+    }
+
+    fn build_command(
+        &self,
+        prompt: &str,
+        permissions: &PermissionProfile,
+        system_prompt: &str,
+    ) -> (String, Vec<String>) {
+        (
+            "claude".to_string(),
+            vec![
+                "-p".to_string(),
+                prompt.to_string(),
+                "--allowedTools".to_string(),
+                permissions.claude_allowed_tools().to_string(),
+                "--append-system-prompt".to_string(),
+                system_prompt.to_string(),
+                "--output-format".to_string(),
+                "json".to_string(),
+            ],
+        )
     }
 
     fn name(&self) -> &str {
@@ -653,6 +688,7 @@ pub async fn spawn(
     generation: u64,
     provider: &dyn AgentProvider,
     agents_dir: Option<&Path>,
+    _compute: Option<&dyn crate::backend::ComputeProvider>,
 ) -> Result<AgentHandle> {
     let path = expand_path(repo_path);
     let repo_name = path
@@ -744,6 +780,7 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
         bead.generation(),
         &ClaudeProvider,
         agents_dir.as_deref(),
+        None, // compute: local subprocess (default)
     )
     .await?;
     let success = handle.wait().await?;
@@ -790,9 +827,113 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // -----------------------------------------------------------------------
+    // MockAgentSession — fake agent that completes immediately
+    // -----------------------------------------------------------------------
+
+    #[allow(dead_code)] // API surface — used by reconcile/tests.rs
+    pub struct MockAgentSession {
+        exit_success: bool,
+    }
+
+    #[allow(dead_code)]
+    impl MockAgentSession {
+        pub fn success() -> Box<dyn AgentSession> {
+            Box::new(Self { exit_success: true })
+        }
+
+        pub fn failure() -> Box<dyn AgentSession> {
+            Box::new(Self {
+                exit_success: false,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AgentSession for MockAgentSession {
+        fn try_wait(&mut self) -> Result<Option<bool>> {
+            Ok(Some(self.exit_success))
+        }
+        async fn wait(&mut self) -> Result<bool> {
+            Ok(self.exit_success)
+        }
+        fn kill(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn pid(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // MockAgentProvider — records spawn calls, returns MockAgentSession
+    // -----------------------------------------------------------------------
+
+    #[allow(dead_code)] // API surface — used by reconcile/tests.rs
+    pub struct MockAgentProvider {
+        /// Side-effect: run this closure on work_dir during spawn (e.g., create a commit)
+        #[allow(clippy::type_complexity)]
+        pub side_effect: Option<Box<dyn Fn(&Path) + Send + Sync>>,
+        pub exit_success: bool,
+    }
+
+    #[allow(dead_code)]
+    impl MockAgentProvider {
+        pub fn succeeding() -> Self {
+            Self {
+                side_effect: None,
+                exit_success: true,
+            }
+        }
+
+        /// Mock that creates a bead-ref commit in work_dir before "completing"
+        pub fn with_commit(bead_id: &str) -> Self {
+            let id = bead_id.to_string();
+            Self {
+                side_effect: Some(Box::new(move |dir: &Path| {
+                    let file = dir.join("change.txt");
+                    std::fs::write(&file, "mock change").unwrap();
+                    let msg = format!("[{id}] fix(test): mock\n\nbead:{id}");
+                    let _ = std::process::Command::new("git")
+                        .args(["add", "."])
+                        .current_dir(dir)
+                        .output();
+                    let _ = std::process::Command::new("git")
+                        .args(["commit", "-m", &msg])
+                        .current_dir(dir)
+                        .output();
+                })),
+                exit_success: true,
+            }
+        }
+    }
+
+    impl AgentProvider for MockAgentProvider {
+        fn spawn_agent(
+            &self,
+            _prompt: &str,
+            work_dir: &Path,
+            _permissions: &PermissionProfile,
+            _system_prompt: &str,
+        ) -> Result<Box<dyn AgentSession>> {
+            if let Some(ref effect) = self.side_effect {
+                effect(work_dir);
+            }
+            if self.exit_success {
+                Ok(MockAgentSession::success())
+            } else {
+                Ok(MockAgentSession::failure())
+            }
+        }
+
+        fn name(&self) -> &str {
+            "mock"
+        }
+    }
 
     #[tokio::test]
     async fn dispatch_missing_beads_dir_errors() {
@@ -1303,5 +1444,110 @@ mod tests {
         assert_eq!(next_agent("feature", "staging-agent"), Some("prod-agent"));
         assert_eq!(next_agent("task", "dev-agent"), None);
         assert_eq!(next_agent("bug", "unknown"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Level 1: Single persona dispatch with mocks
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn mock_agent_session_success() {
+        let mut session = MockAgentSession { exit_success: true };
+        assert_eq!(session.try_wait().unwrap(), Some(true));
+        assert!(session.wait().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn mock_agent_session_failure() {
+        let mut session = MockAgentSession {
+            exit_success: false,
+        };
+        assert_eq!(session.try_wait().unwrap(), Some(false));
+        assert!(!session.wait().await.unwrap());
+    }
+
+    #[test]
+    fn mock_provider_creates_commit() {
+        let repo = crate::testutil::TestRepo::new();
+        let provider = MockAgentProvider::with_commit("rsry-test1");
+        let _session = provider
+            .spawn_agent("prompt", repo.path(), &PermissionProfile::Implement, "sys")
+            .unwrap();
+
+        // Verify the commit was created
+        let output = std::process::Command::new("git")
+            .args(["log", "--oneline", "-1"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&output.stdout);
+        assert!(log.contains("[rsry-test1]"), "bead ref in commit: {log}");
+    }
+
+    #[test]
+    fn mock_commit_passes_verification() {
+        let repo = crate::testutil::TestRepo::new();
+        repo.commit_with_bead_ref("rsry-test1", "foo.rs", "fn main() {}");
+
+        let verifier = crate::verify::Verifier::new(vec![
+            Box::new(crate::verify::CommitCheck),
+            Box::new(crate::verify::BeadRefCheck),
+        ]);
+        let summary = verifier.run(repo.path()).unwrap();
+        assert!(summary.passed(), "verification should pass: {summary:?}");
+    }
+
+    #[test]
+    fn plain_commit_fails_bead_ref_check() {
+        let repo = crate::testutil::TestRepo::new();
+        repo.commit_plain("foo.rs", "fn main() {}");
+
+        let verifier = crate::verify::Verifier::new(vec![
+            Box::new(crate::verify::CommitCheck),
+            Box::new(crate::verify::BeadRefCheck),
+        ]);
+        let summary = verifier.run(repo.path()).unwrap();
+        assert!(!summary.passed(), "should fail bead ref check");
+        assert_eq!(summary.highest_passing_tier, Some(0));
+    }
+
+    #[test]
+    fn spawn_derives_readonly_for_scoping_agent() {
+        let bead = crate::testutil::make_bead("rsry-x", "bug", "test");
+        let mut bead = bead;
+        bead.owner = Some("scoping-agent".to_string());
+        let perms = match bead.owner.as_deref() {
+            Some("scoping-agent") => PermissionProfile::ReadOnly,
+            Some("staging-agent") => PermissionProfile::ReadOnly,
+            Some("pm-agent") => PermissionProfile::Plan,
+            Some("architect-agent") => PermissionProfile::Plan,
+            _ => permission_profile(&bead.issue_type),
+        };
+        assert_eq!(perms, PermissionProfile::ReadOnly);
+    }
+
+    #[test]
+    fn spawn_derives_implement_for_dev_agent() {
+        let mut bead = crate::testutil::make_bead("rsry-x", "bug", "test");
+        bead.owner = Some("dev-agent".to_string());
+        let perms = match bead.owner.as_deref() {
+            Some("scoping-agent") => PermissionProfile::ReadOnly,
+            Some("staging-agent") => PermissionProfile::ReadOnly,
+            Some("pm-agent") => PermissionProfile::Plan,
+            Some("architect-agent") => PermissionProfile::Plan,
+            _ => permission_profile(&bead.issue_type),
+        };
+        assert_eq!(perms, PermissionProfile::Implement);
+    }
+
+    #[test]
+    fn build_command_claude_returns_expected_args() {
+        let provider = ClaudeProvider;
+        let (bin, args) =
+            provider.build_command("test prompt", &PermissionProfile::Implement, "sys prompt");
+        assert_eq!(bin, "claude");
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"test prompt".to_string()));
+        assert!(args.contains(&"--output-format".to_string()));
     }
 }
