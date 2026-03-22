@@ -427,6 +427,7 @@ impl Reconciler {
                     entry.generation,
                     self.provider.as_ref(),
                     self.agents_dir.as_deref(),
+                    None, // compute: local subprocess (default)
                 )
                 .await
                 {

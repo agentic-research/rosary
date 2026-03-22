@@ -160,6 +160,20 @@ pub trait AgentProvider: Send + Sync {
         system_prompt: &str,
     ) -> Result<Box<dyn AgentSession>>;
 
+    /// Build the CLI command that would be passed to the agent, without spawning.
+    /// Returns (binary, args). Used by ComputeProvider to run in a container.
+    #[allow(dead_code)] // API surface — used when compute != local
+    fn build_command(
+        &self,
+        prompt: &str,
+        permissions: &PermissionProfile,
+        system_prompt: &str,
+    ) -> (String, Vec<String>) {
+        // Default: not supported — providers override if they can be containerized
+        let _ = (prompt, permissions, system_prompt);
+        (String::new(), Vec::new())
+    }
+
     /// Human-readable name of this provider.
     fn name(&self) -> &str;
 }
@@ -205,6 +219,27 @@ impl AgentProvider for ClaudeProvider {
             .spawn()
             .with_context(|| format!("spawning claude CLI in {}", work_dir.display()))?;
         Ok(Box::new(CliSession::new(child)))
+    }
+
+    fn build_command(
+        &self,
+        prompt: &str,
+        permissions: &PermissionProfile,
+        system_prompt: &str,
+    ) -> (String, Vec<String>) {
+        (
+            "claude".to_string(),
+            vec![
+                "-p".to_string(),
+                prompt.to_string(),
+                "--allowedTools".to_string(),
+                permissions.claude_allowed_tools().to_string(),
+                "--append-system-prompt".to_string(),
+                system_prompt.to_string(),
+                "--output-format".to_string(),
+                "json".to_string(),
+            ],
+        )
     }
 
     fn name(&self) -> &str {
@@ -653,6 +688,7 @@ pub async fn spawn(
     generation: u64,
     provider: &dyn AgentProvider,
     agents_dir: Option<&Path>,
+    _compute: Option<&dyn crate::backend::ComputeProvider>,
 ) -> Result<AgentHandle> {
     let path = expand_path(repo_path);
     let repo_name = path
@@ -744,6 +780,7 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
         bead.generation(),
         &ClaudeProvider,
         agents_dir.as_deref(),
+        None, // compute: local subprocess (default)
     )
     .await?;
     let success = handle.wait().await?;
