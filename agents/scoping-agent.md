@@ -62,6 +62,12 @@ Write your findings as a structured handoff:
 - [what could go wrong and how to detect it]
 ```
 
+## CRITICAL: Post Your Findings
+
+You MUST call `mcp__rsry__rsry_bead_comment` with your complete findings before finishing. The next agent in the pipeline reads your comment as context. If you don't comment, your research is lost.
+
+Comment format — post the entire output format above as the comment body. This is the handoff to the dev-agent.
+
 ## What You Do NOT Do
 
 - Do NOT write code
