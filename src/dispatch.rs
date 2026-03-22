@@ -783,8 +783,8 @@ pub async fn spawn(
     );
 
     let session: Box<dyn AgentSession> = if let Some(compute) = compute {
-        // Container dispatch: build command, provision, exec in background task.
-        // spawn() returns immediately — the reconciler polls via try_wait().
+        // Container dispatch: build command, provision, exec, destroy.
+        // Synchronous — spawn() blocks for exec duration. Session is already resolved.
         let (bin, args) = provider.build_command(&prompt, &permissions, &system_prompt);
         anyhow::ensure!(
             !bin.is_empty(),
