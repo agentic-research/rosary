@@ -720,10 +720,9 @@ fn row_to_cross_repo_dep(r: &sqlx_mysql::MySqlRow) -> CrossRepoDep {
     }
 }
 
-/// Expand `~` in paths (like `shellexpand::tilde` but returns PathBuf).
+/// Delegate to scanner::expand_path (single source of truth for path expansion).
 fn expand_path(path: &Path) -> PathBuf {
-    let s = path.to_string_lossy();
-    PathBuf::from(shellexpand::tilde(&s).to_string())
+    crate::scanner::expand_path(path)
 }
 
 #[cfg(test)]

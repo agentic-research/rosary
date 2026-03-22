@@ -38,14 +38,25 @@ async fn read_beads(beads_dir: &std::path::Path, repo_name: &str) -> Result<Vec<
     client.list_beads(repo_name).await
 }
 
+/// Expand `~` in paths. Uses shellexpand (already a dependency).
 pub fn expand_path(path: &std::path::Path) -> std::path::PathBuf {
     let s = path.to_string_lossy();
-    if s.starts_with('~')
-        && let Some(home) = dirs_next::home_dir()
-    {
-        return home.join(&s[2..]);
-    }
-    path.to_path_buf()
+    std::path::PathBuf::from(shellexpand::tilde(&s).to_string())
+}
+
+/// Resolve a user-supplied repo path to an absolute repo root.
+///
+/// Handles: "." → cwd, "~" → home, walks up to find .git/.beads/Cargo.toml.
+/// Use this for any path that comes from user input (CLI args, MCP params).
+pub fn resolve_repo_path(user_path: &std::path::Path) -> std::path::PathBuf {
+    // Step 1: "." or empty → cwd
+    let expanded = if user_path == std::path::Path::new(".") || user_path.as_os_str().is_empty() {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    } else {
+        expand_path(user_path)
+    };
+    // Step 2: walk up to repo root
+    crate::config::discover_repo_root(&expanded).unwrap_or(expanded)
 }
 
 /// Jaccard similarity between two strings, tokenized by whitespace.
@@ -100,6 +111,61 @@ mod tests {
         let p = expand_path(std::path::Path::new("~/foo/bar"));
         assert!(!p.to_string_lossy().starts_with('~'));
         assert!(p.to_string_lossy().ends_with("foo/bar"));
+    }
+
+    #[test]
+    fn expand_absolute_path_unchanged() {
+        let p = expand_path(std::path::Path::new("/tmp/myrepo"));
+        assert_eq!(p, std::path::PathBuf::from("/tmp/myrepo"));
+    }
+
+    #[test]
+    fn resolve_repo_dot_uses_cwd() {
+        let resolved = resolve_repo_path(std::path::Path::new("."));
+        // Must not be "." — should be an absolute path
+        assert_ne!(resolved, std::path::PathBuf::from("."));
+        assert!(
+            resolved.is_absolute(),
+            "resolved path should be absolute: {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_repo_empty_uses_cwd() {
+        let resolved = resolve_repo_path(std::path::Path::new(""));
+        assert!(
+            resolved.is_absolute(),
+            "resolved path should be absolute: {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_repo_tilde_expands() {
+        let resolved = resolve_repo_path(std::path::Path::new("~/foo"));
+        assert!(!resolved.to_string_lossy().starts_with('~'));
+    }
+
+    #[test]
+    fn resolve_repo_discovers_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("myrepo");
+        let subdir = root.join("src").join("deep");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+
+        let resolved = resolve_repo_path(&subdir);
+        assert_eq!(resolved, root);
+    }
+
+    #[test]
+    fn resolve_repo_file_name_not_unnamed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("venturi");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+
+        let resolved = resolve_repo_path(&root);
+        let name = resolved.file_name().unwrap().to_string_lossy();
+        assert_eq!(name, "venturi", "should extract repo name, not 'unnamed'");
     }
 
     #[tokio::test]

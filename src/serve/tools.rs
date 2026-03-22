@@ -25,13 +25,27 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_list_beads",
-                "description": "List all beads with optional status filter. Returns a JSON array of matching beads.",
+                "description": "List beads with optional filters. Paginated to avoid oversized responses. Returns beads array + total count.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "status": {
                             "type": "string",
-                            "description": "Filter by status (open, in_progress, blocked, done, etc.). If omitted, returns all beads."
+                            "description": "Filter by status (open, in_progress, blocked, ready, done, etc.). If omitted, returns all beads."
+                        },
+                        "repo": {
+                            "type": "string",
+                            "description": "Filter by repo name (e.g. 'rosary', 'mache'). If omitted, returns beads from all repos."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max beads to return (default 50, max 200).",
+                            "default": 50
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Skip this many beads before returning results (for pagination).",
+                            "default": 0
                         }
                     },
                     "required": []
