@@ -341,18 +341,19 @@ impl Reconciler {
         }
 
         // Phase 1.75: AUTO-ASSIGN — set owner on beads without one
+        // Uses pipeline engine (config-driven) not dispatch::default_agent (hardcoded).
         for bead in &beads {
             if bead.owner.is_some() || bead.status == "closed" || bead.status == "done" {
                 continue;
             }
-            let agent = dispatch::default_agent(&bead.issue_type);
+            let agent = self.pipeline.default_agent(&bead.issue_type);
             if let Some(client) = self.dolt_client(&bead.repo).await {
-                if let Err(e) = client.set_assignee(&bead.id, agent).await {
+                if let Err(e) = client.set_assignee(&bead.id, &agent).await {
                     eprintln!("[assign] failed for {}: {e}", bead.id);
                 } else {
                     eprintln!(
-                        "[assign] {} → {} (issue_type={})",
-                        bead.id, agent, bead.issue_type
+                        "[assign] {} → {agent} (issue_type={})",
+                        bead.id, bead.issue_type
                     );
                 }
             }
@@ -407,8 +408,20 @@ impl Reconciler {
                     continue;
                 }
 
+                // Ensure bead.owner matches pipeline's first agent.
+                // Beads created before pipeline changes may have stale owner.
+                let mut dispatch_bead = bead.clone();
+                let pipeline_agent = self.pipeline.default_agent(&bead.issue_type);
+                if dispatch_bead.owner.as_deref() != Some(&pipeline_agent) {
+                    dispatch_bead.owner = Some(pipeline_agent.clone());
+                    // Update in Dolt so future scans see the correct owner
+                    if let Some(client) = self.dolt_client(&entry.repo).await {
+                        let _ = client.set_assignee(&bead.id, &pipeline_agent).await;
+                    }
+                }
+
                 match dispatch::spawn(
-                    bead,
+                    &dispatch_bead,
                     &path,
                     true,
                     entry.generation,
