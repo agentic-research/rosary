@@ -153,6 +153,24 @@ pub trait LinkageStore: Send + Sync {
     async fn find_by_linear_id(&self, linear_id: &str) -> Result<Option<LinearLink>>;
 }
 
+/// Per-user repo registration for multi-tenant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserRepo {
+    pub user_id: String,
+    pub repo_url: String,
+    pub repo_name: String,
+    /// Reference to encrypted GitHub token in KV (not the token itself).
+    pub github_token_ref: Option<String>,
+}
+
+/// Per-user repo registration store.
+#[async_trait]
+pub trait UserRepoStore: Send + Sync {
+    async fn register_repo(&self, repo: &UserRepo) -> Result<()>;
+    async fn list_user_repos(&self, user_id: &str) -> Result<Vec<UserRepo>>;
+    async fn unregister_repo(&self, user_id: &str, repo_name: &str) -> Result<()>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

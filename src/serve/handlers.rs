@@ -110,6 +110,8 @@ pub(crate) async fn call_tool(
         "rsry_decade_list" => tool_decade_list(args, backend).await,
         "rsry_thread_list" => tool_thread_list(args, backend).await,
         "rsry_thread_assign" => tool_thread_assign(args, backend).await,
+        "rsry_repo_register" => tool_repo_register(args, backend, user_scope).await,
+        "rsry_repo_list" => tool_repo_list(backend, user_scope).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
 }
@@ -1149,6 +1151,79 @@ async fn tool_thread_assign(args: &Value, backend: Option<&DoltBackend>) -> Resu
         "bead_id": bead_id,
         "action": "assigned",
         "thread_size": members.len(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// User repo registration (multi-tenant)
+// ---------------------------------------------------------------------------
+
+async fn tool_repo_register(
+    args: &Value,
+    backend: Option<&DoltBackend>,
+    user_scope: Option<&str>,
+) -> Result<Value> {
+    let backend = backend.ok_or_else(|| {
+        anyhow::anyhow!(
+            "backend store not configured — add [backend] section to ~/.rsry/config.toml"
+        )
+    })?;
+    let user_id = user_scope.ok_or_else(|| {
+        anyhow::anyhow!("repo registration requires user identity (connect via mcp.rosary.bot)")
+    })?;
+
+    let repo_url = args["repo_url"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_url required"))?;
+
+    // Derive repo_name from URL if not provided
+    let repo_name = args
+        .get("repo_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            repo_url
+                .trim_end_matches('/')
+                .trim_end_matches(".git")
+                .rsplit('/')
+                .next()
+                .unwrap_or("repo")
+                .to_string()
+        });
+
+    use crate::store::{UserRepo, UserRepoStore};
+    let repo = UserRepo {
+        user_id: user_id.to_string(),
+        repo_url: repo_url.to_string(),
+        repo_name: repo_name.clone(),
+        github_token_ref: None, // TODO: accept token ref from dashboard settings
+    };
+
+    backend.register_repo(&repo).await?;
+
+    Ok(json!({
+        "user_id": user_id,
+        "repo_name": repo_name,
+        "repo_url": repo_url,
+        "registered": true,
+    }))
+}
+
+async fn tool_repo_list(backend: Option<&DoltBackend>, user_scope: Option<&str>) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+    let user_id =
+        user_scope.ok_or_else(|| anyhow::anyhow!("repo listing requires user identity"))?;
+
+    use crate::store::UserRepoStore;
+    let repos = backend.list_user_repos(user_id).await?;
+
+    Ok(json!({
+        "user_id": user_id,
+        "count": repos.len(),
+        "repos": repos.iter().map(|r| json!({
+            "repo_name": r.repo_name,
+            "repo_url": r.repo_url,
+        })).collect::<Vec<_>>(),
     }))
 }
 
