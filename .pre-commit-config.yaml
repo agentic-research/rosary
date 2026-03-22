@@ -38,9 +38,8 @@ repos:
         entry: scripts/check-file-length.sh
         language: script
         types_or: [rust, python, go, javascript]
-        # Pre-existing large files — splitting tracked by janitor beads.
-        # Remove entries here as files are refactored under the limit.
-        exclude: '^src/(reconcile(/mod)?|config|dispatch|main|serve/(mod|handlers)|store(_dolt)?|epic)\.rs$'
+        # Hook is now baseline-aware — only fails if file CROSSED the limit
+        # or GREW while already over. No exclude list needed.
 
       # Rule 11: Every commit references a bead
       - id: bead-ref

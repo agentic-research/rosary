@@ -12,7 +12,7 @@ impl Reconciler {
     /// next pipeline agent reuses the same worktree and its changes.
     pub(super) async fn checkpoint_workspace(&mut self, bead_id: &str) -> Option<String> {
         let change_id = if let Some(ws) = self.completed_workspaces.remove(bead_id) {
-            let message = format!("fix({bead_id}): agent work");
+            let message = format!("[{bead_id}] fix: agent checkpoint");
             let result = ws.checkpoint(&message).await;
             // Put it back — workspace stays for next phase or cleanup
             self.completed_workspaces.insert(bead_id.to_string(), ws);

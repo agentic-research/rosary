@@ -25,7 +25,7 @@ impl DoltClient {
                     ON deps.issue_id = i.id
                LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
                     ON cmt.issue_id = i.id
-               WHERE i.status != 'closed'
+               WHERE i.status NOT IN ('closed', 'done')
                ORDER BY i.priority ASC, i.created_at DESC"#,
         )
         .fetch_all(&self.pool)
@@ -93,7 +93,7 @@ impl DoltClient {
                             ON deps.issue_id = i.id
                        LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
                             ON cmt.issue_id = i.id
-                       WHERE i.status != 'closed' AND i.user_id = ?
+                       WHERE i.status NOT IN ('closed', 'done') AND i.user_id = ?
                        ORDER BY i.priority ASC, i.created_at DESC"#,
                 )
                 .bind(uid)
