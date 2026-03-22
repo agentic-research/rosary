@@ -25,13 +25,27 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_list_beads",
-                "description": "List all beads with optional status filter. Returns a JSON array of matching beads.",
+                "description": "List beads with optional filters. Paginated to avoid oversized responses. Returns beads array + total count.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "status": {
                             "type": "string",
-                            "description": "Filter by status (open, in_progress, blocked, done, etc.). If omitted, returns all beads."
+                            "description": "Filter by status (open, in_progress, blocked, ready, done, etc.). If omitted, returns all beads."
+                        },
+                        "repo": {
+                            "type": "string",
+                            "description": "Filter by repo name (e.g. 'rosary', 'mache'). If omitted, returns beads from all repos."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max beads to return (default 50, max 200).",
+                            "default": 50
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Skip this many beads before returning results (for pagination).",
+                            "default": 0
                         }
                     },
                     "required": []
@@ -39,10 +53,14 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_run_once",
-                "description": "Run a single reconciliation pass (scan, triage, dispatch, verify). Use dry_run=true to preview without spawning agents.",
+                "description": "Run a reconciliation pass. With bead_id: runs the full pipeline for that bead (dispatch → verify → advance → re-dispatch until terminal). Without bead_id: single pass across all beads. Use dry_run=true to preview.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
+                        "bead_id": {
+                            "type": "string",
+                            "description": "Target a specific bead. Runs the full pipeline until completion (blocks). Skip triage, dispatch only this bead."
+                        },
                         "dry_run": {
                             "type": "boolean",
                             "description": "If true, print what would be dispatched without actually spawning agents. Defaults to true.",

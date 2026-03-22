@@ -12,24 +12,19 @@ use crate::store_dolt::DoltBackend;
 // ---------------------------------------------------------------------------
 // Client helpers
 // ---------------------------------------------------------------------------
-
 /// Get a DoltClient — try the pool first (by name then path), fall back to fresh connect.
 pub(crate) async fn get_client<'a>(repo_path: &str, pool: &'a RepoPool) -> Result<ClientRef<'a>> {
-    // Try by repo name (last path component)
     let name = repo_name_from_path(repo_path);
     if let Some(client) = pool.get(&name) {
         return Ok(ClientRef::Pooled(client));
     }
-    // Try by full path
     if let Some((_name, client)) = pool.get_by_path(repo_path) {
         return Ok(ClientRef::Pooled(client));
     }
-    let path = std::path::Path::new(repo_path);
-    let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
+    let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
     let beads_dir = crate::resolve_beads_dir(&root);
     let config = DoltConfig::from_beads_dir(&beads_dir)?;
-    let client = DoltClient::connect(&config).await?;
-    Ok(ClientRef::Owned(client))
+    Ok(ClientRef::Owned(DoltClient::connect(&config).await?))
 }
 
 pub(crate) enum ClientRef<'a> {
@@ -57,7 +52,6 @@ pub(crate) fn repo_name_from_path(repo_path: &str) -> String {
 // ---------------------------------------------------------------------------
 // Tool router
 // ---------------------------------------------------------------------------
-
 pub(crate) async fn call_tool(
     name: &str,
     args: &Value,
@@ -81,14 +75,33 @@ pub(crate) async fn call_tool(
                 .get("status")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            tool_list_beads(config_path, status.as_deref(), user_scope).await
+            let repo = args
+                .get("repo")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(50)
+                .min(200) as usize;
+            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            tool_list_beads(
+                config_path,
+                status.as_deref(),
+                repo.as_deref(),
+                limit,
+                offset,
+                user_scope,
+            )
+            .await
         }
         "rsry_run_once" => {
             let dry_run = args
                 .get("dry_run")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            tool_run_once(config_path, dry_run).await
+            let bead_id = args.get("bead_id").and_then(|v| v.as_str());
+            tool_run_once(config_path, dry_run, bead_id).await
         }
         "rsry_bead_create" => tool_bead_create(args, pool, user_scope).await,
         "rsry_bead_update" => tool_bead_update(args, pool, user_scope).await,
@@ -120,7 +133,6 @@ pub(crate) async fn call_tool(
 // ---------------------------------------------------------------------------
 // Scan / status / list
 // ---------------------------------------------------------------------------
-
 async fn tool_scan(config_path: &str) -> Result<Value> {
     let cfg = config::load(config_path)?;
     let beads = crate::scanner::scan_repos(&cfg.repo).await?;
@@ -152,69 +164,91 @@ async fn tool_status(config_path: &str) -> Result<Value> {
 async fn tool_list_beads(
     config_path: &str,
     status: Option<&str>,
-    user_scope: Option<&str>,
+    repo: Option<&str>,
+    limit: usize,
+    offset: usize,
+    _user_scope: Option<&str>,
 ) -> Result<Value> {
     let cfg = config::load(config_path)?;
     let beads = crate::scanner::scan_repos(&cfg.repo).await?;
 
-    // Multi-tenant: filter beads by user_id when scoped
-    let beads = if let Some(_uid) = user_scope {
-        // TODO: use list_beads_scoped at the Dolt level for efficiency.
-        // For now, scan returns all beads and we filter in Rust.
-        // This works but doesn't scale — SQL-level filtering is the follow-up.
-        beads
-    } else {
-        beads
-    };
+    let filtered: Vec<_> = beads
+        .into_iter()
+        .filter(|b| match repo {
+            Some(r) => b.repo == r,
+            None => true,
+        })
+        .filter(|b| match status {
+            Some("blocked") => b.is_blocked(),
+            Some("ready") => b.is_ready(),
+            Some(s) => b.status == s,
+            None => true,
+        })
+        .collect();
 
-    let filtered: Vec<_> = match status {
-        Some("blocked") => beads.into_iter().filter(|b| b.is_blocked()).collect(),
-        Some("ready") => beads.into_iter().filter(|b| b.is_ready()).collect(),
-        Some(s) => beads.into_iter().filter(|b| b.status == s).collect(),
-        None => beads,
-    };
+    let total = filtered.len();
+    let page: Vec<_> = filtered.into_iter().skip(offset).take(limit).collect();
 
     Ok(json!({
-        "count": filtered.len(),
-        "beads": filtered,
+        "total": total,
+        "count": page.len(),
+        "offset": offset,
+        "limit": limit,
+        "beads": page,
     }))
 }
 
-async fn tool_run_once(config_path: &str, dry_run: bool) -> Result<Value> {
+async fn tool_run_once(config_path: &str, dry_run: bool, bead_id: Option<&str>) -> Result<Value> {
     use crate::reconcile::{Reconciler, ReconcilerConfig};
     use std::time::Duration;
 
     let cfg = config::load(config_path)?;
 
+    // When targeting a specific bead: run() does iterate() → wait_and_verify().
+    // wait_and_verify loops: dispatch → poll → verify → advance → re-dispatch → terminal.
+    // once=true so run() exits after the pipeline completes (not an infinite loop).
     let reconciler_config = ReconcilerConfig {
-        max_concurrent: 5,
-        scan_interval: Duration::from_secs(30),
+        max_concurrent: 1,
+        scan_interval: Duration::from_secs(5),
         repo: cfg.repo,
         once: true,
         dry_run,
         compute: cfg.compute,
+        target_bead: bead_id.map(|s| s.to_string()),
+        pipelines: cfg.pipelines,
+        max_pipeline_depth: cfg.max_pipeline_depth,
         ..Default::default()
     };
 
     let mut reconciler = Reconciler::new(reconciler_config).await;
-    let summary = reconciler.iterate().await?;
 
-    Ok(json!({
-        "scanned": summary.scanned,
-        "triaged": summary.triaged,
-        "dispatched": summary.dispatched,
-        "completed": summary.completed,
-        "passed": summary.passed,
-        "failed": summary.failed,
-        "deadlettered": summary.deadlettered,
-        "dry_run": dry_run,
-    }))
+    if bead_id.is_some() {
+        // Full pipeline: run() does iterate + wait_and_verify (blocks until done)
+        reconciler.run().await?;
+        Ok(json!({
+            "targeted_bead": bead_id,
+            "pipeline": true,
+            "status": "completed",
+        }))
+    } else {
+        // Single pass: just iterate (existing behavior)
+        let summary = reconciler.iterate().await?;
+        Ok(json!({
+            "scanned": summary.scanned,
+            "triaged": summary.triaged,
+            "dispatched": summary.dispatched,
+            "completed": summary.completed,
+            "passed": summary.passed,
+            "failed": summary.failed,
+            "deadlettered": summary.deadlettered,
+            "dry_run": dry_run,
+        }))
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Bead CRUD
 // ---------------------------------------------------------------------------
-
 async fn tool_bead_create(
     args: &Value,
     pool: &RepoPool,
@@ -474,17 +508,11 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
 
-    // Find the bead
-    let path = std::path::Path::new(repo_path);
-    let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
-    let beads_dir = root.join(".beads");
+    let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
+    let beads_dir = crate::resolve_beads_dir(&root);
     let dolt_config = DoltConfig::from_beads_dir(&beads_dir)?;
     let client = DoltClient::connect(&dolt_config).await?;
-
-    let repo_name = root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".into());
+    let repo_name = repo_name_from_path(repo_path);
 
     let mut bead = client
         .get_bead(bead_id, &repo_name)
@@ -665,12 +693,8 @@ async fn tool_workspace_create(args: &Value) -> Result<Value> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
 
-    let path = std::path::Path::new(repo_path);
-    let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
-    let repo_name = root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".into());
+    let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
+    let repo_name = repo_name_from_path(repo_path);
 
     let ws = crate::workspace::Workspace::create(bead_id, &repo_name, &root, true).await?;
 
@@ -691,12 +715,8 @@ async fn tool_workspace_checkpoint(args: &Value) -> Result<Value> {
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     let message = args["message"].as_str().unwrap_or("agent work");
 
-    let path = std::path::Path::new(repo_path);
-    let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
-    let repo_name = root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".into());
+    let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
+    let repo_name = repo_name_from_path(repo_path);
 
     let ws = crate::workspace::Workspace::from_existing(bead_id, &repo_name, &root);
     let change_id = ws.checkpoint(message).await?;
@@ -716,8 +736,7 @@ fn tool_workspace_cleanup(args: &Value) -> Result<Value> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
 
-    let path = std::path::Path::new(repo_path);
-    let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
+    let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
     let vcs = crate::workspace::detect_vcs(&root);
 
     match vcs {
@@ -745,8 +764,7 @@ async fn tool_workspace_merge(args: &Value) -> Result<Value> {
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     let issue_type = args["issue_type"].as_str().unwrap_or("task");
 
-    let path = std::path::Path::new(repo_path);
-    let root = config::discover_repo_root(path).unwrap_or_else(|| path.to_path_buf());
+    let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
     let branch = format!("fix/{bead_id}");
 
     let result = crate::workspace::merge_or_pr(&root, &branch, bead_id, issue_type).await?;

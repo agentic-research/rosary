@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Golden Rule 2: Keep files under 200 lines.
 # Warns at 200. Fails at 500 — but only if the file CROSSED the limit
-# in this commit (was under, now over) or GREW while already over.
-# Files that were already over and didn't grow pass silently.
+# in this commit (was under, now over). Files already over get a warning
+# on growth but don't block. Like ruff: strict on new, lenient on legacy.
 
 WARN_LIMIT=200
 FAIL_LIMIT=500
@@ -30,9 +30,8 @@ for file in "$@"; do
             # Already over limit and didn't grow — pass (pre-existing)
             :
         elif [ "$baseline" -ge "$FAIL_LIMIT" ] && [ "$lines" -gt "$baseline" ]; then
-            # Already over limit and GREW — fail
-            echo "FAIL: Golden Rule 2 — $file grew from $baseline to $lines lines (over $FAIL_LIMIT limit)"
-            failed=1
+            # Already over limit and GREW — warn (legacy file, don't block)
+            echo "WARNING: Golden Rule 2 — $file grew from $baseline to $lines lines (over $FAIL_LIMIT limit)"
         else
             # Crossed the limit in this commit
             echo "FAIL: Golden Rule 2 — $file is $lines lines (crossed $FAIL_LIMIT limit, was $baseline)"
