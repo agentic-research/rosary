@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::json;
@@ -242,6 +243,12 @@ enum BeadAction {
     Search {
         /// Search query
         query: String,
+    },
+    /// Export beads as JSON (for import into another rsry instance)
+    Export {
+        /// Filter by status (open, blocked, all). Default: open
+        #[arg(short, long, default_value = "open")]
+        status: String,
     },
 }
 
@@ -710,6 +717,29 @@ async fn main() -> Result<()> {
                 BeadAction::Search { query } => {
                     let beads = client.search_beads(&query, &repo_name).await?;
                     cli::bead_search_results(&beads, &query);
+                }
+                BeadAction::Export { status } => {
+                    let beads = client.list_beads(&repo_name).await?;
+                    let filtered: Vec<_> = match status.as_str() {
+                        "all" => beads,
+                        "blocked" => beads.into_iter().filter(|b| b.is_blocked()).collect(),
+                        s => beads.into_iter().filter(|b| b.status == s).collect(),
+                    };
+                    // Export as JSON array matching rsry_bead_import schema
+                    let export: Vec<serde_json::Value> = filtered
+                        .iter()
+                        .map(|b| {
+                            serde_json::json!({
+                                "title": b.title,
+                                "description": b.description,
+                                "priority": b.priority,
+                                "issue_type": b.issue_type,
+                                "files": b.files,
+                                "test_files": b.test_files,
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&export)?);
                 }
             }
         }
