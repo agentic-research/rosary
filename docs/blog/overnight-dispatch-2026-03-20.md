@@ -2,7 +2,7 @@
 
 *March 20, 2026 — James Gardner*
 
----
+______________________________________________________________________
 
 I didn't write a line of Rust today. I've never written Rust before. But by the end of the session, autonomous AI agents had:
 
@@ -30,6 +30,7 @@ I'm a platform engineer. I designed the architecture, wrote the ADRs, defined th
 It started with a broken `git stash`. The jj+git colocated repo had a desync — a file Claude Code created got stuck in git's index, blocking pull and stash. Running `jj status` fixed it in 2 seconds (jj re-snapshots and reconciles the index).
 
 From that bug, we unraveled a chain of infrastructure issues:
+
 - **Symlink split-brain**: `~/github` → `~/remotes` symlink caused beads created via one path to be invisible from the other. Same Dolt DB, different path strings. Fixed by canonicalizing paths in the connection pool.
 - **Stale Dolt PIDs**: Dead Dolt servers left PID/port files behind, causing 10-second timeouts on every startup. Fixed by checking if PIDs are alive before trusting port files.
 - **Hooks blocking their own fix**: We added a pre-commit hook to enforce bead references in commit messages. Then we couldn't commit the hook update because the branch had the *old* hook that didn't understand the new format. The fix for the hook was blocked by the hook. We ended up using `--no-verify` to bootstrap, then moved hooks to `~/.rsry/hooks/` — central, not per-branch.
@@ -73,20 +74,28 @@ Dev agents don't know about each other. Feature agents compose their work. The o
 
 ## The numbers
 
-| Metric | Count |
-|--------|-------|
-| PRs merged | 10 (#29-37, #40) |
-| PRs closed as dupes | 4 (#26-28, #39) |
-| Agent dispatches | 20+ |
-| God files split | 2 confirmed (serve, workspace) + 2 in flight (dolt, dispatch) |
-| Conductor P0 bugs fixed | 2 (stdin wrapper, timeout hang) |
-| Infrastructure bugs fixed | 5 (symlink, stale PID, hooks, search, enable) |
-| BDR Phase 1 | built + 110 tests on real ADRs |
-| ADRs written | 2 (0007 enrichment pipeline, 0008 agent hierarchy) |
-| Golden Rules codified | 3 of 11 (hooks) |
-| Decades organized | 4 |
-| Threads organized | 13 |
-| Tests passing | 385 (Rust) + 110 (BDR) + 106 (conductor) |
+*Updated March 21, 2026 — includes the pipeline engine session.*
+
+| Metric             | March 20             | March 21                                  | Total      |
+| ------------------ | -------------------- | ----------------------------------------- | ---------- |
+| PRs merged         | 10 (#29-40)          | 15 (#59-77)                               | 25         |
+| Bugs found + fixed | 7                    | 10                                        | 17         |
+| God files split    | 2 (serve, workspace) | 1 (reconcile: 2145→551 lines, 8 modules)  | 3          |
+| New modules        | 4                    | 11 (pipeline.rs, 8 reconcile/*, 2 dolt/*) | 15         |
+| Tests passing      | 385 + 110 + 106      | 429 (Rust, conductor removed)             | 429        |
+| Beads filed        | ~95                  | ~30                                       | ~460 total |
+| Beads closed       | ~40                  | ~20 (8 dupes + fixes)                     | ~60        |
+| Agent dispatches   | 20+                  | 10+ (including first 4-phase pipeline)    | 30+        |
+
+### March 21 highlights
+
+- **Pipeline engine**: config-driven agent sequences, persistent state in Dolt, unified completion handler
+- **Scoping agent**: pre-dispatch enrichment (search → analyze → plan)
+- **First 4-phase pipeline**: scoping → dev → staging → prod (all phases advanced automatically)
+- **Multi-tenant chain**: identity extraction, handler scoping, schema migration, repo registration (PRs #67-71)
+- **Storage architecture**: math friend proved Dolt features unused → D1/R2/Fly migration validated
+- **Conductor moved to rig**: rosary is pure Rust, conductor is product layer
+- **Human direction: 1.3% of session tokens** → 98.7% autonomous execution
 
 ## What it feels like
 
@@ -100,12 +109,21 @@ By midnight, you're not coding. You're reviewing PRs that agents wrote, filed, a
 
 ## What's next
 
-The gap is the feature agent. Right now a human (me, or Claude in a chat session) plays that role — dispatching dev agents, reviewing their output, catching duplicate work, opening PRs. When the feature agent is built, the human reviews releases, not PRs. That's the path from "review 10 PRs a day" to "review 1 release a week."
+~~The gap is the feature agent.~~ **Update:** The scoping agent is built and working (March 21). It runs as pipeline phase 0 before dev-agent, researching docs and producing a structured plan. The 4-phase pipeline (scoping → dev → staging → prod) executed end-to-end for the first time.
 
-The hosted endpoint at `mcp.rosary.bot` is next. One URL, any MCP client, structural code intelligence for free. The conductor runs on Fly. Agents work overnight. You review in the morning.
+~~The hosted endpoint at `mcp.rosary.bot` is next.~~ **Update:** Multi-tenant identity, handler scoping, schema migrations, and repo registration are all merged. The deploy to Fly is the last step.
+
+The remaining gaps:
+
+- **Feature agent** (thread-scoped orchestration of multiple dev agents) — the scoping agent is a step toward this
+- **D1 migration** — storage architecture validated (Dolt features provably unused), D1/R2/Fly is the target
+- **Channel plugin** — push-based CI/PR notifications into Claude Code sessions, replacing polling
+- **Bead consolidation** — 460 beads, 8.7% completion rate, PM sweep identified 8 dupes and 6 decades
 
 Designed by a human. Built by Claude. Managed by Claude. Reviewed by a human.
 
----
+**1.3% human direction. 98.7% machine execution. 25 PRs merged in 2 days.**
+
+______________________________________________________________________
 
 *Rosary is open source (AGPL-3.0): [github.com/agentic-research/rosary](https://github.com/agentic-research/rosary)*
