@@ -192,11 +192,16 @@ pub fn default_pipelines() -> HashMap<String, Vec<String>> {
     let mut m = HashMap::new();
     m.insert(
         "bug".into(),
-        vec!["dev-agent".into(), "staging-agent".into()],
+        vec![
+            "scoping-agent".into(),
+            "dev-agent".into(),
+            "staging-agent".into(),
+        ],
     );
     m.insert(
         "feature".into(),
         vec![
+            "scoping-agent".into(),
             "dev-agent".into(),
             "staging-agent".into(),
             "prod-agent".into(),

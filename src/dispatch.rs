@@ -675,7 +675,14 @@ pub async fn spawn(
     // Build agent-aware system prompt from bead.owner
     let system_prompt = build_system_prompt(bead.owner.as_deref(), agents_dir);
 
-    let permissions = permission_profile(&bead.issue_type);
+    // Agent-specific permission override: scoping-agent is always ReadOnly
+    let permissions = match bead.owner.as_deref() {
+        Some("scoping-agent") => PermissionProfile::ReadOnly,
+        Some("staging-agent") => PermissionProfile::ReadOnly,
+        Some("pm-agent") => PermissionProfile::Plan,
+        Some("architect-agent") => PermissionProfile::Plan,
+        _ => permission_profile(&bead.issue_type),
+    };
 
     let agent_label = bead.owner.as_deref().unwrap_or("generic");
     eprintln!(

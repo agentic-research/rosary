@@ -216,10 +216,13 @@ mod tests {
     #[test]
     fn agents_for_known_types() {
         let e = engine();
-        assert_eq!(e.agents_for("bug"), vec!["dev-agent", "staging-agent"]);
+        assert_eq!(
+            e.agents_for("bug"),
+            vec!["scoping-agent", "dev-agent", "staging-agent"]
+        );
         assert_eq!(
             e.agents_for("feature"),
-            vec!["dev-agent", "staging-agent", "prod-agent"]
+            vec!["scoping-agent", "dev-agent", "staging-agent", "prod-agent"]
         );
         assert_eq!(e.agents_for("task"), vec!["dev-agent"]);
         assert_eq!(e.agents_for("review"), vec!["staging-agent"]);
@@ -235,7 +238,7 @@ mod tests {
     #[test]
     fn default_agent_returns_first() {
         let e = engine();
-        assert_eq!(e.default_agent("bug"), "dev-agent");
+        assert_eq!(e.default_agent("bug"), "scoping-agent");
         assert_eq!(e.default_agent("review"), "staging-agent");
         assert_eq!(e.default_agent("epic"), "pm-agent");
     }
@@ -244,6 +247,10 @@ mod tests {
     fn next_agent_advances() {
         let e = engine();
         assert_eq!(
+            e.next_agent("bug", "scoping-agent"),
+            Some("dev-agent".to_string())
+        );
+        assert_eq!(
             e.next_agent("bug", "dev-agent"),
             Some("staging-agent".to_string())
         );
@@ -251,8 +258,12 @@ mod tests {
     }
 
     #[test]
-    fn next_agent_feature_three_stages() {
+    fn next_agent_feature_four_stages() {
         let e = engine();
+        assert_eq!(
+            e.next_agent("feature", "scoping-agent"),
+            Some("dev-agent".to_string())
+        );
         assert_eq!(
             e.next_agent("feature", "dev-agent"),
             Some("staging-agent".to_string())
@@ -319,7 +330,7 @@ mod tests {
             e.decide("bug", Some("dev-agent"), true, Some(true), 0, 3),
             CompletionAction::Advance {
                 next_agent: "staging-agent".to_string(),
-                phase: 1,
+                phase: 2,
             }
         );
     }
@@ -340,7 +351,7 @@ mod tests {
             e.decide("bug", Some("dev-agent"), true, None, 0, 3),
             CompletionAction::Advance {
                 next_agent: "staging-agent".to_string(),
-                phase: 1,
+                phase: 2,
             }
         );
     }
@@ -392,7 +403,7 @@ mod tests {
             bead_id: "test-001".into(),
         };
         let state = e.initial_state(bead_ref.clone(), "bug");
-        assert_eq!(state.pipeline_agent, "dev-agent");
+        assert_eq!(state.pipeline_agent, "scoping-agent");
         assert_eq!(state.pipeline_phase, 0);
         assert_eq!(state.phase_status, "executing");
     }
@@ -402,42 +413,45 @@ mod tests {
     #[test]
     fn depth_zero_is_unlimited() {
         let e = PipelineEngine::new(default_pipelines(), None, 0);
-        assert_eq!(e.agents_for("bug"), vec!["dev-agent", "staging-agent"]);
+        assert_eq!(
+            e.agents_for("bug"),
+            vec!["scoping-agent", "dev-agent", "staging-agent"]
+        );
         assert_eq!(
             e.agents_for("feature"),
-            vec!["dev-agent", "staging-agent", "prod-agent"]
+            vec!["scoping-agent", "dev-agent", "staging-agent", "prod-agent"]
         );
     }
 
     #[test]
     fn depth_one_truncates_to_single_agent() {
         let e = PipelineEngine::new(default_pipelines(), None, 1);
-        assert_eq!(e.agents_for("bug"), vec!["dev-agent"]);
-        assert_eq!(e.agents_for("feature"), vec!["dev-agent"]);
+        assert_eq!(e.agents_for("bug"), vec!["scoping-agent"]);
+        assert_eq!(e.agents_for("feature"), vec!["scoping-agent"]);
         assert_eq!(e.agents_for("task"), vec!["dev-agent"]);
     }
 
     #[test]
     fn depth_two_allows_two_stages() {
         let e = PipelineEngine::new(default_pipelines(), None, 2);
-        assert_eq!(e.agents_for("bug"), vec!["dev-agent", "staging-agent"]);
-        assert_eq!(e.agents_for("feature"), vec!["dev-agent", "staging-agent"]);
+        assert_eq!(e.agents_for("bug"), vec!["scoping-agent", "dev-agent"]);
+        assert_eq!(e.agents_for("feature"), vec!["scoping-agent", "dev-agent"]);
         assert_eq!(e.agents_for("task"), vec!["dev-agent"]);
     }
 
     #[test]
     fn depth_gate_affects_next_agent() {
         let e = PipelineEngine::new(default_pipelines(), None, 1);
-        // With depth=1, bug pipeline is just ["dev-agent"], so no next
-        assert_eq!(e.next_agent("bug", "dev-agent"), None);
+        // With depth=1, bug pipeline is just ["scoping-agent"], so no next
+        assert_eq!(e.next_agent("bug", "scoping-agent"), None);
     }
 
     #[test]
     fn depth_gate_affects_decide() {
         let e = PipelineEngine::new(default_pipelines(), None, 1);
-        // Bug with depth=1: dev-agent passes → Terminal (not Advance)
+        // Bug with depth=1: scoping-agent passes → Terminal (only agent in truncated pipeline)
         assert_eq!(
-            e.decide("bug", Some("dev-agent"), true, Some(true), 0, 3),
+            e.decide("bug", Some("scoping-agent"), true, Some(true), 0, 3),
             CompletionAction::Terminal
         );
     }
