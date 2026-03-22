@@ -65,7 +65,21 @@ impl Reconciler {
     }
 
     /// Run verification tiers on an agent's work directory.
+    /// Returns None (skip verification) for ReadOnly agents — they produce
+    /// research/comments, not code changes.
     pub(super) fn verify_agent(&mut self, bead_id: &str) -> Option<VerifySummary> {
+        // Skip verification for ReadOnly agents (scoping-agent, staging-agent review)
+        // They don't write code — their output is bead comments, not commits.
+        let is_readonly = self
+            .trackers
+            .get(bead_id)
+            .and_then(|t| t.current_agent.as_deref())
+            .is_some_and(|agent| matches!(agent, "scoping-agent" | "staging-agent"));
+        if is_readonly {
+            eprintln!("[verify] {bead_id}: skipped (ReadOnly agent)");
+            return None;
+        }
+
         let (work_dir, repo) = self.completed_work_dirs.remove(bead_id)?;
 
         // Look up language for this repo
