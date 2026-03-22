@@ -50,6 +50,10 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev
 
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install --cask fuse-t
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -64,6 +68,17 @@ jobs:
             target/
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-release-
+
+      - name: Setup fuse-t pkgconfig (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # Cargo fetches ley-line as a git dep; we need its pkgconfig wrapper
+          # for fuser to find fuse-t. Fetch first, then locate.
+          cargo fetch
+          LL_PKG=$(find ~/.cargo/git/checkouts -name "pkgconfig" -path "*/ley-line*" -type d 2>/dev/null | head -1)
+          if [ -n "$LL_PKG" ]; then
+            echo "PKG_CONFIG_PATH=$LL_PKG" >> "$GITHUB_ENV"
+          fi
 
       - name: Build release binary
         run: cargo build --release --bin rsry
