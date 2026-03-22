@@ -457,7 +457,7 @@ pub fn build_prompt(
          <instructions>\n\
          After completing your work:\n\
          1. Run tests via `task test`\n\
-         2. Commit your changes (git add + git commit with bead:{bead_id} in message)\n\
+         2. Commit: git commit -m \"[{bead_id}] type(scope): description\" (the [{bead_id}] prefix is REQUIRED)\n\
          3. Comment your status via mcp__rsry__rsry_bead_comment with repo_path=\"{bead_repo}\" and id=\"{bead_id}\"\n\
          4. Report what you changed\n\
          Do NOT close the bead yourself — the reconciler verifies and closes it.\n\
@@ -493,7 +493,7 @@ You are a rosary-dispatched agent working on a bead (work item).\n\
 - Read the relevant code before making claims about it. \
   If you haven't opened a file, don't assert what it contains.\n\
 - Make minimal, focused changes.\n\
-- Commit with descriptive messages including `bead:ID` reference.\n\
+- Commit format: `[BEAD-ID] type(scope): description` — the [BEAD-ID] prefix is mandatory.\n\
 - Do NOT add co-author lines to commits.\n\
 \n\
 ## Bead Lifecycle\n\

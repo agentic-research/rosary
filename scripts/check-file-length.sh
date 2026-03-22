@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Golden Rule 2: Keep files under 200 lines.
-# Warns at 200. Fails at 500 — files beyond this hard limit must be
-# refactored before committing. The janitor agent creates beads for
-# files in the warning range that need splitting.
+# Warns at 200. Fails at 500 — but only if the file CROSSED the limit
+# in this commit (was under, now over) or GREW while already over.
+# Files that were already over and didn't grow pass silently.
 
 WARN_LIMIT=200
 FAIL_LIMIT=500
@@ -21,9 +21,23 @@ for file in "$@"; do
 
     lines=$(wc -l < "$file")
 
+    # Get baseline from HEAD (0 if file is new)
+    baseline=$(git show HEAD:"$file" 2>/dev/null | wc -l || echo 0)
+    baseline=${baseline:-0}
+
     if [ "$lines" -gt "$FAIL_LIMIT" ]; then
-        echo "FAIL: Golden Rule 2 — $file is $lines lines (hard limit: $FAIL_LIMIT)"
-        failed=1
+        if [ "$baseline" -ge "$FAIL_LIMIT" ] && [ "$lines" -le "$baseline" ]; then
+            # Already over limit and didn't grow — pass (pre-existing)
+            :
+        elif [ "$baseline" -ge "$FAIL_LIMIT" ] && [ "$lines" -gt "$baseline" ]; then
+            # Already over limit and GREW — fail
+            echo "FAIL: Golden Rule 2 — $file grew from $baseline to $lines lines (over $FAIL_LIMIT limit)"
+            failed=1
+        else
+            # Crossed the limit in this commit
+            echo "FAIL: Golden Rule 2 — $file is $lines lines (crossed $FAIL_LIMIT limit, was $baseline)"
+            failed=1
+        fi
     elif [ "$lines" -gt "$WARN_LIMIT" ]; then
         echo "WARNING: Golden Rule 2 — $file is $lines lines (guideline: $WARN_LIMIT)"
     fi

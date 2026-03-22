@@ -1121,6 +1121,19 @@ async fn tool_thread_assign(args: &Value, backend: Option<&DoltBackend>) -> Resu
         .and_then(|v| v.as_str())
         .unwrap_or("ungrouped");
 
+    // Auto-create decade if it doesn't exist
+    use crate::store::DecadeRecord;
+    if backend.get_decade(decade_id).await?.is_none() {
+        backend
+            .upsert_decade(&DecadeRecord {
+                id: decade_id.to_string(),
+                title: decade_id.to_string(),
+                source_path: String::new(),
+                status: "active".to_string(),
+            })
+            .await?;
+    }
+
     // Derive feature branch from config prefix + thread name.
     let prefix = crate::config::load_global()
         .ok()
