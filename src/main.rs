@@ -19,6 +19,7 @@ mod epic;
 mod github;
 #[allow(dead_code)] // API surface — wired into pipeline phase transitions
 mod handoff;
+mod import;
 mod linear;
 #[allow(dead_code)]
 mod linear_tracker;
@@ -250,10 +251,14 @@ enum BeadAction {
         #[arg(short, long, default_value = "open")]
         status: String,
     },
+    /// Import beads from a JSON file or stdin
+    Import {
+        /// JSON file path (reads stdin if omitted)
+        file: Option<String>,
+    },
 }
 
-/// Generate a bead ID from the current timestamp with a repo-specific prefix.
-/// Format: `{prefix}-{lower 6 hex chars of millis}` (~16M values before collision).
+/// Generate a bead ID: `{prefix}-{lower 6 hex chars of millis}` (~16M values before collision).
 pub fn generate_bead_id(prefix: &str) -> String {
     let millis = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -725,21 +730,16 @@ async fn main() -> Result<()> {
                         "blocked" => beads.into_iter().filter(|b| b.is_blocked()).collect(),
                         s => beads.into_iter().filter(|b| b.status == s).collect(),
                     };
-                    // Export as JSON array matching rsry_bead_import schema
-                    let export: Vec<serde_json::Value> = filtered
-                        .iter()
-                        .map(|b| {
-                            serde_json::json!({
-                                "title": b.title,
-                                "description": b.description,
-                                "priority": b.priority,
-                                "issue_type": b.issue_type,
-                                "files": b.files,
-                                "test_files": b.test_files,
-                            })
-                        })
-                        .collect();
+                    let export = import::export_beads_json(&filtered);
                     println!("{}", serde_json::to_string_pretty(&export)?);
+                }
+                BeadAction::Import { file } => {
+                    let beads_json = import::read_beads_json(file)?;
+                    let r = import::import_beads(&beads_json, &client, &repo_name).await?;
+                    println!(
+                        "Imported {}, skipped {} (duplicate titles)",
+                        r.imported, r.skipped
+                    );
                 }
             }
         }

@@ -112,7 +112,7 @@ pub(crate) async fn call_tool(
         "rsry_thread_assign" => tool_thread_assign(args, backend).await,
         "rsry_repo_register" => tool_repo_register(args, backend, user_scope).await,
         "rsry_repo_list" => tool_repo_list(backend, user_scope).await,
-        "rsry_bead_import" => tool_bead_import(args, pool, user_scope).await,
+        "rsry_bead_import" => tool_bead_import(args, config_path, pool, user_scope).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
 }
@@ -1174,87 +1174,75 @@ async fn tool_thread_assign(args: &Value, backend: Option<&DoltBackend>) -> Resu
 
 async fn tool_bead_import(
     args: &Value,
+    config_path: &str,
     pool: &RepoPool,
     user_scope: Option<&str>,
 ) -> Result<Value> {
-    let repo_path = args["repo_path"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    let default_repo_path = args.get("repo_path").and_then(|v| v.as_str());
     let beads = args["beads"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("beads array required"))?;
 
-    let client = get_client(repo_path, pool).await?;
-    let repo_name = repo_name_from_path(repo_path);
+    // Build repo name → path lookup from config for routing by repo name
+    let cfg = config::load_merged(config_path)?;
+    let repo_paths: std::collections::HashMap<String, String> = cfg
+        .repo
+        .iter()
+        .map(|r| {
+            let path = crate::scanner::expand_path(&r.path);
+            (r.name.clone(), path.to_string_lossy().to_string())
+        })
+        .collect();
 
     let mut imported = 0;
     let mut skipped = 0;
+    let mut errors = Vec::new();
     let mut ids = Vec::new();
 
     for bead in beads {
-        let title = bead["title"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("bead title required"))?;
+        let title = bead["title"].as_str().unwrap_or("(untitled)");
 
-        // Dedup: skip if exact title match exists
-        let existing = client.search_beads(title, &repo_name).await?;
-        if existing.iter().any(|b| b.title == title) {
-            skipped += 1;
-            continue;
+        // Resolve target repo: per-bead "repo" field, then fallback to repo_path param
+        let resolved_repo_path = bead
+            .get("repo")
+            .and_then(|v| v.as_str())
+            .and_then(|name| repo_paths.get(name).map(|s| s.as_str()))
+            .or(default_repo_path);
+
+        let repo_path = match resolved_repo_path {
+            Some(p) => p,
+            None => {
+                errors.push(format!(
+                    "no repo for bead '{title}' — set repo field or repo_path param"
+                ));
+                continue;
+            }
+        };
+
+        let client = get_client(repo_path, pool).await?;
+        let repo_name = repo_name_from_path(repo_path);
+
+        match crate::import::import_bead(bead, &client, &repo_name).await? {
+            Some(id) => {
+                if let Some(uid) = user_scope {
+                    let _ = client.set_user_id(&id, uid).await;
+                }
+                ids.push(id);
+                imported += 1;
+            }
+            None => skipped += 1,
         }
-
-        let description = bead["description"].as_str().unwrap_or("");
-        let priority = bead["priority"].as_u64().unwrap_or(2) as u8;
-        let issue_type = bead["issue_type"].as_str().unwrap_or("task");
-        let owner = crate::dispatch::default_agent(issue_type);
-        let files: Vec<String> = bead
-            .get("files")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let test_files: Vec<String> = bead
-            .get("test_files")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let id = crate::generate_bead_id(&repo_name);
-        client
-            .create_bead_full(
-                &id,
-                title,
-                description,
-                priority,
-                issue_type,
-                owner,
-                &files,
-                &test_files,
-                &[],
-            )
-            .await?;
-
-        // Stamp user_id for multi-tenant
-        if let Some(uid) = user_scope {
-            let _ = client.set_user_id(&id, uid).await;
-        }
-
-        ids.push(id);
-        imported += 1;
     }
 
-    Ok(json!({
+    let mut result = json!({
         "imported": imported,
         "skipped": skipped,
         "ids": ids,
-    }))
+    });
+    if !errors.is_empty() {
+        result["errors"] = json!(errors);
+    }
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
