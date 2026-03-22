@@ -138,6 +138,59 @@ impl AgentSession for CliSession {
     }
 }
 
+/// Session for a container-dispatched agent. Currently exec() runs synchronously
+/// in spawn() — the session is already resolved when returned. Non-blocking
+/// background exec requires ComputeProvider: 'static + Clone (future work).
+struct ComputeSession {
+    rx: Option<tokio::sync::oneshot::Receiver<bool>>,
+    result: Option<bool>,
+}
+
+#[async_trait::async_trait]
+impl AgentSession for ComputeSession {
+    fn try_wait(&mut self) -> Result<Option<bool>> {
+        if let Some(result) = self.result {
+            return Ok(Some(result));
+        }
+        if let Some(ref mut rx) = self.rx {
+            match rx.try_recv() {
+                Ok(success) => {
+                    self.result = Some(success);
+                    self.rx = None;
+                    Ok(Some(success))
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => Ok(None),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    // Sender dropped (task panicked) — treat as failure
+                    self.result = Some(false);
+                    self.rx = None;
+                    Ok(Some(false))
+                }
+            }
+        } else {
+            Ok(self.result)
+        }
+    }
+    async fn wait(&mut self) -> Result<bool> {
+        if let Some(result) = self.result {
+            return Ok(result);
+        }
+        if let Some(rx) = self.rx.take() {
+            let success = rx.await.unwrap_or(false);
+            self.result = Some(success);
+            Ok(success)
+        } else {
+            Ok(false)
+        }
+    }
+    fn kill(&mut self) -> Result<()> {
+        // Drop the receiver — the background task will see a closed channel
+        self.rx = None;
+        self.result = Some(false);
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AgentProvider — spawns sessions
 // ---------------------------------------------------------------------------
@@ -688,7 +741,7 @@ pub async fn spawn(
     generation: u64,
     provider: &dyn AgentProvider,
     agents_dir: Option<&Path>,
-    _compute: Option<&dyn crate::backend::ComputeProvider>,
+    compute: Option<&dyn crate::backend::ComputeProvider>,
 ) -> Result<AgentHandle> {
     let path = expand_path(repo_path);
     let repo_name = path
@@ -729,9 +782,75 @@ pub async fn spawn(
         permissions
     );
 
-    let session = provider
-        .spawn_agent(&prompt, &work_dir, &permissions, &system_prompt)
-        .with_context(|| format!("spawning {} for {}", provider.name(), bead.id))?;
+    let session: Box<dyn AgentSession> = if let Some(compute) = compute {
+        // Container dispatch: build command, provision, exec in background task.
+        // spawn() returns immediately — the reconciler polls via try_wait().
+        let (bin, args) = provider.build_command(&prompt, &permissions, &system_prompt);
+        anyhow::ensure!(
+            !bin.is_empty(),
+            "{} does not support build_command()",
+            provider.name()
+        );
+
+        let opts = crate::backend::ProvisionOpts::new(&bead.id, &repo_name);
+        let exec_handle = compute
+            .provision(&opts)
+            .await
+            .with_context(|| format!("provisioning {} for {}", compute.name(), bead.id))?;
+
+        let mut cmd: Vec<String> = vec![bin];
+        cmd.extend(args);
+
+        let bead_id_clone = bead.id.clone();
+        let handle_id = exec_handle.id.clone();
+        let _backend_name = compute.name().to_string();
+
+        // Background task: exec → destroy (always, even on failure)
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        // We need to move the exec_handle into the spawned task, but
+        // compute is borrowed. Use the ExecHandle + backend name to
+        // call docker CLI directly in the task. This is a known limitation —
+        // the real fix is making ComputeProvider: 'static + Clone.
+        // For now, exec synchronously before spawning (same as before but
+        // with proper cleanup).
+        let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
+        let exec_result = compute.exec(&exec_handle, &cmd_refs).await;
+
+        // Always destroy, even on exec failure
+        if let Err(e) = compute.destroy(&exec_handle).await {
+            eprintln!("[dispatch] cleanup {}: {e}", handle_id);
+        }
+
+        let success = match exec_result {
+            Ok(r) => {
+                let ok = r.success();
+                eprintln!(
+                    "[dispatch] {} container {} exited {}",
+                    bead_id_clone,
+                    handle_id,
+                    if ok { "ok" } else { "fail" }
+                );
+                ok
+            }
+            Err(e) => {
+                eprintln!("[dispatch] {} exec failed: {e}", bead_id_clone);
+                false
+            }
+        };
+
+        // Send result — if rx was dropped (kill), this is a no-op
+        let _ = tx.send(success);
+
+        Box::new(ComputeSession {
+            rx: Some(rx),
+            result: None,
+        })
+    } else {
+        // Local dispatch: spawn agent process directly (existing behavior)
+        provider
+            .spawn_agent(&prompt, &work_dir, &permissions, &system_prompt)
+            .with_context(|| format!("spawning {} for {}", provider.name(), bead.id))?
+    };
 
     // Record workspace path for dispatch tracking (resume + debugging).
     // This is the isolated work_dir, not the original repo root.
@@ -928,6 +1047,15 @@ pub(crate) mod tests {
             } else {
                 Ok(MockAgentSession::failure())
             }
+        }
+
+        fn build_command(
+            &self,
+            _prompt: &str,
+            _permissions: &PermissionProfile,
+            _system_prompt: &str,
+        ) -> (String, Vec<String>) {
+            ("echo".to_string(), vec!["mock-agent".to_string()])
         }
 
         fn name(&self) -> &str {
@@ -1549,5 +1677,140 @@ pub(crate) mod tests {
         assert!(args.contains(&"-p".to_string()));
         assert!(args.contains(&"test prompt".to_string()));
         assert!(args.contains(&"--output-format".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Compute dispatch tests — MockProvider + MockAgentProvider
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn spawn_with_compute_uses_container() {
+        use crate::backend::tests::MockProvider;
+
+        let repo = crate::testutil::TestRepo::new();
+        let mut bead = crate::testutil::make_bead("rsry-comp1", "task", "test");
+        bead.owner = Some("dev-agent".into());
+
+        let agent = MockAgentProvider::succeeding();
+        let compute = MockProvider::new();
+
+        // Spawn with compute provider
+        let handle = spawn(
+            &bead,
+            repo.path(),
+            false, // no isolation for test
+            0,
+            &agent,
+            None,
+            Some(&compute),
+        )
+        .await
+        .unwrap();
+
+        // Should have provisioned + exec'd + destroyed
+        let provisions = compute.provisions.lock().unwrap();
+        assert_eq!(provisions.len(), 1, "should provision one container");
+        assert_eq!(provisions[0].bead_id, "rsry-comp1");
+
+        let execs = compute.execs.lock().unwrap();
+        assert_eq!(execs.len(), 1, "should exec one command");
+        // The command should start with "claude" (from build_command)
+        // But MockAgentProvider returns empty build_command — need ClaudeProvider
+        // Actually MockProvider's exec returns default success, so the session is done
+
+        let destroys = compute.destroys.lock().unwrap();
+        assert_eq!(destroys.len(), 1, "should destroy container after exec");
+
+        // Handle should already be completed
+        let mut handle = handle;
+        assert_eq!(handle.session.try_wait().unwrap(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn spawn_with_compute_forwards_command() {
+        use crate::backend::tests::MockProvider;
+
+        let repo = crate::testutil::TestRepo::new();
+        let mut bead = crate::testutil::make_bead("rsry-fwd1", "task", "test");
+        bead.owner = Some("dev-agent".into());
+
+        let agent = MockAgentProvider::succeeding();
+        let compute = MockProvider::new();
+
+        let _handle = spawn(&bead, repo.path(), false, 0, &agent, None, Some(&compute))
+            .await
+            .unwrap();
+
+        // Assert the command forwarded to exec() matches build_command() output
+        let execs = compute.execs.lock().unwrap();
+        assert_eq!(execs.len(), 1);
+        assert_eq!(
+            execs[0][0], "echo",
+            "first arg should be the binary from build_command"
+        );
+        assert_eq!(
+            execs[0][1], "mock-agent",
+            "second arg should be from build_command"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_with_compute_exec_failure_still_destroys() {
+        use crate::backend::ExecResult;
+        use crate::backend::tests::MockProvider;
+
+        let repo = crate::testutil::TestRepo::new();
+        let mut bead = crate::testutil::make_bead("rsry-fail1", "task", "test");
+        bead.owner = Some("dev-agent".into());
+
+        let agent = MockAgentProvider::succeeding();
+        let compute = MockProvider::new();
+        // Enqueue a failure result
+        compute.enqueue_result(ExecResult {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "container error".into(),
+        });
+
+        let handle = spawn(&bead, repo.path(), false, 0, &agent, None, Some(&compute))
+            .await
+            .unwrap();
+
+        // Even though exec failed, container should be destroyed
+        let destroys = compute.destroys.lock().unwrap();
+        assert_eq!(
+            destroys.len(),
+            1,
+            "must destroy container even on exec failure"
+        );
+
+        // Session should report failure
+        let mut handle = handle;
+        assert_eq!(handle.session.try_wait().unwrap(), Some(false));
+    }
+
+    #[tokio::test]
+    async fn spawn_without_compute_uses_local() {
+        let repo = crate::testutil::TestRepo::new();
+        let mut bead = crate::testutil::make_bead("rsry-local1", "task", "test");
+        bead.owner = Some("dev-agent".into());
+
+        let agent = MockAgentProvider::succeeding();
+
+        let handle = spawn(
+            &bead,
+            repo.path(),
+            false,
+            0,
+            &agent,
+            None,
+            None, // no compute = local
+        )
+        .await
+        .unwrap();
+
+        // MockAgentProvider creates a local session — already completed
+        let mut handle = handle;
+        assert_eq!(handle.session.try_wait().unwrap(), Some(true));
     }
 }
