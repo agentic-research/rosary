@@ -29,6 +29,13 @@ impl Reconciler {
                 if bead.id != *target {
                     continue;
                 }
+                // Targeted dispatch: log if bead is in non-open state
+                if bead.status != "open" {
+                    eprintln!(
+                        "[triage] targeted bead {target} is '{}', overriding",
+                        bead.status
+                    );
+                }
             } else if bead.state() != BeadState::Open {
                 continue;
             }
@@ -50,7 +57,8 @@ impl Reconciler {
             }
 
             // Dependency-aware: hard-filter beads with unresolved deps.
-            if bead.is_blocked() {
+            // Targeted dispatch (--bead) bypasses this — explicit override.
+            if bead.is_blocked() && target_filter.is_none() {
                 continue;
             }
 
