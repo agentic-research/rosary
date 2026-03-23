@@ -55,7 +55,7 @@ gh pr view <PR> --json reviews,reviewThreads,reviewDecision
 
 #### 2c. Auto-resolve addressed threads
 
-For each unresolved review thread, check if the file+line was modified in commits after the review:
+For each unresolved review thread, check if the thread's file was modified in commits after the review:
 
 ```bash
 gh api repos/{owner}/{repo}/pulls/{pr}/reviews --jq '.[].submitted_at'
@@ -67,15 +67,17 @@ If the thread's file has commits newer than the review, resolve it:
 gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<ID>"}) { thread { isResolved } } }'
 ```
 
+If the mutation fails (e.g., already resolved, permission denied), log the error and continue to the next thread.
+
 #### 2d. Dismiss stale bot reviews
 
 If a bot review (e.g., security scanner) requested changes, and fix commits landed after that review:
 
 ```bash
-gh api repos/{owner}/{repo}/pulls/{pr}/reviews/<review_id>/dismissals -f message="Fix commits landed after this review" -f event="DISMISS"
+gh api --method PUT repos/{owner}/{repo}/pulls/{pr}/reviews/<review_id>/dismissals -f message="Fix commits landed after this review"
 ```
 
-Only dismiss reviews from known bot accounts (author association = BOT, or login matches common patterns like `*[bot]`, `*-bot`).
+Only dismiss reviews where the author association is `BOT` or the login ends with `[bot]` (GitHub App convention). Do **not** pattern-match on `-bot` suffix — human usernames can match. If the dismiss call fails (403, 422), log the error and continue — do not abort the poll loop.
 
 ### 3. Report merge-readiness
 
@@ -104,5 +106,6 @@ If timeout is reached without merge-readiness, report the current blockers.
 ## Notes
 
 - This skill uses only `gh` CLI — no direct GitHub API tokens needed beyond what `gh auth` provides.
-- Thread resolution is conservative: only resolves threads on files that were modified after the review, not all threads.
-- Bot dismissal only targets accounts with `[bot]` suffix or BOT association — never dismisses human reviews.
+- Thread resolution is conservative: only resolves threads on files that were modified after the review, not all threads. This is file-level, not line-level — a thread is resolved if *any* part of its file changed post-review.
+- Bot dismissal only targets accounts with `[bot]` suffix or BOT author association — never dismisses human reviews.
+- Each poll iteration makes multiple API calls (checks, reviews, per-thread resolution, per-bot dismissal). For PRs with many threads, a single iteration may make 10+ calls. GitHub's authenticated rate limit (5000/hour) is sufficient for single-PR monitoring, but agents should not run multiple concurrent instances without awareness of cumulative API usage.
