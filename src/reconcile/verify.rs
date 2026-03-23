@@ -241,6 +241,7 @@ impl Reconciler {
         let poll_interval = Duration::from_secs(5);
         let timeout = Duration::from_secs(1800);
         let start = std::time::Instant::now();
+        let mut last_heartbeat = std::time::Instant::now();
 
         while !self.active.is_empty() {
             if start.elapsed() > timeout {
@@ -255,6 +256,19 @@ impl Reconciler {
 
             let completed = self.check_completed();
             if completed.is_empty() {
+                // Heartbeat: show elapsed time every 30s
+                if last_heartbeat.elapsed() >= Duration::from_secs(30) {
+                    for (id, handle) in &self.active {
+                        let agent = self
+                            .trackers
+                            .get(id.as_str())
+                            .and_then(|t| t.current_agent.as_deref())
+                            .unwrap_or("agent");
+                        let running_for = (chrono::Utc::now() - handle.started_at).num_seconds();
+                        println!("[waiting] {id} ({agent}) running for {running_for}s");
+                    }
+                    last_heartbeat = std::time::Instant::now();
+                }
                 tokio::time::sleep(poll_interval).await;
                 continue;
             }

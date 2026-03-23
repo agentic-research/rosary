@@ -795,6 +795,11 @@ pub async fn spawn(
         .with_context(|| format!("creating workspace for {}", bead.id))?;
 
     let work_dir = workspace.work_dir.clone();
+
+    // Write bead ID to worktree so the commit-msg hook can inject it
+    // instead of rejecting commits that forget the [bead-id] prefix.
+    let _ = std::fs::write(work_dir.join(".rsry-bead-id"), &bead.id);
+
     let prompt = build_prompt(
         bead,
         &path.display().to_string(),

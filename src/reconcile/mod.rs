@@ -285,14 +285,18 @@ impl Reconciler {
         self.issue_tracker = Some(tracker);
     }
 
-    /// Run the reconciliation loop.
-    pub async fn run(&mut self) -> Result<()> {
-        println!(
-            "Reconciler started: max_concurrent={}, interval={}s, dry_run={}",
-            self.config.max_concurrent,
-            self.config.scan_interval.as_secs(),
-            self.config.dry_run,
-        );
+    /// Run the reconciliation loop. Returns the last iteration summary.
+    pub async fn run(&mut self) -> Result<IterationSummary> {
+        if let Some(ref target) = self.config.target_bead {
+            println!("[reconcile] targeting bead {target} (pipeline until terminal/deadletter)");
+        } else {
+            println!(
+                "Reconciler started: max_concurrent={}, interval={}s, dry_run={}",
+                self.config.max_concurrent,
+                self.config.scan_interval.as_secs(),
+                self.config.dry_run,
+            );
+        }
 
         // Recover beads stuck at 'dispatched' from previous crashed run
         self.recover_stuck_beads().await;
@@ -302,12 +306,20 @@ impl Reconciler {
         let active_ids: Vec<String> = self.active.keys().cloned().collect();
         crate::workspace::sweep_orphaned(&repo_paths, &active_ids);
 
+        let start = Instant::now();
+        let mut cumulative = IterationSummary::default();
         loop {
             let summary = self.iterate().await?;
             println!("[reconcile] {summary}");
+            cumulative.scanned = summary.scanned; // latest scan count
+            cumulative.triaged += summary.triaged;
+            cumulative.dispatched += summary.dispatched;
+            cumulative.completed += summary.completed;
+            cumulative.passed += summary.passed;
+            cumulative.failed += summary.failed;
+            cumulative.deadlettered += summary.deadlettered;
 
             if self.config.once {
-                println!("[reconcile] active agents: {}", self.active.len());
                 if !self.active.is_empty() {
                     println!(
                         "[reconcile] waiting for {} active agent(s)...",
@@ -315,14 +327,28 @@ impl Reconciler {
                     );
                     self.wait_and_verify().await?;
                 }
-                println!("[reconcile] single-pass mode, exiting");
+
+                // When targeting a specific bead, keep looping until it
+                // reaches a terminal state (not just one pass + one retry).
+                if self.config.target_bead.is_some() && summary.dispatched > 0 {
+                    let elapsed = start.elapsed();
+                    println!(
+                        "[reconcile] retry pass ({:.0}s elapsed)",
+                        elapsed.as_secs_f64()
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+
+                let elapsed = start.elapsed();
+                println!("[reconcile] done ({:.0}s elapsed)", elapsed.as_secs_f64());
                 break;
             }
 
             tokio::time::sleep(self.config.scan_interval).await;
         }
 
-        Ok(())
+        Ok(cumulative)
     }
 
     /// Execute one full iteration of the reconciliation loop.
@@ -573,7 +599,8 @@ pub async fn run(
         }
     }
 
-    reconciler.run().await
+    reconciler.run().await?;
+    Ok(())
 }
 
 #[cfg(test)]
