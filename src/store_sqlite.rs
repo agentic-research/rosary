@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS linear_links (
     PRIMARY KEY (repo, bead_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_linear_links_linear_id ON linear_links(linear_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_linear_links_linear_id ON linear_links(linear_id);
 
 CREATE TABLE IF NOT EXISTS user_repos (
     user_id TEXT NOT NULL,
@@ -136,7 +136,8 @@ impl HierarchyStore for SqliteBackend {
     async fn upsert_decade(&self, decade: &DecadeRecord) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO decades (id, title, source_path, status) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO decades (id, title, source_path, status) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(id) DO UPDATE SET title = excluded.title, source_path = excluded.source_path, status = excluded.status",
             params![decade.id, decade.title, decade.source_path, decade.status],
         )?;
         Ok(())
@@ -197,7 +198,8 @@ impl HierarchyStore for SqliteBackend {
     async fn upsert_thread(&self, thread: &ThreadRecord) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO threads (id, name, decade_id, feature_branch) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO threads (id, name, decade_id, feature_branch) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, decade_id = excluded.decade_id, feature_branch = excluded.feature_branch",
             params![thread.id, thread.name, thread.decade_id, thread.feature_branch],
         )?;
         Ok(())
@@ -206,7 +208,7 @@ impl HierarchyStore for SqliteBackend {
     async fn list_threads(&self, decade_id: &str) -> Result<Vec<ThreadRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, decade_id, feature_branch FROM threads WHERE decade_id = ?1",
+            "SELECT id, name, decade_id, feature_branch FROM threads WHERE decade_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map(params![decade_id], |row| {
             Ok(ThreadRecord {
@@ -231,8 +233,9 @@ impl HierarchyStore for SqliteBackend {
 
     async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<BeadRef>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT repo, bead_id FROM thread_members WHERE thread_id = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT repo, bead_id FROM thread_members WHERE thread_id = ?1 ORDER BY repo, bead_id",
+        )?;
         let rows = stmt.query_map(params![thread_id], |row| {
             Ok(BeadRef {
                 repo: row.get(0)?,
@@ -286,7 +289,7 @@ impl DispatchStore for SqliteBackend {
              FROM pipelines WHERE repo = ?1 AND bead_id = ?2",
         )?;
         let mut rows = stmt.query(params![bead.repo, bead.bead_id])?;
-        Ok(rows.next()?.map(|row| row_to_pipeline(row)))
+        Ok(rows.next()?.map(|row| row_to_pipeline(row)).transpose()?)
     }
 
     async fn list_active_pipelines(&self) -> Result<Vec<PipelineState>> {
@@ -295,7 +298,7 @@ impl DispatchStore for SqliteBackend {
             "SELECT repo, bead_id, pipeline_phase, pipeline_agent, phase_status, retries, consecutive_reverts, highest_verify_tier, last_generation, backoff_until
              FROM pipelines",
         )?;
-        let rows = stmt.query_map([], |row| Ok(row_to_pipeline(row)))?;
+        let rows = stmt.query_map([], row_to_pipeline)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -355,7 +358,7 @@ impl DispatchStore for SqliteBackend {
             "SELECT id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path
              FROM dispatches WHERE completed_at IS NULL",
         )?;
-        let rows = stmt.query_map([], |row| Ok(row_to_dispatch(row)))?;
+        let rows = stmt.query_map([], row_to_dispatch)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -491,66 +494,73 @@ impl UserRepoStore for SqliteBackend {
 
 // ── Row helpers ─────────────────────────────────────────
 
-fn row_to_pipeline(row: &rusqlite::Row) -> PipelineState {
-    let backoff_str: Option<String> = row.get(9).unwrap();
-    PipelineState {
+fn row_to_pipeline(row: &rusqlite::Row) -> rusqlite::Result<PipelineState> {
+    let backoff_str: Option<String> = row.get(9)?;
+    Ok(PipelineState {
         bead_ref: BeadRef {
-            repo: row.get(0).unwrap(),
-            bead_id: row.get(1).unwrap(),
+            repo: row.get(0)?,
+            bead_id: row.get(1)?,
         },
-        pipeline_phase: row.get::<_, u8>(2).unwrap(),
-        pipeline_agent: row.get(3).unwrap(),
-        phase_status: row.get(4).unwrap(),
-        retries: row.get(5).unwrap(),
-        consecutive_reverts: row.get(6).unwrap(),
-        highest_verify_tier: row.get(7).unwrap(),
-        last_generation: row.get::<_, i64>(8).unwrap() as u64,
+        pipeline_phase: row.get::<_, u8>(2)?,
+        pipeline_agent: row.get(3)?,
+        phase_status: row.get(4)?,
+        retries: row.get(5)?,
+        consecutive_reverts: row.get(6)?,
+        highest_verify_tier: row.get(7)?,
+        last_generation: row.get::<_, i64>(8)? as u64,
         backoff_until: backoff_str.and_then(|s| {
             DateTime::parse_from_rfc3339(&s)
                 .ok()
                 .map(|dt| dt.with_timezone(&Utc))
         }),
-    }
+    })
 }
 
-fn row_to_dispatch(row: &rusqlite::Row) -> DispatchRecord {
-    let started_str: String = row.get(5).unwrap();
-    let completed_str: Option<String> = row.get(6).unwrap();
-    DispatchRecord {
-        id: row.get(0).unwrap(),
+fn row_to_dispatch(row: &rusqlite::Row) -> rusqlite::Result<DispatchRecord> {
+    let started_str: String = row.get(5)?;
+    let completed_str: Option<String> = row.get(6)?;
+    Ok(DispatchRecord {
+        id: row.get(0)?,
         bead_ref: BeadRef {
-            repo: row.get(1).unwrap(),
-            bead_id: row.get(2).unwrap(),
+            repo: row.get(1)?,
+            bead_id: row.get(2)?,
         },
-        agent: row.get(3).unwrap(),
-        provider: row.get(4).unwrap(),
+        agent: row.get(3)?,
+        provider: row.get(4)?,
         started_at: DateTime::parse_from_rfc3339(&started_str)
             .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now()),
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    5,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
         completed_at: completed_str.and_then(|s| {
             DateTime::parse_from_rfc3339(&s)
                 .ok()
                 .map(|dt| dt.with_timezone(&Utc))
         }),
-        outcome: row.get(7).unwrap(),
-        work_dir: row.get(8).unwrap(),
-        session_id: row.get(9).unwrap(),
-        workspace_path: row.get(10).unwrap(),
-    }
+        outcome: row.get(7)?,
+        work_dir: row.get(8)?,
+        session_id: row.get(9)?,
+        workspace_path: row.get(10)?,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn temp_backend() -> SqliteBackend {
+    fn temp_backend() -> (SqliteBackend, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
-        SqliteBackend::connect(&dir.path().join("test.db")).unwrap()
+        let backend = SqliteBackend::connect(&dir.path().join("test.db")).unwrap();
+        (backend, dir)
     }
 
     #[tokio::test]
     async fn pipeline_crud() {
-        let store = temp_backend();
+        let (store, _dir) = temp_backend();
         let bead = BeadRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
@@ -578,7 +588,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_lifecycle() {
-        let store = temp_backend();
+        let (store, _dir) = temp_backend();
         let record = DispatchRecord {
             id: "d-001".into(),
             bead_ref: BeadRef {
@@ -605,7 +615,7 @@ mod tests {
 
     #[tokio::test]
     async fn hierarchy_crud() {
-        let store = temp_backend();
+        let (store, _dir) = temp_backend();
         let decade = DecadeRecord {
             id: "ADR-001".into(),
             title: "Test".into(),
@@ -643,7 +653,7 @@ mod tests {
 
     #[tokio::test]
     async fn linkage_crud() {
-        let store = temp_backend();
+        let (store, _dir) = temp_backend();
         let from = BeadRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
