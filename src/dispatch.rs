@@ -800,6 +800,26 @@ pub async fn spawn(
     // [bead-id] prefix instead of rejecting commits.
     let _ = std::fs::write(work_dir.join(".rsry-bead-id"), &bead.id);
 
+    // Exclude dispatch artifacts from git — these are rosary metadata,
+    // not part of the agent's work. Uses .git/info/exclude (local to this
+    // worktree, not committed to the repo).
+    // Worktrees have .git as a file (not a dir) pointing to the real gitdir.
+    // Resolve the actual info/exclude path for either layout.
+    let exclude_dir = if work_dir.join(".git").is_dir() {
+        work_dir.join(".git").join("info")
+    } else if let Ok(gitfile) = std::fs::read_to_string(work_dir.join(".git"))
+        && let Some(gitdir) = gitfile.trim().strip_prefix("gitdir: ")
+    {
+        std::path::PathBuf::from(gitdir).join("info")
+    } else {
+        work_dir.join(".git").join("info") // fallback
+    };
+    let _ = std::fs::create_dir_all(&exclude_dir);
+    let _ = std::fs::write(
+        exclude_dir.join("exclude"),
+        "# rosary dispatch artifacts\n.rsry-*\n",
+    );
+
     // Set core.hooksPath to ~/.rsry/hooks/ so the worktree uses our
     // inject hook instead of the main repo's pre-commit framework wrapper.
     if let Some(hooks) = dirs_next::home_dir()
