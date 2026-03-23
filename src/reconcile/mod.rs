@@ -173,10 +173,15 @@ impl Reconciler {
             repo_info.insert(repo.name.clone(), (path, lang));
         }
 
-        let provider = dispatch::provider_by_name(&config.provider).unwrap_or_else(|e| {
-            eprintln!("[reconcile] {e}, falling back to claude");
-            dispatch::provider_by_name("claude").unwrap()
-        });
+        let binaries = crate::config::load_global()
+            .ok()
+            .and_then(|c| c.dispatch.map(|d| d.binaries))
+            .unwrap_or_default();
+        let provider =
+            dispatch::provider_by_name(&config.provider, &binaries).unwrap_or_else(|e| {
+                eprintln!("[reconcile] {e}, falling back to claude");
+                dispatch::provider_by_name("claude", &binaries).unwrap()
+            });
 
         // Build compute provider from config, fall back to local on failure.
         let compute: Box<dyn crate::backend::ComputeProvider> = {

@@ -235,7 +235,18 @@ pub trait AgentProvider: Send + Sync {
 ///
 /// Uses `--allowedTools` with permission rule syntax to grant the agent
 /// the tools it needs without interactive prompts.
-pub struct ClaudeProvider;
+pub struct ClaudeProvider {
+    /// Absolute path to the claude binary. If empty, uses PATH lookup.
+    pub binary: String,
+}
+
+impl Default for ClaudeProvider {
+    fn default() -> Self {
+        Self {
+            binary: "claude".to_string(),
+        }
+    }
+}
 
 impl AgentProvider for ClaudeProvider {
     fn spawn_agent(
@@ -248,7 +259,7 @@ impl AgentProvider for ClaudeProvider {
         let log_path = work_dir.join(STREAM_LOG_FILENAME);
         let log_file = std::fs::File::create(&log_path)
             .with_context(|| format!("creating stream log {}", log_path.display()))?;
-        let child = tokio::process::Command::new("claude")
+        let child = tokio::process::Command::new(&self.binary)
             .args([
                 "-p",
                 prompt,
@@ -281,7 +292,7 @@ impl AgentProvider for ClaudeProvider {
         system_prompt: &str,
     ) -> (String, Vec<String>) {
         (
-            "claude".to_string(),
+            self.binary.clone(),
             vec![
                 "-p".to_string(),
                 prompt.to_string(),
@@ -305,6 +316,9 @@ impl AgentProvider for ClaudeProvider {
 /// Uses `--approval-mode` to control permission prompts.
 #[derive(Default)]
 pub struct GeminiProvider {
+    /// Path to the gemini binary. Defaults to "gemini".
+    #[allow(dead_code)]
+    pub binary: String,
     /// Extra CLI args beyond permissions.
     pub extra_args: Vec<String>,
 }
@@ -322,7 +336,12 @@ impl AgentProvider for GeminiProvider {
         let log_path = work_dir.join(STREAM_LOG_FILENAME);
         let log_file = std::fs::File::create(&log_path)
             .with_context(|| format!("creating stream log {}", log_path.display()))?;
-        let mut cmd = tokio::process::Command::new("gemini");
+        let bin = if self.binary.is_empty() {
+            "gemini"
+        } else {
+            &self.binary
+        };
+        let mut cmd = tokio::process::Command::new(bin);
         cmd.args([
             "-p",
             &full_prompt,
@@ -398,14 +417,36 @@ impl AgentProvider for AcpCliProvider {
     }
 }
 
-/// Resolve a provider by name string (from config/CLI).
-pub fn provider_by_name(name: &str) -> Result<Box<dyn AgentProvider>> {
+/// Resolve a provider by name string, with optional binary path overrides from config.
+pub fn provider_by_name(
+    name: &str,
+    binaries: &std::collections::HashMap<String, String>,
+) -> Result<Box<dyn AgentProvider>> {
     match name {
-        "claude" => Ok(Box::new(ClaudeProvider)),
-        "gemini" => Ok(Box::new(GeminiProvider::default())),
-        "acp" => Ok(Box::new(AcpCliProvider {
-            binary: "claude-agent-acp".to_string(),
-        })),
+        "claude" => {
+            let binary = binaries
+                .get("claude")
+                .cloned()
+                .unwrap_or_else(|| "claude".to_string());
+            Ok(Box::new(ClaudeProvider { binary }))
+        }
+        "gemini" => {
+            let binary = binaries
+                .get("gemini")
+                .cloned()
+                .unwrap_or_else(|| "gemini".to_string());
+            Ok(Box::new(GeminiProvider {
+                binary,
+                ..Default::default()
+            }))
+        }
+        "acp" => {
+            let binary = binaries
+                .get("acp")
+                .cloned()
+                .unwrap_or_else(|| "claude-agent-acp".to_string());
+            Ok(Box::new(AcpCliProvider { binary }))
+        }
         other => anyhow::bail!("unknown provider: {other} (available: claude, gemini, acp)"),
     }
 }
@@ -897,7 +938,7 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
         &path,
         isolate,
         bead.generation(),
-        &ClaudeProvider,
+        &ClaudeProvider::default(),
         agents_dir.as_deref(),
         None, // compute: local subprocess (default)
     )
@@ -1072,7 +1113,7 @@ pub(crate) mod tests {
 
     #[test]
     fn claude_provider_name() {
-        let provider = ClaudeProvider;
+        let provider = ClaudeProvider::default();
         assert_eq!(provider.name(), "claude");
     }
 
@@ -1085,6 +1126,7 @@ pub(crate) mod tests {
     #[test]
     fn gemini_provider_extra_args() {
         let provider = GeminiProvider {
+            binary: String::new(),
             extra_args: vec!["--approval-mode".into(), "yolo".into()],
         };
         assert_eq!(provider.extra_args.len(), 2);
@@ -1093,19 +1135,32 @@ pub(crate) mod tests {
 
     #[test]
     fn provider_by_name_claude() {
-        let p = provider_by_name("claude").unwrap();
+        let empty = std::collections::HashMap::new();
+        let p = provider_by_name("claude", &empty).unwrap();
         assert_eq!(p.name(), "claude");
     }
 
     #[test]
     fn provider_by_name_gemini() {
-        let p = provider_by_name("gemini").unwrap();
+        let empty = std::collections::HashMap::new();
+        let p = provider_by_name("gemini", &empty).unwrap();
         assert_eq!(p.name(), "gemini");
     }
 
     #[test]
     fn provider_by_name_unknown() {
-        assert!(provider_by_name("copilot").is_err());
+        let empty = std::collections::HashMap::new();
+        assert!(provider_by_name("copilot", &empty).is_err());
+    }
+
+    #[test]
+    fn provider_by_name_with_binary_override() {
+        let mut binaries = std::collections::HashMap::new();
+        binaries.insert("claude".to_string(), "/usr/local/bin/claude".to_string());
+        let p = provider_by_name("claude", &binaries).unwrap();
+        assert_eq!(p.name(), "claude");
+        let (bin, _) = p.build_command("test", &PermissionProfile::Implement, "sys");
+        assert_eq!(bin, "/usr/local/bin/claude");
     }
 
     #[test]
@@ -1670,7 +1725,7 @@ pub(crate) mod tests {
 
     #[test]
     fn build_command_claude_returns_expected_args() {
-        let provider = ClaudeProvider;
+        let provider = ClaudeProvider::default();
         let (bin, args) =
             provider.build_command("test prompt", &PermissionProfile::Implement, "sys prompt");
         assert_eq!(bin, "claude");
