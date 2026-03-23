@@ -49,6 +49,16 @@ impl Reconciler {
                 continue;
             }
 
+            // Golden Rule 12: implementation beads need refinement (5-whys)
+            // before dispatch. Unrefined beads need a research pass first.
+            if bead.needs_refinement() {
+                eprintln!(
+                    "[refinement] deferring {} — description too short, needs 5-whys (rule 12)",
+                    bead.id
+                );
+                continue;
+            }
+
             // Dependency-aware: hard-filter beads with unresolved deps.
             if bead.is_blocked() {
                 continue;
