@@ -635,4 +635,142 @@ mod tests {
     fn review_check_tier_name() {
         assert_eq!(ReviewCheck.name(), "review");
     }
+
+    // -----------------------------------------------------------------------
+    // Adversarial: BeadRefCheck (Golden Rule 11)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bead_ref_check_passes_with_bead_ref() {
+        let repo = crate::testutil::TestRepo::new();
+        repo.commit_with_bead_ref("rsry-abc123", "fix.rs", "fn fix() {}");
+        assert_eq!(BeadRefCheck.check(repo.path()).unwrap(), VerifyResult::Pass);
+    }
+
+    #[test]
+    fn bead_ref_check_fails_without_bead_ref() {
+        let repo = crate::testutil::TestRepo::new();
+        repo.commit_plain("fix.rs", "fn fix() {}");
+        let result = BeadRefCheck.check(repo.path()).unwrap();
+        match &result {
+            VerifyResult::Fail(msg) => assert!(
+                msg.contains("Golden Rule 11"),
+                "should cite Golden Rule 11: {msg}"
+            ),
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bead_ref_check_passes_with_bracket_only() {
+        // [rsry-abc] in subject line without "bead:" footer — should PASS
+        // because extract_bead_refs now detects the bracket format too.
+        // This is the format agents produce from the dispatch prompt.
+        let repo = crate::testutil::TestRepo::new();
+        let path = repo.path();
+        std::fs::write(path.join("test.rs"), "fn test() {}").unwrap();
+        run_git(path, &["add", "."]);
+        run_git(path, &["commit", "-m", "[rsry-abc] fix: no footer"]);
+        let result = BeadRefCheck.check(path).unwrap();
+        assert_eq!(
+            result,
+            VerifyResult::Pass,
+            "bracket-format commit should pass BeadRefCheck"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Adversarial: DiffSanityCheck edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn diff_sanity_passes_first_commit() {
+        // First commit has no parent — should pass, not error
+        let dir = init_git_repo();
+        commit_file(dir.path(), "first.txt", "content");
+        let check = DiffSanityCheck {
+            max_files: 1,
+            max_lines: 1,
+        };
+        // This is the first real commit (after the initial), so diff HEAD~1..HEAD
+        // should work. But the initial commit IS the first — git diff HEAD~1 fails.
+        // Let's test with the initial commit itself:
+        let result = check.check(dir.path()).unwrap();
+        assert_eq!(result, VerifyResult::Pass);
+    }
+
+    #[test]
+    fn diff_sanity_flags_too_many_lines() {
+        let dir = init_git_repo();
+        commit_file(dir.path(), "a.txt", "initial");
+        // Second commit with many lines
+        let big_content: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        commit_file(dir.path(), "a.txt", &big_content);
+        let check = DiffSanityCheck {
+            max_files: 100,
+            max_lines: 10, // way fewer than 100 lines
+        };
+        let result = check.check(dir.path()).unwrap();
+        match &result {
+            VerifyResult::Partial(msg) => {
+                assert!(msg.contains("lines"), "should mention lines: {msg}")
+            }
+            other => panic!("expected Partial, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Adversarial: Verifier tier composition
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn verifier_partial_result_short_circuits() {
+        // Partial (not Pass, not Fail) should also stop the pipeline
+        let dir = init_git_repo();
+        commit_file(dir.path(), "a.txt", "initial");
+        commit_file(dir.path(), "a.txt", "changed"); // 2nd commit so HEAD~1 exists
+
+        let verifier = Verifier::new(vec![
+            Box::new(CommitCheck), // Pass
+            Box::new(DiffSanityCheck {
+                max_files: 0,
+                max_lines: 0,
+            }), // Partial (1 file > 0)
+            Box::new(ShellCheck::new("never", "echo", &["should not run"])),
+        ]);
+
+        let summary = verifier.run(dir.path()).unwrap();
+        assert!(!summary.passed(), "Partial should not count as passed");
+        assert_eq!(summary.results.len(), 2, "should stop at Partial tier");
+        assert_eq!(summary.highest_passing_tier, Some(0)); // only commit passed
+    }
+
+    #[test]
+    fn bead_ref_plus_commit_compose_correctly() {
+        // Full pipeline: commit passes, bead_ref fails → short-circuits before shell checks
+        let repo = crate::testutil::TestRepo::new();
+        repo.commit_plain("test.rs", "fn test() {}"); // no bead ref
+
+        let verifier = Verifier::new(vec![
+            Box::new(CommitCheck),
+            Box::new(BeadRefCheck),
+            Box::new(ShellCheck::new("should-not-run", "false", &[])),
+        ]);
+
+        let summary = verifier.run(repo.path()).unwrap();
+        assert!(!summary.passed());
+        assert_eq!(summary.results.len(), 2, "should stop at bead_ref");
+        assert_eq!(summary.highest_passing_tier, Some(0)); // only commit
+        let (name, _) = summary.first_failure().unwrap();
+        assert_eq!(name, "bead_ref");
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {} failed", args.join(" "));
+    }
 }

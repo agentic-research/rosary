@@ -98,12 +98,15 @@ pub(super) async fn create_git_worktree(repo_path: &Path, id: &str) -> Result<Pa
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    // Branch from origin/main if available, otherwise HEAD (local repos without remotes)
+    // Branch from origin/main if available, otherwise HEAD (local repos without remotes).
+    // Always prefer origin/main to avoid including unmerged local commits in agent work.
     let wt_str = worktree_path.to_string_lossy().to_string();
+    let start_point = if has_remote { "origin/main" } else { "HEAD" };
     let mut args: Vec<&str> = vec!["worktree", "add", &wt_str, "-b", &branch_name];
     if has_remote {
         args.push("origin/main");
     }
+    eprintln!("[workspace] branching {branch_name} from {start_point}");
 
     let output = tokio::process::Command::new("git")
         .args(&args)

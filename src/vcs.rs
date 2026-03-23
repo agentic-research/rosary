@@ -224,6 +224,31 @@ pub fn extract_bead_refs(message: &str) -> Vec<BeadRef> {
     let mut refs = Vec::new();
     let lower = message.to_lowercase();
 
+    // Find bracket-format refs: [prefix-suffix] at start of line
+    // This is the format agents produce from the dispatch prompt instructions.
+    for line in lower.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix('[')
+            && let Some(end) = rest.find(']')
+        {
+            let id = &rest[..end];
+            if let Some(dash_pos) = id.find('-') {
+                let prefix = &id[..dash_pos];
+                let suffix = &id[dash_pos + 1..];
+                if !prefix.is_empty()
+                    && !suffix.is_empty()
+                    && prefix.chars().all(|c| c.is_ascii_lowercase() || c == '.')
+                    && suffix.chars().all(|c| c.is_ascii_alphanumeric())
+                {
+                    refs.push(BeadRef {
+                        id: id.to_string(),
+                        closes: false,
+                    });
+                }
+            }
+        }
+    }
+
     // Find all occurrences of "bead:" followed by an ID
     let mut search_from = 0;
     while let Some(pos) = lower[search_from..].find("bead:") {
@@ -482,6 +507,41 @@ mod tests {
         let refs = extract_bead_refs("bead:rsry-8c31a5");
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].id, "rsry-8c31a5");
+    }
+
+    // --- Bracket-format bead ref tests ---
+
+    #[test]
+    fn extract_bracket_format_bead_ref() {
+        // Agent prompt tells agents: git commit -m "[rosary-5aae44] type(scope): desc"
+        let refs = extract_bead_refs("[rosary-5aae44] fix(xref): add module doc");
+        assert_eq!(refs.len(), 1, "bracket format should be detected");
+        assert_eq!(refs[0].id, "rosary-5aae44");
+    }
+
+    #[test]
+    fn extract_bracket_format_with_dots() {
+        // Temp dir names produce IDs like ".tmpXXXXXX-a1b2c3"
+        let refs = extract_bead_refs("[.tmpabcdef-a1b2c3] fix: something");
+        assert_eq!(refs.len(), 1);
+    }
+
+    #[test]
+    fn extract_bracket_and_footer_deduplicates() {
+        let msg = "[rsry-abc123] fix: thing\n\nbead:rsry-abc123";
+        let refs = extract_bead_refs(msg);
+        assert_eq!(refs.len(), 1, "bracket + footer should dedup to 1");
+        assert_eq!(refs[0].id, "rsry-abc123");
+    }
+
+    #[test]
+    fn extract_bracket_not_bead_id() {
+        // [v1.2.3] or [BREAKING] should NOT match
+        let refs = extract_bead_refs("[v1.2.3] release notes");
+        assert!(refs.is_empty(), "version tags should not match");
+
+        let refs = extract_bead_refs("[BREAKING] change api");
+        assert!(refs.is_empty(), "uppercase brackets should not match");
     }
 
     #[test]

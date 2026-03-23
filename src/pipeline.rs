@@ -147,7 +147,7 @@ impl PipelineEngine {
     }
 
     /// Read pipeline state from backend. Returns None if store unavailable.
-    #[allow(dead_code)] // API surface — used by crash recovery
+    #[allow(dead_code)] // API surface — per-bead lookup for future use
     pub async fn get_state(&self, bead_ref: &BeadRef) -> Option<PipelineState> {
         if let Some(ref store) = self.store {
             match store.get_pipeline(bead_ref).await {
@@ -178,7 +178,6 @@ impl PipelineEngine {
     }
 
     /// List all active pipeline states. Returns empty vec if store unavailable.
-    #[allow(dead_code)] // API surface — used by crash recovery
     pub async fn list_active(&self) -> Vec<PipelineState> {
         if let Some(ref store) = self.store {
             store.list_active_pipelines().await.unwrap_or_default()

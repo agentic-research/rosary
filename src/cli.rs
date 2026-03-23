@@ -18,6 +18,7 @@ pub fn status_badge(status: &str) -> String {
         "in_progress" | "dispatched" => "in progress".blue().to_string(),
         "queued" => "queued".cyan().to_string(),
         "verifying" => "verifying".yellow().to_string(),
+        "pr_open" => "pr open".magenta().to_string(),
         "done" | "closed" => "done".bright_black().to_string(),
         "blocked" => "blocked".red().to_string(),
         "rejected" => "rejected".red().to_string(),
