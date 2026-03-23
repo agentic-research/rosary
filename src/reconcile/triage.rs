@@ -129,21 +129,27 @@ impl Reconciler {
             }
 
             let retries = self.queue.retries(&bead.id);
-            let mut score = if self.config.overnight {
-                queue::triage_score_overnight(bead, retries, now)
+            let score = if target_filter.is_some() {
+                // Targeted dispatch: force max score to bypass threshold
+                1.0
             } else {
-                queue::triage_score(bead, retries, now)
-            };
+                let mut s = if self.config.overnight {
+                    queue::triage_score_overnight(bead, retries, now)
+                } else {
+                    queue::triage_score(bead, retries, now)
+                };
 
-            // Self-managed repo preference: boost dogfooding beads.
-            if self
-                .config
-                .repo
-                .iter()
-                .any(|r| r.name == bead.repo && r.self_managed)
-            {
-                score = (score + 0.15).min(1.0);
-            }
+                // Self-managed repo preference: boost dogfooding beads.
+                if self
+                    .config
+                    .repo
+                    .iter()
+                    .any(|r| r.name == bead.repo && r.self_managed)
+                {
+                    s = (s + 0.15).min(1.0);
+                }
+                s
+            };
 
             if score >= self.config.triage_threshold {
                 let bead_gen = bead.generation();

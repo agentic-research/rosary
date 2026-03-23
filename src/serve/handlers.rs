@@ -16,6 +16,16 @@ const SEARCH_MAX_LIMIT: u64 = 50;
 const SEARCH_DESC_TRUNCATE: usize = 200;
 
 // ---------------------------------------------------------------------------
+// Argument parsing helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a boolean arg from MCP JSON, with an explicit default.
+/// Returns `default` if the key is missing, null, or not a bool.
+fn parse_bool_arg(args: &Value, key: &str, default: bool) -> bool {
+    args.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+}
+
+// ---------------------------------------------------------------------------
 // Client helpers
 // ---------------------------------------------------------------------------
 /// Get a DoltClient — try the pool first (by name then path), fall back to fresh connect.
@@ -102,10 +112,7 @@ pub(crate) async fn call_tool(
             .await
         }
         "rsry_run_once" => {
-            let dry_run = args
-                .get("dry_run")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let dry_run = parse_bool_arg(&args, "dry_run", false);
             let bead_id = args.get("bead_id").and_then(|v| v.as_str());
             tool_run_once(config_path, dry_run, bead_id).await
         }
@@ -1420,49 +1427,37 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // Regression tests for rosary-b0b69a: exercises the same parse_bool_arg
+    // helper that call_tool uses, so regressions are caught.
+
     #[test]
     fn run_once_dry_run_defaults_to_false() {
-        // Regression test for rosary-b0b69a: .unwrap_or(true) caused MCP dispatch
-        // to silently run in dry-run mode, never spawning agents.
-        let args = json!({});
-        let dry_run = args
-            .get("dry_run")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
         assert!(
-            !dry_run,
+            !parse_bool_arg(&json!({}), "dry_run", false),
             "dry_run must default to false — MCP dispatch won't work otherwise"
         );
     }
 
     #[test]
     fn run_once_dry_run_explicit_true() {
-        let args = json!({"dry_run": true});
-        let dry_run = args
-            .get("dry_run")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        assert!(dry_run);
+        assert!(parse_bool_arg(&json!({"dry_run": true}), "dry_run", false));
     }
 
     #[test]
     fn run_once_dry_run_explicit_false() {
-        let args = json!({"dry_run": false});
-        let dry_run = args
-            .get("dry_run")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        assert!(!dry_run);
+        assert!(!parse_bool_arg(
+            &json!({"dry_run": false}),
+            "dry_run",
+            false
+        ));
     }
 
     #[test]
     fn run_once_dry_run_string_value_defaults_to_false() {
         // If a client sends "false" as a string, as_bool() returns None
-        let args = json!({"dry_run": "false"});
-        let dry_run = args
-            .get("dry_run")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        assert!(!dry_run, "string 'false' must not become true");
+        assert!(
+            !parse_bool_arg(&json!({"dry_run": "false"}), "dry_run", false),
+            "string 'false' must not become true"
+        );
     }
 }

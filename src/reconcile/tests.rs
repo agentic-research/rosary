@@ -985,7 +985,9 @@ fn no_println_in_reconcile() {
             let content = std::fs::read_to_string(&path).unwrap();
             for (i, line) in content.lines().enumerate() {
                 let trimmed = line.trim();
-                // Skip test code and comments
+                // Skip line comments and attributes. Intentionally conservative —
+                // may flag println! in block comments or string literals, which is
+                // acceptable (false positives > false negatives for this lint).
                 if trimmed.starts_with("//") || trimmed.starts_with('#') {
                     continue;
                 }
