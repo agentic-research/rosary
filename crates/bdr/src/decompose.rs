@@ -43,6 +43,46 @@ pub struct SuccessCriterion {
     pub threshold: Option<String>,
 }
 
+impl BeadSpec {
+    /// Content hash of the immutable bead definition.
+    ///
+    /// Covers: title, description, issue_type, priority, success_criteria.
+    /// Does NOT cover mutable state (status, assignee, retries) — those are
+    /// derived from observations via lattice join (see rosary-45518d).
+    ///
+    /// Properties:
+    /// - Same ADR decomposition → same hash (dedup across runs)
+    /// - Dependency references use content_hash, not string IDs (tamper-evident)
+    /// - Federation: push content hashes, receiver verifies locally
+    pub fn content_hash(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(self.title.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.description.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.issue_type.as_bytes());
+        hasher.update(b"\0");
+        hasher.update([self.priority]);
+        for sc in &self.success_criteria {
+            hasher.update(sc.description.as_bytes());
+            if let Some(ref cmd) = sc.command {
+                hasher.update(cmd.as_bytes());
+            }
+            if let Some(ref threshold) = sc.threshold {
+                hasher.update(threshold.as_bytes());
+            }
+            hasher.update(b"\0");
+        }
+        hasher.finalize().into()
+    }
+
+    /// Hex-encoded content hash (for display and storage).
+    pub fn content_hash_hex(&self) -> String {
+        hex::encode(self.content_hash())
+    }
+}
+
 /// Channel assignment for each atom kind.
 pub fn channel_for_atom(kind: AtomKind) -> BdrChannel {
     match kind {
@@ -434,5 +474,108 @@ mod tests {
         let atom = sample_atom(AtomKind::Decision);
         let specs = decompose(&[atom], "ADR-A");
         assert!(specs[0].success_criteria.is_empty());
+    }
+
+    // --- content_hash tests ---
+
+    #[test]
+    fn content_hash_deterministic() {
+        let spec = BeadSpec {
+            title: "Fix widget".into(),
+            description: "The widget is broken".into(),
+            issue_type: "bug".into(),
+            priority: 1,
+            channel: BdrChannel::Bead,
+            thread_group: "core".into(),
+            source_atom: AtomKind::TechnicalSpec,
+            source_adr: "ADR-001".into(),
+            source_line: 10,
+            references: vec![],
+            target_repo: None,
+            depends_on: vec![],
+            success_criteria: vec![],
+        };
+        let h1 = spec.content_hash();
+        let h2 = spec.content_hash();
+        assert_eq!(h1, h2, "same spec must produce same hash");
+    }
+
+    #[test]
+    fn content_hash_changes_with_title() {
+        let mut spec = BeadSpec {
+            title: "Fix widget".into(),
+            description: "broken".into(),
+            issue_type: "bug".into(),
+            priority: 1,
+            channel: BdrChannel::Bead,
+            thread_group: "core".into(),
+            source_atom: AtomKind::TechnicalSpec,
+            source_adr: "ADR-001".into(),
+            source_line: 10,
+            references: vec![],
+            target_repo: None,
+            depends_on: vec![],
+            success_criteria: vec![],
+        };
+        let h1 = spec.content_hash();
+        spec.title = "Fix different widget".into();
+        let h2 = spec.content_hash();
+        assert_ne!(h1, h2, "different title must produce different hash");
+    }
+
+    #[test]
+    fn content_hash_ignores_metadata() {
+        // source_adr, source_line, references, target_repo, depends_on
+        // are metadata about WHERE the spec came from, not WHAT it defines.
+        // Changing them should NOT change the content hash.
+        let spec1 = BeadSpec {
+            title: "Fix widget".into(),
+            description: "broken".into(),
+            issue_type: "bug".into(),
+            priority: 1,
+            channel: BdrChannel::Bead,
+            thread_group: "core".into(),
+            source_atom: AtomKind::TechnicalSpec,
+            source_adr: "ADR-001".into(),
+            source_line: 10,
+            references: vec!["ref-1".into()],
+            target_repo: Some("mache".into()),
+            depends_on: vec!["ADR-A".into()],
+            success_criteria: vec![],
+        };
+        let spec2 = BeadSpec {
+            source_adr: "ADR-999".into(),
+            source_line: 999,
+            references: vec![],
+            target_repo: None,
+            depends_on: vec![],
+            ..spec1.clone()
+        };
+        assert_eq!(
+            spec1.content_hash(),
+            spec2.content_hash(),
+            "metadata changes must not affect content hash"
+        );
+    }
+
+    #[test]
+    fn content_hash_hex_is_64_chars() {
+        let spec = BeadSpec {
+            title: "t".into(),
+            description: "d".into(),
+            issue_type: "task".into(),
+            priority: 2,
+            channel: BdrChannel::Bead,
+            thread_group: "g".into(),
+            source_atom: AtomKind::TechnicalSpec,
+            source_adr: "A".into(),
+            source_line: 1,
+            references: vec![],
+            target_repo: None,
+            depends_on: vec![],
+            success_criteria: vec![],
+        };
+        let hex = spec.content_hash_hex();
+        assert_eq!(hex.len(), 64, "SHA-256 hex should be 64 chars: {hex}");
     }
 }
