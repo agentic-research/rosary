@@ -22,11 +22,28 @@ struct Migration {
 }
 
 /// All migrations in order. Append new ones at the end — never reorder or remove.
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: "001_add_user_id",
-    sql: "ALTER TABLE issues ADD COLUMN user_id VARCHAR(128) DEFAULT NULL",
-    description: "Add user_id column for multi-tenant scoping",
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: "001_add_user_id",
+        sql: "ALTER TABLE issues ADD COLUMN user_id VARCHAR(128) DEFAULT NULL",
+        description: "Add user_id column for multi-tenant scoping",
+    },
+    Migration {
+        version: "002_observations",
+        sql: "CREATE TABLE IF NOT EXISTS observations (
+            bead_id VARCHAR(128) NOT NULL,
+            agent VARCHAR(128) NOT NULL,
+            phase INT NOT NULL DEFAULT 0,
+            verdict VARCHAR(32) NOT NULL,
+            detail TEXT DEFAULT '',
+            content_hash VARCHAR(64) DEFAULT '',
+            created_at DATETIME NOT NULL,
+            INDEX idx_bead_id (bead_id),
+            INDEX idx_verdict (verdict)
+        )",
+        description: "Append-only agent observations for CRDT-lattice bead state (rosary-45518d)",
+    },
+];
 
 impl DoltClient {
     /// Run all pending migrations on this database.

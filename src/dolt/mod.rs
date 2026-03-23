@@ -6,6 +6,8 @@
 mod bead_crud;
 mod deps;
 pub(crate) mod migrate;
+#[allow(dead_code)] // API surface — wired in step 2 (reconciler integration)
+pub(crate) mod observations;
 mod query;
 mod util;
 
