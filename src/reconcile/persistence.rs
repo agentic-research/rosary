@@ -18,6 +18,10 @@ impl Reconciler {
         let config = DoltConfig::from_beads_dir(&beads_dir).ok()?;
         match DoltClient::connect(&config).await {
             Ok(client) => {
+                // Run pending migrations on first connect (idempotent)
+                if let Err(e) = client.migrate().await {
+                    eprintln!("[dolt] migration failed for {repo}: {e}");
+                }
                 self.dolt_clients.insert(repo.to_string(), client);
                 self.dolt_clients.get(repo)
             }
