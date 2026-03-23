@@ -9,6 +9,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::dispatch;
+use crate::dolt::observations::Verdict;
 use crate::pipeline::CompletionAction;
 use crate::store::BeadRef;
 use crate::verify::VerifySummary;
@@ -104,10 +105,33 @@ impl Reconciler {
         verify_summary: Option<&VerifySummary>,
         thread_map: &HashMap<String, String>,
     ) -> ActionOutcome {
+        // Resolve agent name and phase for the observation.
+        let (agent, phase) = self
+            .trackers
+            .get(bead_id)
+            .map(|t| {
+                (
+                    t.current_agent
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    t.phase_index,
+                )
+            })
+            .unwrap_or_else(|| ("unknown".to_string(), 0));
+
         match action {
             CompletionAction::Advance { next_agent, .. } => {
                 self.on_pass(bead_id);
                 self.checkpoint_workspace(bead_id).await;
+                self.append_observation(
+                    bead_id,
+                    repo,
+                    &agent,
+                    phase,
+                    Verdict::Pass,
+                    "phase passed",
+                )
+                .await;
                 self.write_handoff_and_advance(bead_id, repo, next_agent, thread_map)
                     .await;
                 ActionOutcome::Advanced {
@@ -117,16 +141,39 @@ impl Reconciler {
             CompletionAction::Terminal => {
                 self.on_pass(bead_id);
                 self.checkpoint_and_cleanup(bead_id).await;
+                self.append_observation(
+                    bead_id,
+                    repo,
+                    &agent,
+                    phase,
+                    Verdict::PrOpen,
+                    "pipeline terminal",
+                )
+                .await;
                 self.persist_status(bead_id, repo, "pr_open").await;
                 ActionOutcome::Completed
             }
             CompletionAction::Retry => {
+                let detail = if exit_success {
+                    "verify failed"
+                } else {
+                    "agent exit non-zero"
+                };
                 self.handle_failure(bead_id, exit_success, verify_summary);
+                self.append_observation(bead_id, repo, &agent, phase, Verdict::Fail, detail)
+                    .await;
                 self.persist_status(bead_id, repo, "open").await;
                 ActionOutcome::Retrying
             }
             CompletionAction::Deadletter => {
+                let detail = if exit_success {
+                    "verify failed, max retries"
+                } else {
+                    "agent exit non-zero, max retries"
+                };
                 self.handle_failure(bead_id, exit_success, verify_summary);
+                self.append_observation(bead_id, repo, &agent, phase, Verdict::Deadletter, detail)
+                    .await;
                 self.cleanup_workspace(bead_id);
                 let bead_ref = BeadRef {
                     repo: repo.to_string(),
@@ -438,6 +485,15 @@ impl Reconciler {
                         Ok(handle) => {
                             println!("[dispatch] {bead_id} phase {phase} → {next_agent}");
                             self.persist_status(bead_id, &repo, "dispatched").await;
+                            self.append_observation(
+                                bead_id,
+                                &repo,
+                                next_agent,
+                                phase,
+                                Verdict::Dispatched,
+                                "re-dispatched for next phase",
+                            )
+                            .await;
                             self.active.insert(bead_id.clone(), handle);
                         }
                         Err(e) => {

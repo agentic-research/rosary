@@ -84,6 +84,29 @@ impl Reconciler {
         }
     }
 
+    /// Append an observation for a bead (CRDT-lattice dual-write).
+    ///
+    /// This runs alongside persist_status — both the mutable cell AND the
+    /// append-only observation are written. Once we validate the lattice
+    /// produces identical status, persist_status can be removed.
+    pub(super) async fn append_observation(
+        &mut self,
+        bead_id: &str,
+        repo: &str,
+        agent: &str,
+        phase: u32,
+        verdict: crate::dolt::observations::Verdict,
+        detail: &str,
+    ) {
+        if let Some(client) = self.dolt_client(repo).await
+            && let Err(e) = client
+                .append_observation(bead_id, agent, phase, verdict, detail, "")
+                .await
+        {
+            eprintln!("[observation] failed to append for {bead_id}: {e}");
+        }
+    }
+
     /// Reset beads stuck at 'dispatched' from a previous run.
     /// On startup, any bead with status=dispatched has no running agent
     /// (the reconciler that dispatched it is dead). Reset to open.
