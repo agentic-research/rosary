@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn lattice_join_max_wins() {
         // Simulate: dispatched, then pass, then pr_open
-        let observations = vec![
+        let observations = [
             (Verdict::Dispatched, Some(1)),
             (Verdict::Pass, Some(3)),
             (Verdict::PrOpen, Some(4)),
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn lattice_join_fail_ignored() {
         // Fail doesn't advance the lattice — dispatched + fail = dispatched
-        let observations = vec![(Verdict::Dispatched, Some(1)), (Verdict::Fail, None)];
+        let observations = [(Verdict::Dispatched, Some(1)), (Verdict::Fail, None)];
         let max = observations
             .iter()
             .filter_map(|(v, _)| v.lattice_rank().map(|r| (r, *v)))
@@ -272,7 +272,7 @@ mod tests {
     /// Helper: derive status from a sequence of verdicts (simulates derive_status
     /// without needing a real DB connection).
     fn lattice_status(verdicts: &[Verdict]) -> String {
-        let is_deadlettered = verdicts.iter().any(|v| *v == Verdict::Deadletter);
+        let is_deadlettered = verdicts.contains(&Verdict::Deadletter);
         let max = verdicts
             .iter()
             .filter_map(|v| v.lattice_rank().map(|r| (r, *v)))
