@@ -135,6 +135,9 @@ pub trait DispatchStore: Send + Sync {
     async fn clear_pipeline(&self, bead: &BeadRef) -> Result<()>;
 
     async fn record_dispatch(&self, record: &DispatchRecord) -> Result<()>;
+    /// Upsert a dispatch record (insert or update). Used by migration to handle
+    /// both active and completed dispatches idempotently.
+    async fn upsert_dispatch(&self, record: &DispatchRecord) -> Result<()>;
     async fn complete_dispatch(&self, id: &str, outcome: &str) -> Result<()>;
     /// Update the session_id on a dispatch record (captured after agent starts).
     async fn update_dispatch_session(&self, id: &str, session_id: &str) -> Result<()>;
@@ -169,6 +172,26 @@ pub trait UserRepoStore: Send + Sync {
     async fn register_repo(&self, repo: &UserRepo) -> Result<()>;
     async fn list_user_repos(&self, user_id: &str) -> Result<Vec<UserRepo>>;
     async fn unregister_repo(&self, user_id: &str, repo_name: &str) -> Result<()>;
+}
+
+// ── Composite traits ───────────────────────────────────
+
+/// Unified supertrait — single trait object for all orchestrator state.
+pub trait BackendStore: HierarchyStore + DispatchStore + LinkageStore + UserRepoStore {}
+
+/// Blanket impl: anything implementing all four traits is a BackendStore.
+impl<T: HierarchyStore + DispatchStore + LinkageStore + UserRepoStore> BackendStore for T {}
+
+/// Bulk export — used by migration and backup.
+/// Separate from the main store traits to keep them focused.
+#[async_trait]
+pub trait BackendExport: BackendStore {
+    async fn all_threads(&self) -> Result<Vec<ThreadRecord>>;
+    async fn all_thread_members(&self) -> Result<Vec<(String, BeadRef)>>;
+    async fn all_dispatches(&self) -> Result<Vec<DispatchRecord>>;
+    async fn all_dependencies(&self) -> Result<Vec<CrossRepoDep>>;
+    async fn all_linear_links(&self) -> Result<Vec<LinearLink>>;
+    async fn all_user_repos(&self) -> Result<Vec<UserRepo>>;
 }
 
 #[cfg(test)]
@@ -303,6 +326,16 @@ mod tests {
         async fn record_dispatch(&self, record: &DispatchRecord) -> Result<()> {
             let mut dispatches = self.dispatches.lock().unwrap();
             dispatches.push(record.clone());
+            Ok(())
+        }
+
+        async fn upsert_dispatch(&self, record: &DispatchRecord) -> Result<()> {
+            let mut dispatches = self.dispatches.lock().unwrap();
+            if let Some(existing) = dispatches.iter_mut().find(|d| d.id == record.id) {
+                *existing = record.clone();
+            } else {
+                dispatches.push(record.clone());
+            }
             Ok(())
         }
 

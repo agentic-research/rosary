@@ -291,6 +291,46 @@ impl BackendConfig {
             path: default_backend_path(),
         }
     }
+
+    /// Connect to the configured backend. Returns a trait object.
+    /// For sqlite, the DB file must already exist (use `connect_or_create` for migration).
+    #[allow(dead_code)] // Wired in Phase 2
+    pub async fn connect(&self) -> anyhow::Result<Box<dyn crate::store::BackendStore>> {
+        let path = crate::scanner::expand_path(&self.path);
+        match self.provider.as_str() {
+            "sqlite" => {
+                if !path.exists() {
+                    anyhow::bail!(
+                        "SQLite backend not found at {}. Run `rsry migrate --to sqlite` first, \
+                         or set [backend].provider = \"dolt\" in config.",
+                        path.display()
+                    );
+                }
+                let backend = crate::store_sqlite::SqliteBackend::connect(&path)?;
+                Ok(Box::new(backend))
+            }
+            _ => {
+                let backend = crate::store_dolt::DoltBackend::connect(self).await?;
+                Ok(Box::new(backend))
+            }
+        }
+    }
+
+    /// Connect or create — used by migration to create a fresh target DB.
+    #[allow(dead_code)] // Wired in Phase 3
+    pub async fn connect_or_create(&self) -> anyhow::Result<Box<dyn crate::store::BackendStore>> {
+        let path = crate::scanner::expand_path(&self.path);
+        match self.provider.as_str() {
+            "sqlite" => {
+                let backend = crate::store_sqlite::SqliteBackend::connect(&path)?;
+                Ok(Box::new(backend))
+            }
+            _ => {
+                let backend = crate::store_dolt::DoltBackend::connect(self).await?;
+                Ok(Box::new(backend))
+            }
+        }
+    }
 }
 
 /// Resolve config path: $RSRY_CONFIG → ~/.rsry/config.toml → ./rosary.toml
