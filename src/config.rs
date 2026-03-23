@@ -176,6 +176,10 @@ pub struct DispatchConfig {
     /// Max concurrent dispatches.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
+    /// Binary paths per provider. Overrides default PATH lookup.
+    /// Example: `[dispatch.binaries]\nclaude = "/Users/me/.local/bin/claude"`
+    #[serde(default)]
+    pub binaries: HashMap<String, String>,
 }
 
 fn default_dispatch_provider() -> String {
