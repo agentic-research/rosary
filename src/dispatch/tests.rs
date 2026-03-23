@@ -446,8 +446,9 @@ async fn cli_session_try_wait_completed() {
     let mut session = CliSession::new(child);
     // Wait for it to finish
     session.wait().await.unwrap();
-    // try_wait should return Some now
-    // (already waited, so this is a no-op -- just verifying the API)
+    // try_wait should return Some(true) now that the process has exited
+    let status = session.try_wait().unwrap();
+    assert_eq!(status, Some(true));
 }
 
 #[tokio::test]

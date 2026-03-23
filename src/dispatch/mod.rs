@@ -258,17 +258,32 @@ pub async fn spawn(
     } else {
         work_dir.join(".git").join("info") // fallback
     };
-    let _ = std::fs::create_dir_all(&exclude_dir);
-    let _ = std::fs::write(
-        exclude_dir.join("exclude"),
-        "# rosary dispatch artifacts\n.rsry-*\n",
-    );
+    let _ = (|| {
+        use std::io::Write;
+        std::fs::create_dir_all(&exclude_dir)?;
+        let exclude_path = exclude_dir.join("exclude");
+        let existing = std::fs::read_to_string(&exclude_path).unwrap_or_default();
+        if !existing.lines().any(|l| l.trim() == ".rsry-*") {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&exclude_path)?;
+            if !existing.is_empty() && !existing.ends_with('\n') {
+                writeln!(file)?;
+            }
+            writeln!(file, "# rosary dispatch artifacts")?;
+            writeln!(file, ".rsry-*")?;
+        }
+        Ok::<(), std::io::Error>(())
+    })();
 
     // Set core.hooksPath to ~/.rsry/hooks/ so the worktree uses our
     // inject hook instead of the main repo's pre-commit framework wrapper.
-    if let Some(hooks) = dirs_next::home_dir()
-        .map(|h| h.join(".rsry/hooks"))
-        .filter(|p| p.exists())
+    // Only set in isolated worktrees to avoid mutating the user's main repo config.
+    if isolate
+        && let Some(hooks) = dirs_next::home_dir()
+            .map(|h| h.join(".rsry/hooks"))
+            .filter(|p| p.exists())
     {
         let _ = std::process::Command::new("git")
             .args(["config", "core.hooksPath", &hooks.to_string_lossy()])

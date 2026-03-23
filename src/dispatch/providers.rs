@@ -218,7 +218,6 @@ impl AgentProvider for AcpCliProvider {
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
             .stdin(std::process::Stdio::piped())
-            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::inherit())
             .spawn()
