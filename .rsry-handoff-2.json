@@ -1,0 +1,25 @@
+{
+  "schema_version": "1",
+  "phase": 2,
+  "from_agent": "staging-agent",
+  "to_agent": "prod-agent",
+  "bead_id": "rosary-110305",
+  "provider": "claude",
+  "summary": "Changed 2 files (+26/-1)",
+  "files_changed": [
+    ".rsry-handoff-1.json",
+    ".rsry-stream.jsonl"
+  ],
+  "lines_changed": {
+    "added": 26,
+    "removed": 1
+  },
+  "review_hints": [],
+  "artifacts": {
+    "manifest": ".rsry-dispatch.json",
+    "log": ".rsry-stream-2.jsonl",
+    "previous_handoff": ".rsry-handoff-1.json"
+  },
+  "verdict": null,
+  "timestamp": "2026-03-23T22:17:00.185847Z"
+}
