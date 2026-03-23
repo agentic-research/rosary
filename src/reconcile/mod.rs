@@ -332,6 +332,19 @@ impl Reconciler {
                 // reaches a terminal state. Check if the bead is still
                 // retriable (in backoff queue or was just dispatched).
                 if let Some(ref target) = self.config.target_bead {
+                    // Exit on terminal outcomes
+                    if cumulative.deadlettered > 0 {
+                        println!(
+                            "[reconcile] bead {target} deadlettered after {} retries",
+                            cumulative.failed
+                        );
+                        break;
+                    }
+                    if cumulative.passed > 0 {
+                        println!("[reconcile] bead {target} completed pipeline");
+                        break;
+                    }
+
                     let still_active = summary.dispatched > 0
                         || self.queue.has_backoff(target)
                         || !self.active.is_empty();
