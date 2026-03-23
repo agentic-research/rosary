@@ -560,3 +560,247 @@ fn mock_agent_bad_commit_verify_fails_triggers_retry() {
     let action = pipeline.decide("bug", Some("dev-agent"), true, Some(false), 0, 3);
     assert_eq!(action, CompletionAction::Retry);
 }
+
+// ---------------------------------------------------------------------------
+// Level 3: verify_completed() integration tests
+// ---------------------------------------------------------------------------
+//
+// These test the actual Reconciler.verify_completed() method — the orchestrator
+// decision loop that wires verify_agent + pipeline.decide + tracker mutations.
+
+/// Helper: create a Reconciler with a tracker set up for a bead.
+async fn reconciler_with_bead(
+    bead_id: &str,
+    repo_name: &str,
+    issue_type: &str,
+    current_agent: &str,
+    retries: u32,
+) -> Reconciler {
+    let config = ReconcilerConfig {
+        once: true,
+        repo: Vec::new(),
+        max_retries: 3,
+        ..Default::default()
+    };
+    let mut r = Reconciler::new(config).await;
+    r.trackers.insert(
+        bead_id.to_string(),
+        BeadTracker {
+            repo: repo_name.to_string(),
+            last_generation: 1,
+            retries,
+            consecutive_reverts: 0,
+            highest_tier: None,
+            current_agent: Some(current_agent.to_string()),
+            phase_index: if current_agent == "scoping-agent" {
+                0
+            } else if current_agent == "dev-agent" {
+                1
+            } else {
+                2
+            },
+            issue_type: issue_type.to_string(),
+        },
+    );
+    r
+}
+
+/// dev-agent exits successfully, no work_dir → verify_agent returns None →
+/// pipeline.decide(verify_passed=None) treats as pass → Advance to staging.
+/// Tests the orchestrator loop: verify_completed → pipeline.decide → Advance.
+#[tokio::test]
+async fn verify_completed_pass_advances_pipeline() {
+    let mut r = reconciler_with_bead("bug-001", "test-repo", "bug", "dev-agent", 0).await;
+
+    let beads = vec![crate::testutil::make_bead("bug-001", "bug", "test-repo")];
+    let thread_map = std::collections::HashMap::new();
+
+    let result = r
+        .verify_completed(&[("bug-001".to_string(), true)], &beads, &thread_map)
+        .await;
+
+    assert_eq!(result.passed, 1, "should count 1 pass");
+    assert_eq!(result.failed, 0);
+    assert_eq!(result.deadlettered, 0);
+    assert_eq!(
+        result.phase_advances.len(),
+        1,
+        "should have 1 phase advance"
+    );
+
+    let (bead_id, _repo, next_agent) = &result.phase_advances[0];
+    assert_eq!(bead_id, "bug-001");
+    assert_eq!(next_agent, "staging-agent", "dev → staging for bugs");
+}
+
+/// dev-agent exits successfully but commit lacks bead ref → verify fails → Retry.
+#[tokio::test]
+async fn verify_completed_verify_fail_retries() {
+    let test_repo = crate::testutil::TestRepo::new();
+    test_repo.commit_plain("bad.rs", "fn bad() {}");
+
+    let mut r = reconciler_with_bead("bug-002", "test-repo", "bug", "dev-agent", 0).await;
+    r.completed_work_dirs.insert(
+        "bug-002".to_string(),
+        (test_repo.path().to_path_buf(), "test-repo".to_string()),
+    );
+    r.repo_info.insert(
+        "test-repo".to_string(),
+        (test_repo.path().to_path_buf(), "unknown".to_string()),
+    );
+
+    let beads = vec![crate::testutil::make_bead("bug-002", "bug", "test-repo")];
+    let thread_map = std::collections::HashMap::new();
+
+    let result = r
+        .verify_completed(&[("bug-002".to_string(), true)], &beads, &thread_map)
+        .await;
+
+    assert_eq!(result.passed, 0);
+    assert_eq!(result.failed, 1, "verify failure → retry");
+    assert_eq!(result.deadlettered, 0);
+    assert_eq!(result.phase_advances.len(), 0, "no advance on verify fail");
+    assert_eq!(result.status_updates.len(), 1);
+    assert_eq!(result.status_updates[0].2, "open", "retry reopens bead");
+}
+
+/// Agent process exits non-zero → Retry (regardless of verify).
+#[tokio::test]
+async fn verify_completed_exit_failure_retries() {
+    let mut r = reconciler_with_bead("bug-003", "test-repo", "bug", "dev-agent", 0).await;
+
+    let beads = vec![crate::testutil::make_bead("bug-003", "bug", "test-repo")];
+    let thread_map = std::collections::HashMap::new();
+
+    let result = r
+        .verify_completed(&[("bug-003".to_string(), false)], &beads, &thread_map)
+        .await;
+
+    assert_eq!(result.passed, 0);
+    assert_eq!(result.failed, 1);
+    assert_eq!(result.deadlettered, 0);
+    assert_eq!(result.status_updates[0].2, "open");
+}
+
+/// Agent fails at max retries → Deadletter → status "blocked".
+#[tokio::test]
+async fn verify_completed_max_retries_deadletters() {
+    let mut r = reconciler_with_bead("bug-004", "test-repo", "bug", "dev-agent", 3).await;
+
+    let beads = vec![crate::testutil::make_bead("bug-004", "bug", "test-repo")];
+    let thread_map = std::collections::HashMap::new();
+
+    let result = r
+        .verify_completed(&[("bug-004".to_string(), false)], &beads, &thread_map)
+        .await;
+
+    assert_eq!(result.passed, 0);
+    assert_eq!(result.failed, 1);
+    assert_eq!(result.deadlettered, 1, "max retries → deadletter");
+    assert_eq!(
+        result.status_updates[0].2, "blocked",
+        "deadletter → blocked"
+    );
+}
+
+/// staging-agent (ReadOnly) at end of bug pipeline → Terminal → "pr_open".
+#[tokio::test]
+async fn verify_completed_terminal_sets_pr_open() {
+    let mut r = reconciler_with_bead("bug-005", "test-repo", "bug", "staging-agent", 0).await;
+
+    let beads = vec![crate::testutil::make_bead("bug-005", "bug", "test-repo")];
+    let thread_map = std::collections::HashMap::new();
+
+    // staging-agent exit_success=true, verify skipped (ReadOnly) → Terminal
+    let result = r
+        .verify_completed(&[("bug-005".to_string(), true)], &beads, &thread_map)
+        .await;
+
+    assert_eq!(result.passed, 1);
+    assert_eq!(result.failed, 0);
+    assert_eq!(result.status_updates.len(), 1);
+    assert_eq!(result.status_updates[0].2, "pr_open", "terminal → pr_open");
+}
+
+/// scoping-agent passes → Advance to dev-agent (first phase of bug pipeline).
+#[tokio::test]
+async fn verify_completed_scoping_advances_to_dev() {
+    let mut r = reconciler_with_bead("bug-006", "test-repo", "bug", "scoping-agent", 0).await;
+
+    let beads = vec![crate::testutil::make_bead("bug-006", "bug", "test-repo")];
+    let thread_map = std::collections::HashMap::new();
+
+    let result = r
+        .verify_completed(&[("bug-006".to_string(), true)], &beads, &thread_map)
+        .await;
+
+    assert_eq!(result.passed, 1);
+    assert_eq!(result.phase_advances.len(), 1);
+    assert_eq!(
+        result.phase_advances[0].2, "dev-agent",
+        "scoping → dev for bugs"
+    );
+}
+
+/// task with dev-agent pass → Terminal (single-phase pipeline).
+#[tokio::test]
+async fn verify_completed_task_terminal_immediately() {
+    let mut r = reconciler_with_bead("task-001", "test-repo", "task", "dev-agent", 0).await;
+
+    let beads = vec![crate::testutil::make_bead("task-001", "task", "test-repo")];
+    let thread_map = std::collections::HashMap::new();
+
+    let result = r
+        .verify_completed(&[("task-001".to_string(), true)], &beads, &thread_map)
+        .await;
+
+    assert_eq!(result.passed, 1);
+    assert_eq!(result.phase_advances.len(), 0, "task has no next phase");
+    assert_eq!(result.status_updates.len(), 1);
+    assert_eq!(
+        result.status_updates[0].2, "pr_open",
+        "task terminal → pr_open"
+    );
+}
+
+/// Multiple beads completing in the same pass — mixed outcomes.
+#[tokio::test]
+async fn verify_completed_mixed_batch() {
+    let mut r = reconciler_with_bead("mix-pass", "repo-a", "bug", "dev-agent", 0).await;
+    // Add second bead tracker (exit failure)
+    r.trackers.insert(
+        "mix-fail".to_string(),
+        BeadTracker {
+            repo: "repo-b".to_string(),
+            last_generation: 1,
+            retries: 0,
+            consecutive_reverts: 0,
+            highest_tier: None,
+            current_agent: Some("dev-agent".to_string()),
+            phase_index: 1,
+            issue_type: "task".to_string(),
+        },
+    );
+
+    let beads = vec![
+        crate::testutil::make_bead("mix-pass", "bug", "repo-a"),
+        crate::testutil::make_bead("mix-fail", "task", "repo-b"),
+    ];
+    let thread_map = std::collections::HashMap::new();
+
+    // mix-pass: exit_success=true, no work_dir → verify=None → advance
+    // mix-fail: exit_success=false → retry
+    let completed = vec![
+        ("mix-pass".to_string(), true),
+        ("mix-fail".to_string(), false),
+    ];
+    let result = r.verify_completed(&completed, &beads, &thread_map).await;
+
+    assert_eq!(result.passed, 1, "one pass");
+    assert_eq!(result.failed, 1, "one fail");
+    assert_eq!(
+        result.phase_advances.len() + result.status_updates.len(),
+        2,
+        "each bead gets an outcome"
+    );
+}
