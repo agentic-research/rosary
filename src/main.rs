@@ -712,7 +712,7 @@ async fn main() -> Result<()> {
                     cli::bead_commented(&id);
                 }
                 BeadAction::Search { query } => {
-                    let beads = client.search_beads(&query, &repo_name).await?;
+                    let beads = client.search_beads(&query, &repo_name, 50).await?;
                     cli::bead_search_results(&beads, &query);
                 }
                 BeadAction::Export { status } => {

@@ -147,7 +147,7 @@ async fn create_bead_visible_to_new_connection() {
     // Session B: completely new pool — must see the bead
     let client_b = sandbox.fresh_client().await;
     let found = client_b
-        .search_beads("Cross-session", "test")
+        .search_beads("Cross-session", "test", 50)
         .await
         .unwrap();
     assert!(
@@ -436,7 +436,7 @@ async fn crud_lifecycle_live_dolt() {
     assert_eq!(bead.status, "open");
 
     // Search
-    let results = client.search_beads("CRUD bead", "test").await.unwrap();
+    let results = client.search_beads("CRUD bead", "test", 50).await.unwrap();
     assert!(
         results.iter().any(|b| b.id == test_id),
         "search should find created bead"
@@ -504,7 +504,10 @@ async fn search_multi_word_non_contiguous() {
     let client = sandbox.fresh_client().await;
 
     // "human agent" — words are non-contiguous in title of mw-1
-    let results = client.search_beads("human agent", "test").await.unwrap();
+    let results = client
+        .search_beads("human agent", "test", 50)
+        .await
+        .unwrap();
     assert!(
         results.iter().any(|b| b.id == "mw-1"),
         "should match 'Human vs agent task delineation' (words non-contiguous in title)"
@@ -521,13 +524,13 @@ async fn search_multi_word_non_contiguous() {
     );
 
     // Single word search still works
-    let results = client.search_beads("pipeline", "test").await.unwrap();
+    let results = client.search_beads("pipeline", "test", 50).await.unwrap();
     assert!(
         results.iter().any(|b| b.id == "mw-2"),
         "single word search should still work"
     );
 
     // Empty query returns all beads
-    let results = client.search_beads("", "test").await.unwrap();
+    let results = client.search_beads("", "test", 50).await.unwrap();
     assert!(results.len() >= 3, "empty query should return all beads");
 }

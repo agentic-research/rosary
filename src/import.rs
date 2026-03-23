@@ -57,7 +57,7 @@ pub async fn import_bead(
         .ok_or_else(|| anyhow::anyhow!("bead title required"))?;
 
     // Dedup: skip if exact title match exists
-    let existing = client.search_beads(title, repo_name).await?;
+    let existing = client.search_beads(title, repo_name, 10).await?;
     if existing.iter().any(|b| b.title == title) {
         return Ok(None);
     }
