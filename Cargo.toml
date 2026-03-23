@@ -41,6 +41,7 @@ hex = "0.4"
 owo-colors = "4.3.0"
 jsonwebtoken = "9"
 socket2 = "0.5"
+rusqlite = { version = "0.34", features = ["bundled"] }
 
 [features]
 default = ["leyline"]
