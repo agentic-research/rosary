@@ -54,6 +54,26 @@ tasks:
   install:
     desc: Build, codesign, install rsry, and set up HTTP MCP service
     cmds:
+      - |
+        # Check for existing rsry in PATH (brew, cargo install, system package)
+        EXISTING=$(command -v rsry 2>/dev/null || true)
+        if [ -n "$EXISTING" ] && [ "$EXISTING" != "$HOME/.local/bin/rsry" ]; then
+          EXISTING_VER=$("$EXISTING" --version 2>/dev/null || echo "unknown")
+          NEW_VER=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])" 2>/dev/null || echo "dev")
+          echo "WARNING: found rsry at $EXISTING ($EXISTING_VER)"
+          echo "         task install will place rsry at ~/.local/bin/rsry ($NEW_VER)"
+          # Check if it's a brew install specifically
+          if echo "$EXISTING" | grep -q "homebrew\|Cellar"; then
+            echo "         Suggestion: brew unlink rosary"
+          fi
+          echo ""
+          read -p "Continue? [Y/n] " -n 1 -r
+          echo
+          if [[ ! $REPLY =~ ^[Yy]?$ ]]; then
+            echo "Aborted."
+            exit 1
+          fi
+        fi
       - cargo build --release
       - mkdir -p ~/.local/bin ~/.rsry
       # Stage + codesign in /tmp, then atomic rename to install path.
