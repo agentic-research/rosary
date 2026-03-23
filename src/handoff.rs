@@ -4,8 +4,30 @@
 //! The next agent's prompt references this file for context about what
 //! the previous phase did, what to review, and where to look.
 //!
-//! Backend-agnostic: works with any orchestrator, provider, or execution
-//! backend. The handoff is a JSON file in the workspace directory.
+//! ## Handoff struct
+//!
+//! Each [`Handoff`] captures one phase's output:
+//! - `phase`, `from_agent`, `to_agent` — pipeline position
+//! - `bead_id` — the work item being processed
+//! - `provider` — execution backend (e.g. "claude", "gemini")
+//! - `thread_id` — optional thread from [`HierarchyStore`], giving agents
+//!   context about their position in a larger progression of work
+//! - `summary`, `files_changed`, `lines_changed` — what changed
+//! - `review_hints` — auto-generated focus areas for the reviewing agent
+//! - `artifacts` — paths to manifest, log, and previous handoff
+//! - `verdict` — review result (filled by staging/prod agents)
+//!
+//! ## Key operations
+//!
+//! - [`Handoff::read_chain`] reads the full sequence of handoffs from a workspace
+//! - [`Handoff::format_for_prompt`] renders the chain as markdown for agent prompts
+//! - [`Handoff::chain_hash`] produces a tamper-evident SHA-256 hash chain
+//!
+//! ## File naming
+//!
+//! Handoffs are stored as `.rsry-handoff-{phase}.json` in the workspace directory.
+//!
+//! Backend-agnostic: works with any orchestrator, provider, or execution backend.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
