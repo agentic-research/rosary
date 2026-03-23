@@ -71,6 +71,39 @@ pub struct Verdict {
 }
 
 impl Handoff {
+    /// Content hash of this handoff, forming a hash chain with previous phases.
+    ///
+    /// Covers: phase, from_agent, bead_id, summary, files_changed, previous_handoff.
+    /// The chain property: each handoff's hash includes the previous handoff's
+    /// hash reference, making the pipeline tamper-evident.
+    ///
+    /// Does NOT include timestamp (non-deterministic) or verdict (may be added later).
+    pub fn chain_hash(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(self.phase.to_le_bytes());
+        hasher.update(self.from_agent.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.bead_id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.summary.as_bytes());
+        hasher.update(b"\0");
+        for f in &self.files_changed {
+            hasher.update(f.as_bytes());
+            hasher.update(b"\0");
+        }
+        // Chain: include previous handoff reference (path or hash)
+        if let Some(ref prev) = self.artifacts.previous_handoff {
+            hasher.update(prev.as_bytes());
+        }
+        hasher.finalize().into()
+    }
+
+    /// Hex-encoded chain hash (for display, storage, and chain references).
+    pub fn chain_hash_hex(&self) -> String {
+        hex::encode(self.chain_hash())
+    }
+
     /// Create a handoff from orchestrator state after a phase completes.
     ///
     /// `summary` is extracted from the agent's commit messages or final
@@ -317,6 +350,50 @@ mod tests {
         assert!(prompt.contains("dev-agent"));
         assert!(prompt.contains("timeout=0"));
         assert!(prompt.contains("mache MCP"));
+    }
+
+    // --- chain_hash tests ---
+
+    #[test]
+    fn chain_hash_deterministic() {
+        let work = sample_work();
+        let h = Handoff::new(0, "dev-agent", None, "rsry-abc", "claude", &work);
+        assert_eq!(h.chain_hash(), h.chain_hash());
+    }
+
+    #[test]
+    fn chain_hash_changes_with_phase() {
+        let work = sample_work();
+        let h0 = Handoff::new(0, "dev-agent", None, "rsry-abc", "claude", &work);
+        let h1 = Handoff::new(1, "dev-agent", None, "rsry-abc", "claude", &work);
+        assert_ne!(h0.chain_hash(), h1.chain_hash());
+    }
+
+    #[test]
+    fn chain_hash_includes_previous_handoff() {
+        let work = sample_work();
+        let h0 = Handoff::new(
+            0,
+            "dev-agent",
+            Some("staging-agent"),
+            "rsry-abc",
+            "claude",
+            &work,
+        );
+        let h1 = Handoff::new(1, "staging-agent", None, "rsry-abc", "claude", &work);
+        // h1 has previous_handoff = Some(".rsry-handoff-0.json"), h0 has None
+        assert_ne!(
+            h0.chain_hash(),
+            h1.chain_hash(),
+            "chain hash must differ when previous_handoff differs"
+        );
+    }
+
+    #[test]
+    fn chain_hash_hex_is_64_chars() {
+        let work = sample_work();
+        let h = Handoff::new(0, "dev-agent", None, "rsry-abc", "claude", &work);
+        assert_eq!(h.chain_hash_hex().len(), 64);
     }
 
     #[test]
