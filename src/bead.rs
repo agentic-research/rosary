@@ -314,6 +314,18 @@ impl Bead {
     pub fn is_blocked(&self) -> bool {
         self.status == "blocked" || (self.status == "open" && self.dependency_count > 0)
     }
+
+    /// Golden Rule 12: implementation beads need refinement before dispatch.
+    /// Returns true if this is an implementation bead (bug/feature/task/chore) with
+    /// an empty or trivially short description — meaning the 5-whys haven't been answered.
+    /// Research, design, epic, and review beads are exempt (they ARE the research step).
+    pub fn needs_refinement(&self) -> bool {
+        const MIN_DESCRIPTION_LEN: usize = 50;
+        matches!(
+            self.issue_type.as_str(),
+            "bug" | "feature" | "task" | "chore"
+        ) && self.description.trim().len() < MIN_DESCRIPTION_LEN
+    }
 }
 
 impl fmt::Display for Bead {
@@ -605,6 +617,62 @@ mod tests {
         assert!(!requires_files("epic"));
         assert!(!requires_files("design"));
         assert!(!requires_files("research"));
+    }
+
+    #[test]
+    fn needs_refinement_empty_description() {
+        let val = json!({
+            "id": "x-1", "title": "fix something",
+            "description": "",
+            "status": "open", "priority": 1, "issue_type": "bug",
+            "created_at": "2026-03-12T00:00:00Z",
+            "updated_at": "2026-03-12T00:00:00Z"
+        });
+        let bead = Bead::from_bd_json(&val, "repo").unwrap();
+        assert!(bead.needs_refinement());
+    }
+
+    #[test]
+    fn needs_refinement_short_description() {
+        let val = json!({
+            "id": "x-1", "title": "fix something",
+            "description": "fix the bug",
+            "status": "open", "priority": 1, "issue_type": "task",
+            "created_at": "2026-03-12T00:00:00Z",
+            "updated_at": "2026-03-12T00:00:00Z"
+        });
+        let bead = Bead::from_bd_json(&val, "repo").unwrap();
+        assert!(bead.needs_refinement());
+    }
+
+    #[test]
+    fn needs_refinement_adequate_description() {
+        let desc = "WHO: CLI users. WHEN: on every dispatch. BLAST RADIUS: low.";
+        let val = json!({
+            "id": "x-1", "title": "add refinement gate",
+            "description": desc,
+            "status": "open", "priority": 1, "issue_type": "feature",
+            "created_at": "2026-03-12T00:00:00Z",
+            "updated_at": "2026-03-12T00:00:00Z"
+        });
+        let bead = Bead::from_bd_json(&val, "repo").unwrap();
+        assert!(!bead.needs_refinement());
+    }
+
+    #[test]
+    fn needs_refinement_exempt_types() {
+        // Research/design/epic beads are exempt — they ARE the research step
+        for issue_type in &["epic", "design", "research", "review"] {
+            let val = json!({
+                "id": "x-1", "title": "plan something",
+                "description": "",
+                "status": "open", "priority": 1, "issue_type": issue_type,
+                "created_at": "2026-03-12T00:00:00Z",
+                "updated_at": "2026-03-12T00:00:00Z"
+            });
+            let bead = Bead::from_bd_json(&val, "repo").unwrap();
+            assert!(!bead.needs_refinement(), "{issue_type} should be exempt");
+        }
     }
 
     #[test]
