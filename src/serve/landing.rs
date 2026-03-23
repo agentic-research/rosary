@@ -3,12 +3,23 @@
 //! Content negotiation: browser gets HTML, API client gets JSON.
 //! HTML is loaded from /app/static/mcp-landing.html (injected by rig's
 //! Dockerfile at build time). Falls back to inline HTML if file not found.
+//! File is read once (first request) and cached via OnceLock.
+
+use std::sync::OnceLock;
 
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 
 /// Path where rig's Dockerfile injects the landing page HTML.
 const STATIC_LANDING_PATH: &str = "/app/static/mcp-landing.html";
+
+/// Cached landing HTML — read from disk once, then served from memory.
+fn landing_html() -> &'static str {
+    static HTML: OnceLock<String> = OnceLock::new();
+    HTML.get_or_init(|| {
+        std::fs::read_to_string(STATIC_LANDING_PATH).unwrap_or_else(|_| FALLBACK_HTML.to_string())
+    })
+}
 
 /// Serve the landing page at GET /.
 pub(crate) async fn handle_landing(headers: axum::http::HeaderMap) -> Response {
@@ -16,6 +27,9 @@ pub(crate) async fn handle_landing(headers: axum::http::HeaderMap) -> Response {
         .get("accept")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
+
+    // Content negotiation — Vary header ensures caches key on Accept.
+    let vary = ("vary", "accept");
 
     if accept.contains("application/json") {
         let info = serde_json::json!({
@@ -28,15 +42,17 @@ pub(crate) async fn handle_landing(headers: axum::http::HeaderMap) -> Response {
         });
         (
             StatusCode::OK,
-            [("content-type", "application/json")],
+            [("content-type", "application/json"), vary],
             serde_json::to_string_pretty(&info).unwrap_or_default(),
         )
             .into_response()
     } else {
-        // Try static file first (injected by rig Dockerfile), fall back to inline
-        let html = std::fs::read_to_string(STATIC_LANDING_PATH)
-            .unwrap_or_else(|_| FALLBACK_HTML.to_string());
-        Html(html).into_response()
+        (
+            StatusCode::OK,
+            [("content-type", "text/html; charset=utf-8"), vary],
+            landing_html().to_string(),
+        )
+            .into_response()
     }
 }
 
