@@ -514,16 +514,22 @@ async fn tool_bead_search(
     let beads: Vec<Value> = beads
         .iter()
         .map(|b| {
-            let mut v = serde_json::to_value(b).unwrap_or_default();
+            let mut v = serde_json::to_value(b).context("serializing bead for search results")?;
             if let Some(desc) = v.get("description").and_then(|d| d.as_str())
                 && desc.len() > SEARCH_DESC_TRUNCATE
             {
-                let truncated = format!("{}...", &desc[..SEARCH_DESC_TRUNCATE]);
+                // Truncate at char boundary to avoid panic on multi-byte UTF-8
+                let end = desc
+                    .char_indices()
+                    .map(|(i, _)| i)
+                    .find(|&i| i >= SEARCH_DESC_TRUNCATE)
+                    .unwrap_or(desc.len());
+                let truncated = format!("{}...", &desc[..end]);
                 v["description"] = Value::String(truncated);
             }
-            v
+            Ok(v)
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(json!({ "count": beads.len(), "beads": beads }))
 }
