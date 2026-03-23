@@ -18,6 +18,8 @@ use tempfile::TempDir;
 struct CliSandbox {
     /// The temp directory containing the fake repo + .beads/
     repo_dir: TempDir,
+    /// Isolated HOME directory so enable/disable don't touch real ~/.rsry/
+    home_dir: TempDir,
     /// Path to the rsry binary
     rsry: PathBuf,
 }
@@ -27,18 +29,24 @@ impl CliSandbox {
     /// Uses `rsry enable` to init everything (dolt, schema, server auto-start).
     /// Returns None if dolt is not installed (test skipped).
     fn new() -> Option<Self> {
-        if Command::new("dolt")
+        let dolt_status = Command::new("dolt")
             .arg("version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status()
-            .is_err()
-        {
-            eprintln!("skipping: dolt not installed");
-            return None;
+            .status();
+        match dolt_status {
+            Ok(status) if !status.success() => {
+                eprintln!("skipping: dolt installed but `dolt version` failed");
+                return None;
+            }
+            Err(_) => {
+                eprintln!("skipping: dolt not installed");
+                return None;
+            }
+            _ => {}
         }
 
-        let rsry = rsry_binary();
+        let rsry = PathBuf::from(env!("CARGO_BIN_EXE_rsry"));
         if !rsry.exists() {
             eprintln!("skipping: rsry binary not found at {}", rsry.display());
             eprintln!("hint: run `cargo build` first");
@@ -46,7 +54,21 @@ impl CliSandbox {
         }
 
         let repo_dir = TempDir::new().expect("create temp dir");
+        let home_dir = TempDir::new().expect("create temp HOME");
         let repo = repo_dir.path();
+
+        // Dolt needs ~/.dolt/ for global config. Initialize it in the isolated HOME.
+        let dolt_home = home_dir.path().join(".dolt");
+        std::fs::create_dir_all(&dolt_home).unwrap();
+        // Run dolt config to init the global config so dolt init works
+        let _ = Command::new("dolt")
+            .args(["config", "--global", "--add", "user.name", "Test"])
+            .env("HOME", home_dir.path())
+            .output();
+        let _ = Command::new("dolt")
+            .args(["config", "--global", "--add", "user.email", "test@test.com"])
+            .env("HOME", home_dir.path())
+            .output();
 
         // Initialize a git repo (rsry resolves repo name from dir name)
         run_cmd("git", &["init"], repo);
@@ -56,7 +78,11 @@ impl CliSandbox {
         run_cmd("git", &["add", "."], repo);
         run_cmd("git", &["commit", "-m", "initial"], repo);
 
-        let sandbox = CliSandbox { repo_dir, rsry };
+        let sandbox = CliSandbox {
+            repo_dir,
+            home_dir,
+            rsry,
+        };
 
         // Use `rsry enable` to init .beads/ (dolt init + schema + auto-start server)
         let out = sandbox.run(&["enable", "."]);
@@ -67,11 +93,6 @@ impl CliSandbox {
             "rsry enable failed:\nstdout: {stdout}\nstderr: {stderr}"
         );
 
-        // Cleanup: unregister from global config so we don't pollute the user's registry.
-        // The .beads/ dir and running dolt server persist in the temp dir.
-        let repo_name = sandbox.repo_name();
-        let _ = sandbox.run(&["disable", &repo_name]);
-
         Some(sandbox)
     }
 
@@ -79,20 +100,14 @@ impl CliSandbox {
         self.repo_dir.path()
     }
 
-    fn repo_name(&self) -> String {
-        self.repo_path()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
-    }
-
     /// Run rsry with args, in the sandbox repo directory.
+    /// HOME is set to an isolated temp dir so enable/disable don't touch ~/.rsry/.
     fn run(&self, args: &[&str]) -> Output {
         let mut cmd = Command::new(&self.rsry);
         cmd.args(args)
             .current_dir(self.repo_path())
-            .env("NO_COLOR", "1");
+            .env("NO_COLOR", "1")
+            .env("HOME", self.home_dir.path());
 
         if cfg!(target_os = "macos") {
             cmd.env(
@@ -147,46 +162,29 @@ impl CliSandbox {
 
 impl Drop for CliSandbox {
     fn drop(&mut self) {
-        // Kill the auto-started dolt server
+        // Kill the auto-started dolt server, checking liveness before each signal
+        // to avoid hitting a reused PID.
         let pid_file = self.repo_path().join(".beads").join("dolt-server.pid");
         if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
             && let Ok(pid) = pid_str.trim().parse::<i32>()
         {
             unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
+                if libc::kill(pid, 0) == 0 {
+                    libc::kill(pid, libc::SIGTERM);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    if libc::kill(pid, 0) == 0 {
+                        libc::kill(pid, libc::SIGKILL);
+                    }
+                }
             }
         }
-
-        // Cleanup: ensure repo is unregistered from global config
-        let repo_name = self.repo_name();
-        let _ = Command::new(&self.rsry)
-            .args(["disable", &repo_name])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        // No need to unregister — HOME is isolated, global config is in temp dir.
     }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn rsry_binary() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let debug = PathBuf::from(manifest_dir).join("target/debug/rsry");
-    if debug.exists() {
-        return debug;
-    }
-    let release = PathBuf::from(manifest_dir).join("target/release/rsry");
-    if release.exists() {
-        return release;
-    }
-    debug
-}
 
 fn run_cmd(cmd: &str, args: &[&str], dir: &Path) {
     let output = Command::new(cmd)
@@ -462,8 +460,7 @@ fn status_json_output() {
         None => return,
     };
 
-    // Register repo so status can scan it
-    sandbox.run_ok(&["enable", "."]);
+    // Repo is already registered from CliSandbox::new() enable call (isolated HOME)
     sandbox.create_bead("Status test");
 
     let stdout = sandbox.run_ok(&["status", "--json"]);
@@ -477,9 +474,6 @@ fn status_json_output() {
         parsed["open"].is_number(),
         "should have 'open' field: {parsed}"
     );
-
-    // Cleanup
-    let _ = sandbox.run(&["disable", &sandbox.repo_name()]);
 }
 
 // ---------------------------------------------------------------------------
