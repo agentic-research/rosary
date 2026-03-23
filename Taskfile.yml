@@ -132,6 +132,12 @@ tasks:
     cmds:
       - ./scripts/e2e-sandbox.sh
 
+  integration:
+    desc: Rust CLI integration tests (requires dolt in PATH)
+    deps: [build]
+    cmds:
+      - cargo test --test cli_integration -- --test-threads=1
+
   apk:
     desc: Build distroless OCI image via melange + apko (release)
     cmds:
