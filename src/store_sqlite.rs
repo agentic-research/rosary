@@ -690,4 +690,197 @@ mod tests {
             "issue"
         );
     }
+
+    #[tokio::test]
+    async fn list_decades_with_filter() {
+        let (store, _dir) = temp_backend();
+        store
+            .upsert_decade(&DecadeRecord {
+                id: "ADR-001".into(),
+                title: "A".into(),
+                source_path: "a.md".into(),
+                status: "active".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .upsert_decade(&DecadeRecord {
+                id: "ADR-002".into(),
+                title: "B".into(),
+                source_path: "b.md".into(),
+                status: "proposed".into(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(store.list_decades(None).await.unwrap().len(), 2);
+        assert_eq!(store.list_decades(Some("active")).await.unwrap().len(), 1);
+        assert!(store.list_decades(Some("nope")).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn upsert_decade_preserves_threads() {
+        let (store, _dir) = temp_backend();
+        let decade = DecadeRecord {
+            id: "ADR-001".into(),
+            title: "Original".into(),
+            source_path: "a.md".into(),
+            status: "proposed".into(),
+        };
+        store.upsert_decade(&decade).await.unwrap();
+
+        let thread = ThreadRecord {
+            id: "ADR-001/impl".into(),
+            name: "Impl".into(),
+            decade_id: "ADR-001".into(),
+            feature_branch: None,
+        };
+        store.upsert_thread(&thread).await.unwrap();
+
+        // Update decade — threads must survive (ON CONFLICT, not REPLACE)
+        let updated = DecadeRecord {
+            id: "ADR-001".into(),
+            title: "Updated".into(),
+            source_path: "a.md".into(),
+            status: "active".into(),
+        };
+        store.upsert_decade(&updated).await.unwrap();
+
+        let threads = store.list_threads("ADR-001").await.unwrap();
+        assert_eq!(threads.len(), 1, "thread must survive decade upsert");
+        assert_eq!(
+            store.get_decade("ADR-001").await.unwrap().unwrap().title,
+            "Updated"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_active_pipelines_multi() {
+        let (store, _dir) = temp_backend();
+        for i in 0..3 {
+            store
+                .upsert_pipeline(&PipelineState {
+                    bead_ref: BeadRef {
+                        repo: "rosary".into(),
+                        bead_id: format!("rsry-{i:03}"),
+                    },
+                    pipeline_phase: 0,
+                    pipeline_agent: "dev-agent".into(),
+                    phase_status: "executing".into(),
+                    retries: 0,
+                    consecutive_reverts: 0,
+                    highest_verify_tier: None,
+                    last_generation: 0,
+                    backoff_until: None,
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(store.list_active_pipelines().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn pipeline_backoff_roundtrip() {
+        let (store, _dir) = temp_backend();
+        let now = Utc::now();
+        let bead = BeadRef {
+            repo: "rosary".into(),
+            bead_id: "rsry-bo".into(),
+        };
+        store
+            .upsert_pipeline(&PipelineState {
+                bead_ref: bead.clone(),
+                pipeline_phase: 0,
+                pipeline_agent: "dev-agent".into(),
+                phase_status: "backoff".into(),
+                retries: 2,
+                consecutive_reverts: 0,
+                highest_verify_tier: None,
+                last_generation: 0,
+                backoff_until: Some(now),
+            })
+            .await
+            .unwrap();
+        let got = store.get_pipeline(&bead).await.unwrap().unwrap();
+        assert!(got.backoff_until.is_some());
+        // RFC3339 roundtrip loses sub-second precision, so check within 1s
+        let diff = (got.backoff_until.unwrap() - now).num_seconds().abs();
+        assert!(diff <= 1, "backoff_until roundtrip drift: {diff}s");
+    }
+
+    #[tokio::test]
+    async fn dispatch_update_session() {
+        let (store, _dir) = temp_backend();
+        let record = DispatchRecord {
+            id: "d-sess".into(),
+            bead_ref: BeadRef {
+                repo: "rosary".into(),
+                bead_id: "rsry-001".into(),
+            },
+            agent: "dev-agent".into(),
+            provider: "claude".into(),
+            started_at: Utc::now(),
+            completed_at: None,
+            outcome: None,
+            work_dir: "/tmp/work".into(),
+            session_id: None,
+            workspace_path: None,
+        };
+        store.record_dispatch(&record).await.unwrap();
+
+        store
+            .update_dispatch_session("d-sess", "sess-abc-123")
+            .await
+            .unwrap();
+
+        let active = store.active_dispatches().await.unwrap();
+        assert_eq!(active[0].session_id.as_deref(), Some("sess-abc-123"));
+    }
+
+    #[tokio::test]
+    async fn user_repo_crud() {
+        let (store, _dir) = temp_backend();
+        let repo = UserRepo {
+            user_id: "user-1".into(),
+            repo_url: "https://github.com/example/repo".into(),
+            repo_name: "repo".into(),
+            github_token_ref: Some("kv:tok-abc".into()),
+        };
+
+        store.register_repo(&repo).await.unwrap();
+        let repos = store.list_user_repos("user-1").await.unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].repo_name, "repo");
+        assert_eq!(repos[0].github_token_ref.as_deref(), Some("kv:tok-abc"));
+
+        // Other user sees nothing
+        assert!(store.list_user_repos("user-2").await.unwrap().is_empty());
+
+        // Unregister
+        store.unregister_repo("user-1", "repo").await.unwrap();
+        assert!(store.list_user_repos("user-1").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn user_repo_upsert_overwrites() {
+        let (store, _dir) = temp_backend();
+        let repo = UserRepo {
+            user_id: "user-1".into(),
+            repo_url: "https://github.com/example/repo".into(),
+            repo_name: "repo".into(),
+            github_token_ref: Some("old-tok".into()),
+        };
+        store.register_repo(&repo).await.unwrap();
+
+        // Re-register with new token
+        let updated = UserRepo {
+            github_token_ref: Some("new-tok".into()),
+            ..repo
+        };
+        store.register_repo(&updated).await.unwrap();
+
+        let repos = store.list_user_repos("user-1").await.unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].github_token_ref.as_deref(), Some("new-tok"));
+    }
 }
