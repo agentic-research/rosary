@@ -223,12 +223,27 @@ async fn tool_run_once(config_path: &str, dry_run: bool, bead_id: Option<&str>) 
     let mut reconciler = Reconciler::new(reconciler_config).await;
 
     if bead_id.is_some() {
-        // Full pipeline: run() does iterate + wait_and_verify (blocks until done)
-        reconciler.run().await?;
+        // Full pipeline: run() loops until bead reaches terminal/deadletter
+        let summary = reconciler.run().await?;
+        let status = if summary.deadlettered > 0 {
+            "deadlettered"
+        } else if summary.failed > 0 {
+            "failed"
+        } else if summary.passed > 0 {
+            "terminal"
+        } else if summary.dispatched > 0 {
+            "dispatched"
+        } else {
+            "no_dispatch"
+        };
         Ok(json!({
             "targeted_bead": bead_id,
             "pipeline": true,
-            "status": "completed",
+            "status": status,
+            "dispatched": summary.dispatched,
+            "passed": summary.passed,
+            "failed": summary.failed,
+            "deadlettered": summary.deadlettered,
         }))
     } else {
         // Single pass: just iterate (existing behavior)

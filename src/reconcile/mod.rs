@@ -173,10 +173,15 @@ impl Reconciler {
             repo_info.insert(repo.name.clone(), (path, lang));
         }
 
-        let provider = dispatch::provider_by_name(&config.provider).unwrap_or_else(|e| {
-            eprintln!("[reconcile] {e}, falling back to claude");
-            dispatch::provider_by_name("claude").unwrap()
-        });
+        let binaries = crate::config::load_global()
+            .ok()
+            .and_then(|c| c.dispatch.map(|d| d.binaries))
+            .unwrap_or_default();
+        let provider =
+            dispatch::provider_by_name(&config.provider, &binaries).unwrap_or_else(|e| {
+                eprintln!("[reconcile] {e}, falling back to claude");
+                dispatch::provider_by_name("claude", &binaries).unwrap()
+            });
 
         // Build compute provider from config, fall back to local on failure.
         let compute: Box<dyn crate::backend::ComputeProvider> = {
@@ -280,14 +285,18 @@ impl Reconciler {
         self.issue_tracker = Some(tracker);
     }
 
-    /// Run the reconciliation loop.
-    pub async fn run(&mut self) -> Result<()> {
-        println!(
-            "Reconciler started: max_concurrent={}, interval={}s, dry_run={}",
-            self.config.max_concurrent,
-            self.config.scan_interval.as_secs(),
-            self.config.dry_run,
-        );
+    /// Run the reconciliation loop. Returns the last iteration summary.
+    pub async fn run(&mut self) -> Result<IterationSummary> {
+        if let Some(ref target) = self.config.target_bead {
+            println!("[reconcile] targeting bead {target} (pipeline until terminal/deadletter)");
+        } else {
+            println!(
+                "Reconciler started: max_concurrent={}, interval={}s, dry_run={}",
+                self.config.max_concurrent,
+                self.config.scan_interval.as_secs(),
+                self.config.dry_run,
+            );
+        }
 
         // Recover beads stuck at 'dispatched' from previous crashed run
         self.recover_stuck_beads().await;
@@ -297,12 +306,20 @@ impl Reconciler {
         let active_ids: Vec<String> = self.active.keys().cloned().collect();
         crate::workspace::sweep_orphaned(&repo_paths, &active_ids);
 
+        let start = Instant::now();
+        let mut cumulative = IterationSummary::default();
         loop {
             let summary = self.iterate().await?;
             println!("[reconcile] {summary}");
+            cumulative.scanned = summary.scanned; // latest scan count
+            cumulative.triaged += summary.triaged;
+            cumulative.dispatched += summary.dispatched;
+            cumulative.completed += summary.completed;
+            cumulative.passed += summary.passed;
+            cumulative.failed += summary.failed;
+            cumulative.deadlettered += summary.deadlettered;
 
             if self.config.once {
-                println!("[reconcile] active agents: {}", self.active.len());
                 if !self.active.is_empty() {
                     println!(
                         "[reconcile] waiting for {} active agent(s)...",
@@ -310,14 +327,54 @@ impl Reconciler {
                     );
                     self.wait_and_verify().await?;
                 }
-                println!("[reconcile] single-pass mode, exiting");
+
+                // When targeting a specific bead, keep looping until it
+                // reaches a terminal state. Check if the bead is still
+                // retriable (in backoff queue or was just dispatched).
+                if let Some(ref target) = self.config.target_bead {
+                    // Exit on terminal outcomes
+                    if cumulative.deadlettered > 0 {
+                        println!(
+                            "[reconcile] bead {target} deadlettered after {} retries",
+                            cumulative.failed
+                        );
+                        break;
+                    }
+                    if cumulative.passed > 0 {
+                        println!("[reconcile] bead {target} completed pipeline");
+                        break;
+                    }
+
+                    let still_active = summary.dispatched > 0
+                        || self.queue.has_backoff(target)
+                        || !self.active.is_empty();
+
+                    if still_active {
+                        let elapsed = start.elapsed();
+                        let reason = if self.queue.has_backoff(target) {
+                            "waiting for backoff"
+                        } else {
+                            "retry pass"
+                        };
+                        println!(
+                            "[reconcile] {reason} ({:.0}s elapsed)",
+                            elapsed.as_secs_f64()
+                        );
+                        // Wait for backoff to expire before next scan
+                        tokio::time::sleep(self.config.scan_interval).await;
+                        continue;
+                    }
+                }
+
+                let elapsed = start.elapsed();
+                println!("[reconcile] done ({:.0}s elapsed)", elapsed.as_secs_f64());
                 break;
             }
 
             tokio::time::sleep(self.config.scan_interval).await;
         }
 
-        Ok(())
+        Ok(cumulative)
     }
 
     /// Execute one full iteration of the reconciliation loop.
@@ -568,7 +625,8 @@ pub async fn run(
         }
     }
 
-    reconciler.run().await
+    reconciler.run().await?;
+    Ok(())
 }
 
 #[cfg(test)]
