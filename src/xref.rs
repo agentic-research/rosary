@@ -1,8 +1,8 @@
-//! Cross-repo bead tracking — "threads" that string beads across repos.
+//! Cross-repo external-ref sync.
 //!
-//! When a bead has an `external_ref` like "kiln:ll-packaging", the reconciler
-//! should ensure a mirror bead exists in the target repo with a back-reference.
-//! Status changes propagate bidirectionally on subsequent scans.
+//! When a bead carries an `external_ref` (e.g. `"kiln:ll-packaging"`), this
+//! module creates a **mirror bead** in the target repo with a back-reference
+//! and propagates status changes between source and mirror on each scan.
 use crate::bead::Bead;
 use crate::dolt::DoltClient;
 use std::collections::HashMap;
@@ -77,14 +77,14 @@ pub async fn sync_external_refs(
             }) && mirror.status != ext_ref.source_status
             {
                 eprintln!(
-                    "[thread] status drift: {} ({}) != {} ({}), source wins",
+                    "[xref] status drift: {} ({}) != {} ({}), source wins",
                     ext_ref.source_bead_id, ext_ref.source_status, mirror.id, mirror.status,
                 );
                 if let Err(e) = client
                     .update_status(&mirror.id, &ext_ref.source_status)
                     .await
                 {
-                    eprintln!("[thread] failed to sync status to {}: {e}", mirror.id);
+                    eprintln!("[xref] failed to sync status to {}: {e}", mirror.id);
                 }
             }
         } else {
@@ -100,7 +100,7 @@ pub async fn sync_external_refs(
             );
 
             eprintln!(
-                "[thread] creating mirror bead {} in {} for {}",
+                "[xref] creating mirror bead {} in {} for {}",
                 mirror_id, ext_ref.target_repo, ext_ref.source_bead_id
             );
 
@@ -108,7 +108,7 @@ pub async fn sync_external_refs(
                 .create_bead(&mirror_id, &title, &description, 2, "task")
                 .await
             {
-                eprintln!("[thread] failed to create mirror {mirror_id}: {e}");
+                eprintln!("[xref] failed to create mirror {mirror_id}: {e}");
             } else {
                 // Set the back-reference via direct SQL
                 let sql = format!(
@@ -121,7 +121,7 @@ pub async fn sync_external_refs(
                     .await;
                 // Best-effort: external_ref column update
                 if let Err(e) = client.execute_raw(&sql).await {
-                    eprintln!("[thread] failed to set back-ref on {mirror_id}: {e}");
+                    eprintln!("[xref] failed to set back-ref on {mirror_id}: {e}");
                 }
             }
         }
