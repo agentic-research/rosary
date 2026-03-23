@@ -334,6 +334,31 @@ impl DispatchStore for SqliteBackend {
         Ok(())
     }
 
+    async fn upsert_dispatch(&self, record: &DispatchRecord) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(id) DO UPDATE SET
+                 completed_at = excluded.completed_at, outcome = excluded.outcome,
+                 session_id = excluded.session_id, workspace_path = excluded.workspace_path",
+            params![
+                record.id,
+                record.bead_ref.repo,
+                record.bead_ref.bead_id,
+                record.agent,
+                record.provider,
+                record.started_at.to_rfc3339(),
+                record.completed_at.map(|dt| dt.to_rfc3339()),
+                record.outcome,
+                record.work_dir,
+                record.session_id,
+                record.workspace_path,
+            ],
+        )?;
+        Ok(())
+    }
+
     async fn complete_dispatch(&self, id: &str, outcome: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -489,6 +514,111 @@ impl UserRepoStore for SqliteBackend {
             params![user_id, repo_name],
         )?;
         Ok(())
+    }
+}
+
+// ── BackendExport ──────────────────────────────────────
+
+#[async_trait]
+impl BackendExport for SqliteBackend {
+    async fn all_threads(&self) -> Result<Vec<ThreadRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT id, name, decade_id, feature_branch FROM threads ORDER BY id")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ThreadRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                decade_id: row.get(2)?,
+                feature_branch: row.get(3)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    async fn all_thread_members(&self) -> Result<Vec<(String, BeadRef)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT thread_id, repo, bead_id FROM thread_members ORDER BY thread_id, repo, bead_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                BeadRef {
+                    repo: row.get(1)?,
+                    bead_id: row.get(2)?,
+                },
+            ))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    async fn all_dispatches(&self) -> Result<Vec<DispatchRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path
+             FROM dispatches ORDER BY started_at ASC",
+        )?;
+        let rows = stmt.query_map([], row_to_dispatch)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    async fn all_dependencies(&self) -> Result<Vec<CrossRepoDep>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT from_repo, from_bead, to_repo, to_bead, dep_type FROM dependencies")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(CrossRepoDep {
+                from: BeadRef {
+                    repo: row.get(0)?,
+                    bead_id: row.get(1)?,
+                },
+                to: BeadRef {
+                    repo: row.get(2)?,
+                    bead_id: row.get(3)?,
+                },
+                dep_type: row.get(4)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    async fn all_linear_links(&self) -> Result<Vec<LinearLink>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT repo, bead_id, linear_id, linear_type FROM linear_links")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(LinearLink {
+                bead_ref: BeadRef {
+                    repo: row.get(0)?,
+                    bead_id: row.get(1)?,
+                },
+                linear_id: row.get(2)?,
+                linear_type: row.get(3)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    async fn all_user_repos(&self) -> Result<Vec<UserRepo>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT user_id, repo_url, repo_name, github_token_ref FROM user_repos")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(UserRepo {
+                user_id: row.get(0)?,
+                repo_url: row.get(1)?,
+                repo_name: row.get(2)?,
+                github_token_ref: row.get(3)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 }
 

@@ -20,7 +20,7 @@ use tokio::sync::RwLock;
 
 use crate::config;
 use crate::pool::RepoPool;
-use crate::store_dolt::DoltBackend;
+use crate::store::BackendStore;
 
 // ---------------------------------------------------------------------------
 // Caller identity — extracted from CF client cert or Authorization header
@@ -208,7 +208,7 @@ async fn handle_tools_call(
     params: &Value,
     config_path: &str,
     pool: &RepoPool,
-    backend: Option<&DoltBackend>,
+    backend: Option<&dyn BackendStore>,
     caller: &CallerIdentity,
 ) -> JsonRpcResponse {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -271,7 +271,7 @@ pub(crate) struct AppState {
     pub webhook_secret: Option<Arc<str>>,
     /// Backend store for cross-repo orchestrator state (pipeline, dispatches, linkage).
     /// None when `[backend]` is not configured — existing functionality is unaffected.
-    pub backend: Option<Arc<DoltBackend>>,
+    pub backend: Option<Arc<dyn BackendStore>>,
 }
 
 /// Validate Origin header to prevent DNS rebinding attacks.
@@ -488,13 +488,13 @@ async fn run_http(config_path: &str, port: u16) -> Result<()> {
 
     // Connect backend store if [backend] is configured
     let backend = if let Some(ref backend_cfg) = cfg.backend {
-        match DoltBackend::connect(backend_cfg).await {
+        match backend_cfg.connect().await {
             Ok(b) => {
                 eprintln!(
                     "[rsry-mcp] backend store connected ({})",
                     backend_cfg.path.display()
                 );
-                Some(Arc::new(b))
+                Some(Arc::from(b))
             }
             Err(e) => {
                 eprintln!("[rsry-mcp] backend store unavailable, continuing without it: {e}");
@@ -598,13 +598,13 @@ async fn run_stdio(config_path: &str) -> Result<()> {
     // Connect backend store if [backend] is configured
     let cfg = config::load(config_path).ok();
     let backend = if let Some(backend_cfg) = cfg.as_ref().and_then(|c| c.backend.as_ref()) {
-        match DoltBackend::connect(backend_cfg).await {
+        match backend_cfg.connect().await {
             Ok(b) => {
                 eprintln!(
                     "[rsry-mcp] backend store connected ({})",
                     backend_cfg.path.display()
                 );
-                Some(Arc::new(b))
+                Some(Arc::from(b))
             }
             Err(e) => {
                 eprintln!("[rsry-mcp] backend store unavailable, continuing without it: {e}");

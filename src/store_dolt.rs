@@ -506,6 +506,31 @@ impl DispatchStore for DoltBackend {
         Ok(())
     }
 
+    async fn upsert_dispatch(&self, record: &DispatchRecord) -> Result<()> {
+        query(
+            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                 completed_at = VALUES(completed_at), outcome = VALUES(outcome),
+                 session_id = VALUES(session_id), workspace_path = VALUES(workspace_path)",
+        )
+        .bind(&record.id)
+        .bind(&record.bead_ref.repo)
+        .bind(&record.bead_ref.bead_id)
+        .bind(&record.agent)
+        .bind(&record.provider)
+        .bind(record.started_at.naive_utc())
+        .bind(record.completed_at.map(|dt| dt.naive_utc()))
+        .bind(&record.outcome)
+        .bind(&record.work_dir)
+        .bind(&record.session_id)
+        .bind(&record.workspace_path)
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("upserting dispatch {}", record.id))?;
+        Ok(())
+    }
+
     async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>> {
         let rows = query(
             "SELECT id, repo, bead_id, agent, provider, started_at,
@@ -717,6 +742,103 @@ fn row_to_cross_repo_dep(r: &sqlx_mysql::MySqlRow) -> CrossRepoDep {
             bead_id: r.get("to_bead"),
         },
         dep_type: r.get("dep_type"),
+    }
+}
+
+// ── BackendExport ──────────────────────────────────────
+
+#[async_trait]
+impl BackendExport for DoltBackend {
+    async fn all_threads(&self) -> Result<Vec<ThreadRecord>> {
+        let rows = query("SELECT id, name, decade_id, feature_branch FROM threads ORDER BY id")
+            .fetch_all(&self.pool)
+            .await
+            .context("listing all threads")?;
+        Ok(rows
+            .iter()
+            .map(|r| ThreadRecord {
+                id: r.get("id"),
+                name: r.get("name"),
+                decade_id: r.get("decade_id"),
+                feature_branch: r.try_get("feature_branch").ok(),
+            })
+            .collect())
+    }
+
+    async fn all_thread_members(&self) -> Result<Vec<(String, BeadRef)>> {
+        let rows = query(
+            "SELECT thread_id, repo, bead_id FROM thread_members ORDER BY thread_id, ordinal",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("listing all thread members")?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>("thread_id"),
+                    BeadRef {
+                        repo: r.get("repo"),
+                        bead_id: r.get("bead_id"),
+                    },
+                )
+            })
+            .collect())
+    }
+
+    async fn all_dispatches(&self) -> Result<Vec<DispatchRecord>> {
+        let rows = query(
+            "SELECT id, repo, bead_id, agent, provider, started_at,
+                    completed_at, outcome, work_dir, session_id, workspace_path
+             FROM dispatches ORDER BY started_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("listing all dispatches")?;
+        Ok(rows.iter().map(row_to_dispatch_record).collect())
+    }
+
+    async fn all_dependencies(&self) -> Result<Vec<CrossRepoDep>> {
+        let rows =
+            query("SELECT from_repo, from_bead, to_repo, to_bead, dep_type FROM cross_repo_deps")
+                .fetch_all(&self.pool)
+                .await
+                .context("listing all dependencies")?;
+        Ok(rows.iter().map(row_to_cross_repo_dep).collect())
+    }
+
+    async fn all_linear_links(&self) -> Result<Vec<LinearLink>> {
+        let rows = query("SELECT repo, bead_id, linear_id, linear_type FROM linear_links")
+            .fetch_all(&self.pool)
+            .await
+            .context("listing all linear links")?;
+        Ok(rows
+            .iter()
+            .map(|r| LinearLink {
+                bead_ref: BeadRef {
+                    repo: r.get("repo"),
+                    bead_id: r.get("bead_id"),
+                },
+                linear_id: r.get("linear_id"),
+                linear_type: r.get("linear_type"),
+            })
+            .collect())
+    }
+
+    async fn all_user_repos(&self) -> Result<Vec<UserRepo>> {
+        let rows = query("SELECT user_id, repo_url, repo_name, github_token_ref FROM user_repos")
+            .fetch_all(&self.pool)
+            .await
+            .context("listing all user repos")?;
+        Ok(rows
+            .iter()
+            .map(|r| UserRepo {
+                user_id: r.get("user_id"),
+                repo_url: r.get("repo_url"),
+                repo_name: r.get("repo_name"),
+                github_token_ref: r.try_get("github_token_ref").ok(),
+            })
+            .collect())
     }
 }
 
