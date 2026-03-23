@@ -662,18 +662,20 @@ mod tests {
     }
 
     #[test]
-    fn bead_ref_check_fails_with_bracket_only_no_bead_prefix() {
-        // [rsry-abc] in subject line but no "bead:" footer — should FAIL
-        // because extract_bead_refs only finds "bead:ID" format
+    fn bead_ref_check_passes_with_bracket_only() {
+        // [rsry-abc] in subject line without "bead:" footer — should PASS
+        // because extract_bead_refs now detects the bracket format too.
+        // This is the format agents produce from the dispatch prompt.
         let repo = crate::testutil::TestRepo::new();
         let path = repo.path();
         std::fs::write(path.join("test.rs"), "fn test() {}").unwrap();
         run_git(path, &["add", "."]);
         run_git(path, &["commit", "-m", "[rsry-abc] fix: no footer"]);
         let result = BeadRefCheck.check(path).unwrap();
-        assert!(
-            matches!(&result, VerifyResult::Fail(_)),
-            "bracket-only commit (no bead: footer) should fail: {result:?}"
+        assert_eq!(
+            result,
+            VerifyResult::Pass,
+            "bracket-format commit should pass BeadRefCheck"
         );
     }
 
