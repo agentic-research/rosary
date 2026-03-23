@@ -63,8 +63,8 @@ pub(crate) fn tool_definitions() -> Value {
                         },
                         "dry_run": {
                             "type": "boolean",
-                            "description": "If true, print what would be dispatched without actually spawning agents. Defaults to true.",
-                            "default": true
+                            "description": "If true, print what would be dispatched without actually spawning agents. Defaults to false — omitting this field will actually dispatch.",
+                            "default": false
                         }
                     },
                     "required": []

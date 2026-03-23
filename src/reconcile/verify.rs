@@ -276,7 +276,7 @@ impl Reconciler {
             if let Err(e) = client.set_assignee(bead_id, next_agent).await {
                 eprintln!("[phase] failed to advance {bead_id}: {e}");
             } else {
-                println!("[phase] {bead_id} → {next_agent} (phase {})", phase + 1);
+                eprintln!("[phase] {bead_id} → {next_agent} (phase {})", phase + 1);
             }
         }
         self.persist_status(bead_id, repo, "open").await;
@@ -388,7 +388,7 @@ impl Reconciler {
                             .and_then(|t| t.current_agent.as_deref())
                             .unwrap_or("agent");
                         let running_for = (chrono::Utc::now() - handle.started_at).num_seconds();
-                        println!("[waiting] {id} ({agent}) running for {running_for}s");
+                        eprintln!("[waiting] {id} ({agent}) running for {running_for}s");
                     }
                     last_heartbeat = std::time::Instant::now();
                 }
@@ -483,7 +483,7 @@ impl Reconciler {
                     .await
                     {
                         Ok(handle) => {
-                            println!("[dispatch] {bead_id} phase {phase} → {next_agent}");
+                            eprintln!("[dispatch] {bead_id} phase {phase} → {next_agent}");
                             self.persist_status(bead_id, &repo, "dispatched").await;
                             self.append_observation(
                                 bead_id,

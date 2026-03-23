@@ -293,9 +293,9 @@ impl Reconciler {
     /// Run the reconciliation loop. Returns the last iteration summary.
     pub async fn run(&mut self) -> Result<IterationSummary> {
         if let Some(ref target) = self.config.target_bead {
-            println!("[reconcile] targeting bead {target} (pipeline until terminal/deadletter)");
+            eprintln!("[reconcile] targeting bead {target} (pipeline until terminal/deadletter)");
         } else {
-            println!(
+            eprintln!(
                 "Reconciler started: max_concurrent={}, interval={}s, dry_run={}",
                 self.config.max_concurrent,
                 self.config.scan_interval.as_secs(),
@@ -315,7 +315,7 @@ impl Reconciler {
         let mut cumulative = IterationSummary::default();
         loop {
             let summary = self.iterate().await?;
-            println!("[reconcile] {summary}");
+            eprintln!("[reconcile] {summary}");
             cumulative.scanned = summary.scanned; // latest scan count
             cumulative.triaged += summary.triaged;
             cumulative.dispatched += summary.dispatched;
@@ -326,7 +326,7 @@ impl Reconciler {
 
             if self.config.once {
                 if !self.active.is_empty() {
-                    println!(
+                    eprintln!(
                         "[reconcile] waiting for {} active agent(s)...",
                         self.active.len()
                     );
@@ -339,14 +339,14 @@ impl Reconciler {
                 if let Some(ref target) = self.config.target_bead {
                     // Exit on terminal outcomes
                     if cumulative.deadlettered > 0 {
-                        println!(
+                        eprintln!(
                             "[reconcile] bead {target} deadlettered after {} retries",
                             cumulative.failed
                         );
                         break;
                     }
                     if cumulative.passed > 0 {
-                        println!("[reconcile] bead {target} completed pipeline");
+                        eprintln!("[reconcile] bead {target} completed pipeline");
                         break;
                     }
 
@@ -361,7 +361,7 @@ impl Reconciler {
                         } else {
                             "retry pass"
                         };
-                        println!(
+                        eprintln!(
                             "[reconcile] {reason} ({:.0}s elapsed)",
                             elapsed.as_secs_f64()
                         );
@@ -372,7 +372,7 @@ impl Reconciler {
                 }
 
                 let elapsed = start.elapsed();
-                println!("[reconcile] done ({:.0}s elapsed)", elapsed.as_secs_f64());
+                eprintln!("[reconcile] done ({:.0}s elapsed)", elapsed.as_secs_f64());
                 break;
             }
 
@@ -443,7 +443,7 @@ impl Reconciler {
             };
 
             if self.config.dry_run {
-                println!(
+                eprintln!(
                     "[dry-run] would dispatch {} (score={:.3}, retries={})",
                     entry.bead_id, entry.score, entry.retries
                 );
@@ -495,7 +495,7 @@ impl Reconciler {
                 {
                     Ok(handle) => {
                         let agent_label = bead.owner.as_deref().unwrap_or("generic");
-                        println!(
+                        eprintln!(
                             "[dispatch] {} (gen={}, retries={}, provider={}, agent={})",
                             entry.bead_id,
                             entry.generation,

@@ -105,7 +105,7 @@ pub(crate) async fn call_tool(
             let dry_run = args
                 .get("dry_run")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+                .unwrap_or(false);
             let bead_id = args.get("bead_id").and_then(|v| v.as_str());
             tool_run_once(config_path, dry_run, bead_id).await
         }
@@ -220,6 +220,7 @@ async fn tool_run_once(config_path: &str, dry_run: bool, bead_id: Option<&str>) 
         once: true,
         dry_run,
         compute: cfg.compute,
+        backend: cfg.backend,
         target_bead: bead_id.map(|s| s.to_string()),
         pipelines: cfg.pipelines,
         max_pipeline_depth: cfg.max_pipeline_depth,

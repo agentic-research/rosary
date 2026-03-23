@@ -46,19 +46,24 @@ impl Reconciler {
                 continue;
             }
 
-            // Severity floor: skip beads below minimum priority level
-            if !queue::passes_severity_floor(bead, self.queue.min_priority) {
+            // Severity floor: skip beads below minimum priority level.
+            // Targeted dispatch (--bead) bypasses — explicit intent overrides floor.
+            if !queue::passes_severity_floor(bead, self.queue.min_priority)
+                && target_filter.is_none()
+            {
                 continue;
             }
 
-            // Skip epics — they're planning beads, not actionable work
-            if bead.issue_type == "epic" {
+            // Skip epics — they're planning beads, not actionable work.
+            // Targeted dispatch bypasses — user explicitly chose this bead.
+            if bead.issue_type == "epic" && target_filter.is_none() {
                 continue;
             }
 
             // Golden Rule 12: implementation beads need refinement (5-whys)
             // before dispatch. Unrefined beads need a research pass first.
-            if bead.needs_refinement() {
+            // Targeted dispatch (--bead) bypasses — explicit user intent overrides gate.
+            if bead.needs_refinement() && target_filter.is_none() {
                 eprintln!(
                     "[refinement] deferring {} — description too short, needs 5-whys (rule 12)",
                     bead.id

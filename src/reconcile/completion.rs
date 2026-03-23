@@ -92,7 +92,7 @@ impl Reconciler {
         let verifier = Verifier::for_language(lang);
         match verifier.run(&work_dir) {
             Ok(summary) => {
-                println!(
+                eprintln!(
                     "[verify] {bead_id}: {} (highest_tier={:?})",
                     if summary.passed() { "PASS" } else { "FAIL" },
                     summary.highest_passing_tier,
@@ -107,7 +107,7 @@ impl Reconciler {
     }
 
     pub(super) fn on_pass(&mut self, bead_id: &str) {
-        println!("[pass] {bead_id}");
+        eprintln!("[pass] {bead_id}");
         self.queue.clear_backoff(bead_id);
         if let Some(tracker) = self.trackers.get_mut(bead_id) {
             tracker.consecutive_reverts = 0;
@@ -144,11 +144,11 @@ impl Reconciler {
 
         // Stopping conditions
         if tracker.retries >= self.config.max_retries {
-            println!("[deadletter] {bead_id}: max retries ({})", tracker.retries);
+            eprintln!("[deadletter] {bead_id}: max retries ({})", tracker.retries);
             return true;
         }
         if tracker.consecutive_reverts >= 3 {
-            println!(
+            eprintln!(
                 "[deadletter] {bead_id}: {} consecutive reverts",
                 tracker.consecutive_reverts
             );
@@ -159,7 +159,7 @@ impl Reconciler {
         self.queue
             .record_backoff(bead_id, tracker.retries, Instant::now());
         if let Some((name, _)) = summary.first_failure() {
-            println!(
+            eprintln!(
                 "[retry] {bead_id}: failed at tier '{name}', retry #{} scheduled",
                 tracker.retries
             );
@@ -186,7 +186,7 @@ impl Reconciler {
         tracker.retries += 1;
 
         if tracker.retries >= self.config.max_retries {
-            println!(
+            eprintln!(
                 "[deadletter] {bead_id}: max retries after exit failure ({})",
                 tracker.retries
             );
@@ -195,7 +195,7 @@ impl Reconciler {
 
         self.queue
             .record_backoff(bead_id, tracker.retries, Instant::now());
-        println!(
+        eprintln!(
             "[retry] {bead_id}: agent exited non-zero, retry #{} scheduled",
             tracker.retries
         );
