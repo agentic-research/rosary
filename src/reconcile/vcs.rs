@@ -58,7 +58,7 @@ impl Reconciler {
         for (repo_name, bead_id, bead_repo, change_id, closes) in &pending {
             let new_status = if *closes { "closed" } else { "dispatched" };
 
-            println!("[vcs] {repo_name}: {bead_id} → {new_status} (jj change {change_id})");
+            eprintln!("[vcs] {repo_name}: {bead_id} → {new_status} (jj change {change_id})");
 
             if let Some(client) = self.dolt_client(bead_repo).await {
                 let _ = client
@@ -115,7 +115,7 @@ impl Reconciler {
             };
 
             if merged {
-                println!("[pr-merged] {} — PR merged, closing bead", bead.id);
+                eprintln!("[pr-merged] {} — PR merged, closing bead", bead.id);
                 self.persist_status(&bead.id, &bead.repo, "closed").await;
 
                 // Now clear pipeline state

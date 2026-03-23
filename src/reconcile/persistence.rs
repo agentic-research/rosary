@@ -78,7 +78,7 @@ impl Reconciler {
         if let Some(client) = self.dolt_client(repo).await {
             match client.get_status(bead_id).await {
                 Ok(Some(ref status)) if status == "closed" || status == "done" => {
-                    println!("[agent-closed] {bead_id} — skipping verification (agent-first)");
+                    eprintln!("[agent-closed] {bead_id} — skipping verification (agent-first)");
                     true
                 }
                 _ => false,

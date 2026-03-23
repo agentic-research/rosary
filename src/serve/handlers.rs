@@ -16,6 +16,16 @@ const SEARCH_MAX_LIMIT: u64 = 50;
 const SEARCH_DESC_TRUNCATE: usize = 200;
 
 // ---------------------------------------------------------------------------
+// Argument parsing helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a boolean arg from MCP JSON, with an explicit default.
+/// Returns `default` if the key is missing, null, or not a bool.
+fn parse_bool_arg(args: &Value, key: &str, default: bool) -> bool {
+    args.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+}
+
+// ---------------------------------------------------------------------------
 // Client helpers
 // ---------------------------------------------------------------------------
 /// Get a DoltClient — try the pool first (by name then path), fall back to fresh connect.
@@ -102,10 +112,7 @@ pub(crate) async fn call_tool(
             .await
         }
         "rsry_run_once" => {
-            let dry_run = args
-                .get("dry_run")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+            let dry_run = parse_bool_arg(args, "dry_run", false);
             let bead_id = args.get("bead_id").and_then(|v| v.as_str());
             tool_run_once(config_path, dry_run, bead_id).await
         }
@@ -220,6 +227,7 @@ async fn tool_run_once(config_path: &str, dry_run: bool, bead_id: Option<&str>) 
         once: true,
         dry_run,
         compute: cfg.compute,
+        backend: cfg.backend,
         target_bead: bead_id.map(|s| s.to_string()),
         pipelines: cfg.pipelines,
         max_pipeline_depth: cfg.max_pipeline_depth,
@@ -1417,5 +1425,39 @@ mod tests {
         // Should fail on backend check before field validation, but if backend were present
         // it would fail on missing pipeline_agent. Test the backend-absent path first.
         assert!(result.is_err());
+    }
+
+    // Regression tests for rosary-b0b69a: exercises the same parse_bool_arg
+    // helper that call_tool uses, so regressions are caught.
+
+    #[test]
+    fn run_once_dry_run_defaults_to_false() {
+        assert!(
+            !parse_bool_arg(&json!({}), "dry_run", false),
+            "dry_run must default to false — MCP dispatch won't work otherwise"
+        );
+    }
+
+    #[test]
+    fn run_once_dry_run_explicit_true() {
+        assert!(parse_bool_arg(&json!({"dry_run": true}), "dry_run", false));
+    }
+
+    #[test]
+    fn run_once_dry_run_explicit_false() {
+        assert!(!parse_bool_arg(
+            &json!({"dry_run": false}),
+            "dry_run",
+            false
+        ));
+    }
+
+    #[test]
+    fn run_once_dry_run_string_value_defaults_to_false() {
+        // If a client sends "false" as a string, as_bool() returns None
+        assert!(
+            !parse_bool_arg(&json!({"dry_run": "false"}), "dry_run", false),
+            "string 'false' must not become true"
+        );
     }
 }
