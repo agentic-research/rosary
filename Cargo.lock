@@ -350,10 +350,12 @@ name = "bdr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
  "openai-harmony",
  "pretty_assertions",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
 ]
 
