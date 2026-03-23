@@ -2,7 +2,7 @@
 
 > **Experimental software.** APIs, schemas, and behaviors change without notice. Use at your own risk. Contributions welcome — expect rough edges.
 
-Autonomous work orchestrator for AI agents across multiple code repos.
+Autonomous work orchestrator for AI agents across multiple code repos. Local-first, open source. Hosted version coming at [rosary.bot](https://rosary.bot).
 
 Rosary structures work as **[beads](https://github.com/steveyegge/beads)** — small, trackable units stored in each repo via [Dolt](https://www.dolthub.com/). A reconciliation loop scans for ready beads, dispatches AI agents (Claude, Gemini) to execute them in isolated workspaces, verifies the results, and syncs status to [Linear](https://linear.app) for human review.
 
