@@ -112,7 +112,7 @@ pub(crate) async fn call_tool(
             .await
         }
         "rsry_run_once" => {
-            let dry_run = parse_bool_arg(&args, "dry_run", false);
+            let dry_run = parse_bool_arg(args, "dry_run", false);
             let bead_id = args.get("bead_id").and_then(|v| v.as_str());
             tool_run_once(config_path, dry_run, bead_id).await
         }
