@@ -40,6 +40,8 @@ mod sprites_provider;
 mod store;
 #[allow(dead_code)] // Phase 1: Dolt backend, wired in Phase 2
 mod store_dolt;
+#[allow(dead_code)] // Phase 1: SQLite backend, wired alongside Dolt
+mod store_sqlite;
 #[allow(dead_code)]
 mod sync;
 #[cfg(test)]

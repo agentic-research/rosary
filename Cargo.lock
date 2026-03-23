@@ -3253,6 +3253,7 @@ dependencies = [
  "owo-colors",
  "predicates",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
