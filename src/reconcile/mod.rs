@@ -500,6 +500,15 @@ impl Reconciler {
                         );
                         self.persist_status(&entry.bead_id, &entry.repo, "dispatched")
                             .await;
+                        self.append_observation(
+                            &entry.bead_id,
+                            &entry.repo,
+                            agent_label,
+                            0,
+                            crate::dolt::observations::Verdict::Dispatched,
+                            "agent dispatched",
+                        )
+                        .await;
 
                         // Record the dispatch branch and workspace path
                         let branch = format!("fix/{}", entry.bead_id);
