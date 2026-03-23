@@ -329,15 +329,28 @@ impl Reconciler {
                 }
 
                 // When targeting a specific bead, keep looping until it
-                // reaches a terminal state (not just one pass + one retry).
-                if self.config.target_bead.is_some() && summary.dispatched > 0 {
-                    let elapsed = start.elapsed();
-                    println!(
-                        "[reconcile] retry pass ({:.0}s elapsed)",
-                        elapsed.as_secs_f64()
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    continue;
+                // reaches a terminal state. Check if the bead is still
+                // retriable (in backoff queue or was just dispatched).
+                if let Some(ref target) = self.config.target_bead {
+                    let still_active = summary.dispatched > 0
+                        || self.queue.has_backoff(target)
+                        || !self.active.is_empty();
+
+                    if still_active {
+                        let elapsed = start.elapsed();
+                        let reason = if self.queue.has_backoff(target) {
+                            "waiting for backoff"
+                        } else {
+                            "retry pass"
+                        };
+                        println!(
+                            "[reconcile] {reason} ({:.0}s elapsed)",
+                            elapsed.as_secs_f64()
+                        );
+                        // Wait for backoff to expire before next scan
+                        tokio::time::sleep(self.config.scan_interval).await;
+                        continue;
+                    }
                 }
 
                 let elapsed = start.elapsed();

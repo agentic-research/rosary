@@ -173,6 +173,11 @@ impl WorkQueue {
         self.in_queue.contains(bead_id)
     }
 
+    /// Check if a bead has pending backoff (scheduled for retry).
+    pub fn has_backoff(&self, bead_id: &str) -> bool {
+        self.backoff.contains_key(bead_id)
+    }
+
     /// Clear backoff state for a bead (e.g., on successful completion).
     pub fn clear_backoff(&mut self, bead_id: &str) {
         self.backoff.remove(bead_id);
