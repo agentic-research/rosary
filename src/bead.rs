@@ -26,6 +26,8 @@ pub enum BeadState {
     Queued,
     Dispatched,
     Verifying,
+    /// Pipeline complete, PR created, awaiting merge. NOT eligible for dispatch.
+    PrOpen,
     Done,
     Rejected,
     Blocked,
@@ -42,6 +44,7 @@ impl BeadState {
             BeadState::Queued => &[BeadState::Dispatched],
             BeadState::Dispatched => &[BeadState::Verifying],
             BeadState::Verifying => &[BeadState::Done, BeadState::Rejected, BeadState::Blocked],
+            BeadState::PrOpen => &[BeadState::Done],
             BeadState::Rejected => &[BeadState::Open],
             BeadState::Blocked => &[BeadState::Open],
             BeadState::Done => &[],
@@ -71,6 +74,7 @@ impl BeadState {
             BeadState::Queued => ("unstarted", "Todo"),
             BeadState::Dispatched => ("started", "In Progress"),
             BeadState::Verifying => ("started", "In Review"),
+            BeadState::PrOpen => ("started", "In Review"),
             BeadState::Done => ("completed", "Done"),
             BeadState::Blocked => ("backlog", "Backlog"),
         }
@@ -107,6 +111,7 @@ impl fmt::Display for BeadState {
             BeadState::Queued => "queued",
             BeadState::Dispatched => "dispatched",
             BeadState::Verifying => "verifying",
+            BeadState::PrOpen => "pr_open",
             BeadState::Done => "done",
             BeadState::Rejected => "rejected",
             BeadState::Blocked => "blocked",
@@ -128,6 +133,7 @@ impl From<&str> for BeadState {
             "rejected" => BeadState::Rejected,
             "blocked" => BeadState::Blocked,
             "stale" => BeadState::Stale,
+            "pr_open" => BeadState::PrOpen,
             "in_progress" => BeadState::Dispatched, // legacy mapping
             _ => BeadState::Open,
         }
@@ -403,6 +409,7 @@ mod tests {
             BeadState::Queued,
             BeadState::Dispatched,
             BeadState::Verifying,
+            BeadState::PrOpen,
             BeadState::Done,
             BeadState::Rejected,
             BeadState::Blocked,
@@ -673,6 +680,55 @@ mod tests {
             let bead = Bead::from_bd_json(&val, "repo").unwrap();
             assert!(!bead.needs_refinement(), "{issue_type} should be exempt");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug regression: pr_open must be a recognized state
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pr_open_parses_correctly() {
+        // BUG: verify.rs writes "pr_open" status but BeadState::from parses it
+        // as Open, which means triage could re-dispatch a bead waiting for PR merge.
+        assert_ne!(
+            BeadState::from("pr_open"),
+            BeadState::Open,
+            "pr_open must NOT parse as Open — would cause re-dispatch"
+        );
+    }
+
+    #[test]
+    fn pr_open_display_roundtrips() {
+        let state = BeadState::from("pr_open");
+        let s = state.to_string();
+        assert_eq!(BeadState::from(s.as_str()), state, "pr_open must roundtrip");
+    }
+
+    #[test]
+    fn pr_open_maps_to_linear_in_review() {
+        // PR awaiting merge should show as "In Review" in Linear, not "Todo"
+        let state = BeadState::from("pr_open");
+        let (linear_type, _) = state.to_linear_type();
+        assert_eq!(
+            linear_type, "started",
+            "pr_open should map to Linear 'started' type, not '{linear_type}'"
+        );
+    }
+
+    #[test]
+    fn pr_open_is_not_ready() {
+        // A bead with pr_open status should NOT be eligible for dispatch
+        let val = json!({
+            "id": "x-1", "title": "waiting for merge",
+            "status": "pr_open", "priority": 1,
+            "created_at": "2026-03-12T00:00:00Z",
+            "updated_at": "2026-03-12T00:00:00Z"
+        });
+        let bead = Bead::from_bd_json(&val, "repo").unwrap();
+        assert!(
+            !bead.is_ready(),
+            "pr_open bead should NOT be ready for dispatch"
+        );
     }
 
     #[test]
