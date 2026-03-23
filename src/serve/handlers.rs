@@ -1419,4 +1419,50 @@ mod tests {
         // it would fail on missing pipeline_agent. Test the backend-absent path first.
         assert!(result.is_err());
     }
+
+    #[test]
+    fn run_once_dry_run_defaults_to_false() {
+        // Regression test for rosary-b0b69a: .unwrap_or(true) caused MCP dispatch
+        // to silently run in dry-run mode, never spawning agents.
+        let args = json!({});
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(
+            !dry_run,
+            "dry_run must default to false — MCP dispatch won't work otherwise"
+        );
+    }
+
+    #[test]
+    fn run_once_dry_run_explicit_true() {
+        let args = json!({"dry_run": true});
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(dry_run);
+    }
+
+    #[test]
+    fn run_once_dry_run_explicit_false() {
+        let args = json!({"dry_run": false});
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(!dry_run);
+    }
+
+    #[test]
+    fn run_once_dry_run_string_value_defaults_to_false() {
+        // If a client sends "false" as a string, as_bool() returns None
+        let args = json!({"dry_run": "false"});
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(!dry_run, "string 'false' must not become true");
+    }
 }

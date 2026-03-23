@@ -972,3 +972,37 @@ async fn verify_completed_feature_four_phase_progression() {
     assert_eq!(result.phase_advances.len(), 0, "prod → no more phases");
     assert_eq!(result.status_updates[0].2, "pr_open", "Terminal → pr_open");
 }
+
+/// Source-level lint: reconcile/ must never use println! (corrupts MCP stdio).
+/// Regression test for rosary-b0b69a.
+#[test]
+fn no_println_in_reconcile() {
+    let reconcile_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconcile");
+    let mut violations = Vec::new();
+    for entry in std::fs::read_dir(&reconcile_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "rs") {
+            let content = std::fs::read_to_string(&path).unwrap();
+            for (i, line) in content.lines().enumerate() {
+                let trimmed = line.trim();
+                // Skip test code and comments
+                if trimmed.starts_with("//") || trimmed.starts_with('#') {
+                    continue;
+                }
+                if trimmed.contains("println!") && !trimmed.contains("eprintln!") {
+                    violations.push(format!(
+                        "{}:{}: {}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        i + 1,
+                        trimmed
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "println! in reconcile/ corrupts MCP stdio JSON-RPC stream. Use eprintln! instead.\n{}",
+        violations.join("\n")
+    );
+}
