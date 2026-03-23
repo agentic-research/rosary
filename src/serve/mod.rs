@@ -5,6 +5,7 @@
 //! - **http**: MCP Streamable HTTP transport over a single `/mcp` endpoint
 
 mod handlers;
+mod landing;
 mod tools;
 mod webhook;
 
@@ -526,6 +527,7 @@ async fn run_http(config_path: &str, port: u16) -> Result<()> {
     };
 
     let app = axum::Router::new()
+        .route("/", axum::routing::get(landing::handle_landing))
         .route(
             "/mcp",
             axum::routing::post(handle_mcp_post)
