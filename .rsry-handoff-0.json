@@ -1,0 +1,25 @@
+{
+  "schema_version": "1",
+  "phase": 0,
+  "from_agent": "scoping-agent",
+  "to_agent": "dev-agent",
+  "bead_id": "rosary-110305",
+  "provider": "claude",
+  "summary": "Changed 2 files (+2/-2)",
+  "files_changed": [
+    ".rsry-bead-id",
+    ".rsry-stream.jsonl"
+  ],
+  "lines_changed": {
+    "added": 2,
+    "removed": 2
+  },
+  "review_hints": [],
+  "artifacts": {
+    "manifest": ".rsry-dispatch.json",
+    "log": ".rsry-stream-0.jsonl",
+    "previous_handoff": null
+  },
+  "verdict": null,
+  "timestamp": "2026-03-23T22:11:11.966766Z"
+}
