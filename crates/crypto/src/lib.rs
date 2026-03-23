@@ -3,4 +3,3 @@ pub mod classify;
 pub mod error;
 pub mod key;
 pub mod projection;
-pub mod wasteland;
