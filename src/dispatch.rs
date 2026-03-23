@@ -796,9 +796,21 @@ pub async fn spawn(
 
     let work_dir = workspace.work_dir.clone();
 
-    // Write bead ID to worktree so the commit-msg hook can inject it
-    // instead of rejecting commits that forget the [bead-id] prefix.
+    // Write bead ID to worktree so the commit-msg hook can inject the
+    // [bead-id] prefix instead of rejecting commits.
     let _ = std::fs::write(work_dir.join(".rsry-bead-id"), &bead.id);
+
+    // Set core.hooksPath to ~/.rsry/hooks/ so the worktree uses our
+    // inject hook instead of the main repo's pre-commit framework wrapper.
+    if let Some(hooks) = dirs_next::home_dir()
+        .map(|h| h.join(".rsry/hooks"))
+        .filter(|p| p.exists())
+    {
+        let _ = std::process::Command::new("git")
+            .args(["config", "core.hooksPath", &hooks.to_string_lossy()])
+            .current_dir(&work_dir)
+            .output();
+    }
 
     let prompt = build_prompt(
         bead,
