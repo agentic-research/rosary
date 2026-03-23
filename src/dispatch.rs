@@ -713,8 +713,10 @@ pub fn build_system_prompt(agent_name: Option<&str>, agents_dir: Option<&Path>) 
 // Agent pipeline — phase progression
 // ---------------------------------------------------------------------------
 
-/// The agent pipeline for a given issue type.
-pub fn agent_pipeline(issue_type: &str) -> &'static [&'static str] {
+/// The hardcoded agent pipeline for a given issue type.
+/// Used by `default_agent()` for callers without a PipelineEngine.
+/// The reconciler uses PipelineEngine (config-driven) instead.
+fn agent_pipeline(issue_type: &str) -> &'static [&'static str] {
     match issue_type {
         "bug" => &["dev-agent", "staging-agent"],
         "feature" => &["dev-agent", "staging-agent", "prod-agent"],
@@ -741,16 +743,6 @@ pub fn permission_profile(issue_type: &str) -> PermissionProfile {
         "epic" | "plan" | "triage" => PermissionProfile::Plan,
         _ => PermissionProfile::Implement,
     }
-}
-
-/// The next agent in the pipeline after `current`, or None if done.
-/// Note: reconciler now uses PipelineEngine.next_agent() for config-driven lookup.
-/// This remains as a convenience for callers that don't have a PipelineEngine.
-#[allow(dead_code)] // API surface — used in tests
-pub fn next_agent(issue_type: &str, current: &str) -> Option<&'static str> {
-    let pipeline = agent_pipeline(issue_type);
-    let idx = pipeline.iter().position(|&a| a == current)?;
-    pipeline.get(idx + 1).copied()
 }
 
 /// Resolve agents_dir from config by finding the self-managed repo.
@@ -1632,38 +1624,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn pipeline_bug() {
-        assert_eq!(agent_pipeline("bug"), &["dev-agent", "staging-agent"]);
-    }
-
-    #[test]
-    fn pipeline_feature() {
-        assert_eq!(
-            agent_pipeline("feature"),
-            &["dev-agent", "staging-agent", "prod-agent"]
-        );
-    }
-
-    #[test]
-    fn pipeline_task() {
-        assert_eq!(agent_pipeline("task"), &["dev-agent"]);
-    }
-
-    #[test]
     fn default_agent_maps_issue_type() {
         assert_eq!(default_agent("bug"), "dev-agent");
         assert_eq!(default_agent("review"), "staging-agent");
         assert_eq!(default_agent("epic"), "pm-agent");
         assert_eq!(default_agent("xyz"), "dev-agent");
-    }
-
-    #[test]
-    fn next_agent_advances() {
-        assert_eq!(next_agent("bug", "dev-agent"), Some("staging-agent"));
-        assert_eq!(next_agent("bug", "staging-agent"), None);
-        assert_eq!(next_agent("feature", "staging-agent"), Some("prod-agent"));
-        assert_eq!(next_agent("task", "dev-agent"), None);
-        assert_eq!(next_agent("bug", "unknown"), None);
     }
 
     // -----------------------------------------------------------------------
