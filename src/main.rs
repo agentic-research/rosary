@@ -387,8 +387,8 @@ async fn main() -> Result<()> {
             let sync_cfg = config::load_merged(&config::resolve_config_path())?;
             let hierarchy: Option<Box<dyn store::HierarchyStore>> =
                 if let Some(ref backend_cfg) = sync_cfg.backend {
-                    match store_dolt::DoltBackend::connect(backend_cfg).await {
-                        Ok(b) => Some(Box::new(b)),
+                    match backend_cfg.connect().await {
+                        Ok(b) => Some(b as Box<dyn store::HierarchyStore>),
                         Err(e) => {
                             eprintln!("[sync] hierarchy unavailable ({e}), no sub-issue grouping");
                             None

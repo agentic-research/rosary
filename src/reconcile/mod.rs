@@ -215,19 +215,20 @@ impl Reconciler {
             );
         }
 
-        // Connect backend (DoltBackend) if config is present.
-        // Provides both HierarchyStore and DispatchStore from the same database.
-        // Best-effort: features degrade gracefully when unavailable.
+        // Connect backend if config is present. Two connects — both backends
+        // handle this efficiently (SQLite opens same file, Dolt shares pool).
         #[allow(clippy::type_complexity)]
         let (hierarchy, dispatch_store): (
             Option<Box<dyn crate::store::HierarchyStore>>,
             Option<Box<dyn crate::store::DispatchStore>>,
         ) = if let Some(ref backend_cfg) = config.backend {
-            // Connect twice — sqlx pools are Arc-based so this shares the connection pool.
-            let hierarchy = match crate::store_dolt::DoltBackend::connect(backend_cfg).await {
+            let hierarchy = match backend_cfg.connect().await {
                 Ok(backend) => {
-                    eprintln!("[reconcile] hierarchy store connected (DoltBackend)");
-                    Some(Box::new(backend) as Box<dyn crate::store::HierarchyStore>)
+                    eprintln!(
+                        "[reconcile] hierarchy store connected ({})",
+                        backend_cfg.provider
+                    );
+                    Some(backend as Box<dyn crate::store::HierarchyStore>)
                 }
                 Err(e) => {
                     eprintln!(
@@ -237,10 +238,13 @@ impl Reconciler {
                     None
                 }
             };
-            let dispatch = match crate::store_dolt::DoltBackend::connect(backend_cfg).await {
+            let dispatch = match backend_cfg.connect().await {
                 Ok(backend) => {
-                    eprintln!("[reconcile] dispatch store connected (DoltBackend)");
-                    Some(Box::new(backend) as Box<dyn crate::store::DispatchStore>)
+                    eprintln!(
+                        "[reconcile] dispatch store connected ({})",
+                        backend_cfg.provider
+                    );
+                    Some(backend as Box<dyn crate::store::DispatchStore>)
                 }
                 Err(e) => {
                     eprintln!("[reconcile] dispatch store unavailable ({e})");

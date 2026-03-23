@@ -6,8 +6,7 @@ use serde_json::{Value, json};
 use crate::config;
 use crate::dolt::{DoltClient, DoltConfig};
 use crate::pool::RepoPool;
-use crate::store::{BeadRef, DispatchRecord, DispatchStore, PipelineState};
-use crate::store_dolt::DoltBackend;
+use crate::store::{BackendStore, BeadRef, DispatchRecord, PipelineState};
 
 /// Default result limit for bead search (keeps MCP responses bounded).
 const SEARCH_DEFAULT_LIMIT: u64 = 20;
@@ -64,7 +63,7 @@ pub(crate) async fn call_tool(
     args: &Value,
     config_path: &str,
     pool: &RepoPool,
-    backend: Option<&DoltBackend>,
+    backend: Option<&dyn BackendStore>,
     caller: &super::CallerIdentity,
 ) -> Result<Value> {
     let user_scope = caller.user_scope();
@@ -900,7 +899,7 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
 
 pub(crate) async fn tool_pipeline_upsert(
     args: &Value,
-    backend: Option<&DoltBackend>,
+    backend: Option<&dyn BackendStore>,
 ) -> Result<Value> {
     let backend = backend.ok_or_else(|| {
         anyhow::anyhow!(
@@ -974,7 +973,7 @@ pub(crate) async fn tool_pipeline_upsert(
     }))
 }
 
-async fn tool_pipeline_query(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+async fn tool_pipeline_query(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
     let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
 
     let repo = args.get("repo").and_then(|v| v.as_str());
@@ -1022,7 +1021,7 @@ async fn tool_pipeline_query(args: &Value, backend: Option<&DoltBackend>) -> Res
     }
 }
 
-async fn tool_dispatch_record(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+async fn tool_dispatch_record(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
     let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
 
     let id = args["id"]
@@ -1064,7 +1063,7 @@ async fn tool_dispatch_record(args: &Value, backend: Option<&DoltBackend>) -> Re
     Ok(json!({ "id": id, "bead_id": bead_id, "recorded": true }))
 }
 
-async fn tool_dispatch_history(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+async fn tool_dispatch_history(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
     let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
     let bead_id = args.get("bead_id").and_then(|v| v.as_str());
     let active_only = args
@@ -1105,11 +1104,10 @@ async fn tool_dispatch_history(args: &Value, backend: Option<&DoltBackend>) -> R
 // Hierarchy tools (decades, threads, bead membership)
 // ---------------------------------------------------------------------------
 
-async fn tool_decade_list(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+async fn tool_decade_list(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
     let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
     let status = args.get("status").and_then(|v| v.as_str());
 
-    use crate::store::HierarchyStore;
     let decades = backend.list_decades(status).await?;
 
     let items: Vec<Value> = decades
@@ -1127,9 +1125,8 @@ async fn tool_decade_list(args: &Value, backend: Option<&DoltBackend>) -> Result
     Ok(json!({ "count": items.len(), "decades": items }))
 }
 
-async fn tool_thread_list(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+async fn tool_thread_list(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
     let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
-    use crate::store::HierarchyStore;
 
     // Option 1: list threads for a decade
     if let Some(decade_id) = args.get("decade_id").and_then(|v| v.as_str()) {
@@ -1164,9 +1161,9 @@ async fn tool_thread_list(args: &Value, backend: Option<&DoltBackend>) -> Result
     anyhow::bail!("provide either decade_id or (bead_id + repo)")
 }
 
-async fn tool_thread_assign(args: &Value, backend: Option<&DoltBackend>) -> Result<Value> {
+async fn tool_thread_assign(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
     let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
-    use crate::store::{BeadRef, HierarchyStore, ThreadRecord};
+    use crate::store::{BeadRef, ThreadRecord};
 
     let thread_id = args["thread_id"]
         .as_str()
@@ -1317,7 +1314,7 @@ async fn tool_bead_import(
 
 async fn tool_repo_register(
     args: &Value,
-    backend: Option<&DoltBackend>,
+    backend: Option<&dyn BackendStore>,
     user_scope: Option<&str>,
 ) -> Result<Value> {
     let backend = backend.ok_or_else(|| {
@@ -1348,7 +1345,7 @@ async fn tool_repo_register(
                 .to_string()
         });
 
-    use crate::store::{UserRepo, UserRepoStore};
+    use crate::store::UserRepo;
     let repo = UserRepo {
         user_id: user_id.to_string(),
         repo_url: repo_url.to_string(),
@@ -1366,12 +1363,14 @@ async fn tool_repo_register(
     }))
 }
 
-async fn tool_repo_list(backend: Option<&DoltBackend>, user_scope: Option<&str>) -> Result<Value> {
+async fn tool_repo_list(
+    backend: Option<&dyn BackendStore>,
+    user_scope: Option<&str>,
+) -> Result<Value> {
     let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
     let user_id =
         user_scope.ok_or_else(|| anyhow::anyhow!("repo listing requires user identity"))?;
 
-    use crate::store::UserRepoStore;
     let repos = backend.list_user_repos(user_id).await?;
 
     Ok(json!({
