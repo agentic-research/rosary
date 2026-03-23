@@ -19,7 +19,12 @@ impl DoltClient {
 
     #[allow(dead_code)] // API surface for rsry bead search
     /// Search beads by title or description substring match (case-insensitive).
-    pub async fn search_beads(&self, query_str: &str, repo_name: &str) -> Result<Vec<Bead>> {
+    pub async fn search_beads(
+        &self,
+        query_str: &str,
+        repo_name: &str,
+        limit: u32,
+    ) -> Result<Vec<Bead>> {
         let words: Vec<String> = query_str
             .split_whitespace()
             .map(|w| format!("%{}%", w.to_lowercase()))
@@ -51,7 +56,7 @@ impl DoltClient {
                     ON cmt.issue_id = i.id
                WHERE {where_clause}
                ORDER BY i.priority ASC, i.created_at DESC
-               LIMIT 50"#,
+               LIMIT {limit}"#,
         );
 
         let mut q = query(&sql);

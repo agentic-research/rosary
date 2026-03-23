@@ -154,7 +154,8 @@ pub(crate) fn tool_definitions() -> Value {
                     "type": "object",
                     "properties": {
                         "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
-                        "query": { "type": "string", "description": "Search query" }
+                        "query": { "type": "string", "description": "Search query" },
+                        "limit": { "type": "integer", "description": "Max results to return (default 20, max 50)", "default": 20 }
                     },
                     "required": ["repo_path", "query"]
                 }

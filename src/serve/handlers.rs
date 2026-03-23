@@ -9,6 +9,13 @@ use crate::pool::RepoPool;
 use crate::store::{BeadRef, DispatchRecord, DispatchStore, PipelineState};
 use crate::store_dolt::DoltBackend;
 
+/// Default result limit for bead search (keeps MCP responses bounded).
+const SEARCH_DEFAULT_LIMIT: u64 = 20;
+/// Hard ceiling — even if the caller asks for more.
+const SEARCH_MAX_LIMIT: u64 = 50;
+/// Truncate bead descriptions in search results to this many bytes.
+const SEARCH_DESC_TRUNCATE: usize = 200;
+
 // ---------------------------------------------------------------------------
 // Client helpers
 // ---------------------------------------------------------------------------
@@ -493,10 +500,30 @@ async fn tool_bead_search(
     let query_str = args["query"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("query required"))?;
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(SEARCH_DEFAULT_LIMIT)
+        .min(SEARCH_MAX_LIMIT) as u32;
 
     let client = get_client(repo_path, pool).await?;
     let repo_name = repo_name_from_path(repo_path);
-    let beads = client.search_beads(query_str, &repo_name).await?;
+    let beads = client.search_beads(query_str, &repo_name, limit).await?;
+
+    // Truncate descriptions to keep response size bounded
+    let beads: Vec<Value> = beads
+        .iter()
+        .map(|b| {
+            let mut v = serde_json::to_value(b).unwrap_or_default();
+            if let Some(desc) = v.get("description").and_then(|d| d.as_str())
+                && desc.len() > SEARCH_DESC_TRUNCATE
+            {
+                let truncated = format!("{}...", &desc[..SEARCH_DESC_TRUNCATE]);
+                v["description"] = Value::String(truncated);
+            }
+            v
+        })
+        .collect();
 
     Ok(json!({ "count": beads.len(), "beads": beads }))
 }
