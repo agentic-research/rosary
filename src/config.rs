@@ -294,7 +294,6 @@ impl BackendConfig {
 
     /// Connect to the configured backend. Returns a trait object.
     /// For sqlite, the DB file must already exist (use `connect_or_create` for migration).
-    #[allow(dead_code)] // Wired in Phase 2
     pub async fn connect(&self) -> anyhow::Result<Box<dyn crate::store::BackendStore>> {
         let path = crate::scanner::expand_path(&self.path);
         match self.provider.as_str() {
@@ -309,15 +308,20 @@ impl BackendConfig {
                 let backend = crate::store_sqlite::SqliteBackend::connect(&path)?;
                 Ok(Box::new(backend))
             }
-            _ => {
+            "dolt" => {
                 let backend = crate::store_dolt::DoltBackend::connect(self).await?;
                 Ok(Box::new(backend))
+            }
+            other => {
+                anyhow::bail!(
+                    "unknown [backend].provider \"{other}\". Supported: \"dolt\", \"sqlite\""
+                );
             }
         }
     }
 
     /// Connect or create — used by migration to create a fresh target DB.
-    #[allow(dead_code)] // Wired in Phase 3
+    #[allow(dead_code)] // Wired in Phase 3 (rsry migrate)
     pub async fn connect_or_create(&self) -> anyhow::Result<Box<dyn crate::store::BackendStore>> {
         let path = crate::scanner::expand_path(&self.path);
         match self.provider.as_str() {
@@ -325,9 +329,14 @@ impl BackendConfig {
                 let backend = crate::store_sqlite::SqliteBackend::connect(&path)?;
                 Ok(Box::new(backend))
             }
-            _ => {
+            "dolt" => {
                 let backend = crate::store_dolt::DoltBackend::connect(self).await?;
                 Ok(Box::new(backend))
+            }
+            other => {
+                anyhow::bail!(
+                    "unknown [backend].provider \"{other}\". Supported: \"dolt\", \"sqlite\""
+                );
             }
         }
     }

@@ -215,8 +215,9 @@ impl Reconciler {
             );
         }
 
-        // Connect backend if config is present. Two connects — both backends
-        // handle this efficiently (SQLite opens same file, Dolt shares pool).
+        // Connect backend if config is present. Two separate instances —
+        // Reconciler owns HierarchyStore, PipelineEngine owns DispatchStore.
+        // TODO: refactor to Arc<dyn BackendStore> to share a single connection.
         #[allow(clippy::type_complexity)]
         let (hierarchy, dispatch_store): (
             Option<Box<dyn crate::store::HierarchyStore>>,

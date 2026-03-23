@@ -640,6 +640,39 @@ mod tests {
         assert_eq!(active[0].session_id.as_deref(), Some("sess-abc-123"));
     }
 
+    #[tokio::test]
+    async fn upsert_dispatch_idempotent() {
+        let store = InMemoryStore::new();
+        let record = DispatchRecord {
+            id: "d-upsert".into(),
+            bead_ref: BeadRef {
+                repo: "rosary".into(),
+                bead_id: "rsry-001".into(),
+            },
+            agent: "dev-agent".into(),
+            provider: "claude".into(),
+            started_at: Utc::now(),
+            completed_at: None,
+            outcome: None,
+            work_dir: "/tmp/work".into(),
+            session_id: None,
+            workspace_path: None,
+        };
+
+        // Insert via upsert
+        store.upsert_dispatch(&record).await.unwrap();
+        assert_eq!(store.active_dispatches().await.unwrap().len(), 1);
+
+        // Upsert again with completion — updates, doesn't duplicate
+        let mut completed = record.clone();
+        completed.completed_at = Some(Utc::now());
+        completed.outcome = Some("success".into());
+        store.upsert_dispatch(&completed).await.unwrap();
+
+        // Still one dispatch, now completed
+        assert!(store.active_dispatches().await.unwrap().is_empty());
+    }
+
     // ── LinkageStore tests ──────────────────────────────
 
     #[tokio::test]
