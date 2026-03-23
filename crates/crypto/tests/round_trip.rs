@@ -2,12 +2,11 @@ use rosary_crypto::cipher::{decrypt_field, encrypt_field};
 use rosary_crypto::classify::{FieldVisibility, classify};
 use rosary_crypto::key::{derive_key, generate_key};
 use rosary_crypto::projection::project_bead;
-use rosary_crypto::wasteland::bead_to_wanted;
 
 #[test]
 fn encrypt_decrypt_round_trip() {
     let key = generate_key();
-    let bead_id = "loom-abc";
+    let bead_id = "bead-abc";
     let field = "description";
     let plaintext = b"This is a secret description of the bead.";
 
@@ -23,32 +22,32 @@ fn wrong_key_fails() {
     let key1 = generate_key();
     let key2 = generate_key();
 
-    let ct = encrypt_field("description", "loom-abc", b"secret", &key1).unwrap();
-    let result = decrypt_field("description", "loom-abc", &ct, &key2);
+    let ct = encrypt_field("description", "bead-abc", b"secret", &key1).unwrap();
+    let result = decrypt_field("description", "bead-abc", &ct, &key2);
     assert!(result.is_err());
 }
 
 #[test]
 fn wrong_field_name_fails() {
     let key = generate_key();
-    let ct = encrypt_field("description", "loom-abc", b"secret", &key).unwrap();
-    let result = decrypt_field("notes", "loom-abc", &ct, &key);
+    let ct = encrypt_field("description", "bead-abc", b"secret", &key).unwrap();
+    let result = decrypt_field("notes", "bead-abc", &ct, &key);
     assert!(result.is_err());
 }
 
 #[test]
 fn wrong_bead_id_fails() {
     let key = generate_key();
-    let ct = encrypt_field("description", "loom-abc", b"secret", &key).unwrap();
-    let result = decrypt_field("description", "loom-xyz", &ct, &key);
+    let ct = encrypt_field("description", "bead-abc", b"secret", &key).unwrap();
+    let result = decrypt_field("description", "bead-xyz", &ct, &key);
     assert!(result.is_err());
 }
 
 #[test]
 fn deterministic_nonce() {
     let key = generate_key();
-    let ct1 = encrypt_field("description", "loom-abc", b"same data", &key).unwrap();
-    let ct2 = encrypt_field("description", "loom-abc", b"same data", &key).unwrap();
+    let ct1 = encrypt_field("description", "bead-abc", b"same data", &key).unwrap();
+    let ct2 = encrypt_field("description", "bead-abc", b"same data", &key).unwrap();
     assert_eq!(ct1, ct2, "same input should produce same ciphertext");
 }
 
@@ -78,16 +77,16 @@ fn classify_unknown_defaults_private() {
 #[test]
 fn key_derivation_deterministic() {
     let master = generate_key();
-    let k1 = derive_key(&master, "wasteland-v1");
-    let k2 = derive_key(&master, "wasteland-v1");
+    let k1 = derive_key(&master, "context-v1");
+    let k2 = derive_key(&master, "context-v1");
     assert_eq!(k1, k2);
 }
 
 #[test]
 fn key_derivation_different_contexts() {
     let master = generate_key();
-    let k1 = derive_key(&master, "wasteland-v1");
-    let k2 = derive_key(&master, "wasteland-v2");
+    let k1 = derive_key(&master, "context-v1");
+    let k2 = derive_key(&master, "context-v2");
     assert_ne!(k1, k2);
 }
 
@@ -95,20 +94,20 @@ fn key_derivation_different_contexts() {
 fn project_bead_encrypts_private_leaves_public() {
     let key = generate_key();
     let bead = serde_json::json!({
-        "id": "loom-test1",
+        "id": "bead-test1",
         "title": "Fix the widget",
         "status": "open",
         "priority": "2",
         "issue_type": "bug",
         "description": "The widget is broken because of X",
-        "owner": "jamestexas",
+        "owner": "test-user",
         "notes": "Internal implementation detail"
     });
 
     let projection = project_bead(&bead, &key).unwrap();
 
     // Public fields are cleartext
-    assert_eq!(projection.id, "loom-test1");
+    assert_eq!(projection.id, "bead-test1");
     assert_eq!(projection.title, "Fix the widget");
     assert_eq!(projection.status.as_deref(), Some("open"));
     assert_eq!(projection.priority.as_deref(), Some("2"));
@@ -119,73 +118,16 @@ fn project_bead_encrypts_private_leaves_public() {
     assert!(desc.len() > 0);
 
     let owner = projection.owner.as_ref().unwrap();
-    assert_ne!(owner, "jamestexas");
+    assert_ne!(owner, "test-user");
 
     // Decrypt and verify
     let desc_bytes =
         base64::Engine::decode(&base64::engine::general_purpose::STANDARD, desc).unwrap();
-    let decrypted = decrypt_field("description", "loom-test1", &desc_bytes, &key).unwrap();
+    let decrypted = decrypt_field("description", "bead-test1", &desc_bytes, &key).unwrap();
     assert_eq!(
         String::from_utf8(decrypted).unwrap(),
         "The widget is broken because of X"
     );
-}
-
-#[test]
-fn bead_to_wanted_mapping() {
-    let key = generate_key();
-    let bead = serde_json::json!({
-        "id": "loom-test2",
-        "title": "Add search feature",
-        "status": "open",
-        "priority": "1",
-        "issue_type": "feature",
-        "description": "Secret implementation plan"
-    });
-
-    let wanted = bead_to_wanted(&bead, &key, "jamestexas", Some("rosary")).unwrap();
-
-    assert_eq!(wanted.id, "w-rr-loom-test2");
-    assert_eq!(wanted.title, "Add search feature");
-    assert_eq!(wanted.posted_by, "jamestexas");
-    assert_eq!(wanted.status, "open");
-    assert_eq!(wanted.project.as_deref(), Some("rosary"));
-    assert_eq!(wanted.priority, Some(1));
-
-    // Description should be None (encrypted, in metadata)
-    assert!(wanted.description.is_none());
-
-    // Metadata should contain encrypted_fields
-    let meta = wanted.metadata.as_ref().unwrap();
-    assert_eq!(meta["source"], "rosary");
-    assert!(meta["encrypted_fields"]["description"].is_string());
-}
-
-#[test]
-fn status_mapping() {
-    let key = generate_key();
-
-    let cases = vec![
-        ("open", "open"),
-        ("in_progress", "claimed"),
-        ("closed", "completed"),
-        ("done", "completed"),
-        ("deferred", "withdrawn"),
-    ];
-
-    for (bead_status, expected_wl) in cases {
-        let bead = serde_json::json!({
-            "id": format!("loom-s-{}", bead_status),
-            "title": "test",
-            "status": bead_status,
-        });
-        let wanted = bead_to_wanted(&bead, &key, "test", None).unwrap();
-        assert_eq!(
-            wanted.status, expected_wl,
-            "bead status '{}' should map to '{}'",
-            bead_status, expected_wl
-        );
-    }
 }
 
 // --- cipher edge cases ---
@@ -193,8 +135,8 @@ fn status_mapping() {
 #[test]
 fn encrypt_empty_plaintext() {
     let key = generate_key();
-    let ct = encrypt_field("description", "loom-abc", b"", &key).unwrap();
-    let decrypted = decrypt_field("description", "loom-abc", &ct, &key).unwrap();
+    let ct = encrypt_field("description", "bead-abc", b"", &key).unwrap();
+    let decrypted = decrypt_field("description", "bead-abc", &ct, &key).unwrap();
     assert_eq!(decrypted, b"");
 }
 
@@ -202,8 +144,8 @@ fn encrypt_empty_plaintext() {
 fn encrypt_large_plaintext() {
     let key = generate_key();
     let large = vec![0x42u8; 100_000];
-    let ct = encrypt_field("description", "loom-abc", &large, &key).unwrap();
-    let decrypted = decrypt_field("description", "loom-abc", &ct, &key).unwrap();
+    let ct = encrypt_field("description", "bead-abc", &large, &key).unwrap();
+    let decrypted = decrypt_field("description", "bead-abc", &ct, &key).unwrap();
     assert_eq!(decrypted, large);
 }
 
@@ -211,8 +153,8 @@ fn encrypt_large_plaintext() {
 fn encrypt_unicode_content() {
     let key = generate_key();
     let text = "修正ウィジェット — 日本語テスト 🔐";
-    let ct = encrypt_field("description", "loom-uni", text.as_bytes(), &key).unwrap();
-    let decrypted = decrypt_field("description", "loom-uni", &ct, &key).unwrap();
+    let ct = encrypt_field("description", "bead-uni", text.as_bytes(), &key).unwrap();
+    let decrypted = decrypt_field("description", "bead-uni", &ct, &key).unwrap();
     assert_eq!(String::from_utf8(decrypted).unwrap(), text);
 }
 
@@ -220,8 +162,8 @@ fn encrypt_unicode_content() {
 fn different_fields_different_ciphertext() {
     let key = generate_key();
     let data = b"same data in both fields";
-    let ct1 = encrypt_field("description", "loom-abc", data, &key).unwrap();
-    let ct2 = encrypt_field("notes", "loom-abc", data, &key).unwrap();
+    let ct1 = encrypt_field("description", "bead-abc", data, &key).unwrap();
+    let ct2 = encrypt_field("notes", "bead-abc", data, &key).unwrap();
     assert_ne!(
         ct1, ct2,
         "different field names should produce different ciphertext"
@@ -232,8 +174,8 @@ fn different_fields_different_ciphertext() {
 fn different_beads_different_ciphertext() {
     let key = generate_key();
     let data = b"same data in both beads";
-    let ct1 = encrypt_field("description", "loom-aaa", data, &key).unwrap();
-    let ct2 = encrypt_field("description", "loom-bbb", data, &key).unwrap();
+    let ct1 = encrypt_field("description", "bead-aaa", data, &key).unwrap();
+    let ct2 = encrypt_field("description", "bead-bbb", data, &key).unwrap();
     assert_ne!(
         ct1, ct2,
         "different bead IDs should produce different ciphertext"
@@ -244,7 +186,7 @@ fn different_beads_different_ciphertext() {
 fn ciphertext_is_longer_than_plaintext() {
     let key = generate_key();
     let plaintext = b"short";
-    let ct = encrypt_field("description", "loom-abc", plaintext, &key).unwrap();
+    let ct = encrypt_field("description", "bead-abc", plaintext, &key).unwrap();
     assert!(
         ct.len() > plaintext.len(),
         "ciphertext should include auth tag overhead"
@@ -256,10 +198,10 @@ fn ciphertext_is_longer_than_plaintext() {
 #[test]
 fn tampered_ciphertext_fails() {
     let key = generate_key();
-    let ct = encrypt_field("description", "loom-abc", b"secret", &key).unwrap();
+    let ct = encrypt_field("description", "bead-abc", b"secret", &key).unwrap();
     let mut tampered = ct.clone();
     tampered[0] ^= 0xff;
-    let result = decrypt_field("description", "loom-abc", &tampered, &key);
+    let result = decrypt_field("description", "bead-abc", &tampered, &key);
     assert!(
         result.is_err(),
         "tampered ciphertext should fail authentication"
@@ -269,9 +211,9 @@ fn tampered_ciphertext_fails() {
 #[test]
 fn truncated_ciphertext_fails() {
     let key = generate_key();
-    let ct = encrypt_field("description", "loom-abc", b"secret", &key).unwrap();
+    let ct = encrypt_field("description", "bead-abc", b"secret", &key).unwrap();
     let truncated = &ct[..ct.len() - 1];
-    let result = decrypt_field("description", "loom-abc", truncated, &key);
+    let result = decrypt_field("description", "bead-abc", truncated, &key);
     assert!(result.is_err(), "truncated ciphertext should fail");
 }
 
@@ -345,11 +287,11 @@ fn derived_key_differs_from_master() {
 fn project_bead_missing_optional_fields() {
     let key = generate_key();
     let bead = serde_json::json!({
-        "id": "loom-minimal",
+        "id": "bead-minimal",
         "title": "Minimal bead"
     });
     let projection = project_bead(&bead, &key).unwrap();
-    assert_eq!(projection.id, "loom-minimal");
+    assert_eq!(projection.id, "bead-minimal");
     assert_eq!(projection.title, "Minimal bead");
     assert!(projection.status.is_none());
     assert!(projection.description.is_none());
@@ -379,12 +321,12 @@ fn projection_private_fields_decrypt_correctly() {
     use base64::Engine;
     let key = generate_key();
     let bead = serde_json::json!({
-        "id": "loom-rt",
+        "id": "bead-rt",
         "title": "Round trip all private fields",
         "description": "desc-secret",
         "owner": "owner-secret",
         "branch": "feat/secret-branch",
-        "pr_url": "https://github.com/secret/pr/1",
+        "pr_url": "https://example.com/pr/1",
         "design": "design-doc-content",
         "notes": "internal-notes",
         "acceptance_criteria": "must pass all tests"
@@ -396,7 +338,7 @@ fn projection_private_fields_decrypt_correctly() {
         ("description", "desc-secret"),
         ("owner", "owner-secret"),
         ("branch", "feat/secret-branch"),
-        ("pr_url", "https://github.com/secret/pr/1"),
+        ("pr_url", "https://example.com/pr/1"),
         ("design", "design-doc-content"),
         ("notes", "internal-notes"),
         ("acceptance_criteria", "must pass all tests"),
@@ -425,7 +367,7 @@ fn projection_private_fields_decrypt_correctly() {
         let ct = base64::engine::general_purpose::STANDARD
             .decode(encrypted_b64)
             .unwrap();
-        let decrypted = decrypt_field(field_name, "loom-rt", &ct, &key).unwrap();
+        let decrypted = decrypt_field(field_name, "bead-rt", &ct, &key).unwrap();
         assert_eq!(
             String::from_utf8(decrypted).unwrap(),
             expected,
@@ -433,93 +375,4 @@ fn projection_private_fields_decrypt_correctly() {
             field_name
         );
     }
-}
-
-// --- wasteland mapping ---
-
-use rosary_crypto::wasteland::wanted_to_sql;
-
-#[test]
-fn wanted_to_sql_generates_valid_insert() {
-    let key = generate_key();
-    let bead = serde_json::json!({
-        "id": "loom-sql1",
-        "title": "Test SQL generation",
-        "status": "open",
-        "priority": "1",
-        "issue_type": "bug",
-        "description": "secret"
-    });
-    let wanted = bead_to_wanted(&bead, &key, "jamestexas", Some("rosary")).unwrap();
-    let sql = wanted_to_sql(&wanted);
-
-    assert!(sql.starts_with("INSERT INTO wanted"));
-    assert!(sql.contains("'w-rr-loom-sql1'"));
-    assert!(sql.contains("'Test SQL generation'"));
-    assert!(sql.contains("'jamestexas'"));
-    assert!(sql.contains("'rosary'"));
-    assert!(sql.contains("'open'"));
-}
-
-#[test]
-fn wanted_to_sql_escapes_quotes() {
-    let key = generate_key();
-    let bead = serde_json::json!({
-        "id": "loom-esc",
-        "title": "Fix the user's widget",
-        "status": "open",
-    });
-    let wanted = bead_to_wanted(&bead, &key, "test", None).unwrap();
-    let sql = wanted_to_sql(&wanted);
-    assert!(
-        sql.contains("Fix the user''s widget"),
-        "single quotes should be escaped"
-    );
-}
-
-#[test]
-fn wanted_no_project_gives_null() {
-    let key = generate_key();
-    let bead = serde_json::json!({
-        "id": "loom-np",
-        "title": "No project",
-        "status": "open",
-    });
-    let wanted = bead_to_wanted(&bead, &key, "test", None).unwrap();
-    let sql = wanted_to_sql(&wanted);
-    assert!(
-        sql.contains("NULL"),
-        "missing project should be NULL in SQL"
-    );
-}
-
-#[test]
-fn wanted_metadata_contains_source_version() {
-    let key = generate_key();
-    let bead = serde_json::json!({
-        "id": "loom-meta",
-        "title": "Meta check",
-        "status": "open",
-    });
-    let wanted = bead_to_wanted(&bead, &key, "test", None).unwrap();
-    let meta = wanted.metadata.as_ref().unwrap();
-    assert_eq!(meta["source"], "rosary");
-    assert_eq!(meta["version"], "0.1");
-}
-
-#[test]
-fn wanted_without_private_fields_has_no_encrypted_section() {
-    let key = generate_key();
-    let bead = serde_json::json!({
-        "id": "loom-pub",
-        "title": "Public only",
-        "status": "open",
-        "priority": "3",
-    });
-    let wanted = bead_to_wanted(&bead, &key, "test", None).unwrap();
-    let meta = wanted.metadata.as_ref().unwrap();
-    assert!(
-        meta.get("encrypted_fields").is_none(),
-        "no private fields means no encrypted_fields in metadata"
-    );
 }
