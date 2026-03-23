@@ -195,6 +195,8 @@ impl Reconciler {
 
     /// Clean up the workspace for a completed bead.
     /// Delegates to workspace.rs cleanup functions to avoid duplication.
+    /// No-op when no workspace is tracked — avoids touching the real filesystem
+    /// for unknown beads (safety: prevents deleting worktrees from other reconcilers).
     pub(super) fn cleanup_workspace(&mut self, bead_id: &str) {
         if let Some(ws) = self.completed_workspaces.remove(bead_id) {
             eprintln!(
@@ -212,9 +214,10 @@ impl Reconciler {
                 crate::workspace::VcsKind::None => {}
             }
         } else {
-            // Legacy fallback — try both VCS types
-            crate::workspace::cleanup_jj_workspace(std::path::Path::new("."), bead_id);
-            crate::workspace::cleanup_git_worktree(std::path::Path::new("."), bead_id);
+            // No workspace tracked — skip cleanup. The legacy fallback that
+            // cleaned up from "." was unsafe: it could delete worktrees
+            // belonging to other reconcilers or from previous runs.
+            eprintln!("[cleanup] {bead_id}: no workspace tracked, skipping");
         }
     }
 }

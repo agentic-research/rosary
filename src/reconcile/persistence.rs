@@ -87,13 +87,55 @@ impl Reconciler {
     /// Reset beads stuck at 'dispatched' from a previous run.
     /// On startup, any bead with status=dispatched has no running agent
     /// (the reconciler that dispatched it is dead). Reset to open.
+    ///
+    /// Also restores pipeline state: if a bead had progressed to phase 2
+    /// before the crash, the tracker is rebuilt from persistent PipelineState
+    /// so it resumes at the correct phase (not phase 0).
     pub(super) async fn recover_stuck_beads(&mut self) {
+        // Load persistent pipeline state so we can restore phase progress.
+        let active_pipelines = self.pipeline.list_active().await;
+        let pipeline_map: std::collections::HashMap<String, crate::store::PipelineState> =
+            active_pipelines
+                .into_iter()
+                .map(|ps| (ps.bead_ref.bead_id.clone(), ps))
+                .collect();
+
+        if !pipeline_map.is_empty() {
+            eprintln!(
+                "[recover] found {} active pipeline states from previous run",
+                pipeline_map.len()
+            );
+        }
+
         let beads = match scanner::scan_repos(&self.config.repo).await {
             Ok(b) => b,
             Err(_) => return,
         };
         for bead in &beads {
             if bead.status == "dispatched" {
+                // Restore tracker from persistent pipeline state if available.
+                // This preserves phase progress across crashes — without it,
+                // a bead at phase 2 (staging) would restart at phase 0 (scoping).
+                if let Some(ps) = pipeline_map.get(&bead.id) {
+                    eprintln!(
+                        "[recover] restoring {} to phase {} ({})",
+                        bead.id, ps.pipeline_phase, ps.pipeline_agent
+                    );
+                    self.trackers.insert(
+                        bead.id.clone(),
+                        super::BeadTracker {
+                            repo: bead.repo.clone(),
+                            last_generation: 0,
+                            retries: ps.retries,
+                            consecutive_reverts: ps.consecutive_reverts,
+                            highest_tier: ps.highest_verify_tier.map(|t| t as usize),
+                            current_agent: Some(ps.pipeline_agent.clone()),
+                            phase_index: ps.pipeline_phase as u32,
+                            issue_type: bead.issue_type.clone(),
+                        },
+                    );
+                }
+
                 eprintln!("[recover] resetting stuck bead {} to open", bead.id);
                 self.persist_status(&bead.id, &bead.repo, "open").await;
             }
