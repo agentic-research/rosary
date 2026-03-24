@@ -79,12 +79,21 @@ impl AgentProvider for ClaudeProvider {
         // Use piped stdin (not null). Claude CLI may hang with /dev/null
         // when it needs to initialize MCP servers or check auth status.
         // The pipe stays open for the child's lifetime; we never write to it.
+        // Log the full command for debugging dispatch failures
+        let allowed = permissions.claude_allowed_tools();
+        eprintln!(
+            "[spawn] {} -p <prompt> --allowedTools '{}' --output-format json (cwd={})",
+            self.binary,
+            allowed,
+            work_dir.display()
+        );
+
         let child = tokio::process::Command::new(&self.binary)
             .args([
                 "-p",
                 prompt,
                 "--allowedTools",
-                permissions.claude_allowed_tools(),
+                allowed,
                 "--append-system-prompt",
                 system_prompt,
                 "--output-format",
@@ -94,7 +103,7 @@ impl AgentProvider for ClaudeProvider {
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
-            // Prevent nested Claude/Gemini conflicts when dispatched from MCP stdio
+            // Prevent nested Claude Code conflicts when dispatched from MCP
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_ENTRYPOINT")
             .stdin(std::process::Stdio::piped())
@@ -102,6 +111,10 @@ impl AgentProvider for ClaudeProvider {
             .stderr(std::process::Stdio::from(err_file))
             .spawn()
             .with_context(|| format!("spawning claude CLI in {}", work_dir.display()))?;
+
+        let pid = child.id().unwrap_or(0);
+        eprintln!("[spawn] claude started (pid={pid})");
+
         Ok(Box::new(CliSession::new(child)))
     }
 
