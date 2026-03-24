@@ -393,7 +393,7 @@ pub fn load(path: &str) -> Result<Config> {
 }
 
 /// Path to `~/.rsry/`.
-fn default_rsry_dir() -> PathBuf {
+pub fn rsry_dir() -> PathBuf {
     dirs_next::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".rsry")
@@ -511,7 +511,7 @@ fn install_hooks(repo_path: &Path, config: &Config) {
     let hooks_dir = config
         .hooks_dir
         .clone()
-        .unwrap_or_else(|| default_rsry_dir().join("hooks"));
+        .unwrap_or_else(|| rsry_dir().join("hooks"));
 
     if !hooks_dir.exists() {
         // First time — create the default hooks dir and seed it

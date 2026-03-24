@@ -154,11 +154,11 @@ pub struct MigrationReport {
 pub async fn migrate(
     source: &dyn BackendExport,
     target: &dyn BackendExport,
-    provider_name: &str,
+    source_provider: &str,
     backup_dir: Option<&std::path::Path>,
 ) -> Result<MigrationReport> {
     // 1. Export from source
-    let snapshot = export_snapshot(source, provider_name).await?;
+    let snapshot = export_snapshot(source, source_provider).await?;
     let source_counts = snapshot.counts();
 
     // 2. Optional backup
