@@ -25,6 +25,8 @@ mod linear;
 mod linear_tracker;
 #[allow(dead_code)] // API surface — consumed by orchestrator after dispatch
 mod manifest;
+#[allow(dead_code)]
+mod migrate;
 mod pipeline;
 mod pool;
 mod queue;
