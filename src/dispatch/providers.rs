@@ -71,18 +71,21 @@ impl AgentProvider for ClaudeProvider {
         system_prompt: &str,
     ) -> Result<Box<dyn AgentSession>> {
         let log_path = work_dir.join(STREAM_LOG_FILENAME);
-        let log_file = std::fs::File::create(&log_path)
-            .with_context(|| format!("creating stream log {}", log_path.display()))?;
         let err_path = work_dir.join(".rsry-stderr.log");
         let err_file = std::fs::File::create(&err_path)
             .with_context(|| format!("creating stderr log {}", err_path.display()))?;
-        // Use piped stdin (not null). Claude CLI may hang with /dev/null
-        // when it needs to initialize MCP servers or check auth status.
-        // The pipe stays open for the child's lifetime; we never write to it.
-        // Log the full command for debugging dispatch failures
+
+        // Use -p with stream-json output. The bidi streaming protocol
+        // (--input-format stream-json) has auth issues when spawned from
+        // launchd context — CC reports "Not logged in" despite valid OAuth.
+        // -p mode works correctly with OAuth from any context.
+        // Stream-json output gives us structured events for monitoring.
+        // TODO: switch to bidi streaming once CC fixes auth for SDK entrypoints
         let allowed = permissions.claude_allowed_tools();
+        let log_file = std::fs::File::create(&log_path)
+            .with_context(|| format!("creating stream log {}", log_path.display()))?;
         eprintln!(
-            "[spawn] {} -p <prompt> --allowedTools '{}' --output-format json (cwd={})",
+            "[spawn] {} -p <prompt> --output-format stream-json --allowedTools '{}' (cwd={})",
             self.binary,
             allowed,
             work_dir.display()
@@ -92,21 +95,24 @@ impl AgentProvider for ClaudeProvider {
             .args([
                 "-p",
                 prompt,
+                "--output-format",
+                "stream-json",
+                "--verbose",
                 "--allowedTools",
                 allowed,
                 "--append-system-prompt",
                 system_prompt,
-                "--output-format",
-                "json",
             ])
             .current_dir(work_dir)
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
-            // Prevent nested Claude Code conflicts when dispatched from MCP
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_ENTRYPOINT")
-            .stdin(std::process::Stdio::piped())
+            // null stdin — piped stdin triggers CC's SDK detection which
+            // uses different auth handling and fails with "Not logged in".
+            // -p mode with null stdin uses standard OAuth from Keychain.
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::from(err_file))
             .spawn()
@@ -124,6 +130,8 @@ impl AgentProvider for ClaudeProvider {
         permissions: &PermissionProfile,
         system_prompt: &str,
     ) -> (String, Vec<String>) {
+        // build_command returns the -p form for compute providers (containers)
+        // that can't do the streaming protocol
         (
             self.binary.clone(),
             vec![
