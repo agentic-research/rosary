@@ -152,8 +152,8 @@ pub struct MigrationReport {
 
 /// Full migration: export from source, backup, import to target, verify.
 pub async fn migrate(
-    source: &(dyn BackendExport),
-    target: &(dyn BackendExport),
+    source: &dyn BackendExport,
+    target: &dyn BackendExport,
     provider_name: &str,
     backup_dir: Option<&std::path::Path>,
 ) -> Result<MigrationReport> {
@@ -187,7 +187,7 @@ pub async fn migrate(
 
 /// Import a snapshot into a backend store. Uses upserts for idempotency.
 pub async fn import_snapshot(
-    target: &(dyn BackendStore),
+    target: &dyn BackendStore,
     snapshot: &BackendSnapshot,
 ) -> Result<TableCounts> {
     for d in &snapshot.decades {
@@ -220,7 +220,7 @@ pub async fn import_snapshot(
 
 /// Export all orchestrator state into a snapshot.
 pub async fn export_snapshot(
-    source: &(dyn BackendExport),
+    source: &dyn BackendExport,
     provider_name: &str,
 ) -> Result<BackendSnapshot> {
     Ok(BackendSnapshot {
