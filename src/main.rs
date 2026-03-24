@@ -25,6 +25,8 @@ mod linear;
 mod linear_tracker;
 #[allow(dead_code)] // API surface — consumed by orchestrator after dispatch
 mod manifest;
+#[allow(dead_code)]
+mod migrate;
 mod pipeline;
 mod pool;
 mod queue;
@@ -205,6 +207,24 @@ enum Command {
         /// Repo path containing .beads/
         #[arg(short, long, default_value = ".")]
         repo: String,
+    },
+    /// Export orchestrator backend state to JSON backup
+    Backup {
+        /// Output directory (default: ~/.rsry/backups/<timestamp>)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Migrate orchestrator backend between providers (e.g. dolt → sqlite)
+    Migrate {
+        /// Target provider: "sqlite" or "dolt"
+        #[arg(long)]
+        to: String,
+        /// Target path (default: ~/.rsry/backend.db for sqlite)
+        #[arg(long)]
+        path: Option<String>,
+        /// Skip post-migration verification
+        #[arg(long)]
+        skip_verify: bool,
     },
 }
 
@@ -733,6 +753,102 @@ async fn main() -> Result<()> {
                         r.imported, r.skipped
                     );
                 }
+            }
+        }
+        Command::Backup { output } => {
+            let cfg = config::load_merged(&config::resolve_config_path())?;
+            let backend_cfg = cfg
+                .backend
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("[backend] section missing from config"))?;
+            let source = backend_cfg.connect_exportable().await?;
+            let snapshot = migrate::export_snapshot(&*source, &backend_cfg.provider).await?;
+            let rsry_dir = config::rsry_dir();
+            let dir = output.unwrap_or_else(|| {
+                rsry_dir
+                    .join("backups")
+                    .join(chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string())
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            migrate::save_backup(&snapshot, std::path::Path::new(&dir))?;
+            let counts = snapshot.counts();
+            eprintln!("Backup saved to {dir}");
+            eprintln!(
+                "  decades={} threads={} members={} pipelines={} dispatches={} deps={} links={} repos={}",
+                counts.decades,
+                counts.threads,
+                counts.thread_members,
+                counts.pipelines,
+                counts.dispatches,
+                counts.dependencies,
+                counts.linear_links,
+                counts.user_repos
+            );
+        }
+        Command::Migrate {
+            to,
+            path,
+            skip_verify,
+        } => {
+            let cfg = config::load_merged(&config::resolve_config_path())?;
+            let backend_cfg = cfg
+                .backend
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("[backend] section missing from config"))?;
+            let source = backend_cfg.connect_exportable().await?;
+
+            let rsry_dir = config::rsry_dir();
+            let target_path = path.unwrap_or_else(|| match to.as_str() {
+                "sqlite" => rsry_dir.join("backend.db").to_string_lossy().into_owned(),
+                _ => rsry_dir.join("dolt/rosary").to_string_lossy().into_owned(),
+            });
+            let target_cfg = config::BackendConfig {
+                provider: to.clone(),
+                path: target_path.clone().into(),
+            };
+            let target = target_cfg.connect_or_create().await?;
+
+            // Auto-backup before migration
+            let backup_dir = rsry_dir
+                .join("backups")
+                .join(format!(
+                    "pre-migrate-{}",
+                    chrono::Utc::now().format("%Y%m%d-%H%M%S")
+                ))
+                .to_string_lossy()
+                .into_owned();
+
+            eprintln!("Migrating {} → {} ...", backend_cfg.provider, to);
+            let report = migrate::migrate(
+                &*source,
+                &*target,
+                &backend_cfg.provider,
+                Some(std::path::Path::new(&backup_dir)),
+            )
+            .await?;
+
+            eprintln!("Source: {:?}", report.source_counts);
+            eprintln!("Target: {:?}", report.target_counts);
+
+            if skip_verify {
+                eprintln!("Verification: SKIPPED (--skip-verify)");
+                eprintln!();
+                eprintln!("To switch, edit ~/.rsry/config.toml:");
+                eprintln!("  [backend]");
+                eprintln!("  provider = \"{}\"", to);
+                eprintln!("  path = \"{}\"", target_path);
+            } else if report.verified {
+                eprintln!("Verification: PASSED");
+                eprintln!();
+                eprintln!("To switch, edit ~/.rsry/config.toml:");
+                eprintln!("  [backend]");
+                eprintln!("  provider = \"{}\"", to);
+                eprintln!("  path = \"{}\"", target_path);
+            } else {
+                eprintln!("Verification: FAILED — counts mismatch!");
+                eprintln!("Backup at: {backup_dir}");
+                std::process::exit(1);
             }
         }
     }
