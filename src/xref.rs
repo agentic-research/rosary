@@ -4,7 +4,7 @@
 //! module creates a **mirror bead** in the target repo with a back-reference
 //! and propagates status changes between source and mirror on each scan.
 use crate::bead::Bead;
-use crate::dolt::DoltClient;
+use crate::store::BeadStore;
 use std::collections::HashMap;
 
 /// A parsed external reference: "repo_name:label".
@@ -51,11 +51,11 @@ pub fn find_external_refs(beads: &[Bead]) -> Vec<ExternalRef> {
 ///
 /// For each external ref:
 /// 1. Check if a bead with a back-reference already exists in the target repo
-/// 2. If not, create one via the target repo's DoltClient
+/// 2. If not, create one via the target repo's BeadStore
 /// 3. If yes, sync status if the source has changed
 pub async fn sync_external_refs(
     refs: &[ExternalRef],
-    dolt_clients: &HashMap<String, DoltClient>,
+    dolt_clients: &HashMap<String, Box<dyn BeadStore>>,
     all_beads: &[Bead],
 ) {
     for ext_ref in refs {
@@ -110,17 +110,10 @@ pub async fn sync_external_refs(
             {
                 eprintln!("[xref] failed to create mirror {mirror_id}: {e}");
             } else {
-                // Set the back-reference via direct SQL
-                let sql = format!(
-                    "UPDATE issues SET external_ref = '{}' WHERE id = '{}'",
-                    back_ref.replace('\'', "''"),
-                    mirror_id,
-                );
                 client
                     .log_event(&mirror_id, "xref_created", &back_ref)
                     .await;
-                // Best-effort: external_ref column update
-                if let Err(e) = client.execute_raw(&sql).await {
+                if let Err(e) = client.set_external_ref(&mirror_id, &back_ref).await {
                     eprintln!("[xref] failed to set back-ref on {mirror_id}: {e}");
                 }
             }

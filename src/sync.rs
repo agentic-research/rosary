@@ -9,7 +9,7 @@
 use anyhow::Result;
 
 use crate::bead::{Bead, BeadUpdate};
-use crate::dolt::DoltClient;
+use crate::store::BeadStore;
 
 /// A normalized issue from an external tracker.
 #[derive(Debug, Clone)]
@@ -76,7 +76,7 @@ impl std::fmt::Display for SyncResult {
 /// Run bidirectional sync between beads and an external tracker.
 pub async fn bidi_sync(
     tracker: &dyn IssueTracker,
-    client: &DoltClient,
+    client: &dyn BeadStore,
     beads: &[Bead],
     _repo_name: &str,
 ) -> Result<SyncResult> {

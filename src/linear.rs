@@ -337,12 +337,13 @@ async fn resolve_phase_project_id(
     Ok(project_id)
 }
 
-/// Connect to a repo's Dolt database via its .beads/ directory.
-async fn connect_repo_dolt(repo: &crate::config::RepoConfig) -> Result<crate::dolt::DoltClient> {
+/// Connect to a repo's bead store via its .beads/ directory.
+async fn connect_repo_beads(
+    repo: &crate::config::RepoConfig,
+) -> Result<Box<dyn crate::store::BeadStore>> {
     let path = crate::scanner::expand_path(&repo.path);
     let beads_dir = path.join(".beads");
-    let config = crate::dolt::DoltConfig::from_beads_dir(&beads_dir)?;
-    crate::dolt::DoltClient::connect(&config).await
+    crate::bead_sqlite::connect_bead_store(&beads_dir).await
 }
 
 /// Bidirectional sync: beads <-> Linear.
@@ -435,10 +436,10 @@ pub async fn sync(
     let beads =
         crate::scanner::scan_repos(&repos.iter().map(|r| (*r).clone()).collect::<Vec<_>>()).await?;
 
-    let mut dolt_clients: std::collections::HashMap<String, crate::dolt::DoltClient> =
+    let mut dolt_clients: std::collections::HashMap<String, Box<dyn crate::store::BeadStore>> =
         std::collections::HashMap::new();
     for repo in &repos {
-        match connect_repo_dolt(repo).await {
+        match connect_repo_beads(repo).await {
             Ok(dc) => {
                 dolt_clients.insert(repo.name.clone(), dc);
             }

@@ -4,9 +4,8 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use crate::config;
-use crate::dolt::{DoltClient, DoltConfig};
 use crate::pool::RepoPool;
-use crate::store::{BackendStore, BeadRef, DispatchRecord, PipelineState};
+use crate::store::{BackendStore, BeadRef, BeadStore, DispatchRecord, PipelineState};
 
 /// Default result limit for bead search (keeps MCP responses bounded).
 const SEARCH_DEFAULT_LIMIT: u64 = 20;
@@ -28,32 +27,32 @@ fn parse_bool_arg(args: &Value, key: &str, default: bool) -> bool {
 // ---------------------------------------------------------------------------
 // Client helpers
 // ---------------------------------------------------------------------------
-/// Get a DoltClient — try the pool first (by name then path), fall back to fresh connect.
-pub(crate) async fn get_client<'a>(repo_path: &str, pool: &'a RepoPool) -> Result<ClientRef<'a>> {
+/// Get a BeadStore — try the pool first (by name then path), fall back to fresh connect.
+pub(crate) async fn get_client<'a>(repo_path: &str, pool: &'a RepoPool) -> Result<StoreRef<'a>> {
     let name = repo_name_from_path(repo_path);
-    if let Some(client) = pool.get(&name) {
-        return Ok(ClientRef::Pooled(client));
+    if let Some(store) = pool.get(&name) {
+        return Ok(StoreRef::Pooled(store));
     }
-    if let Some((_name, client)) = pool.get_by_path(repo_path) {
-        return Ok(ClientRef::Pooled(client));
+    if let Some((_name, store)) = pool.get_by_path(repo_path) {
+        return Ok(StoreRef::Pooled(store));
     }
     let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
     let beads_dir = crate::resolve_beads_dir(&root);
-    let config = DoltConfig::from_beads_dir(&beads_dir)?;
-    Ok(ClientRef::Owned(DoltClient::connect(&config).await?))
+    Ok(StoreRef::Owned(
+        crate::bead_sqlite::connect_bead_store(&beads_dir).await?,
+    ))
 }
 
-pub(crate) enum ClientRef<'a> {
-    Pooled(&'a DoltClient),
-    Owned(DoltClient),
+pub(crate) enum StoreRef<'a> {
+    Pooled(&'a dyn BeadStore),
+    Owned(Box<dyn BeadStore>),
 }
 
-impl std::ops::Deref for ClientRef<'_> {
-    type Target = DoltClient;
-    fn deref(&self) -> &DoltClient {
+impl StoreRef<'_> {
+    pub(crate) fn as_store(&self) -> &dyn BeadStore {
         match self {
-            ClientRef::Pooled(c) => c,
-            ClientRef::Owned(c) => c,
+            StoreRef::Pooled(s) => *s,
+            StoreRef::Owned(s) => s.as_ref(),
         }
     }
 }
@@ -337,7 +336,8 @@ async fn tool_bead_create(
         );
     }
 
-    let client = get_client(repo_path, pool).await?;
+    let client_ref = get_client(repo_path, pool).await?;
+    let client = client_ref.as_store();
     let repo_name = repo_name_from_path(repo_path);
     let id = crate::generate_bead_id(&repo_name);
 
@@ -424,7 +424,8 @@ async fn tool_bead_update(
         anyhow::bail!("no fields to update — provide at least one field besides repo_path and id");
     }
 
-    let client = get_client(repo_path, pool).await?;
+    let client_ref = get_client(repo_path, pool).await?;
+    let client = client_ref.as_store();
     let updated_fields = client.update_bead_fields(id, &update).await?;
 
     // Log the update event for audit trail
@@ -447,7 +448,8 @@ async fn tool_bead_close(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("id required"))?;
 
-    let client = get_client(repo_path, pool).await?;
+    let client_ref = get_client(repo_path, pool).await?;
+    let client = client_ref.as_store();
     client.close_bead(id).await?;
 
     // Unregister the session so rsry_active stops showing it.
@@ -474,7 +476,8 @@ async fn tool_bead_comment(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("body required"))?;
 
-    let client = get_client(repo_path, pool).await?;
+    let client_ref = get_client(repo_path, pool).await?;
+    let client = client_ref.as_store();
     client.add_comment(id, body, "rsry-mcp").await?;
 
     // Update session registry so rsry_active shows last activity
@@ -500,7 +503,8 @@ async fn tool_bead_link(args: &Value, pool: &RepoPool) -> Result<Value> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let client = get_client(repo_path, pool).await?;
+    let client_ref = get_client(repo_path, pool).await?;
+    let client = client_ref.as_store();
 
     if remove {
         client.remove_dependency(id, depends_on).await?;
@@ -528,7 +532,8 @@ async fn tool_bead_search(
         .unwrap_or(SEARCH_DEFAULT_LIMIT)
         .min(SEARCH_MAX_LIMIT) as u32;
 
-    let client = get_client(repo_path, pool).await?;
+    let client_ref = get_client(repo_path, pool).await?;
+    let client = client_ref.as_store();
     let repo_name = repo_name_from_path(repo_path);
     let beads = client.search_beads(query_str, &repo_name, limit).await?;
 
@@ -580,8 +585,7 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
 
     let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
     let beads_dir = crate::resolve_beads_dir(&root);
-    let dolt_config = DoltConfig::from_beads_dir(&beads_dir)?;
-    let client = DoltClient::connect(&dolt_config).await?;
+    let client = crate::bead_sqlite::connect_bead_store(&beads_dir).await?;
     let repo_name = repo_name_from_path(repo_path);
 
     let mut bead = client
@@ -1305,10 +1309,11 @@ async fn tool_bead_import(
             }
         };
 
-        let client = get_client(repo_path, pool).await?;
+        let client_ref = get_client(repo_path, pool).await?;
+        let client = client_ref.as_store();
         let repo_name = repo_name_from_path(repo_path);
 
-        match crate::import::import_bead(bead, &client, &repo_name).await? {
+        match crate::import::import_bead(bead, client, &repo_name).await? {
             Some(id) => {
                 if let Some(uid) = user_scope {
                     let _ = client.set_user_id(&id, uid).await;

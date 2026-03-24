@@ -535,16 +535,17 @@ async fn build_pr_content(
     (title, body)
 }
 
-/// Load bead title and description from the repo's Dolt database.
+/// Load bead title and description from the repo's bead store.
 async fn load_bead_info(repo_path: &Path, bead_id: &str) -> Option<(String, String)> {
     let beads_dir = crate::resolve_beads_dir(repo_path);
-    let config = crate::dolt::DoltConfig::from_beads_dir(&beads_dir).ok()?;
-    let client = crate::dolt::DoltClient::connect(&config).await.ok()?;
+    let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
+        .await
+        .ok()?;
     let repo_name = repo_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let bead = client.get_bead(bead_id, &repo_name).await.ok()??;
+    let bead = store.get_bead(bead_id, &repo_name).await.ok()??;
     Some((bead.title, bead.description))
 }
 

@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use crate::dolt::DoltClient;
+use crate::store::BeadStore;
 
 /// Read a JSON bead array from a file path or stdin.
 pub fn read_beads_json(file: Option<String>) -> Result<Vec<Value>> {
@@ -45,11 +45,11 @@ pub struct ImportResult {
     pub ids: Vec<String>,
 }
 
-/// Parse a JSON bead value into fields and create it via the DoltClient.
+/// Parse a JSON bead value into fields and create it via the BeadStore.
 /// Returns `Some(id)` if created, `None` if skipped (duplicate title).
 pub async fn import_bead(
     bead: &Value,
-    client: &DoltClient,
+    client: &dyn BeadStore,
     repo_name: &str,
 ) -> Result<Option<String>> {
     let title = bead["title"]
@@ -106,7 +106,7 @@ pub async fn import_bead(
 /// Import a batch of beads into a single repo. Returns counts + created IDs.
 pub async fn import_beads(
     beads: &[Value],
-    client: &DoltClient,
+    client: &dyn BeadStore,
     repo_name: &str,
 ) -> Result<ImportResult> {
     let mut result = ImportResult {

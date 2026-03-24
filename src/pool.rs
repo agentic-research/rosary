@@ -1,4 +1,4 @@
-//! Long-lived connection pool for Dolt servers across registered repos.
+//! Long-lived connection pool for bead stores across registered repos.
 //!
 //! The MCP server creates a `RepoPool` on startup, connecting to all
 //! repos with .beads/ directories. Connections are reused across tool
@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::config;
-use crate::dolt::{DoltClient, DoltConfig};
+use crate::store::BeadStore;
 
-/// Long-lived pool of DoltClient connections keyed by repo name.
+/// Long-lived pool of BeadStore connections keyed by repo name.
 pub struct RepoPool {
-    clients: HashMap<String, DoltClient>,
+    clients: HashMap<String, Box<dyn BeadStore>>,
     paths: HashMap<String, PathBuf>,
 }
 
@@ -32,7 +32,7 @@ impl RepoPool {
     /// Repos that fail to connect are logged and skipped (best-effort).
     pub async fn from_config(config_path: &str) -> Result<Self> {
         let cfg = config::load_merged(config_path)?;
-        let mut clients = HashMap::new();
+        let mut clients: HashMap<String, Box<dyn BeadStore>> = HashMap::new();
         let mut paths = HashMap::new();
 
         for repo in &cfg.repo {
@@ -44,18 +44,13 @@ impl RepoPool {
 
             paths.insert(repo.name.clone(), path.clone());
 
-            match DoltConfig::from_beads_dir(&beads_dir) {
-                Ok(dolt_config) => match DoltClient::connect(&dolt_config).await {
-                    Ok(client) => {
-                        eprintln!("[pool] connected: {}", repo.name);
-                        clients.insert(repo.name.clone(), client);
-                    }
-                    Err(e) => {
-                        eprintln!("[pool] skipping {} (connect failed: {e})", repo.name);
-                    }
-                },
+            match crate::bead_sqlite::connect_bead_store(&beads_dir).await {
+                Ok(store) => {
+                    eprintln!("[pool] connected: {}", repo.name);
+                    clients.insert(repo.name.clone(), store);
+                }
                 Err(e) => {
-                    eprintln!("[pool] skipping {} (config error: {e})", repo.name);
+                    eprintln!("[pool] skipping {} (connect failed: {e})", repo.name);
                 }
             }
         }
@@ -63,14 +58,14 @@ impl RepoPool {
         Ok(RepoPool { clients, paths })
     }
 
-    /// Get a DoltClient by repo name.
-    pub fn get(&self, repo_name: &str) -> Option<&DoltClient> {
-        self.clients.get(repo_name)
+    /// Get a BeadStore by repo name.
+    pub fn get(&self, repo_name: &str) -> Option<&dyn BeadStore> {
+        self.clients.get(repo_name).map(|b| b.as_ref())
     }
 
-    /// Get a DoltClient by repo path (resolves name from path).
+    /// Get a BeadStore by repo path (resolves name from path).
     /// Resolves repo path via discover_repo_root (no symlink resolution).
-    pub fn get_by_path(&self, repo_path: &str) -> Option<(&str, &DoltClient)> {
+    pub fn get_by_path(&self, repo_path: &str) -> Option<(&str, &dyn BeadStore)> {
         let target = Path::new(repo_path);
         let discovered = config::discover_repo_root(target).unwrap_or_else(|| target.to_path_buf());
         let root = crate::scanner::expand_path(&discovered);
@@ -79,7 +74,7 @@ impl RepoPool {
             if *path == root
                 && let Some(client) = self.clients.get(name)
             {
-                return Some((name.as_str(), client));
+                return Some((name.as_str(), client.as_ref()));
             }
         }
         None
@@ -103,8 +98,8 @@ impl RepoPool {
 
     /// Iterate over all (repo_name, client) pairs. Used by webhook handler.
     #[allow(dead_code)]
-    pub fn iter_clients(&self) -> impl Iterator<Item = (&str, &DoltClient)> {
-        self.clients.iter().map(|(k, v)| (k.as_str(), v))
+    pub fn iter_clients(&self) -> impl Iterator<Item = (&str, &dyn BeadStore)> {
+        self.clients.iter().map(|(k, v)| (k.as_str(), v.as_ref()))
     }
 }
 
@@ -175,7 +170,7 @@ path = "/tmp/no-such-repo-xyz"
         let clients = HashMap::new();
         let mut paths = HashMap::new();
 
-        // We can't easily create a DoltClient without a real server,
+        // We can't easily create a BeadStore without a real database,
         // so test the names/paths logic separately
         paths.insert("alpha".to_string(), PathBuf::from("/tmp/alpha"));
         paths.insert("beta".to_string(), PathBuf::from("/tmp/beta"));

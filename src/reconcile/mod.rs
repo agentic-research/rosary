@@ -21,12 +21,12 @@ use std::time::{Duration, Instant};
 
 use crate::config::{self, RepoConfig};
 use crate::dispatch::{self, AgentHandle};
-use crate::dolt::DoltClient;
 use crate::epic;
 use crate::pipeline::PipelineEngine;
 use crate::queue::WorkQueue;
 use crate::scanner;
 use crate::store::BeadRef;
+use crate::store::BeadStore;
 use crate::sync::IssueTracker;
 use crate::xref;
 
@@ -105,8 +105,8 @@ pub struct Reconciler {
     completed_work_dirs: HashMap<String, (PathBuf, String)>,
     /// Stash workspaces from completed agents for checkpoint + teardown
     completed_workspaces: HashMap<String, crate::workspace::Workspace>,
-    /// Dolt clients keyed by repo name, lazily connected
-    dolt_clients: HashMap<String, DoltClient>,
+    /// Bead stores keyed by repo name, lazily connected
+    dolt_clients: HashMap<String, Box<dyn crate::store::BeadStore>>,
     /// Resolved AI agent provider (claude, gemini, etc).
     provider: Box<dyn dispatch::AgentProvider>,
     /// Optional external issue tracker (Linear, etc.) for status mirroring.
