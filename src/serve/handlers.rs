@@ -232,6 +232,22 @@ async fn tool_run_once(config_path: &str, dry_run: bool, bead_id: Option<&str>) 
     };
 
     if let Some(target) = bead_id {
+        if dry_run {
+            // Dry run: single synchronous pass — no background task needed.
+            // Avoids infinite loop (dry-run increments dispatched but never
+            // reaches terminal state, so run() loops forever).
+            let mut reconciler = Reconciler::new(reconciler_config).await;
+            let summary = reconciler.iterate().await?;
+            return Ok(json!({
+                "targeted_bead": target,
+                "pipeline": true,
+                "status": "dry_run",
+                "dispatched": summary.dispatched,
+                "triaged": summary.triaged,
+                "dry_run": true,
+            }));
+        }
+
         // Async hand-off: spawn the full pipeline in the background and return
         // immediately. The MCP HTTP client has a ~60s timeout — the pipeline
         // takes minutes. Use rsry_active to poll for completion.
