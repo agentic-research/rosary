@@ -217,9 +217,6 @@ async fn tool_run_once(config_path: &str, dry_run: bool, bead_id: Option<&str>) 
 
     let cfg = config::load(config_path)?;
 
-    // When targeting a specific bead: run() does iterate() → wait_and_verify().
-    // wait_and_verify loops: dispatch → poll → verify → advance → re-dispatch → terminal.
-    // once=true so run() exits after the pipeline completes (not an infinite loop).
     let reconciler_config = ReconcilerConfig {
         max_concurrent: 1,
         scan_interval: Duration::from_secs(5),
@@ -234,33 +231,35 @@ async fn tool_run_once(config_path: &str, dry_run: bool, bead_id: Option<&str>) 
         ..Default::default()
     };
 
-    let mut reconciler = Reconciler::new(reconciler_config).await;
+    if let Some(target) = bead_id {
+        // Async hand-off: spawn the full pipeline in the background and return
+        // immediately. The MCP HTTP client has a ~60s timeout — the pipeline
+        // takes minutes. Use rsry_active to poll for completion.
+        let target_id = target.to_string();
+        tokio::spawn(async move {
+            let mut reconciler = Reconciler::new(reconciler_config).await;
+            match reconciler.run().await {
+                Ok(summary) => {
+                    eprintln!(
+                        "[run_once] pipeline for {target_id} finished: dispatched={} passed={} failed={} deadlettered={}",
+                        summary.dispatched, summary.passed, summary.failed, summary.deadlettered
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[run_once] pipeline for {target_id} failed: {e}");
+                }
+            }
+        });
 
-    if bead_id.is_some() {
-        // Full pipeline: run() loops until bead reaches terminal/deadletter
-        let summary = reconciler.run().await?;
-        let status = if summary.deadlettered > 0 {
-            "deadlettered"
-        } else if summary.failed > 0 {
-            "failed"
-        } else if summary.passed > 0 {
-            "terminal"
-        } else if summary.dispatched > 0 {
-            "dispatched"
-        } else {
-            "no_dispatch"
-        };
         Ok(json!({
-            "targeted_bead": bead_id,
+            "targeted_bead": target,
             "pipeline": true,
-            "status": status,
-            "dispatched": summary.dispatched,
-            "passed": summary.passed,
-            "failed": summary.failed,
-            "deadlettered": summary.deadlettered,
+            "status": "started",
+            "message": "Pipeline running in background. Use rsry_active to monitor progress.",
         }))
     } else {
-        // Single pass: just iterate (existing behavior)
+        // Single pass (no bead_id): fast enough to stay synchronous.
+        let mut reconciler = Reconciler::new(reconciler_config).await;
         let summary = reconciler.iterate().await?;
         Ok(json!({
             "scanned": summary.scanned,
