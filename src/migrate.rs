@@ -172,10 +172,19 @@ pub async fn migrate(
     // 3. Import to target
     import_snapshot(target, &snapshot).await?;
 
-    // 4. Verify — re-export from target and compare counts
+    // 4. Verify — re-export from target and compare counts.
+    // Target may have MORE decades than source (stub decades for FK integrity),
+    // so we check target >= source for decades, exact match for everything else.
     let verify_snapshot = export_snapshot(target, "verify").await?;
     let target_counts = verify_snapshot.counts();
-    let verified = source_counts == target_counts;
+    let verified = target_counts.decades >= source_counts.decades
+        && target_counts.threads == source_counts.threads
+        && target_counts.thread_members == source_counts.thread_members
+        && target_counts.pipelines == source_counts.pipelines
+        && target_counts.dispatches == source_counts.dispatches
+        && target_counts.dependencies == source_counts.dependencies
+        && target_counts.linear_links == source_counts.linear_links
+        && target_counts.user_repos == source_counts.user_repos;
 
     Ok(MigrationReport {
         source_counts,
@@ -186,10 +195,36 @@ pub async fn migrate(
 }
 
 /// Import a snapshot into a backend store. Uses upserts for idempotency.
+/// Auto-creates stub decades for any threads referencing missing decade IDs
+/// (Dolt doesn't enforce FKs, so source data may have orphans).
 pub async fn import_snapshot(
     target: &dyn BackendStore,
     snapshot: &BackendSnapshot,
 ) -> Result<TableCounts> {
+    // Collect known decade IDs — mutable so we can track stubs
+    let mut known_decades: std::collections::HashSet<String> =
+        snapshot.decades.iter().map(|d| d.id.clone()).collect();
+
+    // Auto-create stub decades for orphaned thread references (deduped)
+    let mut stub_count = 0;
+    for t in &snapshot.threads {
+        if !known_decades.contains(&t.decade_id) {
+            target
+                .upsert_decade(&DecadeRecord {
+                    id: t.decade_id.clone(),
+                    title: t.decade_id.clone(),
+                    source_path: String::new(),
+                    status: "active".into(),
+                })
+                .await?;
+            known_decades.insert(t.decade_id.clone());
+            stub_count += 1;
+        }
+    }
+    if stub_count > 0 {
+        eprintln!("[migrate] created {stub_count} stub decades for orphaned thread references");
+    }
+
     for d in &snapshot.decades {
         target.upsert_decade(d).await?;
     }
@@ -530,6 +565,39 @@ mod tests {
     #[test]
     fn load_backup_missing_dir_errors() {
         assert!(load_backup(std::path::Path::new("/tmp/nonexistent-rsry-backup-xyz")).is_err());
+    }
+
+    #[tokio::test]
+    async fn import_creates_stub_decades_for_orphaned_threads() {
+        // Simulate Dolt data where threads reference decades that don't exist
+        let snap = BackendSnapshot {
+            version: 1,
+            created_at: Utc::now(),
+            source_provider: "dolt".into(),
+            decades: vec![], // No decades!
+            threads: vec![ThreadRecord {
+                id: "missing-decade/thread1".into(),
+                name: "Thread in missing decade".into(),
+                decade_id: "missing-decade".into(),
+                feature_branch: None,
+            }],
+            thread_members: vec![],
+            pipelines: vec![],
+            dispatches: vec![],
+            dependencies: vec![],
+            linear_links: vec![],
+            user_repos: vec![],
+        };
+
+        let (target, _dir) = temp_backend();
+        // This should NOT fail — stubs should be created
+        let counts = import_snapshot(&target, &snap).await.unwrap();
+        assert_eq!(counts.threads, 1);
+
+        // Verify stub decade was created
+        let decade = target.get_decade("missing-decade").await.unwrap();
+        assert!(decade.is_some());
+        assert_eq!(decade.unwrap().title, "missing-decade");
     }
 
     #[tokio::test]
