@@ -97,7 +97,7 @@ tasks:
         BIN="$HOME/.local/bin/rsry"
         LOG="$HOME/.rsry/http.log"
         STAGED="/tmp/com.rosary.serve.plist.staged"
-        sed -e "s|__RSRY_BIN__|$BIN|g" -e "s|__RSRY_LOG__|$LOG|g" -e "s|__HOME__|$HOME|g" \
+        sed -e "s|__RSRY_BIN__|$BIN|g" -e "s|__RSRY_LOG__|$LOG|g" -e "s|__HOME__|$HOME|g" -e "s|__USER__|$USER|g" \
           scripts/com.rosary.serve.plist.template > "$STAGED"
         # Only reload launchd if the plist content has actually changed
         # (or doesn't exist yet). On normal `task install`, the binary

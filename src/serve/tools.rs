@@ -53,13 +53,13 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_run_once",
-                "description": "Run a reconciliation pass. With bead_id: runs the full pipeline for that bead (dispatch → verify → advance → re-dispatch until terminal). Without bead_id: single pass across all beads. Use dry_run=true to preview.",
+                "description": "Run a reconciliation pass. With bead_id: starts the full pipeline in the background (async — returns immediately with status 'started', use rsry_active to poll). Without bead_id: single synchronous pass across all beads. Use dry_run=true to preview without dispatching.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "bead_id": {
                             "type": "string",
-                            "description": "Target a specific bead. Runs the full pipeline until completion (blocks). Skip triage, dispatch only this bead."
+                            "description": "Target a specific bead. Starts pipeline in background (async). Use rsry_active to monitor. With dry_run=true, runs a single synchronous pass instead."
                         },
                         "dry_run": {
                             "type": "boolean",

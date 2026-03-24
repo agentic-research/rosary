@@ -32,12 +32,17 @@
         <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>__HOME__</string>
+        <key>USER</key>
+        <string>__USER__</string>
     </dict>
     <key>StandardOutPath</key>
     <string>__RSRY_LOG__</string>
     <key>StandardErrorPath</key>
     <string>__RSRY_LOG__</string>
     <key>RunAtLoad</key>
+    <true/>
+    <!-- Required for spawned agents to access Keychain (Claude Code OAuth credentials) -->
+    <key>SessionCreate</key>
     <true/>
 </dict>
 </plist>

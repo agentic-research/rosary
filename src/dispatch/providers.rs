@@ -73,15 +73,27 @@ impl AgentProvider for ClaudeProvider {
         let log_path = work_dir.join(STREAM_LOG_FILENAME);
         let log_file = std::fs::File::create(&log_path)
             .with_context(|| format!("creating stream log {}", log_path.display()))?;
+        let err_path = work_dir.join(".rsry-stderr.log");
+        let err_file = std::fs::File::create(&err_path)
+            .with_context(|| format!("creating stderr log {}", err_path.display()))?;
         // Use piped stdin (not null). Claude CLI may hang with /dev/null
         // when it needs to initialize MCP servers or check auth status.
         // The pipe stays open for the child's lifetime; we never write to it.
+        // Log the full command for debugging dispatch failures
+        let allowed = permissions.claude_allowed_tools();
+        eprintln!(
+            "[spawn] {} -p <prompt> --allowedTools '{}' --output-format json (cwd={})",
+            self.binary,
+            allowed,
+            work_dir.display()
+        );
+
         let child = tokio::process::Command::new(&self.binary)
             .args([
                 "-p",
                 prompt,
                 "--allowedTools",
-                permissions.claude_allowed_tools(),
+                allowed,
                 "--append-system-prompt",
                 system_prompt,
                 "--output-format",
@@ -91,11 +103,18 @@ impl AgentProvider for ClaudeProvider {
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
+            // Prevent nested Claude Code conflicts when dispatched from MCP
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::from(log_file))
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::from(err_file))
             .spawn()
             .with_context(|| format!("spawning claude CLI in {}", work_dir.display()))?;
+
+        let pid = child.id().unwrap_or(0);
+        eprintln!("[spawn] claude started (pid={pid})");
+
         Ok(Box::new(CliSession::new(child)))
     }
 
@@ -150,6 +169,9 @@ impl AgentProvider for GeminiProvider {
         let log_path = work_dir.join(STREAM_LOG_FILENAME);
         let log_file = std::fs::File::create(&log_path)
             .with_context(|| format!("creating stream log {}", log_path.display()))?;
+        let err_path = work_dir.join(".rsry-stderr.log");
+        let err_file = std::fs::File::create(&err_path)
+            .with_context(|| format!("creating stderr log {}", err_path.display()))?;
         let bin = if self.binary.is_empty() {
             "gemini"
         } else {
@@ -172,9 +194,11 @@ impl AgentProvider for GeminiProvider {
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log_file))
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::from(err_file))
             .spawn()
             .with_context(|| format!("spawning gemini CLI in {}", work_dir.display()))?;
         Ok(Box::new(CliSession::new(child)))
@@ -212,14 +236,19 @@ impl AgentProvider for AcpCliProvider {
         let log_path = work_dir.join(STREAM_LOG_FILENAME);
         let log_file = std::fs::File::create(&log_path)
             .with_context(|| format!("creating stream log {}", log_path.display()))?;
+        let err_path = work_dir.join(".rsry-stderr.log");
+        let err_file = std::fs::File::create(&err_path)
+            .with_context(|| format!("creating stderr log {}", err_path.display()))?;
         let child = tokio::process::Command::new(&self.binary)
             .current_dir(work_dir)
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::from(log_file))
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::from(err_file))
             .spawn()
             .with_context(|| format!("spawning ACP agent: {}", self.binary))?;
         Ok(Box::new(CliSession::new(child)))
