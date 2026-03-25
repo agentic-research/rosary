@@ -1,55 +1,46 @@
-/target
+# === DENY ALL (whitelist approach) ===
+# Everything at the root is ignored by default.
+# Only explicitly listed items are tracked.
+/*
 
-# Dolt database files (added by bd init)
-.dolt/
-*.db
+# === RUST BUILD ===
+!/Cargo.toml
+!/Cargo.lock
+!/build.rs
+!/src
+!/crates
+!/tests
 
-# Local beads backups
-backups/
+# === CONFIG ===
+!/.cargo
+!/Taskfile.yml
+!/rosary.toml
+!/rosary-self.toml
+!/apko.yaml
+!/melange.yaml
+!/entitlements.plist
 
-# CRUMB - personal memory (not tracked)
-.crumb/
+# === DOCS & DEFINITIONS ===
+!/README.md
+!/CLAUDE.md
+!/AGENTS.md
+!/LICENSE
+!/docs
+!/agents
+!/skills
+!/scripts
 
-# Dolt server runtime files
-dolt-server.lock
-dolt-server.log
-dolt-server.pid
-dolt-server.port
-# Dolt data directories (inside .beads/, not src/dolt/)
-.beads/dolt/
-.envrc
-.env
+# === TOOLING ===
+!/.gitignore
+!/.mcp.json
+!/.pre-commit-config.yaml
+!/.github
+!/.claude-plugin
 
-# Agent workspace directories
-.rsry-workspaces/
+# === BEADS (tracked config, not data) ===
+!/.beads
+/.beads/dolt/
 
-# Rosary user-scoped config (worktrees, config live in ~/.rsry/)
-.rsry/
-
-# Claude Code runtime artifacts (keep .claude/settings.json etc)
-.claude/worktrees/
-.claude/scheduled_tasks.lock
-.claude/projects/
-
-# Stale scripts from agent runs
-.tmp-*
-_push_fix.*
-.fix-beads.py
-_fix_stale_servers.py
-_beads_clone/
-
-# Experiments (local only)
-experiments/
-<<<<<<< Updated upstream
-
-# Agent working logs (ephemeral review notes, not source)
-_agent_logs/
-
-# Local plan/scratch files (agent session plans, not tracked)
-_*.md
-||||||| Stash base
-=======
-
-# Agent working logs (scratch space for analysis agents)
-_agent_logs/
->>>>>>> Stashed changes
+# === BEAD STATE ===
+!/.rsry-bead-id
+!/.rsry-stream.jsonl
