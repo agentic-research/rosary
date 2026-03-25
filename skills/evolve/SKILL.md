@@ -82,6 +82,28 @@ Mode determines which personas deploy:
 | `--fe` | dev-agent | staging-agent |
 | `--prune` | janitor-agent | skeptic-agent |
 
+### Team Scaling — Match team size to task size
+
+The scoping-agent determines team composition. Mode selects which AGENTS,
+scale selects HOW MANY:
+
+| Bead scope | Team | Rationale |
+|------------|------|-----------|
+| 1 file | Generator solo | No coordination overhead |
+| 2-5 files, same module | Generator + evaluator | Minimal viable pipeline |
+| >5 files OR cross-module | Scoping + generator + evaluator + skeptic | Full pipeline |
+| `--simplify` (any size) | principal-agent + skeptic | Simplify always needs adversarial check |
+| `--security` (any size) | prod-agent + skeptic | Security always needs adversarial check |
+
+**How to determine scale:**
+1. Count files in bead scope
+2. Check if files span multiple directories (mache get_communities if available)
+3. Mode flags (`--simplify`, `--security`) override file-count logic
+4. Scoping-agent writes team composition into plan.md's `## Team` section
+
+For 1-file scale: the generator agent does its own verification (no separate evaluator).
+This avoids spawning a second agent just to re-run one lint command.
+
 ## Architecture (Anthropic Harness Pattern)
 
 Separate generator from evaluator. Self-evaluation creates confirmation bias;
@@ -185,23 +207,71 @@ The scoping-agent writes all of this into `plan.md`:
 If the `Questions for human` section is non-empty, STOP and ask before executing.
 An empty questions section means the plan is self-contained and can proceed autonomously.
 
+### 2.5 Discover Verification — Don't hardcode, probe
+
+The scoping-agent discovers verification commands for the repo. This replaces
+any hardcoded assumptions about what tools a repo uses.
+
+**Principle: One path, multiple callers.**
+Evolve uses the same commands a developer runs locally, CI runs remotely,
+and pre-commit runs on commit. It never invents its own verification commands.
+
+**Probe hierarchy** (scoping-agent checks in order, uses first match per category):
+
+| Priority | File | Extract |
+|----------|------|---------|
+| 1 | Taskfile.yml | Parse task names — lint, test, check, typecheck, build |
+| 2 | Makefile | Parse targets — lint, test, check |
+| 3 | package.json | Parse scripts — test, lint, typecheck, build |
+| 4 | Cargo.toml | `cargo test`, `cargo clippy`, `cargo build` |
+| 5 | go.mod | `go test ./...`, `go vet ./...` |
+| 6 | mix.exs | `mix test`, `mix format --check-formatted` |
+| 7 | pyproject.toml | `pytest`, `ruff check .` |
+
+**Fast-fail layer:** Before running any of the above, the evaluator runs
+`mache get_diagnostics` on changed files. Type/syntax errors caught in
+milliseconds — no point running a 30-second test suite if the code doesn't parse.
+
+**Commit gate:** If `.pre-commit-config.yaml` exists, run `pre-commit run --all-files`
+as a final gate. If not, suggest bootstrapping from the reference template
+in `docs/pre-commit-reference.yaml`.
+
+**Hard stop:** If NO verification tooling is found, STOP and ask the human:
+"No verification tooling found in {repo}. What should I run?"
+Do not guess. Do not proceed without verification.
+
+The scoping-agent writes all discovered commands into plan.md's `## Verification`
+section. Downstream agents read this section — they never probe on their own.
+
 ### 3. Execute -- Generator -> Evaluator pipeline
 
 **Generator** (dev-agent, per bead):
-- Reads plan.md
+- Reads plan.md (including `## Verification` section)
 - Implements the fix
+- Runs ALL verify commands from plan.md's Verification section
+- Captures stdout/stderr of each command
 - Stages changes (`git add`)
-- Writes `changes.md` summarizing what was done
+- Writes `changes.md` with:
+  - Summary of what was done
+  - **Verification Output** section with actual command output and exit codes
+  - If any command failed, reports the failure — does NOT claim success
 - Does NOT commit
 
 **Evaluator** (staging-agent, after ALL generators finish):
-- Runs typecheck
-- Runs tests (diff-aware: only affected pages if possible)
+- Runs `mache get_diagnostics` on changed files (fast-fail — ms)
+- Re-runs ALL verify commands from plan.md independently (does NOT trust generator's output)
+- Compares its results against generator's claimed results in changes.md
+- If results differ, that itself is a finding (stale state, flaky test, or lie)
 - Reads each `changes.md`
-- Writes `eval.md` per bead: PASS or FAIL with specific feedback
-- Auto-fixes mechanical issues (unused imports, formatting)
+- Writes `eval.md` per bead: PASS or FAIL with:
+  - Its own command output as evidence
+  - Specific error messages if FAIL (not just "tests failed")
+  - Diff against generator's claimed output if they diverge
 
-**On FAIL**: writes `feedback.md`, generator retries (max 3).
+**On FAIL**: writes `feedback.md` with the exact error output (command, exit code,
+stderr). Generator retries with this specific error context (max 3). If all retries
+fail, bead stays open with error details as a comment via rsry_bead_comment.
+
 **On PASS**: team lead commits all passing beads as one batch.
 
 ### 4. Commit -- Team lead only
@@ -274,11 +344,11 @@ Operating principles feed back into agent prompts. Each run makes agents better.
 
 ## Lifecycle conditions
 
-**START:** bead open + files specified + description clear
-**STOP:** evaluator passes + typecheck green + tests green
-**ESCALATE:** critical issue found, or >3 files without tests
-**RETRY:** evaluator fails (max 3 per bead)
-**NEVER:** commit without eval pass, push with failing tests
+**START:** bead open + files specified + description clear + verification discovered
+**STOP:** evaluator passes + ALL discovered verify commands green (with evidence)
+**ESCALATE:** critical issue found, or >3 files without tests, or no verification tooling found
+**RETRY:** evaluator fails with specific error output (max 3 per bead)
+**NEVER:** commit without eval pass, push with failing tests, proceed without verification
 
 ## Provenance
 
