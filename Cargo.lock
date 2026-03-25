@@ -3237,7 +3237,6 @@ name = "rosary"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
- "agent-client-protocol-schema",
  "anyhow",
  "assert_cmd",
  "async-trait",

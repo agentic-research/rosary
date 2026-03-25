@@ -304,7 +304,7 @@ impl AgentProvider for AcpNativeProvider {
     }
 
     fn name(&self) -> &str {
-        "acp-native"
+        "acp"
     }
 }
 
