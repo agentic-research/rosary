@@ -224,6 +224,7 @@ impl AgentProvider for GeminiProvider {
 /// the ACP session, not via CLI flags.
 ///
 /// Example binaries: `claude-agent-acp` (npm), custom ACP agents.
+#[allow(dead_code)] // Legacy stub — replaced by AcpNativeProvider
 pub struct AcpCliProvider {
     /// Path or name of the ACP agent binary.
     pub binary: String,
@@ -267,6 +268,46 @@ impl AgentProvider for AcpCliProvider {
     }
 }
 
+/// Provider that uses the ACP protocol natively via `ClientSideConnection`.
+///
+/// Spawns the agent binary as a subprocess, establishes a JSON-RPC connection,
+/// and runs the full ACP lifecycle (initialize → new_session → prompt).
+/// Works with any ACP-compatible binary: claude-agent-acp, gemini-agent-acp, etc.
+pub struct AcpNativeProvider {
+    /// Path or name of the ACP agent binary.
+    pub binary: String,
+}
+
+impl AgentProvider for AcpNativeProvider {
+    fn spawn_agent(
+        &self,
+        prompt: &str,
+        work_dir: &Path,
+        permissions: &PermissionProfile,
+        system_prompt: &str,
+    ) -> Result<Box<dyn AgentSession>> {
+        let log_path = work_dir.join(STREAM_LOG_FILENAME);
+        eprintln!(
+            "[spawn] ACP native: {} (cwd={})",
+            self.binary,
+            work_dir.display()
+        );
+        let session = crate::acp::spawn_acp_session(
+            &self.binary,
+            prompt,
+            work_dir,
+            *permissions,
+            system_prompt,
+            &log_path,
+        )?;
+        Ok(Box::new(session))
+    }
+
+    fn name(&self) -> &str {
+        "acp"
+    }
+}
+
 /// Resolve a provider by name string, with optional binary path overrides from config.
 pub fn provider_by_name(
     name: &str,
@@ -295,7 +336,7 @@ pub fn provider_by_name(
                 .get("acp")
                 .cloned()
                 .unwrap_or_else(|| "claude-agent-acp".to_string());
-            Ok(Box::new(AcpCliProvider { binary }))
+            Ok(Box::new(AcpNativeProvider { binary }))
         }
         other => anyhow::bail!("unknown provider: {other} (available: claude, gemini, acp)"),
     }

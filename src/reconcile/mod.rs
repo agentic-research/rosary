@@ -26,6 +26,7 @@ use crate::pipeline::PipelineEngine;
 use crate::queue::WorkQueue;
 use crate::scanner;
 use crate::store::BeadRef;
+#[allow(unused_imports)]
 use crate::store::BeadStore;
 use crate::sync::IssueTracker;
 use crate::xref;
