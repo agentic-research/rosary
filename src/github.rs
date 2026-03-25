@@ -382,6 +382,7 @@ mod tests {
             "rosary-test",
             "claude",
             &work,
+            None,
         );
         let body = build_pr_body(&[h], None);
         assert!(body.contains("Phase 0"));

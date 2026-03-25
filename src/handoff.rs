@@ -63,6 +63,12 @@ pub struct Handoff {
     /// Review verdict (filled by staging/prod agents, null for dev).
     pub verdict: Option<Verdict>,
 
+    /// Content hash of the previous phase's handoff (hex-encoded SHA-256).
+    /// Links the chain by CONTENT, not file path — an attacker cannot replace
+    /// the previous handoff file without invalidating this hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_chain_hash: Option<String>,
+
     pub timestamp: DateTime<Utc>,
 }
 
@@ -95,9 +101,16 @@ pub struct Verdict {
 impl Handoff {
     /// Content hash of this handoff, forming a hash chain with previous phases.
     ///
-    /// Covers: phase, from_agent, bead_id, summary, files_changed, previous_handoff.
-    /// The chain property: each handoff's hash includes the previous handoff's
-    /// hash reference, making the pipeline tamper-evident.
+    /// Covers: phase, from_agent, bead_id, summary, files_changed, previous_chain_hash.
+    /// The chain property: each handoff's hash includes the CONTENT HASH of the
+    /// previous handoff (not its file path), making the pipeline tamper-evident.
+    /// Replacing a previous handoff file changes its content hash, which invalidates
+    /// every subsequent handoff in the chain.
+    ///
+    /// **Invariant**: For `phase > 0`, `previous_chain_hash` MUST be `Some` for
+    /// the chain to be tamper-evident. Production callsites enforce this by aborting
+    /// handoff creation when the previous handoff can't be read. Test callsites may
+    /// pass `None` for convenience.
     ///
     /// Does NOT include timestamp (non-deterministic) or verdict (may be added later).
     pub fn chain_hash(&self) -> [u8; 32] {
@@ -114,9 +127,11 @@ impl Handoff {
             hasher.update(f.as_bytes());
             hasher.update(b"\0");
         }
-        // Chain: include previous handoff reference (path or hash)
-        if let Some(ref prev) = self.artifacts.previous_handoff {
-            hasher.update(prev.as_bytes());
+        // Chain: include CONTENT HASH of previous phase (not file path).
+        // This is the critical security property — replacing a previous handoff
+        // file without knowing its hash breaks the chain.
+        if let Some(ref prev_hash) = self.previous_chain_hash {
+            hasher.update(prev_hash.as_bytes());
         }
         hasher.finalize().into()
     }
@@ -131,6 +146,10 @@ impl Handoff {
     /// `summary` is extracted from the agent's commit messages or final
     /// output. `review_hints` are derived from changed files and bead
     /// description keywords.
+    /// Create a handoff, optionally linking to the previous phase's content hash.
+    ///
+    /// `previous` is the previous phase's handoff (if any). Its `chain_hash_hex()`
+    /// is stored in `previous_chain_hash` to create a content-linked chain.
     pub fn new(
         phase: u32,
         from_agent: &str,
@@ -138,6 +157,7 @@ impl Handoff {
         bead_id: &str,
         provider: &str,
         work: &crate::manifest::Work,
+        previous: Option<&Handoff>,
     ) -> Self {
         // Generate review hints from file patterns
         let mut hints = Vec::new();
@@ -166,7 +186,7 @@ impl Handoff {
             });
 
         Handoff {
-            schema_version: "1".to_string(),
+            schema_version: "2".to_string(),
             phase,
             from_agent: from_agent.to_string(),
             to_agent: to_agent.map(|s| s.to_string()),
@@ -190,6 +210,7 @@ impl Handoff {
                 },
             },
             verdict: None,
+            previous_chain_hash: previous.map(|p| p.chain_hash_hex()),
             timestamp: Utc::now(),
         }
     }
@@ -289,6 +310,7 @@ mod tests {
             "rosary-abc",
             "claude",
             &work,
+            None,
         );
 
         let json = serde_json::to_string_pretty(&h).unwrap();
@@ -312,6 +334,7 @@ mod tests {
             "rosary-abc",
             "gemini",
             &work,
+            None,
         );
 
         assert_eq!(
@@ -324,7 +347,7 @@ mod tests {
     fn handoff_write_read() {
         let tmp = tempfile::TempDir::new().unwrap();
         let work = sample_work();
-        let h = Handoff::new(0, "dev-agent", None, "rosary-test", "claude", &work);
+        let h = Handoff::new(0, "dev-agent", None, "rosary-test", "claude", &work, None);
 
         h.write_to(tmp.path()).unwrap();
         let read = Handoff::read_from(tmp.path(), 0).unwrap();
@@ -343,10 +366,11 @@ mod tests {
             "rosary-x",
             "claude",
             &work,
+            None,
         );
         h0.write_to(tmp.path()).unwrap();
 
-        let h1 = Handoff::new(1, "staging-agent", None, "rosary-x", "gemini", &work);
+        let h1 = Handoff::new(1, "staging-agent", None, "rosary-x", "gemini", &work, None);
         h1.write_to(tmp.path()).unwrap();
 
         let chain = Handoff::read_chain(tmp.path());
@@ -365,6 +389,7 @@ mod tests {
             "rosary-abc",
             "claude",
             &work,
+            None,
         );
         let prompt = Handoff::format_for_prompt(&[h]);
 
@@ -379,20 +404,20 @@ mod tests {
     #[test]
     fn chain_hash_deterministic() {
         let work = sample_work();
-        let h = Handoff::new(0, "dev-agent", None, "rsry-abc", "claude", &work);
+        let h = Handoff::new(0, "dev-agent", None, "rsry-abc", "claude", &work, None);
         assert_eq!(h.chain_hash(), h.chain_hash());
     }
 
     #[test]
     fn chain_hash_changes_with_phase() {
         let work = sample_work();
-        let h0 = Handoff::new(0, "dev-agent", None, "rsry-abc", "claude", &work);
-        let h1 = Handoff::new(1, "dev-agent", None, "rsry-abc", "claude", &work);
+        let h0 = Handoff::new(0, "dev-agent", None, "rsry-abc", "claude", &work, None);
+        let h1 = Handoff::new(1, "dev-agent", None, "rsry-abc", "claude", &work, None);
         assert_ne!(h0.chain_hash(), h1.chain_hash());
     }
 
     #[test]
-    fn chain_hash_includes_previous_handoff() {
+    fn chain_hash_content_linked() {
         let work = sample_work();
         let h0 = Handoff::new(
             0,
@@ -401,20 +426,54 @@ mod tests {
             "rsry-abc",
             "claude",
             &work,
+            None,
         );
-        let h1 = Handoff::new(1, "staging-agent", None, "rsry-abc", "claude", &work);
-        // h1 has previous_handoff = Some(".rsry-handoff-0.json"), h0 has None
+
+        // h1 links to h0 by CONTENT HASH, not file path
+        let h1 = Handoff::new(
+            1,
+            "staging-agent",
+            None,
+            "rsry-abc",
+            "claude",
+            &work,
+            Some(&h0),
+        );
+
+        // The chain hash of h1 includes h0's content hash
+        assert!(h1.previous_chain_hash.is_some());
+        assert_eq!(
+            h1.previous_chain_hash.as_deref(),
+            Some(h0.chain_hash_hex().as_str())
+        );
+
+        // Modifying h0's summary changes its hash, which would invalidate h1's chain
+        let mut h0_tampered = h0.clone();
+        h0_tampered.summary = "tampered summary".to_string();
+        assert_ne!(h0.chain_hash_hex(), h0_tampered.chain_hash_hex());
+
+        // h1 still references the ORIGINAL h0's hash — tampered h0 won't match
         assert_ne!(
-            h0.chain_hash(),
-            h1.chain_hash(),
-            "chain hash must differ when previous_handoff differs"
+            h1.previous_chain_hash.as_deref(),
+            Some(h0_tampered.chain_hash_hex().as_str()),
+            "tampering with h0 must break the chain link from h1"
+        );
+    }
+
+    #[test]
+    fn chain_hash_none_for_phase_zero() {
+        let work = sample_work();
+        let h0 = Handoff::new(0, "dev-agent", None, "rsry-abc", "claude", &work, None);
+        assert!(
+            h0.previous_chain_hash.is_none(),
+            "phase 0 has no previous hash"
         );
     }
 
     #[test]
     fn chain_hash_hex_is_64_chars() {
         let work = sample_work();
-        let h = Handoff::new(0, "dev-agent", None, "rsry-abc", "claude", &work);
+        let h = Handoff::new(0, "dev-agent", None, "rsry-abc", "claude", &work, None);
         assert_eq!(h.chain_hash_hex().len(), 64);
     }
 
@@ -430,7 +489,7 @@ mod tests {
             lines_removed: 5,
             diff_stat: None,
         };
-        let h = Handoff::new(0, "dev-agent", None, "rosary-abc", "claude", &work);
+        let h = Handoff::new(0, "dev-agent", None, "rosary-abc", "claude", &work, None);
 
         assert!(h.review_hints.iter().any(|r| r.contains("concurrency")));
         assert!(h.review_hints.iter().any(|r| r.contains("coverage")));

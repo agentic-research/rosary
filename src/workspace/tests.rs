@@ -803,6 +803,7 @@ async fn e2e_pipeline_two_phase_lifecycle() {
         bead_id,
         "test",
         &work1,
+        None,
     );
     let handoff_path = handoff1.write_to(&ws.work_dir).expect("write handoff 1");
     assert!(handoff_path.exists(), "handoff file must exist");
