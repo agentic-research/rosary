@@ -30,7 +30,9 @@ sqlx-mysql = { version = "0.8.6", features = ["chrono"], default-features = fals
 reqwest = { version = "0.12", features = ["json"] }
 leyline-vcs = { git = "https://github.com/agentic-research/ley-line", default-features = false, optional = true }
 agent-client-protocol = "0.10.2"
+agent-client-protocol-schema = "0.11"
 async-trait = "0.1.89"
+tokio-util = { version = "0.7", features = ["compat"] }
 libc = "0.2"
 bdr = { path = "crates/bdr" }
 axum = "0.8"

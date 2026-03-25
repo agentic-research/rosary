@@ -41,7 +41,7 @@ use session::ComputeSession;
 ///
 /// Profiles are intentionally simple -- 3 levels. Complex per-tool rules
 /// belong in a schema/config file, not in Rust match arms.
-#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionProfile {
     /// Read + analyze only. For review, survey, audit.
