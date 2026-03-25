@@ -31,6 +31,50 @@ Composable: `/loop 10m /rosary:evolve --simplify` for continuous refactoring.
 | `--prune` | **Delete only** — dead code, stale beads | Reduce surface area |
 | `--dry-run` | Assess + plan, no changes | Preview what would happen |
 
+## Scale — Intel before operation
+
+Evolve operates at three scales. The assessment phase determines which:
+
+| Scale | Scope | When | Intel source |
+|-------|-------|------|-------------|
+| **File** | Single file refactor | `--simplify` on small beads | LSP, mache get_impact |
+| **Repo** | Cross-file coherence | Default mode, most beads | mache get_communities, dependency graph |
+| **Ecosystem** | Cross-repo dependencies | Beads touching shared types/APIs | rosary.toml repo list, `../` traversal |
+
+**Ecosystem scale** applies when:
+- A bead references files in multiple repos (e.g., signet cert format + rig cert minting)
+- A change in one repo breaks assumptions in another
+- rosary.toml lists the repo map — read it first
+
+At ecosystem scale, the scoping-agent reads `rosary.toml` to map dependencies,
+then checks if the bead's files touch any cross-repo seams (use `rosary:seam-discovery`).
+If yes, the plan.md must document which repos are affected and in what order changes
+should be applied.
+
+## Personas — Who works on what
+
+Agents are personas (perspective + judgment) with abilities (skills + tools):
+
+| Persona | Perspective | Skills | Constraints |
+|---------|------------|--------|-------------|
+| **scoping-agent** | Planner — enriches before expensive work | note | Haiku model, cheap |
+| **dev-agent** | Implementer — finds complexity, fixes it | simplify | Full access |
+| **principal-agent** | Does what is right, not what was asked | evolve, simplify, seam-discovery, note | Full access, Opus |
+| **skeptic-agent** | Distrusts AI output, assumes wrong until proven | note | Read-only, no Write/Edit |
+| **staging-agent** | Adversarial tester — tests test real behavior? | | Read-only |
+| **prod-agent** | Finds resource leaks, error swallowing, concurrency | note | Read-only |
+| **pm-agent** | Strategic — cross-repo overlap, scope creep, retro | note, evolve | Full access |
+
+Mode determines which personas deploy:
+
+| Mode | Generator | Evaluator |
+|------|-----------|-----------|
+| default | dev-agent | staging-agent |
+| `--simplify` | principal-agent | skeptic-agent |
+| `--security` | prod-agent | skeptic-agent |
+| `--fe` | dev-agent | staging-agent |
+| `--prune` | janitor-agent | skeptic-agent |
+
 ## Architecture (Anthropic Harness Pattern)
 
 Separate generator from evaluator. Self-evaluation creates confirmation bias;
