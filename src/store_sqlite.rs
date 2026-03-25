@@ -37,6 +37,9 @@ impl SqliteBackend {
         // Create tables
         conn.execute_batch(SCHEMA)?;
 
+        // Additive migrations — safe to run on every connect (IF NOT EXISTS / column-exists guard)
+        let _ = conn.execute_batch("ALTER TABLE dispatches ADD COLUMN chain_hash TEXT;");
+
         Ok(SqliteBackend {
             conn: Mutex::new(conn),
             path: path.to_path_buf(),
@@ -98,7 +101,8 @@ CREATE TABLE IF NOT EXISTS dispatches (
     outcome TEXT,
     work_dir TEXT NOT NULL DEFAULT '',
     session_id TEXT,
-    workspace_path TEXT
+    workspace_path TEXT,
+    chain_hash TEXT
 );
 
 CREATE TABLE IF NOT EXISTS dependencies (
@@ -315,8 +319,8 @@ impl DispatchStore for SqliteBackend {
     async fn record_dispatch(&self, record: &DispatchRecord) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path, chain_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 record.id,
                 record.bead_ref.repo,
@@ -329,6 +333,7 @@ impl DispatchStore for SqliteBackend {
                 record.work_dir,
                 record.session_id,
                 record.workspace_path,
+                record.chain_hash,
             ],
         )?;
         Ok(())
@@ -337,8 +342,8 @@ impl DispatchStore for SqliteBackend {
     async fn upsert_dispatch(&self, record: &DispatchRecord) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path, chain_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(id) DO UPDATE SET
                  completed_at = excluded.completed_at, outcome = excluded.outcome,
                  session_id = excluded.session_id, workspace_path = excluded.workspace_path",
@@ -354,6 +359,7 @@ impl DispatchStore for SqliteBackend {
                 record.work_dir,
                 record.session_id,
                 record.workspace_path,
+                record.chain_hash,
             ],
         )?;
         Ok(())
@@ -380,7 +386,7 @@ impl DispatchStore for SqliteBackend {
     async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path
+            "SELECT id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path, chain_hash
              FROM dispatches WHERE completed_at IS NULL",
         )?;
         let rows = stmt.query_map([], row_to_dispatch)?;
@@ -558,7 +564,7 @@ impl BackendExport for SqliteBackend {
     async fn all_dispatches(&self) -> Result<Vec<DispatchRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path
+            "SELECT id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path, chain_hash
              FROM dispatches ORDER BY started_at ASC",
         )?;
         let rows = stmt.query_map([], row_to_dispatch)?;
@@ -675,6 +681,7 @@ fn row_to_dispatch(row: &rusqlite::Row) -> rusqlite::Result<DispatchRecord> {
         work_dir: row.get(8)?,
         session_id: row.get(9)?,
         workspace_path: row.get(10)?,
+        chain_hash: row.get(11)?,
     })
 }
 
@@ -733,6 +740,7 @@ mod tests {
             work_dir: "/tmp/work".into(),
             session_id: None,
             workspace_path: None,
+            chain_hash: None,
         };
 
         store.record_dispatch(&record).await.unwrap();
@@ -955,6 +963,7 @@ mod tests {
             work_dir: "/tmp/work".into(),
             session_id: None,
             workspace_path: None,
+            chain_hash: None,
         };
         store.record_dispatch(&record).await.unwrap();
 

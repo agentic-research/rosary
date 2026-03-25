@@ -652,6 +652,10 @@ impl Reconciler {
                                     .log_event(&entry.bead_id, "workspace_path", ws_path)
                                     .await;
                             }
+                            // Record HEAD SHA at dispatch time (APAS chain integrity, L1 anchor)
+                            if let Some(ref sha) = handle.chain_hash {
+                                client.log_event(&entry.bead_id, "chain_hash", sha).await;
+                            }
                         }
 
                         self.active.insert(entry.bead_id.clone(), handle);

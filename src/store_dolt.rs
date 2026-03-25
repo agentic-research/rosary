@@ -190,6 +190,7 @@ impl DoltBackend {
                 work_dir VARCHAR(1024),
                 session_id VARCHAR(256),
                 workspace_path VARCHAR(1024),
+                chain_hash VARCHAR(64),
                 INDEX idx_bead (repo, bead_id),
                 INDEX idx_active (completed_at)
             )",
@@ -468,8 +469,8 @@ impl DispatchStore for DoltBackend {
 
     async fn record_dispatch(&self, record: &DispatchRecord) -> Result<()> {
         query(
-            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, work_dir, session_id, workspace_path)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, work_dir, session_id, workspace_path, chain_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&record.id)
         .bind(&record.bead_ref.repo)
@@ -480,6 +481,7 @@ impl DispatchStore for DoltBackend {
         .bind(&record.work_dir)
         .bind(&record.session_id)
         .bind(&record.workspace_path)
+        .bind(&record.chain_hash)
         .execute(&self.pool)
         .await
         .with_context(|| format!("recording dispatch {}", record.id))?;
@@ -508,8 +510,8 @@ impl DispatchStore for DoltBackend {
 
     async fn upsert_dispatch(&self, record: &DispatchRecord) -> Result<()> {
         query(
-            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path, chain_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
                  completed_at = VALUES(completed_at), outcome = VALUES(outcome),
                  session_id = VALUES(session_id), workspace_path = VALUES(workspace_path)",
@@ -525,6 +527,7 @@ impl DispatchStore for DoltBackend {
         .bind(&record.work_dir)
         .bind(&record.session_id)
         .bind(&record.workspace_path)
+        .bind(&record.chain_hash)
         .execute(&self.pool)
         .await
         .with_context(|| format!("upserting dispatch {}", record.id))?;
@@ -534,7 +537,7 @@ impl DispatchStore for DoltBackend {
     async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>> {
         let rows = query(
             "SELECT id, repo, bead_id, agent, provider, started_at,
-                    completed_at, outcome, work_dir, session_id, workspace_path
+                    completed_at, outcome, work_dir, session_id, workspace_path, chain_hash
              FROM dispatches WHERE completed_at IS NULL",
         )
         .fetch_all(&self.pool)
@@ -728,6 +731,7 @@ fn row_to_dispatch_record(r: &sqlx_mysql::MySqlRow) -> DispatchRecord {
         work_dir: r.try_get("work_dir").unwrap_or_default(),
         session_id: r.try_get("session_id").ok().flatten(),
         workspace_path: r.try_get("workspace_path").ok().flatten(),
+        chain_hash: r.try_get("chain_hash").ok().flatten(),
     }
 }
 
@@ -789,7 +793,7 @@ impl BackendExport for DoltBackend {
     async fn all_dispatches(&self) -> Result<Vec<DispatchRecord>> {
         let rows = query(
             "SELECT id, repo, bead_id, agent, provider, started_at,
-                    completed_at, outcome, work_dir, session_id, workspace_path
+                    completed_at, outcome, work_dir, session_id, workspace_path, chain_hash
              FROM dispatches ORDER BY started_at ASC",
         )
         .fetch_all(&self.pool)
@@ -974,6 +978,7 @@ mod tests {
             work_dir: "/tmp/work".into(),
             session_id: Some("test-session-123".into()),
             workspace_path: Some("/tmp/ws/test".into()),
+            chain_hash: None,
         };
         backend.record_dispatch(&dispatch).await.unwrap();
 

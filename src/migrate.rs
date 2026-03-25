@@ -363,6 +363,7 @@ mod tests {
                 work_dir: "/tmp/work".into(),
                 session_id: None,
                 workspace_path: None,
+                chain_hash: None,
             })
             .await
             .unwrap();
@@ -465,6 +466,7 @@ mod tests {
                 work_dir: "/tmp/work".into(),
                 session_id: None,
                 workspace_path: None,
+                chain_hash: None,
             })
             .await
             .unwrap();

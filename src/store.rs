@@ -88,6 +88,9 @@ pub struct DispatchRecord {
     pub session_id: Option<String>,
     /// jj workspace path (distinct from work_dir repo root).
     pub workspace_path: Option<String>,
+    /// HEAD commit SHA of the target repo at dispatch time (APAS chain integrity).
+    /// Ties agent output to a specific repo snapshot for auditability.
+    pub chain_hash: Option<String>,
 }
 
 /// Cross-repo dependency between beads.
@@ -669,6 +672,7 @@ mod tests {
             work_dir: "/tmp/work".into(),
             session_id: None,
             workspace_path: None,
+            chain_hash: None,
         };
 
         store.record_dispatch(&record).await.unwrap();
@@ -700,6 +704,7 @@ mod tests {
             work_dir: "/tmp/work".into(),
             session_id: None,
             workspace_path: Some("/tmp/.rsry-workspaces/rsry-002".into()),
+            chain_hash: None,
         };
 
         store.record_dispatch(&record).await.unwrap();
@@ -739,6 +744,7 @@ mod tests {
             work_dir: "/tmp/work".into(),
             session_id: None,
             workspace_path: None,
+            chain_hash: None,
         };
 
         // Insert via upsert
