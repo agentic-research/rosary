@@ -1516,4 +1516,45 @@ mod tests {
             "string 'false' must not become true"
         );
     }
+
+    // Tests for user_id propagation through CallerIdentity -> tool_run_once ->
+    // ReconcilerConfig.user_id.  We test the user_scope() extraction layer (the
+    // only part that can be unit-tested without loading config or running the
+    // reconciler) to lock in the contract: authenticated callers produce
+    // Some(user_id), anonymous/machine callers produce None.
+
+    #[test]
+    fn user_scope_authenticated_user_yields_some() {
+        let id = super::super::CallerIdentity::User("alice".to_string());
+        assert_eq!(id.user_scope(), Some("alice"));
+    }
+
+    #[test]
+    fn user_scope_machine_as_user_yields_some() {
+        let id = super::super::CallerIdentity::MachineAsUser {
+            user_id: "bob".to_string(),
+            service: "ingester".to_string(),
+        };
+        assert_eq!(id.user_scope(), Some("bob"));
+    }
+
+    #[test]
+    fn user_scope_machine_yields_none() {
+        let id = super::super::CallerIdentity::Machine("ingester".to_string());
+        assert_eq!(
+            id.user_scope(),
+            None,
+            "machine-level service must not scope to a user"
+        );
+    }
+
+    #[test]
+    fn user_scope_anonymous_yields_none() {
+        let id = super::super::CallerIdentity::Anonymous;
+        assert_eq!(
+            id.user_scope(),
+            None,
+            "anonymous/CLI callers must not scope to a user"
+        );
+    }
 }
