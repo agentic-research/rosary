@@ -227,6 +227,23 @@ impl Reconciler {
 
         if let Some(ws) = self.completed_workspaces.get(bead_id) {
             let work = crate::manifest::Work::from_git(&ws.work_dir, None);
+            // Read previous handoff for content-linked chain hash.
+            // For phase > 0, missing previous handoff means the chain is broken —
+            // skip handoff write entirely to avoid creating an unlinked attestation.
+            let previous = if phase > 0 {
+                match crate::handoff::Handoff::read_from(&ws.work_dir, phase - 1) {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        eprintln!(
+                            "[handoff] {bead_id}: phase {phase} cannot read previous handoff, \
+                             skipping handoff write to preserve chain integrity: {e}"
+                        );
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
             let mut handoff = crate::handoff::Handoff::new(
                 phase,
                 &from_agent,
@@ -234,6 +251,7 @@ impl Reconciler {
                 bead_id,
                 self.provider.name(),
                 &work,
+                previous.as_ref(),
             );
             // Always set thread_id (was missing in wait_and_verify before this refactor)
             handoff.thread_id = thread_map.get(bead_id).cloned();
