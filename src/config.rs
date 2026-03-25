@@ -180,6 +180,14 @@ pub struct DispatchConfig {
     /// Example: `[dispatch.binaries]\nclaude = "/Users/me/.local/bin/claude"`
     #[serde(default)]
     pub binaries: HashMap<String, String>,
+    /// Anthropic API key / OAuth token for dispatched agents.
+    ///
+    /// Equivalent to `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` env vars,
+    /// but stored in `~/.rsry/config.toml` for hosts (e.g. wasteland rigs) where
+    /// per-repo `.envrc` files are not available.
+    ///
+    /// Priority: env vars → per-repo `.envrc` → this field.
+    pub anthropic_api_key: Option<String>,
 }
 
 fn default_dispatch_provider() -> String {

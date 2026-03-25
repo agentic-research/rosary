@@ -1,31 +1,27 @@
 //! On-demand repo cloning for hosted/wasteland mode.
 //!
 //! When a workspace is requested for a repo that's registered but not local,
-//! clone it on demand. Clones are cached in `~/.rsry/repos/<hash>/` and reused
-//! across dispatches.
+//! clone it on demand. Clones are cached under `~/.rsry/repos/<org>_<repo>/`
+//! and reused across dispatches (fetch-to-update on subsequent calls).
 //!
-//! Pattern follows mache's `getOrCreateRepoClone` — thread-safe, ref-counted,
-//! with idle TTL cleanup.
+//! Thread-safe via a `Mutex<HashMap>` — concurrent requests for the same URL
+//! wait on the first clone to finish rather than cloning twice.
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-#[allow(dead_code)] // Wired in rosary-4158a0 (wasteland workspace_create)
 /// Cache of cloned repos keyed by URL.
 pub struct RepoCache {
     repos: Mutex<HashMap<String, CachedRepo>>,
     base_dir: PathBuf,
 }
 
-#[allow(dead_code)]
 struct CachedRepo {
     path: PathBuf,
-    ref_count: u32,
 }
 
-#[allow(dead_code)] // Wired in rosary-4158a0
 impl RepoCache {
     pub fn new() -> Self {
         let base_dir = dirs_next::home_dir()
@@ -72,7 +68,6 @@ impl RepoCache {
                 repo_url.to_string(),
                 CachedRepo {
                     path: repo_dir.clone(),
-                    ref_count: 1,
                 },
             );
             return Ok(repo_dir);
@@ -112,7 +107,6 @@ impl RepoCache {
             repo_url.to_string(),
             CachedRepo {
                 path: repo_dir.clone(),
-                ref_count: 1,
             },
         );
 

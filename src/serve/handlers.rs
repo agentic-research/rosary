@@ -74,6 +74,7 @@ pub(crate) async fn call_tool(
     pool: &RepoPool,
     backend: Option<&dyn BackendStore>,
     caller: &super::CallerIdentity,
+    repo_cache: &crate::repo_cache::RepoCache,
 ) -> Result<Value> {
     let user_scope = caller.user_scope();
 
@@ -123,7 +124,7 @@ pub(crate) async fn call_tool(
         "rsry_bead_search" => tool_bead_search(args, pool, user_scope).await,
         "rsry_dispatch" => tool_dispatch(args, config_path).await,
         "rsry_active" => tool_active().await,
-        "rsry_workspace_create" => tool_workspace_create(args).await,
+        "rsry_workspace_create" => tool_workspace_create(args, config_path, repo_cache).await,
         "rsry_workspace_checkpoint" => tool_workspace_checkpoint(args).await,
         "rsry_workspace_cleanup" => tool_workspace_cleanup(args),
         "rsry_workspace_merge" => tool_workspace_merge(args).await,
@@ -759,7 +760,11 @@ fn check_agent_health(session: &crate::session::SessionEntry) -> &'static str {
 // Workspace tools
 // ---------------------------------------------------------------------------
 
-async fn tool_workspace_create(args: &Value) -> Result<Value> {
+async fn tool_workspace_create(
+    args: &Value,
+    config_path: &str,
+    repo_cache: &crate::repo_cache::RepoCache,
+) -> Result<Value> {
     let bead_id = args["bead_id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
@@ -767,9 +772,21 @@ async fn tool_workspace_create(args: &Value) -> Result<Value> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
 
-    let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
-    let repo_name = repo_name_from_path(repo_path);
+    // Remote repo URL: clone on demand, then proceed with the local path.
+    // Only https:// is accepted — http:// is rejected to avoid credential leakage.
+    if repo_path.starts_with("http://") {
+        anyhow::bail!("insecure http:// URLs not allowed — use https://");
+    }
+    let root = if repo_path.starts_with("https://") {
+        let github_token = resolve_github_token(config_path).await;
+        repo_cache
+            .ensure_local(repo_path, github_token.as_deref())
+            .await?
+    } else {
+        crate::scanner::resolve_repo_path(std::path::Path::new(repo_path))
+    };
 
+    let repo_name = repo_name_from_path(&root.to_string_lossy());
     let ws = crate::workspace::Workspace::create(bead_id, &repo_name, &root, true).await?;
 
     Ok(json!({
@@ -778,6 +795,19 @@ async fn tool_workspace_create(args: &Value) -> Result<Value> {
         "vcs": format!("{:?}", ws.vcs),
         "repo_path": ws.repo_path.to_string_lossy(),
     }))
+}
+
+/// Resolve a GitHub token for cloning private repos.
+/// Tries GitHub App installation token first, then GITHUB_TOKEN env var.
+async fn resolve_github_token(config_path: &str) -> Option<String> {
+    if let Ok(cfg) = config::load(config_path)
+        && let Some(gh_cfg) = cfg.github
+        && let Ok(client) = crate::github::GitHubClient::from_config(&gh_cfg)
+        && let Ok(token) = client.bearer_token().await
+    {
+        return Some(token);
+    }
+    std::env::var("GITHUB_TOKEN").ok()
 }
 
 async fn tool_workspace_checkpoint(args: &Value) -> Result<Value> {

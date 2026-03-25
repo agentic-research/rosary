@@ -137,7 +137,7 @@ impl GitHubClient {
     /// Get a valid Bearer token for API calls.
     /// For App auth, this generates/refreshes the installation token.
     /// For PAT auth, this returns the static token.
-    async fn bearer_token(&self) -> Result<String> {
+    pub(crate) async fn bearer_token(&self) -> Result<String> {
         match &self.auth {
             AuthStrategy::Pat(token) => Ok(token.clone()),
             AuthStrategy::App {

@@ -298,6 +298,10 @@ impl AgentProvider for AcpNativeProvider {
             self.binary,
             work_dir.display()
         );
+        let auth_token = resolve_auth_token(work_dir);
+        if auth_token.is_some() {
+            eprintln!("[spawn] passing auth token to ACP agent");
+        }
         let session = crate::acp::spawn_acp_session(
             &self.binary,
             prompt,
@@ -305,6 +309,7 @@ impl AgentProvider for AcpNativeProvider {
             *permissions,
             system_prompt,
             &log_path,
+            auth_token.as_deref(),
         )?;
         Ok(Box::new(session))
     }
@@ -316,6 +321,13 @@ impl AgentProvider for AcpNativeProvider {
 
 /// Resolve auth token for agent spawning. Launchd services can't access
 /// Keychain OAuth, so we read CLAUDE_CODE_OAUTH_TOKEN from env or .envrc.
+///
+/// Priority:
+/// 1. `CLAUDE_CODE_OAUTH_TOKEN` env var
+/// 2. `ANTHROPIC_API_KEY` env var
+/// 3. `.envrc` in work_dir
+/// 4. `.envrc` in git repo root (for worktrees)
+/// 5. `dispatch.anthropic_api_key` in `~/.rsry/config.toml` (wasteland / hosted rigs)
 fn resolve_auth_token(work_dir: &Path) -> Option<String> {
     // 1. Env vars (set by direnv, shell profile, or launchd plist)
     if let Ok(token) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN") {
@@ -325,7 +337,7 @@ fn resolve_auth_token(work_dir: &Path) -> Option<String> {
         return Some(token);
     }
 
-    // 2. Read from .envrc (direnv pattern) — check work_dir and git origin
+    // 2-4. Read from .envrc (direnv pattern) — check work_dir and git origin
     let mut paths = vec![work_dir.join(".envrc")];
     if let Ok(output) = std::process::Command::new("git")
         .args(["rev-parse", "--git-common-dir"])
@@ -352,6 +364,16 @@ fn resolve_auth_token(work_dir: &Path) -> Option<String> {
                 }
             }
         }
+    }
+
+    // 5. Global config fallback — dispatch.anthropic_api_key in ~/.rsry/config.toml.
+    // Used by wasteland rigs and hosted services where no per-repo .envrc exists.
+    // Uses load_global() so $RSRY_CONFIG env var doesn't redirect to a project config.
+    if let Ok(cfg) = crate::config::load_global()
+        && let Some(key) = cfg.dispatch.and_then(|d| d.anthropic_api_key)
+        && !key.is_empty()
+    {
+        return Some(key);
     }
 
     None
