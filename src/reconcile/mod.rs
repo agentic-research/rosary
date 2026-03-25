@@ -54,6 +54,12 @@ pub struct ReconcilerConfig {
     pub pipelines: HashMap<String, Vec<String>>,
     /// Maximum pipeline stages per bead. 0 = unlimited.
     pub max_pipeline_depth: usize,
+    /// Scope remote repo loading to a specific user.
+    ///
+    /// - `None` — local/self-hosted mode: loads repos for all users (or none if no backend).
+    /// - `Some(uid)` — hosted/federated mode: loads only repos registered by this user,
+    ///   preventing cross-user dispatch.
+    pub user_id: Option<String>,
 }
 
 impl Default for ReconcilerConfig {
@@ -73,6 +79,7 @@ impl Default for ReconcilerConfig {
             target_bead: None,
             pipelines: crate::config::default_pipelines(),
             max_pipeline_depth: 0,
+            user_id: None,
         }
     }
 }
@@ -281,55 +288,62 @@ impl Reconciler {
 
         if let Some(ref backend_cfg) = config.backend {
             match backend_cfg.connect_exportable().await {
-                Ok(backend) => match backend.all_user_repos().await {
-                    Ok(user_repos) => {
-                        for user_repo in user_repos {
-                            // Skip repos already in config by name (exact match).
-                            if repo_info.contains_key(&user_repo.repo_name) {
-                                continue;
-                            }
-                            // Reject insecure http:// URLs — credentials would transit plaintext.
-                            if user_repo.repo_url.starts_with("http://") {
-                                eprintln!(
-                                    "[reconcile] skipping remote repo {} — insecure http:// URL",
-                                    user_repo.repo_name
-                                );
-                                continue;
-                            }
-                            match repo_cache.ensure_local(&user_repo.repo_url, None).await {
-                                Ok(local_path) => {
-                                    let lang = helpers::detect_language(&local_path);
-                                    eprintln!(
-                                        "[reconcile] remote repo {} cloned to {}",
-                                        user_repo.repo_name,
-                                        local_path.display()
-                                    );
-                                    repo_info.insert(
-                                        user_repo.repo_name.clone(),
-                                        (local_path.clone(), lang.clone()),
-                                    );
-                                    remote_repos.push(crate::config::RepoConfig {
-                                        name: user_repo.repo_name,
-                                        path: local_path,
-                                        lang: Some(lang),
-                                        self_managed: false,
-                                    });
+                Ok(backend) => {
+                    // Scoped to a specific user in hosted/federated mode; all users in local mode.
+                    let user_repos_result = match config.user_id.as_deref() {
+                        Some(uid) => backend.list_user_repos(uid).await,
+                        None => backend.all_user_repos().await,
+                    };
+                    match user_repos_result {
+                        Ok(user_repos) => {
+                            for user_repo in user_repos {
+                                // Skip repos already in config by name (exact match).
+                                if repo_info.contains_key(&user_repo.repo_name) {
+                                    continue;
                                 }
-                                Err(e) => {
+                                // Reject insecure http:// URLs — credentials would transit plaintext.
+                                if user_repo.repo_url.starts_with("http://") {
                                     eprintln!(
-                                        "[reconcile] remote repo {} clone failed (will retry): {e}",
+                                        "[reconcile] skipping remote repo {} — insecure http:// URL",
                                         user_repo.repo_name
                                     );
-                                    // Keep URL so iterate() can retry on next pass.
-                                    pending_remote_urls.push(user_repo.repo_url);
+                                    continue;
+                                }
+                                match repo_cache.ensure_local(&user_repo.repo_url, None).await {
+                                    Ok(local_path) => {
+                                        let lang = helpers::detect_language(&local_path);
+                                        eprintln!(
+                                            "[reconcile] remote repo {} cloned to {}",
+                                            user_repo.repo_name,
+                                            local_path.display()
+                                        );
+                                        repo_info.insert(
+                                            user_repo.repo_name.clone(),
+                                            (local_path.clone(), lang.clone()),
+                                        );
+                                        remote_repos.push(crate::config::RepoConfig {
+                                            name: user_repo.repo_name,
+                                            path: local_path,
+                                            lang: Some(lang),
+                                            self_managed: false,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[reconcile] remote repo {} clone failed (will retry): {e}",
+                                            user_repo.repo_name
+                                        );
+                                        // Keep URL so iterate() can retry on next pass.
+                                        pending_remote_urls.push(user_repo.repo_url);
+                                    }
                                 }
                             }
                         }
+                        Err(e) => {
+                            eprintln!("[reconcile] could not load registered repos: {e}");
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("[reconcile] could not load registered repos: {e}");
-                    }
-                },
+                }
                 Err(e) => {
                     eprintln!("[reconcile] backend unavailable for repo loading: {e}");
                 }
