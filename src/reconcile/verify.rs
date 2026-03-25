@@ -344,6 +344,20 @@ impl Reconciler {
                 )
                 .await;
 
+            let outcome_str = match &outcome {
+                ActionOutcome::Advanced { .. } => "success",
+                ActionOutcome::Completed => "success",
+                ActionOutcome::Retrying => "retry",
+                ActionOutcome::Deadlettered => "deadletter",
+            };
+            if let Some(dispatch_id) = self
+                .trackers
+                .get(bead_id.as_str())
+                .and_then(|t| t.dispatch_id.as_deref())
+            {
+                self.pipeline.complete_dispatch(dispatch_id, outcome_str).await;
+            }
+
             match outcome {
                 ActionOutcome::Advanced { ref next_agent } => {
                     result.passed += 1;

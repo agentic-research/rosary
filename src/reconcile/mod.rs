@@ -25,7 +25,7 @@ use crate::epic;
 use crate::pipeline::PipelineEngine;
 use crate::queue::WorkQueue;
 use crate::scanner;
-use crate::store::BeadRef;
+use crate::store::{BeadRef, DispatchRecord};
 #[allow(unused_imports)]
 use crate::store::BeadStore;
 use crate::sync::IssueTracker;
@@ -99,6 +99,9 @@ struct BeadTracker {
     /// Bead's issue type (e.g. "bug", "task"). Captured at dispatch time so
     /// wait_and_verify can determine pipeline advancement without a fresh scan.
     issue_type: String,
+    /// Backend dispatch record ID for this active dispatch (format: "{bead_id}-{gen}").
+    /// Set on dispatch, used to call complete_dispatch when the agent finishes.
+    dispatch_id: Option<String>,
 }
 
 /// The reconciliation loop orchestrator.
@@ -658,6 +661,31 @@ impl Reconciler {
                             }
                         }
 
+                        let dispatch_id =
+                            format!("{}-{}", entry.bead_id, entry.generation);
+                        // Record dispatch to backend store (captures chain_hash + workspace)
+                        let dispatch_record = DispatchRecord {
+                            id: dispatch_id.clone(),
+                            bead_ref: BeadRef {
+                                repo: entry.repo.clone(),
+                                bead_id: entry.bead_id.clone(),
+                            },
+                            agent: bead
+                                .owner
+                                .as_deref()
+                                .unwrap_or("generic")
+                                .to_string(),
+                            provider: self.provider.name().to_string(),
+                            started_at: handle.started_at,
+                            completed_at: None,
+                            outcome: None,
+                            work_dir: handle.work_dir.display().to_string(),
+                            session_id: None,
+                            workspace_path: handle.workspace_path.clone(),
+                            chain_hash: handle.chain_hash.clone(),
+                        };
+                        self.pipeline.record_dispatch(&dispatch_record).await;
+
                         self.active.insert(entry.bead_id.clone(), handle);
                         let agent_name = bead.owner.clone();
                         let tracker =
@@ -672,11 +700,13 @@ impl Reconciler {
                                     current_agent: None,
                                     phase_index: 0,
                                     issue_type: bead.issue_type.clone(),
+                                    dispatch_id: None,
                                 });
                         tracker.last_generation = entry.generation;
                         tracker.repo = entry.repo.clone();
                         tracker.current_agent = agent_name;
                         tracker.issue_type = bead.issue_type.clone();
+                        tracker.dispatch_id = Some(dispatch_id);
 
                         // Persist initial pipeline state to backend store
                         let bead_ref = BeadRef {

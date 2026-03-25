@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::store::{BeadRef, DispatchStore, PipelineState};
+use crate::store::{BeadRef, DispatchRecord, DispatchStore, PipelineState};
 
 /// What the reconciler should do after a bead's agent completes.
 #[derive(Debug, Clone, PartialEq)]
@@ -174,6 +174,24 @@ impl PipelineEngine {
                 "[pipeline] failed to clear state for {}/{}: {e}",
                 bead_ref.repo, bead_ref.bead_id
             );
+        }
+    }
+
+    /// Record a new dispatch to backend store. Best-effort — no-op if store unavailable.
+    pub async fn record_dispatch(&self, record: &DispatchRecord) {
+        if let Some(ref store) = self.store
+            && let Err(e) = store.record_dispatch(record).await
+        {
+            eprintln!("[pipeline] failed to record dispatch {}: {e}", record.id);
+        }
+    }
+
+    /// Mark a dispatch as complete in backend store. Best-effort — no-op if store unavailable.
+    pub async fn complete_dispatch(&self, id: &str, outcome: &str) {
+        if let Some(ref store) = self.store
+            && let Err(e) = store.complete_dispatch(id, outcome).await
+        {
+            eprintln!("[pipeline] failed to complete dispatch {id}: {e}");
         }
     }
 
