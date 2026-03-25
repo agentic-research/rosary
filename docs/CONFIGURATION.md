@@ -92,7 +92,37 @@ network_allowlist = ["github.com", "crates.io"]
 provider = "claude"              # Default: "claude", "gemini", "acp"
 adversarial_provider = "gemini"  # Provider for review phases
 max_concurrent = 3               # Max parallel dispatches
+
+[dispatch.binaries]
+claude = "/Users/me/.local/bin/claude"     # Absolute path (avoids PATH issues)
+acp = "/opt/homebrew/bin/claude-agent-acp" # ACP protocol agent
 ```
+
+#### Authentication for dispatched agents
+
+**This is critical.** The rsry HTTP server runs as a launchd service which cannot
+access macOS Keychain for OAuth tokens. Dispatched agents need auth credentials
+passed via environment variable.
+
+**Setup (required for dispatch to work):**
+
+1. Run `claude setup-token` to generate a long-lived OAuth token (valid 1 year)
+2. Add to your repo's `.envrc` (used by direnv):
+   ```bash
+   export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+   ```
+3. Run `direnv allow` in the repo directory
+
+Rosary reads the token at dispatch time from (in priority order):
+1. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
+2. `ANTHROPIC_API_KEY` environment variable
+3. `.envrc` in the agent's working directory
+4. `.envrc` in the git repo root (for worktree dispatches)
+
+Without this, dispatched agents fail with "Not logged in".
+
+For ACP provider (`provider = "acp"`), use `ANTHROPIC_API_KEY` (Console API key)
+instead — OAuth tokens are not yet supported by the Anthropic Messages API.
 
 ### `[http]` — HTTP Transport
 
