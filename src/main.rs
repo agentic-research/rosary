@@ -33,6 +33,7 @@ mod pipeline;
 mod pool;
 mod queue;
 mod reconcile;
+mod repo_cache;
 mod scanner;
 mod serve;
 mod session;
