@@ -368,13 +368,12 @@ fn resolve_auth_token(work_dir: &Path) -> Option<String> {
 
     // 5. Global config fallback — dispatch.anthropic_api_key in ~/.rsry/config.toml.
     // Used by wasteland rigs and hosted services where no per-repo .envrc exists.
-    let config_path = crate::config::resolve_config_path();
-    if let Ok(cfg) = crate::config::load(&config_path) {
-        if let Some(key) = cfg.dispatch.and_then(|d| d.anthropic_api_key) {
-            if !key.is_empty() {
-                return Some(key);
-            }
-        }
+    // Uses load_global() so $RSRY_CONFIG env var doesn't redirect to a project config.
+    if let Ok(cfg) = crate::config::load_global()
+        && let Some(key) = cfg.dispatch.and_then(|d| d.anthropic_api_key)
+        && !key.is_empty()
+    {
+        return Some(key);
     }
 
     None

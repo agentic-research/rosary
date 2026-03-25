@@ -1,11 +1,11 @@
 //! On-demand repo cloning for hosted/wasteland mode.
 //!
 //! When a workspace is requested for a repo that's registered but not local,
-//! clone it on demand. Clones are cached in `~/.rsry/repos/<hash>/` and reused
-//! across dispatches.
+//! clone it on demand. Clones are cached under `~/.rsry/repos/<org>_<repo>/`
+//! and reused across dispatches (fetch-to-update on subsequent calls).
 //!
-//! Pattern follows mache's `getOrCreateRepoClone` — thread-safe, ref-counted,
-//! with idle TTL cleanup.
+//! Thread-safe via a `Mutex<HashMap>` — concurrent requests for the same URL
+//! wait on the first clone to finish rather than cloning twice.
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;

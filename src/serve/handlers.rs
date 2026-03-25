@@ -773,7 +773,11 @@ async fn tool_workspace_create(
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
 
     // Remote repo URL: clone on demand, then proceed with the local path.
-    let root = if repo_path.starts_with("https://") || repo_path.starts_with("http://") {
+    // Only https:// is accepted — http:// is rejected to avoid credential leakage.
+    if repo_path.starts_with("http://") {
+        anyhow::bail!("insecure http:// URLs not allowed — use https://");
+    }
+    let root = if repo_path.starts_with("https://") {
         let github_token = resolve_github_token(config_path).await;
         repo_cache
             .ensure_local(repo_path, github_token.as_deref())
@@ -796,14 +800,12 @@ async fn tool_workspace_create(
 /// Resolve a GitHub token for cloning private repos.
 /// Tries GitHub App installation token first, then GITHUB_TOKEN env var.
 async fn resolve_github_token(config_path: &str) -> Option<String> {
-    if let Ok(cfg) = config::load(config_path) {
-        if let Some(gh_cfg) = cfg.github {
-            if let Ok(client) = crate::github::GitHubClient::from_config(&gh_cfg) {
-                if let Ok(token) = client.bearer_token().await {
-                    return Some(token);
-                }
-            }
-        }
+    if let Ok(cfg) = config::load(config_path)
+        && let Some(gh_cfg) = cfg.github
+        && let Ok(client) = crate::github::GitHubClient::from_config(&gh_cfg)
+        && let Ok(token) = client.bearer_token().await
+    {
+        return Some(token);
     }
     std::env::var("GITHUB_TOKEN").ok()
 }
