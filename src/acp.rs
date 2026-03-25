@@ -141,6 +141,7 @@ pub fn spawn_acp_session(
     permissions: PermissionProfile,
     system_prompt: &str,
     log_path: &Path,
+    auth_token: Option<&str>,
 ) -> Result<AcpSession> {
     let binary = binary.to_string();
     // Thread system_prompt into the prompt (ACP sends prompt as content blocks,
@@ -160,8 +161,8 @@ pub fn spawn_acp_session(
     let err_file = std::fs::File::create(&err_path)
         .with_context(|| format!("creating stderr log {}", err_path.display()))?;
 
-    let mut child = std::process::Command::new(&binary)
-        .current_dir(&work_dir)
+    let mut cmd = std::process::Command::new(&binary);
+    cmd.current_dir(&work_dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::from(err_file))
@@ -171,7 +172,11 @@ pub fn spawn_acp_session(
         .env_remove("GIT_OBJECT_DIRECTORY")
         .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .env_remove("CLAUDECODE")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
+        .env_remove("CLAUDE_CODE_ENTRYPOINT");
+    if let Some(token) = auth_token {
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+    }
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning ACP agent: {binary}"))?;
 
@@ -600,6 +605,7 @@ mod tests {
             PermissionProfile::ReadOnly,
             "",
             std::path::Path::new("/dev/null"),
+            None,
         );
         assert!(result.is_err());
     }
@@ -613,6 +619,7 @@ mod tests {
             PermissionProfile::ReadOnly,
             "",
             std::path::Path::new("/dev/null"),
+            None,
         )
         .unwrap();
 
@@ -631,6 +638,7 @@ mod tests {
             PermissionProfile::ReadOnly,
             "",
             std::path::Path::new("/dev/null"),
+            None,
         ) {
             session.kill().ok();
         }

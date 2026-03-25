@@ -102,27 +102,42 @@ acp = "/opt/homebrew/bin/claude-agent-acp" # ACP protocol agent
 
 **This is critical.** The rsry HTTP server runs as a launchd service which cannot
 access macOS Keychain for OAuth tokens. Dispatched agents need auth credentials
-passed via environment variable.
+passed via environment variable or config.
 
-**Setup (required for dispatch to work):**
+Rosary resolves the token at dispatch time in this priority order:
+
+1. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
+2. `ANTHROPIC_API_KEY` environment variable
+3. `.envrc` in the agent's working directory
+4. `.envrc` in the git repo root (for worktree dispatches)
+5. `dispatch.anthropic_api_key` in `~/.rsry/config.toml` *(wasteland / hosted rigs)*
+
+Without any of these, dispatched agents fail with "Not logged in".
+
+**Option A — per-repo `.envrc` (local development):**
 
 1. Run `claude setup-token` to generate a long-lived OAuth token (valid 1 year)
-2. Add to your repo's `.envrc` (used by direnv):
+2. Add to your repo's `.envrc`:
    ```bash
    export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
    ```
 3. Run `direnv allow` in the repo directory
 
-Rosary reads the token at dispatch time from (in priority order):
-1. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
-2. `ANTHROPIC_API_KEY` environment variable
-3. `.envrc` in the agent's working directory
-4. `.envrc` in the git repo root (for worktree dispatches)
+**Option B — global config (wasteland / hosted rigs):**
 
-Without this, dispatched agents fail with "Not logged in".
+For remote repos cloned on demand (wasteland), there is no per-repo `.envrc`.
+Set the token once in `~/.rsry/config.toml`:
 
-For ACP provider (`provider = "acp"`), use `ANTHROPIC_API_KEY` (Console API key)
-instead — OAuth tokens are not yet supported by the Anthropic Messages API.
+```toml
+[dispatch]
+anthropic_api_key = "sk-ant-oat01-..."  # or ANTHROPIC_API_KEY value
+```
+
+This is the recommended pattern for hosted rigs — mirrors how `claude-code-action`
+passes `CLAUDE_CODE_OAUTH_TOKEN` as the `anthropic_api_key` GHA input.
+
+**ACP provider:** `ANTHROPIC_API_KEY` (Console API key) or the OAuth token work.
+Both are passed as `CLAUDE_CODE_OAUTH_TOKEN` to the ACP agent subprocess.
 
 ### `[http]` — HTTP Transport
 
@@ -142,13 +157,15 @@ token_env = "CF_API_TOKEN"
 
 ## Environment Variables
 
-| Variable                | Purpose                   | Config equivalent             |
-| ----------------------- | ------------------------- | ----------------------------- |
-| `RSRY_CONFIG`           | Config file path          | —                             |
-| `LINEAR_API_KEY`        | Linear API key            | `[linear] api_key`            |
-| `LINEAR_TEAM`           | Linear team key           | `[linear] team`               |
-| `LINEAR_WEBHOOK_SECRET` | Webhook signing           | `[linear] webhook_secret`     |
-| `SPRITES_TOKEN`         | Sprites compute API token | `[compute.sprites] token_env` |
+| Variable                    | Purpose                        | Config equivalent                    |
+| --------------------------- | ------------------------------ | ------------------------------------ |
+| `RSRY_CONFIG`               | Config file path               | —                                    |
+| `CLAUDE_CODE_OAUTH_TOKEN`   | Agent auth (OAuth token)       | `[dispatch] anthropic_api_key`       |
+| `ANTHROPIC_API_KEY`         | Agent auth (API key)           | `[dispatch] anthropic_api_key`       |
+| `LINEAR_API_KEY`            | Linear API key                 | `[linear] api_key`                   |
+| `LINEAR_TEAM`               | Linear team key                | `[linear] team`                      |
+| `LINEAR_WEBHOOK_SECRET`     | Webhook signing                | `[linear] webhook_secret`            |
+| `SPRITES_TOKEN`             | Sprites compute API token      | `[compute.sprites] token_env`        |
 
 ## File Locations
 
