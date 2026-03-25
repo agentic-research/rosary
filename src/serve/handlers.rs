@@ -114,7 +114,7 @@ pub(crate) async fn call_tool(
         "rsry_run_once" => {
             let dry_run = parse_bool_arg(args, "dry_run", false);
             let bead_id = args.get("bead_id").and_then(|v| v.as_str());
-            tool_run_once(config_path, dry_run, bead_id).await
+            tool_run_once(config_path, dry_run, bead_id, user_scope).await
         }
         "rsry_bead_create" => tool_bead_create(args, pool, user_scope).await,
         "rsry_bead_update" => tool_bead_update(args, pool, user_scope).await,
@@ -211,7 +211,12 @@ async fn tool_list_beads(
     }))
 }
 
-async fn tool_run_once(config_path: &str, dry_run: bool, bead_id: Option<&str>) -> Result<Value> {
+async fn tool_run_once(
+    config_path: &str,
+    dry_run: bool,
+    bead_id: Option<&str>,
+    user_id: Option<&str>,
+) -> Result<Value> {
     use crate::reconcile::{Reconciler, ReconcilerConfig};
     use std::time::Duration;
 
@@ -228,6 +233,7 @@ async fn tool_run_once(config_path: &str, dry_run: bool, bead_id: Option<&str>) 
         target_bead: bead_id.map(|s| s.to_string()),
         pipelines: cfg.pipelines,
         max_pipeline_depth: cfg.max_pipeline_depth,
+        user_id: user_id.map(|s| s.to_string()),
         ..Default::default()
     };
 
@@ -1508,6 +1514,47 @@ mod tests {
         assert!(
             !parse_bool_arg(&json!({"dry_run": "false"}), "dry_run", false),
             "string 'false' must not become true"
+        );
+    }
+
+    // Tests for user_id propagation through CallerIdentity -> tool_run_once ->
+    // ReconcilerConfig.user_id.  We test the user_scope() extraction layer (the
+    // only part that can be unit-tested without loading config or running the
+    // reconciler) to lock in the contract: authenticated callers produce
+    // Some(user_id), anonymous/machine callers produce None.
+
+    #[test]
+    fn user_scope_authenticated_user_yields_some() {
+        let id = super::super::CallerIdentity::User("alice".to_string());
+        assert_eq!(id.user_scope(), Some("alice"));
+    }
+
+    #[test]
+    fn user_scope_machine_as_user_yields_some() {
+        let id = super::super::CallerIdentity::MachineAsUser {
+            user_id: "bob".to_string(),
+            service: "ingester".to_string(),
+        };
+        assert_eq!(id.user_scope(), Some("bob"));
+    }
+
+    #[test]
+    fn user_scope_machine_yields_none() {
+        let id = super::super::CallerIdentity::Machine("ingester".to_string());
+        assert_eq!(
+            id.user_scope(),
+            None,
+            "machine-level service must not scope to a user"
+        );
+    }
+
+    #[test]
+    fn user_scope_anonymous_yields_none() {
+        let id = super::super::CallerIdentity::Anonymous;
+        assert_eq!(
+            id.user_scope(),
+            None,
+            "anonymous/CLI callers must not scope to a user"
         );
     }
 }
