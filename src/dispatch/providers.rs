@@ -75,46 +75,49 @@ impl AgentProvider for ClaudeProvider {
         let err_file = std::fs::File::create(&err_path)
             .with_context(|| format!("creating stderr log {}", err_path.display()))?;
 
-        // Use -p with stream-json output. The bidi streaming protocol
-        // (--input-format stream-json) has auth issues when spawned from
-        // launchd context — CC reports "Not logged in" despite valid OAuth.
-        // -p mode works correctly with OAuth from any context.
-        // Stream-json output gives us structured events for monitoring.
-        // TODO: switch to bidi streaming once CC fixes auth for SDK entrypoints
+        // Exact pattern from PR #110 that was validated working with OAuth.
+        // Key: -p mode, --output-format json, piped stdin, ENTRYPOINT removed.
         let allowed = permissions.claude_allowed_tools();
         let log_file = std::fs::File::create(&log_path)
             .with_context(|| format!("creating stream log {}", log_path.display()))?;
         eprintln!(
-            "[spawn] {} -p <prompt> --output-format stream-json --allowedTools '{}' (cwd={})",
+            "[spawn] {} -p <prompt> --allowedTools '{}' --output-format json (cwd={})",
             self.binary,
             allowed,
             work_dir.display()
         );
 
-        let child = tokio::process::Command::new(&self.binary)
-            .args([
-                "-p",
-                prompt,
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--allowedTools",
-                allowed,
-                "--append-system-prompt",
-                system_prompt,
-            ])
-            .current_dir(work_dir)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .env_remove("CLAUDECODE")
-            .env_remove("CLAUDE_CODE_ENTRYPOINT")
-            // null stdin — piped stdin triggers CC's SDK detection which
-            // uses different auth handling and fails with "Not logged in".
-            // -p mode with null stdin uses standard OAuth from Keychain.
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::from(log_file))
-            .stderr(std::process::Stdio::from(err_file))
+        // Resolve OAuth token for launchd context where Keychain OAuth
+        // isn't available. Check env vars, then .envrc in the repo root.
+        let auth_token = resolve_auth_token(work_dir);
+
+        let mut cmd = tokio::process::Command::new(&self.binary);
+        cmd.args([
+            "-p",
+            prompt,
+            "--allowedTools",
+            allowed,
+            "--append-system-prompt",
+            system_prompt,
+            "--output-format",
+            "json",
+        ])
+        .current_dir(work_dir)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_ENTRYPOINT")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::from(log_file))
+        .stderr(std::process::Stdio::from(err_file));
+
+        if let Some(ref token) = auth_token {
+            cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+            eprintln!("[spawn] passing CLAUDE_CODE_OAUTH_TOKEN to agent");
+        }
+
+        let child = cmd
             .spawn()
             .with_context(|| format!("spawning claude CLI in {}", work_dir.display()))?;
 
@@ -255,7 +258,10 @@ impl AgentProvider for AcpCliProvider {
             .env_remove("GIT_INDEX_FILE")
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_ENTRYPOINT")
-            .stdin(std::process::Stdio::piped())
+            // null stdin — piped stdin triggers CC's SDK detection which
+            // uses different auth handling and fails with "Not logged in".
+            // -p mode with null stdin uses standard OAuth from Keychain.
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::from(err_file))
             .spawn()
@@ -306,6 +312,49 @@ impl AgentProvider for AcpNativeProvider {
     fn name(&self) -> &str {
         "acp"
     }
+}
+
+/// Resolve auth token for agent spawning. Launchd services can't access
+/// Keychain OAuth, so we read CLAUDE_CODE_OAUTH_TOKEN from env or .envrc.
+fn resolve_auth_token(work_dir: &Path) -> Option<String> {
+    // 1. Env vars (set by direnv, shell profile, or launchd plist)
+    if let Ok(token) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN") {
+        return Some(token);
+    }
+    if let Ok(token) = std::env::var("ANTHROPIC_API_KEY") {
+        return Some(token);
+    }
+
+    // 2. Read from .envrc (direnv pattern) — check work_dir and git origin
+    let mut paths = vec![work_dir.join(".envrc")];
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(work_dir)
+        .output()
+    {
+        let git_common = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Some(repo_root) = std::path::Path::new(&git_common).parent() {
+            paths.push(repo_root.join(".envrc"));
+        }
+    }
+
+    for path in &paths {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            for line in content.lines() {
+                if let Some(val) = line
+                    .strip_prefix("export CLAUDE_CODE_OAUTH_TOKEN=")
+                    .or_else(|| line.strip_prefix("export ANTHROPIC_API_KEY="))
+                {
+                    let val = val.trim().trim_matches('"').trim_matches('\'');
+                    if !val.is_empty() {
+                        return Some(val.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Resolve a provider by name string, with optional binary path overrides from config.
