@@ -124,6 +124,13 @@ pub struct Reconciler {
     /// Schema-driven pipeline engine. Replaces hardcoded agent_pipeline() match.
     /// Uses DispatchStore for persistent pipeline state (survives crashes).
     pipeline: PipelineEngine,
+    /// Remote repos registered via rsry_repo_register, successfully cloned.
+    /// Merged with config.repo for scanning on each iterate() pass.
+    remote_repos: Vec<crate::config::RepoConfig>,
+    /// Remote repo URLs whose initial clone failed — retried each iterate() pass.
+    pending_remote_urls: Vec<String>,
+    /// On-demand clone cache for remote repos (wasteland mode).
+    repo_cache: std::sync::Arc<crate::repo_cache::RepoCache>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -266,6 +273,69 @@ impl Reconciler {
             config.max_pipeline_depth,
         );
 
+        // Load remote repos registered via rsry_repo_register.
+        // Clones them on demand so the reconciler can scan and dispatch against them.
+        let repo_cache = std::sync::Arc::new(crate::repo_cache::RepoCache::new());
+        let mut remote_repos = Vec::new();
+        let mut pending_remote_urls = Vec::new();
+
+        if let Some(ref backend_cfg) = config.backend {
+            match backend_cfg.connect_exportable().await {
+                Ok(backend) => match backend.all_user_repos().await {
+                    Ok(user_repos) => {
+                        for user_repo in user_repos {
+                            // Skip repos already in config by name (exact match).
+                            if repo_info.contains_key(&user_repo.repo_name) {
+                                continue;
+                            }
+                            // Reject insecure http:// URLs — credentials would transit plaintext.
+                            if user_repo.repo_url.starts_with("http://") {
+                                eprintln!(
+                                    "[reconcile] skipping remote repo {} — insecure http:// URL",
+                                    user_repo.repo_name
+                                );
+                                continue;
+                            }
+                            match repo_cache.ensure_local(&user_repo.repo_url, None).await {
+                                Ok(local_path) => {
+                                    let lang = helpers::detect_language(&local_path);
+                                    eprintln!(
+                                        "[reconcile] remote repo {} cloned to {}",
+                                        user_repo.repo_name,
+                                        local_path.display()
+                                    );
+                                    repo_info.insert(
+                                        user_repo.repo_name.clone(),
+                                        (local_path.clone(), lang.clone()),
+                                    );
+                                    remote_repos.push(crate::config::RepoConfig {
+                                        name: user_repo.repo_name,
+                                        path: local_path,
+                                        lang: Some(lang),
+                                        self_managed: false,
+                                    });
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[reconcile] remote repo {} clone failed (will retry): {e}",
+                                        user_repo.repo_name
+                                    );
+                                    // Keep URL so iterate() can retry on next pass.
+                                    pending_remote_urls.push(user_repo.repo_url);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[reconcile] could not load registered repos: {e}");
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[reconcile] backend unavailable for repo loading: {e}");
+                }
+            }
+        }
+
         Reconciler {
             config,
             queue: WorkQueue::new(),
@@ -281,6 +351,9 @@ impl Reconciler {
             agents_dir,
             hierarchy,
             pipeline,
+            remote_repos,
+            pending_remote_urls,
+            repo_cache,
         }
     }
 
@@ -387,8 +460,45 @@ impl Reconciler {
     pub async fn iterate(&mut self) -> Result<IterationSummary> {
         let mut summary = IterationSummary::default();
 
-        // Phase 1: SCAN
-        let beads = scanner::scan_repos(&self.config.repo).await?;
+        // Phase 0.5: RETRY PENDING — attempt clones that failed at startup.
+        if !self.pending_remote_urls.is_empty() {
+            let mut still_pending = Vec::new();
+            for url in std::mem::take(&mut self.pending_remote_urls) {
+                match self.repo_cache.ensure_local(&url, None).await {
+                    Ok(local_path) => {
+                        let repo_name = url
+                            .trim_end_matches('/')
+                            .trim_end_matches(".git")
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or("repo")
+                            .to_string();
+                        let lang = helpers::detect_language(&local_path);
+                        eprintln!("[reconcile] remote repo {repo_name} cloned on retry");
+                        self.repo_info
+                            .insert(repo_name.clone(), (local_path.clone(), lang.clone()));
+                        self.remote_repos.push(crate::config::RepoConfig {
+                            name: repo_name,
+                            path: local_path,
+                            lang: Some(lang),
+                            self_managed: false,
+                        });
+                    }
+                    Err(_) => still_pending.push(url),
+                }
+            }
+            self.pending_remote_urls = still_pending;
+        }
+
+        // Phase 1: SCAN — config repos + remote repos registered via rsry_repo_register
+        let all_repos: Vec<_> = self
+            .config
+            .repo
+            .iter()
+            .chain(self.remote_repos.iter())
+            .cloned()
+            .collect();
+        let beads = scanner::scan_repos(&all_repos).await?;
         summary.scanned = beads.len();
 
         // Phase 1.5: VCS SCAN — detect bead refs in recent jj commits
