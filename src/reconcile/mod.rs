@@ -124,6 +124,14 @@ pub struct Reconciler {
     /// Schema-driven pipeline engine. Replaces hardcoded agent_pipeline() match.
     /// Uses DispatchStore for persistent pipeline state (survives crashes).
     pipeline: PipelineEngine,
+    /// Remote repos registered via rsry_repo_register, cloned on demand.
+    /// Populated from backend at startup; merged with config.repo for scanning.
+    remote_repos: Vec<crate::config::RepoConfig>,
+    /// On-demand clone cache for remote repos (wasteland mode).
+    /// Held to keep the in-memory path map alive across iterations; clones
+    /// happen at startup, fetches on subsequent `ensure_local` calls.
+    #[allow(dead_code)]
+    repo_cache: std::sync::Arc<crate::repo_cache::RepoCache>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -266,6 +274,61 @@ impl Reconciler {
             config.max_pipeline_depth,
         );
 
+        // Load remote repos registered via rsry_repo_register.
+        // Clones them on demand so the reconciler can scan and dispatch against them.
+        let repo_cache = std::sync::Arc::new(crate::repo_cache::RepoCache::new());
+        let mut remote_repos = Vec::new();
+
+        if let Some(ref backend_cfg) = config.backend {
+            match backend_cfg.connect_exportable().await {
+                Ok(backend) => match backend.all_user_repos().await {
+                    Ok(user_repos) => {
+                        for user_repo in user_repos {
+                            // Skip repos already registered via local config
+                            if repo_info
+                                .values()
+                                .any(|(p, _)| p.to_string_lossy().contains(&user_repo.repo_name))
+                            {
+                                continue;
+                            }
+                            match repo_cache.ensure_local(&user_repo.repo_url, None).await {
+                                Ok(local_path) => {
+                                    let lang = helpers::detect_language(&local_path);
+                                    eprintln!(
+                                        "[reconcile] remote repo {} cloned to {}",
+                                        user_repo.repo_name,
+                                        local_path.display()
+                                    );
+                                    repo_info.insert(
+                                        user_repo.repo_name.clone(),
+                                        (local_path.clone(), lang.clone()),
+                                    );
+                                    remote_repos.push(crate::config::RepoConfig {
+                                        name: user_repo.repo_name,
+                                        path: local_path,
+                                        lang: Some(lang),
+                                        self_managed: false,
+                                    });
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[reconcile] skipping remote repo {} — clone failed: {e}",
+                                        user_repo.repo_name
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[reconcile] could not load registered repos: {e}");
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[reconcile] backend unavailable for repo loading: {e}");
+                }
+            }
+        }
+
         Reconciler {
             config,
             queue: WorkQueue::new(),
@@ -281,6 +344,8 @@ impl Reconciler {
             agents_dir,
             hierarchy,
             pipeline,
+            remote_repos,
+            repo_cache,
         }
     }
 
@@ -387,8 +452,15 @@ impl Reconciler {
     pub async fn iterate(&mut self) -> Result<IterationSummary> {
         let mut summary = IterationSummary::default();
 
-        // Phase 1: SCAN
-        let beads = scanner::scan_repos(&self.config.repo).await?;
+        // Phase 1: SCAN — config repos + remote repos registered via rsry_repo_register
+        let all_repos: Vec<_> = self
+            .config
+            .repo
+            .iter()
+            .chain(self.remote_repos.iter())
+            .cloned()
+            .collect();
+        let beads = scanner::scan_repos(&all_repos).await?;
         summary.scanned = beads.len();
 
         // Phase 1.5: VCS SCAN — detect bead refs in recent jj commits
