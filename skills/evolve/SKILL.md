@@ -9,7 +9,7 @@ description: >
 user-invocable: true
 argument-hint: "[--dry-run] [--simplify|--security|--fe|--prune] [--focus <area>]"
 allowed-tools: "*"
-version: "0.2.0"
+version: "0.3.0"
 author: "ART Ecosystem"
 ---
 

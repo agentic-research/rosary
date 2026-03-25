@@ -1,6 +1,6 @@
 {
   "name": "rosary",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "ART orchestrator — beads, agents, evolve loops. Skills for autonomous work management across all ART repos.",
   "author": {
     "name": "Agentic Research",
