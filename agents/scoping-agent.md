@@ -31,6 +31,26 @@ Given a bead (title, description, file scopes), produce:
 - Check: are there tests? What's the test pattern in this area?
 - Note: any recent changes to these files (git log)
 
+### Step 2.5: Discover Verification Tooling
+
+Probe the repo root for existing verification commands. Check in this order,
+use the first match per category (lint, test, typecheck, build):
+
+| Priority | File | How to extract commands |
+|----------|------|----------------------|
+| 1 | `Taskfile.yml` | Read `tasks:` keys — look for lint, test, check, typecheck, build |
+| 2 | `Makefile` | Read targets — look for lint, test, check |
+| 3 | `package.json` | Read `scripts` — look for test, lint, typecheck, build |
+| 4 | `Cargo.toml` | Exists → `cargo test`, `cargo clippy`, `cargo build` |
+| 5 | `go.mod` | Exists → `go test ./...`, `go vet ./...` |
+| 6 | `mix.exs` | Exists → `mix test`, `mix format --check-formatted` |
+| 7 | `pyproject.toml` | Exists → `pytest`, `ruff check .` |
+
+Also check for `.pre-commit-config.yaml` — if present, add `pre-commit run --all-files` as the commit gate.
+
+**If NOTHING is found** (no Taskfile, no Makefile, no package.json, no Cargo.toml, no go.mod, no mix.exs, no pyproject.toml):
+Flag in the plan as a blocker. The human must specify what to run.
+
 ### Step 3: Plan
 
 Write a numbered plan where each step has:
@@ -52,6 +72,34 @@ Write your findings as a structured handoff:
 ## File Map
 - path/to/file.rs: [what it does, what's relevant]
 - path/to/other.rs: [relationship to the change]
+
+## Verification
+
+### Fast-fail
+- mache get_diagnostics on: [list of changed files from bead scope]
+
+### Build/Lint/Test
+- Source: [Taskfile.yml | Makefile | package.json | language conventional]
+- Lint: [exact command]
+- Test: [exact command]
+- Typecheck: [exact command, if applicable]
+- Build: [exact command, if applicable]
+
+### Commit Gate
+- [pre-commit: `pre-commit run --all-files` | None found — suggest bootstrapping]
+
+### Not Found
+- [list verification tooling NOT found in this repo]
+
+## Team
+- Scale: [1-agent | 2-agent | full-pipeline]
+- Generator: [agent name]
+- Evaluator: [agent name, or "none" for 1-agent scale]
+- Rationale: [why this scale — file count, module span, mode flag]
+
+File count: [N files in bead scope]
+Cross-module: [yes/no — do files span multiple directories/communities?]
+Mode override: [if --simplify or --security, note that it overrides file-count logic]
 
 ## Plan
 1. **[action]** — [how]. Verify: [check]. Exit: [condition].
