@@ -1,0 +1,11 @@
+{
+  "name": "rosary",
+  "version": "0.1.0",
+  "description": "ART orchestrator — beads, agents, evolve loops. Skills for autonomous work management across all ART repos.",
+  "author": {
+    "name": "Agentic Research",
+    "url": "https://rosary.bot"
+  },
+  "repository": "https://github.com/agentic-research/rosary",
+  "license": "AGPL-3.0"
+}
