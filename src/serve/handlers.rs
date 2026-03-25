@@ -114,7 +114,7 @@ pub(crate) async fn call_tool(
         "rsry_run_once" => {
             let dry_run = parse_bool_arg(args, "dry_run", false);
             let bead_id = args.get("bead_id").and_then(|v| v.as_str());
-            tool_run_once(config_path, dry_run, bead_id).await
+            tool_run_once(config_path, dry_run, bead_id, user_scope).await
         }
         "rsry_bead_create" => tool_bead_create(args, pool, user_scope).await,
         "rsry_bead_update" => tool_bead_update(args, pool, user_scope).await,
@@ -211,7 +211,12 @@ async fn tool_list_beads(
     }))
 }
 
-async fn tool_run_once(config_path: &str, dry_run: bool, bead_id: Option<&str>) -> Result<Value> {
+async fn tool_run_once(
+    config_path: &str,
+    dry_run: bool,
+    bead_id: Option<&str>,
+    user_id: Option<&str>,
+) -> Result<Value> {
     use crate::reconcile::{Reconciler, ReconcilerConfig};
     use std::time::Duration;
 
@@ -228,6 +233,7 @@ async fn tool_run_once(config_path: &str, dry_run: bool, bead_id: Option<&str>) 
         target_bead: bead_id.map(|s| s.to_string()),
         pipelines: cfg.pipelines,
         max_pipeline_depth: cfg.max_pipeline_depth,
+        user_id: user_id.map(|s| s.to_string()),
         ..Default::default()
     };
 
