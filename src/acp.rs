@@ -33,8 +33,8 @@ use agent_client_protocol::{
 };
 use anyhow::{Context as _, Result};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // ---------------------------------------------------------------------------
 // AcpSession — Send+Sync wrapper around !Send ACP connection thread
@@ -55,12 +55,12 @@ impl crate::dispatch::session::AgentSession for AcpSession {
         if let Some(result) = self.result {
             return Ok(Some(result));
         }
-        if self.finished.load(Ordering::SeqCst) {
-            if let Some(handle) = self.join_handle.take() {
-                let success = handle.join().unwrap_or(false);
-                self.result = Some(success);
-                return Ok(Some(success));
-            }
+        if self.finished.load(Ordering::SeqCst)
+            && let Some(handle) = self.join_handle.take()
+        {
+            let success = handle.join().unwrap_or(false);
+            self.result = Some(success);
+            return Ok(Some(success));
         }
         Ok(None)
     }
@@ -71,12 +71,12 @@ impl crate::dispatch::session::AgentSession for AcpSession {
         }
         // Poll until the thread finishes (non-blocking check every 500ms)
         loop {
-            if self.finished.load(Ordering::SeqCst) {
-                if let Some(handle) = self.join_handle.take() {
-                    let success = handle.join().unwrap_or(false);
-                    self.result = Some(success);
-                    return Ok(success);
-                }
+            if self.finished.load(Ordering::SeqCst)
+                && let Some(handle) = self.join_handle.take()
+            {
+                let success = handle.join().unwrap_or(false);
+                self.result = Some(success);
+                return Ok(success);
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
@@ -145,14 +145,8 @@ pub fn spawn_acp_session(
                 let local_set = tokio::task::LocalSet::new();
                 local_set
                     .run_until(async {
-                        run_acp_lifecycle(
-                            &mut child,
-                            &prompt,
-                            &work_dir,
-                            permissions,
-                            &log_path,
-                        )
-                        .await
+                        run_acp_lifecycle(&mut child, &prompt, &work_dir, permissions, &log_path)
+                            .await
                     })
                     .await
             });
@@ -206,12 +200,12 @@ async fn run_acp_lifecycle(
         .context("agent subprocess has no stdout")?;
 
     // Wrap in tokio async IO + compat layer for futures::AsyncRead/Write
-    let stdin_async = tokio::io::BufWriter::new(tokio::fs::File::from_std(
-        unsafe { std::os::unix::io::FromRawFd::from_raw_fd(std::os::unix::io::IntoRawFd::into_raw_fd(stdin)) }
-    ));
-    let stdout_async = tokio::io::BufReader::new(tokio::fs::File::from_std(
-        unsafe { std::os::unix::io::FromRawFd::from_raw_fd(std::os::unix::io::IntoRawFd::into_raw_fd(stdout)) }
-    ));
+    let stdin_async = tokio::io::BufWriter::new(tokio::fs::File::from_std(unsafe {
+        std::os::unix::io::FromRawFd::from_raw_fd(std::os::unix::io::IntoRawFd::into_raw_fd(stdin))
+    }));
+    let stdout_async = tokio::io::BufReader::new(tokio::fs::File::from_std(unsafe {
+        std::os::unix::io::FromRawFd::from_raw_fd(std::os::unix::io::IntoRawFd::into_raw_fd(stdout))
+    }));
 
     let outgoing = stdin_async.compat_write();
     let incoming = stdout_async.compat();
@@ -221,10 +215,9 @@ async fn run_acp_lifecycle(
         log_path: log_path.to_path_buf(),
     };
 
-    let (conn, handle_io) =
-        acp::ClientSideConnection::new(client, outgoing, incoming, |fut| {
-            tokio::task::spawn_local(fut);
-        });
+    let (conn, handle_io) = acp::ClientSideConnection::new(client, outgoing, incoming, |fut| {
+        tokio::task::spawn_local(fut);
+    });
 
     // Drive I/O in background
     tokio::task::spawn_local(handle_io);
@@ -232,7 +225,8 @@ async fn run_acp_lifecycle(
     // Initialize
     conn.initialize(
         acp::InitializeRequest::new(acp::ProtocolVersion::V1).client_info(
-            acp::Implementation::new("rosary", env!("CARGO_PKG_VERSION")).title("Rosary Orchestrator"),
+            acp::Implementation::new("rosary", env!("CARGO_PKG_VERSION"))
+                .title("Rosary Orchestrator"),
         ),
     )
     .await
@@ -240,7 +234,7 @@ async fn run_acp_lifecycle(
 
     // Create session
     let session = conn
-        .new_session(acp::NewSessionRequest::new(&work_dir))
+        .new_session(acp::NewSessionRequest::new(work_dir))
         .await
         .context("ACP new_session")?;
 
@@ -337,15 +331,14 @@ impl Client for RosaryClient {
         args: SessionNotification,
     ) -> agent_client_protocol::Result<()> {
         // Log structured event to stream file
-        if let Ok(json) = serde_json::to_string(&args.update) {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
+        if let Ok(json) = serde_json::to_string(&args.update)
+            && let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&self.log_path)
-            {
-                use std::io::Write;
-                let _ = writeln!(f, "{json}");
-            }
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "{json}");
         }
         Ok(())
     }

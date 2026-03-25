@@ -224,6 +224,7 @@ impl AgentProvider for GeminiProvider {
 /// the ACP session, not via CLI flags.
 ///
 /// Example binaries: `claude-agent-acp` (npm), custom ACP agents.
+#[allow(dead_code)] // Legacy stub — replaced by AcpNativeProvider
 pub struct AcpCliProvider {
     /// Path or name of the ACP agent binary.
     pub binary: String,

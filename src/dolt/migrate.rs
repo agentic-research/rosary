@@ -1,3 +1,4 @@
+#![allow(dead_code)] // Dolt migrations — kept for repos still using Dolt backend
 //! Schema migrations for beads databases.
 //!
 //! Migrations are versioned SQL statements applied in order. Each migration

@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 
 use crate::bead::Bead;
 use crate::scanner::expand_path;
+#[allow(unused_imports)] // Used when dispatch migrates fully to BeadStore
 use crate::store::BeadStore;
 use session::ComputeSession;
 
