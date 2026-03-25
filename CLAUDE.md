@@ -45,28 +45,31 @@ task all            # fmt + check + lint + test
 
 ## Key Source Files
 
-| File                        | Purpose                                                                     |
-| --------------------------- | --------------------------------------------------------------------------- |
-| src/serve.rs                | MCP server (stdio + HTTP) + Linear webhook handler                          |
-| src/reconcile.rs            | Reconciliation loop: scan → triage → dispatch → verify                      |
-| src/bead.rs                 | Bead model, BeadState enum, Linear type mapping                             |
-| src/dispatch.rs             | Agent dispatch, pipeline mapping, execution                                 |
-| src/epic.rs                 | Semantic clustering, dedup, file overlap detection                          |
-| src/dolt.rs                 | Dolt database client (per-repo beads)                                       |
-| src/store_dolt.rs           | Dolt backend for orchestrator state (pipeline, dispatches, cross-repo deps) |
-| src/store.rs                | Backend-agnostic store traits (HierarchyStore, DispatchStore, LinkageStore) |
-| src/handoff.rs              | Structured context transfer between pipeline phases                         |
-| src/workspace.rs            | Git/jj worktree creation and isolation                                      |
-| src/linear.rs               | Linear sync CLI (`rsry sync`)                                               |
-| src/linear_tracker.rs       | IssueTracker trait impl for Linear (cached states, configurable)            |
-| src/sync.rs                 | Backend-agnostic sync engine                                                |
-| src/config.rs               | Configuration (repos, linear, http, tunnel, backend)                        |
-| src/pool.rs                 | Connection pool for multi-repo Dolt access                                  |
-| src/main.rs                 | CLI entry + shared helpers (`generate_bead_id`, `resolve_beads_dir`)        |
-| crates/bdr/src/parse.rs     | ADR markdown parser — frontmatter + section → atom extraction               |
-| crates/bdr/src/decompose.rs | Atom → BeadSpec mapper with cross-repo routing + success criteria           |
-| crates/bdr/src/thread.rs    | Thread grouping + Decade assembly from atoms                                |
-| crates/bdr/src/accrete.rs   | Bottom-up: bead completions → decade state transitions                      |
+| File                        | Purpose                                                                                |
+| --------------------------- | -------------------------------------------------------------------------------------- |
+| src/serve.rs                | MCP server (stdio + HTTP) + Linear webhook handler                                     |
+| src/reconcile.rs            | Reconciliation loop: scan → triage → dispatch → verify                                 |
+| src/bead.rs                 | Bead model, BeadState enum, Linear type mapping                                        |
+| src/store.rs                | Backend-agnostic store traits (BeadStore, HierarchyStore, DispatchStore, LinkageStore)  |
+| src/bead_dolt.rs            | DoltBeadStore — production BeadStore impl wrapping DoltClient                          |
+| src/bead_sqlite.rs          | SqliteBeadStore — fallback/test BeadStore impl, portable export                        |
+| src/dispatch.rs             | Agent dispatch, pipeline mapping, execution                                            |
+| src/acp.rs                  | ACP native dispatch (AcpSession, RosaryClient, spawn_acp_session)                      |
+| src/epic.rs                 | Semantic clustering, dedup, file overlap detection                                     |
+| src/dolt.rs                 | Dolt database client (per-repo beads)                                                  |
+| src/store_dolt.rs           | Dolt backend for orchestrator state (pipeline, dispatches, cross-repo deps)            |
+| src/handoff.rs              | Structured context transfer between pipeline phases + content-linked chain hash        |
+| src/workspace.rs            | Git/jj worktree creation and isolation                                                 |
+| src/linear.rs               | Linear sync CLI (`rsry sync`)                                                          |
+| src/linear_tracker.rs       | IssueTracker trait impl for Linear (cached states, configurable)                       |
+| src/sync.rs                 | Backend-agnostic sync engine                                                           |
+| src/config.rs               | Configuration (repos, linear, http, tunnel, backend)                                   |
+| src/pool.rs                 | Connection pool for multi-repo Dolt access + connect_bead_store() factory              |
+| src/main.rs                 | CLI entry + shared helpers (`generate_bead_id`, `resolve_beads_dir`)                   |
+| crates/bdr/src/parse.rs     | ADR markdown parser — frontmatter + section → atom extraction                          |
+| crates/bdr/src/decompose.rs | Atom → BeadSpec mapper with cross-repo routing + success criteria                      |
+| crates/bdr/src/thread.rs    | Thread grouping + Decade assembly from atoms                                           |
+| crates/bdr/src/accrete.rs   | Bottom-up: bead completions → decade state transitions                                 |
 
 ## Agent Definitions
 
@@ -91,10 +94,12 @@ Pipeline mapping: issue_type → agent sequence (dispatch.rs `agent_pipeline()`)
 Beads are the distributed work tracking system. Each repo has `.beads/` with a Dolt database.
 
 ```bash
-# MCP tools (via rsry serve) — 24 tools
+# MCP tools (via rsry serve) — 27 tools
 # Beads
 rsry_bead_create / rsry_bead_update / rsry_bead_search / rsry_bead_comment / rsry_bead_close
-rsry_bead_link / rsry_status / rsry_list_beads / rsry_scan / rsry_active
+rsry_bead_link / rsry_bead_import / rsry_status / rsry_list_beads / rsry_scan / rsry_active
+# Repos
+rsry_repo_register / rsry_repo_list
 # Dispatch + pipeline
 rsry_dispatch / rsry_run_once / rsry_decompose
 rsry_pipeline_upsert / rsry_pipeline_query / rsry_dispatch_record / rsry_dispatch_history
@@ -135,6 +140,7 @@ File overlap is also re-checked in Phase 4 (dispatch loop) to catch beads queued
 | 0006 | Proposed | Declarative tool registry (unified MCP/CLI/pipeline from single source) |
 | 0007 | Proposed | BDR enrichment pipeline (mache + haiku + sqlite-vec dedup)              |
 | 0008 | Proposed | Agent hierarchy dispatch model (dev/feature/orchestrator tiers)         |
+| APAS | Draft    | Agent Provenance Attestation Standard v0.1.0 (4 conformance levels)     |
 
 ## BDR Hierarchy (Decade → Thread → Bead)
 
@@ -153,7 +159,7 @@ Current decades:
 
 ## MCP Integration
 
-Rosary exposes 24 MCP tools via `rsry serve`. Accessible from:
+Rosary exposes 27 MCP tools via `rsry serve`. Accessible from:
 
 - Claude Code (stdio transport, configured in MCP settings)
 - Claude web (HTTP transport via tunnel)

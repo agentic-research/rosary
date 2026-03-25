@@ -76,7 +76,7 @@ rsry run
 
 ## MCP server
 
-Rosary exposes 24 tools as MCP. Any AI agent or human with an MCP client can scan beads, dispatch work, manage threads, and track progress.
+Rosary exposes 27 tools as MCP. Any AI agent or human with an MCP client can scan beads, dispatch work, manage threads, and track progress.
 
 ```bash
 # Add to Claude Code (one-time)
@@ -86,15 +86,16 @@ claude mcp add -s user rsry -- rsry serve --transport stdio
 rsry serve --transport http --port 8383
 ```
 
-**24 tools** across five categories:
+**27 tools** across six categories:
 
 | Category   | Tools                                                                                                                                              |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_comment`, `rsry_bead_close`, `rsry_bead_link`                               |
+| Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_comment`, `rsry_bead_close`, `rsry_bead_link`, `rsry_bead_import`           |
 | Status     | `rsry_status`, `rsry_list_beads`, `rsry_scan`, `rsry_active`                                                                                       |
 | Dispatch   | `rsry_dispatch`, `rsry_run_once`, `rsry_decompose`, `rsry_pipeline_upsert`, `rsry_pipeline_query`, `rsry_dispatch_record`, `rsry_dispatch_history` |
 | Workspaces | `rsry_workspace_create`, `rsry_workspace_checkpoint`, `rsry_workspace_cleanup`, `rsry_workspace_merge`                                             |
 | Hierarchy  | `rsry_decade_list`, `rsry_thread_list`, `rsry_thread_assign`                                                                                       |
+| Repos      | `rsry_repo_register`, `rsry_repo_list`                                                                                                             |
 
 ## Config
 
