@@ -1,0 +1,22 @@
+{
+  "name": "art-ecosystem",
+  "owner": {
+    "name": "Agentic Research"
+  },
+  "metadata": {
+    "description": "ART ecosystem plugins — rosary orchestrator, agents, evolve loops"
+  },
+  "plugins": [
+    {
+      "name": "rosary",
+      "source": "./",
+      "description": "Autonomous work orchestrator — beads, agents, evolve loops, seam discovery",
+      "version": "0.1.0",
+      "author": {
+        "name": "Agentic Research"
+      },
+      "repository": "https://github.com/agentic-research/rosary",
+      "license": "AGPL-3.0"
+    }
+  ]
+}
