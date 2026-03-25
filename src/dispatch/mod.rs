@@ -30,8 +30,8 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::bead::Bead;
-use crate::dolt::{DoltClient, DoltConfig};
 use crate::scanner::expand_path;
+use crate::store::BeadStore;
 use session::ComputeSession;
 
 /// Permission profile for dispatched agents.
@@ -418,8 +418,7 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
     let path = expand_path(repo_path);
     let beads_dir = path.join(".beads");
 
-    let config = DoltConfig::from_beads_dir(&beads_dir)?;
-    let client = DoltClient::connect(&config).await?;
+    let client = crate::bead_sqlite::connect_bead_store(&beads_dir).await?;
 
     let bead = client
         .get_bead(bead_id, &path.display().to_string())

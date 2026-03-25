@@ -199,7 +199,8 @@ impl Reconciler {
             "[retry] {bead_id}: agent exited non-zero, retry #{} scheduled",
             tracker.retries
         );
-        self.cleanup_workspace(bead_id);
+        // Preserve workspace on failure so stderr/stream logs are readable
+        eprintln!("[retry] {bead_id}: preserving workspace for post-mortem");
 
         false
     }

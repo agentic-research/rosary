@@ -2,9 +2,7 @@ use anyhow::Result;
 
 use crate::bead::Bead;
 use crate::config::RepoConfig;
-use crate::dolt::{DoltClient, DoltConfig};
-
-/// Scan all configured repos for beads via native MySQL to Dolt.
+/// Scan all configured repos for beads.
 pub async fn scan_repos(repos: &[RepoConfig]) -> Result<Vec<Bead>> {
     let mut all_beads = Vec::new();
 
@@ -31,11 +29,10 @@ pub async fn scan_repos(repos: &[RepoConfig]) -> Result<Vec<Bead>> {
     Ok(all_beads)
 }
 
-/// Read beads from a single repo via native MySQL connection to Dolt.
+/// Read beads from a single repo via BeadStore (SQLite or Dolt fallback).
 async fn read_beads(beads_dir: &std::path::Path, repo_name: &str) -> Result<Vec<Bead>> {
-    let config = DoltConfig::from_beads_dir(beads_dir)?;
-    let client = DoltClient::connect(&config).await?;
-    client.list_beads(repo_name).await
+    let store = crate::bead_sqlite::connect_bead_store(beads_dir).await?;
+    store.list_beads(repo_name).await
 }
 
 /// Expand `~` in paths. Uses shellexpand (already a dependency).

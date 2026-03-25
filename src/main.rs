@@ -9,6 +9,8 @@ mod acp;
 #[allow(dead_code)] // API surface — wired in rsry-e608bb (reconciler integration)
 mod backend;
 mod bead;
+mod bead_dolt;
+mod bead_sqlite;
 mod cli;
 mod config;
 mod dispatch;
@@ -641,8 +643,7 @@ async fn main() -> Result<()> {
             if !dry_run {
                 let repo_root = scanner::resolve_repo_path(Path::new(&repo));
                 let beads_dir = repo_root.join(".beads");
-                let dolt_config = dolt::DoltConfig::from_beads_dir(&beads_dir)?;
-                let client = dolt::DoltClient::connect(&dolt_config).await?;
+                let client = bead_sqlite::connect_bead_store(&beads_dir).await?;
                 let decompose_repo_name = repo_root
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -681,8 +682,7 @@ async fn main() -> Result<()> {
         Command::Bead { action, repo } => {
             let repo_root = scanner::resolve_repo_path(Path::new(&repo));
             let beads_dir = resolve_beads_dir(&repo_root);
-            let dolt_config = dolt::DoltConfig::from_beads_dir(&beads_dir)?;
-            let client = dolt::DoltClient::connect(&dolt_config).await?;
+            let client = bead_sqlite::connect_bead_store(&beads_dir).await?;
             let repo_name = repo_root
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -747,7 +747,7 @@ async fn main() -> Result<()> {
                 }
                 BeadAction::Import { file } => {
                     let beads_json = import::read_beads_json(file)?;
-                    let r = import::import_beads(&beads_json, &client, &repo_name).await?;
+                    let r = import::import_beads(&beads_json, &*client, &repo_name).await?;
                     println!(
                         "Imported {}, skipped {} (duplicate titles)",
                         r.imported, r.skipped

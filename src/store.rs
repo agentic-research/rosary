@@ -1,13 +1,15 @@
-//! Backend store traits for rosary orchestrator state.
+//! Backend store traits for rosary.
 //!
-//! Three focused traits split by domain:
+//! Two trait families:
+//!
+//! **Orchestrator state** (cross-repo, single global DB):
 //! - [`HierarchyStore`]: decades, threads, bead-to-thread membership
 //! - [`DispatchStore`]: pipeline state, dispatch history, backoff
 //! - [`LinkageStore`]: cross-repo dependencies, Linear linkage
+//! - [`BackendStore`]: unified supertrait
 //!
-//! Beads themselves stay in per-repo `.beads/` Dolt databases.
-//! These traits persist the orchestrator's *own* state — relationships
-//! between beads, pipeline progress, and external-system linkage.
+//! **Bead CRUD** (per-repo `.beads/` directory):
+//! - [`BeadStore`]: create, read, update, search, close, comment, dependencies
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -172,6 +174,86 @@ pub trait UserRepoStore: Send + Sync {
     async fn register_repo(&self, repo: &UserRepo) -> Result<()>;
     async fn list_user_repos(&self, user_id: &str) -> Result<Vec<UserRepo>>;
     async fn unregister_repo(&self, user_id: &str, repo_name: &str) -> Result<()>;
+}
+
+// ── Bead CRUD trait ──────────────────────────────────────
+
+/// Per-repo bead storage — CRUD, search, dependencies, comments, events.
+///
+/// Each repo has its own BeadStore (SQLite file or Dolt server).
+/// Implementations: [`crate::bead_sqlite::SqliteBeadStore`],
+/// [`crate::bead_dolt::DoltBeadStore`].
+#[async_trait]
+pub trait BeadStore: Send + Sync {
+    // ── CRUD ──
+    async fn list_beads(&self, repo_name: &str) -> Result<Vec<crate::bead::Bead>>;
+    async fn list_beads_scoped(
+        &self,
+        repo_name: &str,
+        user_id: Option<&str>,
+    ) -> Result<Vec<crate::bead::Bead>>;
+    async fn get_bead(&self, id: &str, repo_name: &str) -> Result<Option<crate::bead::Bead>>;
+    async fn create_bead(
+        &self,
+        id: &str,
+        title: &str,
+        description: &str,
+        priority: u8,
+        issue_type: &str,
+    ) -> Result<()>;
+    #[allow(clippy::too_many_arguments)]
+    async fn create_bead_full(
+        &self,
+        id: &str,
+        title: &str,
+        description: &str,
+        priority: u8,
+        issue_type: &str,
+        owner: &str,
+        files: &[String],
+        test_files: &[String],
+        depends_on: &[String],
+    ) -> Result<()>;
+
+    // ── Field updates ──
+    async fn update_bead_fields(
+        &self,
+        id: &str,
+        update: &crate::bead::BeadUpdate,
+    ) -> Result<Vec<String>>;
+    async fn update_status(&self, id: &str, status: &str) -> Result<()>;
+    async fn get_status(&self, id: &str) -> Result<Option<String>>;
+    async fn close_bead(&self, id: &str) -> Result<()>;
+    async fn set_assignee(&self, id: &str, assignee: &str) -> Result<()>;
+    async fn set_user_id(&self, id: &str, user_id: &str) -> Result<()>;
+    async fn set_files(&self, id: &str, files: &[String], test_files: &[String]) -> Result<()>;
+
+    // ── Search ──
+    async fn search_beads(
+        &self,
+        query: &str,
+        repo_name: &str,
+        limit: u32,
+    ) -> Result<Vec<crate::bead::Bead>>;
+
+    // ── External references (Linear linkage) ──
+    async fn get_external_ref(&self, id: &str) -> Result<Option<String>>;
+    async fn set_external_ref(&self, id: &str, external_ref: &str) -> Result<()>;
+    async fn find_by_external_ref(&self, external_ref: &str) -> Result<Option<String>>;
+    async fn list_closed_linked_beads(&self, repo_name: &str) -> Result<Vec<crate::bead::Bead>>;
+
+    // ── Dependencies ──
+    async fn add_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()>;
+    async fn remove_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()>;
+    async fn get_dependencies(&self, issue_id: &str) -> Result<Vec<String>>;
+    async fn get_dependents(&self, issue_id: &str) -> Result<Vec<String>>;
+
+    // ── Comments & events ──
+    async fn add_comment(&self, issue_id: &str, body: &str, author: &str) -> Result<()>;
+    /// Best-effort audit log. Implementations should warn on failure, not error.
+    async fn log_event(&self, issue_id: &str, event_type: &str, detail: &str);
+    /// Most recent event detail for a bead + event type.
+    async fn get_latest_event(&self, issue_id: &str, event_type: &str) -> Result<Option<String>>;
 }
 
 // ── Composite traits ───────────────────────────────────

@@ -1,32 +1,27 @@
-//! Dolt persistence and status mirroring.
+//! Bead persistence and status mirroring.
 //!
 //! Sentry span: `reconcile.persist`
 
 use super::Reconciler;
-use crate::dolt::{DoltClient, DoltConfig};
 use crate::scanner;
+use crate::store::BeadStore;
 
 impl Reconciler {
-    /// Get or lazily connect a DoltClient for a repo.
-    pub(super) async fn dolt_client(&mut self, repo: &str) -> Option<&DoltClient> {
+    /// Get or lazily connect a BeadStore for a repo.
+    pub(super) async fn dolt_client(&mut self, repo: &str) -> Option<&dyn BeadStore> {
         if self.dolt_clients.contains_key(repo) {
-            return self.dolt_clients.get(repo);
+            return self.dolt_clients.get(repo).map(|b| b.as_ref());
         }
 
         let (path, _) = self.repo_info.get(repo)?;
         let beads_dir = path.join(".beads");
-        let config = DoltConfig::from_beads_dir(&beads_dir).ok()?;
-        match DoltClient::connect(&config).await {
-            Ok(client) => {
-                // Run pending migrations on first connect (idempotent)
-                if let Err(e) = client.migrate().await {
-                    eprintln!("[dolt] migration failed for {repo}: {e}");
-                }
-                self.dolt_clients.insert(repo.to_string(), client);
-                self.dolt_clients.get(repo)
+        match crate::bead_sqlite::connect_bead_store(&beads_dir).await {
+            Ok(store) => {
+                self.dolt_clients.insert(repo.to_string(), store);
+                self.dolt_clients.get(repo).map(|b| b.as_ref())
             }
             Err(e) => {
-                eprintln!("[dolt] failed to connect for {repo}: {e}");
+                eprintln!("[bead] failed to connect for {repo}: {e}");
                 None
             }
         }
@@ -102,12 +97,12 @@ impl Reconciler {
         verdict: crate::dolt::observations::Verdict,
         detail: &str,
     ) {
-        if let Some(client) = self.dolt_client(repo).await
-            && let Err(e) = client
-                .append_observation(bead_id, agent, phase, verdict, detail, "")
-                .await
-        {
-            eprintln!("[observation] failed to append for {bead_id}: {e}");
+        if let Some(client) = self.dolt_client(repo).await {
+            let event_detail =
+                format!("phase={phase} agent={agent} verdict={verdict:?} detail={detail}");
+            client
+                .log_event(bead_id, "observation", &event_detail)
+                .await;
         }
     }
 
