@@ -44,12 +44,19 @@ Evolve operates at three scales. The assessment phase determines which:
 **Ecosystem scale** applies when:
 - A bead references files in multiple repos (e.g., signet cert format + rig cert minting)
 - A change in one repo breaks assumptions in another
-- rosary.toml lists the repo map — read it first
+- Imports or configs reference external repos
 
-At ecosystem scale, the scoping-agent reads `rosary.toml` to map dependencies,
+Scale detection is DERIVED, not configured:
+1. Check if `rosary.toml` exists -- if yes, read the repo map
+2. If not, check `../` for sibling repos (common monorepo/workspace pattern)
+3. Check imports/configs for cross-repo references (go.mod, Cargo.toml, package.json)
+4. If no cross-repo deps found, operate at repo scale
+
+At ecosystem scale, the scoping-agent maps dependencies (rosary.toml OR `../` scan),
 then checks if the bead's files touch any cross-repo seams (use `rosary:seam-discovery`).
-If yes, the plan.md must document which repos are affected and in what order changes
-should be applied.
+If yes, plan.md must document which repos are affected and in what order.
+
+The skill works with zero config. rosary.toml is a hint, not a requirement.
 
 ## Personas — Who works on what
 
@@ -119,15 +126,64 @@ For `--simplify` mode: ignore beads. Scan codebase for:
 - Inconsistent error handling or response shapes
 File ephemeral beads for each extraction, execute, close in same run.
 
-### 2. Plan -- Contract negotiation
+### 2. Derive the lifecycle -- Don't configure, discover
 
-For each closable bead, scoping-agent writes `plan.md`:
-- What files change
-- What the test should verify (the "done" criteria)
-- Estimated LOC change (positive = growth, negative = simplification)
-- Risk level (low/medium/high)
+For each closable bead, the scoping-agent DERIVES the lifecycle from the code.
+Do not ask the human to define these -- read the codebase and figure it out.
+If something is NOT derivable, ASK the human before proceeding.
 
-For `--simplify`: plan must show LOC stays flat or decreases.
+**Starting point** (derive from bead + code):
+- Problem statement: what does the bead describe? Read the bead description.
+- Current state: read the files the bead touches. What exists today?
+- Outcome: what should be different after? Derive from bead title + description.
+- If the bead is vague, ASK: "What does done look like for {bead-id}?"
+
+**Stopping point** (derive from existing tests + types):
+- Definition of done: does a test exist that would fail today and pass after?
+  If yes, that's the acceptance criterion. If no, write one.
+- Acceptance criteria: typecheck passes, existing tests don't regress, new test passes.
+- If there are no tests for this area, ASK: "No tests cover {file}. Should I add one?"
+
+**Validation** (derive from the dependency graph):
+- What calls this code? (mache find_callers or grep)
+- What does this code call? (mache find_callees)
+- If callers > 3, the change is high-risk -- evaluator must verify each caller.
+- If the file has no callers, it might be dead code -- flag for `--prune`.
+
+**Verification and attestation** (cite sources):
+- Every claim in plan.md must have a citation:
+  - File path + line number for code references
+  - Bead ID for the work item
+  - Test name for acceptance criteria
+  - mache output for dependency claims
+- If you can't cite it, you don't know it. ASK or investigate.
+
+The scoping-agent writes all of this into `plan.md`:
+
+```
+## Plan: {bead-id} -- {title}
+
+### Starting point
+- Problem: {derived from bead description}
+- Files: {list with line numbers}
+- Current behavior: {what the code does now, with citations}
+
+### Stopping point
+- Done when: {test name} passes
+- Acceptance: typecheck + {N} existing tests + 1 new test
+- LOC delta: {estimate, negative for simplify}
+
+### Validation
+- Callers: {list from mache/grep, with file:line}
+- Risk: {low|medium|high} because {reason}
+
+### Verification
+- Citations: {every claim has a file:line or bead-id}
+- Questions for human: {anything not derivable}
+```
+
+If the `Questions for human` section is non-empty, STOP and ask before executing.
+An empty questions section means the plan is self-contained and can proceed autonomously.
 
 ### 3. Execute -- Generator -> Evaluator pipeline
 
