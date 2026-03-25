@@ -360,6 +360,7 @@ mod tests {
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: Some(Arc::from("test-secret")),
             backend: None,
+            repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
         };
 
         let app = axum::Router::new()
@@ -389,6 +390,7 @@ mod tests {
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: Some(Arc::from("test-secret")),
             backend: None,
+            repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
         };
 
         let app = axum::Router::new()
@@ -425,6 +427,7 @@ mod tests {
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: Some(Arc::from(secret)),
             backend: None,
+            repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
         };
 
         let app = axum::Router::new()

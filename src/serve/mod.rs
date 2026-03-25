@@ -210,12 +210,13 @@ async fn handle_tools_call(
     pool: &RepoPool,
     backend: Option<&dyn BackendStore>,
     caller: &CallerIdentity,
+    repo_cache: &crate::repo_cache::RepoCache,
 ) -> JsonRpcResponse {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
-    match handlers::call_tool(name, &args, config_path, pool, backend, caller).await {
+    match handlers::call_tool(name, &args, config_path, pool, backend, caller, repo_cache).await {
         Ok(result) => JsonRpcResponse::success(
             id,
             json!({
@@ -272,6 +273,8 @@ pub(crate) struct AppState {
     /// Backend store for cross-repo orchestrator state (pipeline, dispatches, linkage).
     /// None when `[backend]` is not configured — existing functionality is unaffected.
     pub backend: Option<Arc<dyn BackendStore>>,
+    /// On-demand repo cache for wasteland remote dispatch.
+    pub repo_cache: Arc<crate::repo_cache::RepoCache>,
 }
 
 /// Validate Origin header to prevent DNS rebinding attacks.
@@ -432,6 +435,7 @@ fn handle_mcp_post(
                     &state.pool,
                     state.backend.as_deref(),
                     &caller,
+                    &state.repo_cache,
                 )
                 .await
             }
@@ -516,6 +520,7 @@ async fn run_http(config_path: &str, port: u16) -> Result<()> {
         sessions: Arc::new(RwLock::new(HashSet::new())),
         webhook_secret: webhook_secret.map(|s| Arc::from(s.as_str())),
         backend,
+        repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
     };
 
     let app = axum::Router::new()
@@ -607,8 +612,9 @@ async fn run_stdio(config_path: &str) -> Result<()> {
         None
     };
 
-    // Create connection pool on startup — reused across all tool calls
+    // Create connection pool and repo cache on startup — reused across all tool calls
     let pool = RepoPool::from_config(config_path).await?;
+    let repo_cache = crate::repo_cache::RepoCache::new();
     eprintln!(
         "[rsry-mcp] server started (stdio transport, {} repos: {}, build {})",
         pool.len(),
@@ -682,6 +688,7 @@ async fn run_stdio(config_path: &str) -> Result<()> {
                     &pool,
                     backend.as_deref(),
                     &CallerIdentity::Anonymous,
+                    &repo_cache,
                 )
                 .await
             }
@@ -884,6 +891,7 @@ mod tests {
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: None,
             backend: None,
+            repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
         };
 
         let app = axum::Router::new()
@@ -919,6 +927,7 @@ mod tests {
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: None,
             backend: None,
+            repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
         };
 
         let app = axum::Router::new()
@@ -951,6 +960,7 @@ mod tests {
             sessions: Arc::new(RwLock::new(HashSet::from(["sess-1".to_string()]))),
             webhook_secret: None,
             backend: None,
+            repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
         };
 
         let app = axum::Router::new()
