@@ -125,6 +125,9 @@ pub struct AgentHandle {
     /// Contains init, assistant, and result events from `--output-format json`.
     #[allow(dead_code)]
     pub log_path: Option<PathBuf>,
+    /// HEAD commit SHA of the target repo at dispatch time (APAS chain integrity, L1).
+    #[allow(dead_code)]
+    pub chain_hash: Option<String>,
 }
 
 impl AgentHandle {
@@ -400,6 +403,16 @@ pub async fn spawn(
 
     let log_path = work_dir.join(STREAM_LOG_FILENAME);
 
+    // Capture HEAD commit SHA for APAS chain integrity (L1 anchor).
+    // Runs after workspace creation so the SHA reflects the isolated worktree state.
+    let chain_hash = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&work_dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+
     Ok(AgentHandle {
         bead_id: bead.id.clone(),
         generation,
@@ -410,6 +423,7 @@ pub async fn spawn(
         session_id: None,
         workspace_path,
         log_path: Some(log_path),
+        chain_hash,
     })
 }
 

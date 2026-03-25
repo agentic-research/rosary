@@ -1120,6 +1120,7 @@ async fn tool_dispatch_record(args: &Value, backend: Option<&dyn BackendStore>) 
         work_dir: work_dir.to_string(),
         session_id: None,
         workspace_path: None,
+        chain_hash: None,
     };
 
     backend.record_dispatch(&record).await?;

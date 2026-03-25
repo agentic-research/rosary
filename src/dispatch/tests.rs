@@ -493,6 +493,7 @@ async fn agent_handle_session_id() {
         session_id: None,
         workspace_path: Some("/tmp/.rsry-workspaces/test-1".into()),
         log_path: Some(PathBuf::from("/tmp/.rsry-stream.jsonl")),
+        chain_hash: None,
     };
 
     assert!(handle.session_id.is_none());
