@@ -6,6 +6,22 @@ use std::path::PathBuf;
 
 use super::Reconciler;
 
+/// Parse the pipe-delimited output from the combined `gh pr view` call.
+///
+/// Expected format: `"STATE|sha|DECISION|reviewer1,reviewer2"`
+/// - STATE: OPEN, MERGED, CLOSED
+/// - sha: merge commit OID (empty if not yet merged)
+/// - DECISION: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or empty
+/// - reviewers: comma-separated logins of CHANGES_REQUESTED reviewers
+fn parse_pr_status_line(line: &str) -> (String, String, String, String) {
+    let mut parts = line.splitn(4, '|');
+    let state = parts.next().unwrap_or("").to_string();
+    let merge_sha = parts.next().unwrap_or("").to_string();
+    let decision = parts.next().unwrap_or("").to_string();
+    let reviewers = parts.next().unwrap_or("").to_string();
+    (state, merge_sha, decision, reviewers)
+}
+
 impl Reconciler {
     /// Scan jj logs across repos for bead references in commit messages.
     /// Triggers state transitions: open → dispatched (for refs), open → done (for closes).
@@ -73,10 +89,19 @@ impl Reconciler {
         transitions
     }
 
-    /// Poll beads in `pr_open` status — close when their PR merges.
-    /// Uses `gh pr view` (works locally and in CI). Falls back gracefully
-    /// if `gh` isn't available or the PR URL isn't recorded.
-    pub(super) async fn poll_pr_merges(&mut self, beads: &[crate::bead::Bead]) -> usize {
+    /// Poll beads in `pr_open` status: surface review feedback and close merged PRs.
+    ///
+    /// One `gh pr view` call per bead fetches `state`, `mergeCommit`, `reviewDecision`,
+    /// and `reviews` together, avoiding duplicate API/subprocess overhead.
+    ///
+    /// - **CHANGES_REQUESTED**: logs a `pr_feedback` event (de-duplicated — only logged when
+    ///   the reviewer set changes so the audit trail doesn't grow unbounded).
+    /// - **MERGED**: logs the merge SHA, adds an audit comment, closes the bead, and clears
+    ///   pipeline state (same behaviour as the former `poll_pr_merges`).
+    ///
+    /// Falls back gracefully if `gh` is unavailable or the API returns an error.
+    /// Returns the number of beads closed.
+    pub(super) async fn poll_pr_status(&mut self, beads: &[crate::bead::Bead]) -> usize {
         let pr_open_beads: Vec<&crate::bead::Bead> =
             beads.iter().filter(|b| b.status == "pr_open").collect();
 
@@ -101,34 +126,63 @@ impl Reconciler {
                 continue;
             };
 
-            // Check PR state and fetch merge SHA in one gh call.
-            // jq: emit "STATE|sha" — sha is empty string when not yet merged.
-            let output = std::process::Command::new("gh")
+            // Fetch state, merge SHA, review decision, and CHANGES_REQUESTED reviewers
+            // in a single gh invocation.
+            // jq: "STATE|sha|DECISION|reviewer1,reviewer2"
+            let output = tokio::process::Command::new("gh")
                 .args([
                     "pr",
                     "view",
                     &url,
                     "--json",
-                    "state,mergeCommit",
+                    "state,mergeCommit,reviewDecision,reviews",
                     "-q",
-                    ".state + \"|\" + (.mergeCommit.oid // \"\")",
+                    ".state + \"|\" + (.mergeCommit.oid // \"\") + \"|\" + .reviewDecision + \"|\" + ([.reviews[] | select(.state == \"CHANGES_REQUESTED\") | .author.login] | join(\",\"))",
                 ])
-                .output();
+                .output()
+                .await;
 
-            let (merged, merge_sha) = match output {
+            let line = match output {
                 Ok(o) if o.status.success() => {
-                    let raw = String::from_utf8_lossy(&o.stdout);
-                    let line = raw.trim();
-                    if let Some((state, sha)) = line.split_once('|') {
-                        (state == "MERGED", sha.to_string())
-                    } else {
-                        (line == "MERGED", String::new())
-                    }
+                    String::from_utf8_lossy(&o.stdout).trim().to_string()
                 }
                 _ => continue, // gh not available or API error — skip
             };
 
-            if merged {
+            let (state, merge_sha, decision, reviewers) = parse_pr_status_line(&line);
+
+            // — Feedback: log CHANGES_REQUESTED once per reviewer-set change —
+            if decision == "CHANGES_REQUESTED" {
+                let detail = if reviewers.is_empty() {
+                    format!("CHANGES_REQUESTED — {url}")
+                } else {
+                    format!("CHANGES_REQUESTED by {reviewers} — {url}")
+                };
+
+                if let Some(client) = self.dolt_client(&bead.repo).await {
+                    // De-duplicate: only log when the reviewer set / detail changes.
+                    let latest = client
+                        .get_latest_event(&bead.id, "pr_feedback")
+                        .await
+                        .ok()
+                        .flatten();
+                    if latest.as_deref() != Some(&detail) {
+                        eprintln!(
+                            "[pr-feedback] {} — changes requested ({})",
+                            bead.id, reviewers
+                        );
+                        let _ = client.log_event(&bead.id, "pr_feedback", &detail).await;
+                    }
+                } else {
+                    eprintln!(
+                        "[pr-feedback] {} — changes requested ({})",
+                        bead.id, reviewers
+                    );
+                }
+            }
+
+            // — Merge: close the bead when the PR has merged —
+            if state == "MERGED" {
                 // Log merge SHA + add audit comment before persisting status
                 // so the audit trail precedes the state transition.
                 if let Some(client) = self.dolt_client(&bead.repo).await {
@@ -162,5 +216,55 @@ impl Reconciler {
         }
 
         closed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pr_status_merged_with_sha() {
+        let (state, sha, decision, reviewers) =
+            parse_pr_status_line("MERGED|abc123def456|APPROVED|");
+        assert_eq!(state, "MERGED");
+        assert_eq!(sha, "abc123def456");
+        assert_eq!(decision, "APPROVED");
+        assert_eq!(reviewers, "");
+    }
+
+    #[test]
+    fn parse_pr_status_open_changes_requested() {
+        let (state, sha, decision, reviewers) =
+            parse_pr_status_line("OPEN||CHANGES_REQUESTED|alice,bob");
+        assert_eq!(state, "OPEN");
+        assert_eq!(sha, "");
+        assert_eq!(decision, "CHANGES_REQUESTED");
+        assert_eq!(reviewers, "alice,bob");
+    }
+
+    #[test]
+    fn parse_pr_status_open_no_review() {
+        let (state, sha, decision, reviewers) = parse_pr_status_line("OPEN|||");
+        assert_eq!(state, "OPEN");
+        assert_eq!(sha, "");
+        assert_eq!(decision, "");
+        assert_eq!(reviewers, "");
+    }
+
+    #[test]
+    fn parse_pr_status_reviewers_with_pipe_in_fourth_field() {
+        // Ensure splitn(4) doesn't split on a hypothetical pipe in reviewer names
+        let (state, _, decision, reviewers) = parse_pr_status_line("OPEN||CHANGES_REQUESTED|alice");
+        assert_eq!(state, "OPEN");
+        assert_eq!(decision, "CHANGES_REQUESTED");
+        assert_eq!(reviewers, "alice");
+    }
+
+    #[test]
+    fn parse_pr_status_merged_no_sha() {
+        let (state, sha, _, _) = parse_pr_status_line("MERGED|||");
+        assert_eq!(state, "MERGED");
+        assert_eq!(sha, "");
     }
 }
