@@ -223,13 +223,14 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_workspace_merge",
-                "description": "Merge a completed agent's worktree branch back to main (ff-merge for tasks/bugs, push branch for features/epics).",
+                "description": "Push agent worktree branch and open PR. Rebases onto base_branch first.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "bead_id": { "type": "string", "description": "Bead ID (branch is fix/{bead_id})" },
                         "repo_path": { "type": "string", "description": "Path to the repo root" },
-                        "issue_type": { "type": "string", "description": "Issue type (task/bug = ff-merge, feature/epic = push branch)", "default": "task" }
+                        "issue_type": { "type": "string", "description": "Issue type: bug, feature, task, chore, review, epic, design, research", "default": "task" },
+                        "base_branch": { "type": "string", "description": "Branch to PR into. Defaults to the configured [github] base (usually main)." }
                     },
                     "required": ["bead_id", "repo_path"]
                 }

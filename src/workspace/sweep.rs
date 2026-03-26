@@ -341,7 +341,9 @@ pub async fn merge_or_pr(
 
 /// Terminal step with explicit base branch override.
 ///
-/// When `base` is None, reads from GitHub config (defaults to "main").
+/// When `base` is None, falls back to `"main"`. Callers that have config
+/// access should pass the configured default branch explicitly rather than
+/// relying on this fallback.
 pub async fn merge_or_pr_with_base(
     repo_path: &Path,
     branch: &str,

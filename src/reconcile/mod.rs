@@ -60,6 +60,9 @@ pub struct ReconcilerConfig {
     /// - `Some(uid)` — hosted/federated mode: loads only repos registered by this user,
     ///   preventing cross-user dispatch.
     pub user_id: Option<String>,
+    /// Default base branch for agent PRs when no thread feature branch is found.
+    /// Populated from `[github] base` in config. Defaults to "main".
+    pub default_branch: String,
 }
 
 impl Default for ReconcilerConfig {
@@ -80,6 +83,7 @@ impl Default for ReconcilerConfig {
             pipelines: crate::config::default_pipelines(),
             max_pipeline_depth: 0,
             user_id: None,
+            default_branch: "main".to_string(),
         }
     }
 }
@@ -780,6 +784,11 @@ pub async fn run(
         target_bead: target_bead.map(|s| s.to_string()),
         pipelines: cfg.pipelines,
         max_pipeline_depth: cfg.max_pipeline_depth,
+        default_branch: cfg
+            .github
+            .as_ref()
+            .map(|g| g.base.clone())
+            .unwrap_or_else(|| "main".to_string()),
         ..Default::default()
     };
 
