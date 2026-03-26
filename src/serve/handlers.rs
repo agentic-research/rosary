@@ -13,6 +13,13 @@ const SEARCH_DEFAULT_LIMIT: u64 = 20;
 const SEARCH_MAX_LIMIT: u64 = 50;
 /// Truncate bead descriptions in search results to this many bytes.
 const SEARCH_DESC_TRUNCATE: usize = 200;
+/// Maximum bytes for a bead title.
+const TITLE_MAX_LEN: usize = 512;
+/// Maximum bytes for a bead description or comment body.
+const BODY_MAX_LEN: usize = 50_000;
+/// Maximum valid priority value (P0–P3).
+const PRIORITY_MAX: u64 = 3;
+// Canonical issue type list lives in crate::bead::VALID_ISSUE_TYPES.
 
 // ---------------------------------------------------------------------------
 // Argument parsing helpers
@@ -310,9 +317,52 @@ async fn tool_bead_create(
     let title = args["title"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("title required"))?;
-    let description = args["description"].as_str().unwrap_or("");
-    let priority = args["priority"].as_u64().unwrap_or(2) as u8;
-    let issue_type = args["issue_type"].as_str().unwrap_or("task");
+    if title.trim().is_empty() {
+        anyhow::bail!("title must not be blank");
+    }
+    if title.len() > TITLE_MAX_LEN {
+        anyhow::bail!("title exceeds {TITLE_MAX_LEN} bytes (got {})", title.len());
+    }
+    // description: optional, but must be a string if present (not a number/array)
+    let description = match args.get("description") {
+        None | Some(Value::Null) => "",
+        Some(v) => v
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("description must be a string, got {:?}", v))?,
+    };
+    if description.len() > BODY_MAX_LEN {
+        anyhow::bail!(
+            "description exceeds {BODY_MAX_LEN} bytes (got {})",
+            description.len()
+        );
+    }
+    // priority: optional, but must be a non-negative integer if present
+    let priority_raw = match args.get("priority") {
+        None | Some(Value::Null) => 2u64,
+        Some(v) => v.as_u64().ok_or_else(|| {
+            anyhow::anyhow!("priority must be an integer 0–{PRIORITY_MAX}, got {:?}", v)
+        })?,
+    };
+    if priority_raw > PRIORITY_MAX {
+        anyhow::bail!(
+            "priority must be 0–{PRIORITY_MAX} (P0=critical … P3=low), got {priority_raw}"
+        );
+    }
+    let priority = priority_raw as u8;
+    // issue_type: optional, but must be one of the known values if present
+    let issue_type = match args.get("issue_type") {
+        None | Some(Value::Null) => "task",
+        Some(v) => v
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("issue_type must be a string, got {:?}", v))?,
+    };
+    if !crate::bead::VALID_ISSUE_TYPES.contains(&issue_type) {
+        anyhow::bail!(
+            "unknown issue_type {:?} — valid values: {}",
+            issue_type,
+            crate::bead::VALID_ISSUE_TYPES.join(", ")
+        );
+    }
     let owner = args
         .get("owner")
         .and_then(|v| v.as_str())
@@ -396,6 +446,52 @@ async fn tool_bead_update(
     let id = args["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("id required"))?;
+
+    // Validate optional fields before constructing the update.
+    // Use presence check (args.get(...).is_some()) rather than as_str()/as_u64()
+    // so that wrong-type values (e.g. priority: -1 / "2" / 1.5) are rejected
+    // instead of silently ignored.
+    if let Some(tv) = args.get("title").filter(|v| !v.is_null()) {
+        let t = tv
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("title must be a string, got {:?}", tv))?;
+        if t.trim().is_empty() {
+            anyhow::bail!("title must not be blank");
+        }
+        if t.len() > TITLE_MAX_LEN {
+            anyhow::bail!("title exceeds {TITLE_MAX_LEN} bytes (got {})", t.len());
+        }
+    }
+    if let Some(dv) = args.get("description").filter(|v| !v.is_null()) {
+        let d = dv
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("description must be a string, got {:?}", dv))?;
+        anyhow::ensure!(
+            d.len() <= BODY_MAX_LEN,
+            "description exceeds {BODY_MAX_LEN} bytes (got {})",
+            d.len()
+        );
+    }
+    if let Some(pv) = args.get("priority").filter(|v| !v.is_null()) {
+        let p = pv.as_u64().ok_or_else(|| {
+            anyhow::anyhow!("priority must be an integer 0–{PRIORITY_MAX}, got {:?}", pv)
+        })?;
+        anyhow::ensure!(
+            p <= PRIORITY_MAX,
+            "priority must be 0–{PRIORITY_MAX} (P0=critical … P3=low), got {p}"
+        );
+    }
+    if let Some(itv) = args.get("issue_type").filter(|v| !v.is_null()) {
+        let it = itv
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("issue_type must be a string, got {:?}", itv))?;
+        anyhow::ensure!(
+            crate::bead::VALID_ISSUE_TYPES.contains(&it),
+            "unknown issue_type {:?} — valid values: {}",
+            it,
+            crate::bead::VALID_ISSUE_TYPES.join(", ")
+        );
+    }
 
     let update = crate::bead::BeadUpdate {
         title: args.get("title").and_then(|v| v.as_str()).map(String::from),
@@ -482,6 +578,12 @@ async fn tool_bead_comment(
     let body = args["body"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("body required"))?;
+    if body.trim().is_empty() {
+        anyhow::bail!("body must not be blank");
+    }
+    if body.len() > BODY_MAX_LEN {
+        anyhow::bail!("body exceeds {BODY_MAX_LEN} bytes (got {})", body.len());
+    }
 
     let client_ref = get_client(repo_path, pool).await?;
     let client = client_ref.as_store();
@@ -509,6 +611,10 @@ async fn tool_bead_link(args: &Value, pool: &RepoPool) -> Result<Value> {
         .get("remove")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+
+    if id == depends_on {
+        anyhow::bail!("a bead cannot depend on itself ({id})");
+    }
 
     let client_ref = get_client(repo_path, pool).await?;
     let client = client_ref.as_store();
@@ -1557,5 +1663,155 @@ mod tests {
             None,
             "anonymous/CLI callers must not scope to a user"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Input validation tests — exercise the MCP boundary guards directly
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod input_validation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn empty_pool() -> crate::pool::RepoPool {
+        crate::pool::RepoPool::empty()
+    }
+
+    // Validation fires before DB access, so an empty pool + nonexistent path is fine.
+    const FAKE_REPO: &str = "/nonexistent/repo";
+
+    // ---- tool_bead_create --------------------------------------------------
+
+    #[tokio::test]
+    async fn create_rejects_blank_title() {
+        let args = json!({ "repo_path": FAKE_REPO, "title": "   " });
+        let err = tool_bead_create(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("blank"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn create_rejects_title_too_long() {
+        let long = "x".repeat(TITLE_MAX_LEN + 1);
+        let args = json!({ "repo_path": FAKE_REPO, "title": long });
+        let err = tool_bead_create(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("exceeds"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn create_rejects_priority_out_of_range() {
+        let args = json!({ "repo_path": FAKE_REPO, "title": "T", "priority": 4 });
+        let err = tool_bead_create(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("priority must be 0"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn create_rejects_priority_wrong_type() {
+        let args = json!({ "repo_path": FAKE_REPO, "title": "T", "priority": "high" });
+        let err = tool_bead_create(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("priority must be an integer"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_rejects_unknown_issue_type() {
+        let args = json!({ "repo_path": FAKE_REPO, "title": "T", "issue_type": "story" });
+        let err = tool_bead_create(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown issue_type"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn create_rejects_issue_type_wrong_type() {
+        let args = json!({ "repo_path": FAKE_REPO, "title": "T", "issue_type": 42 });
+        let err = tool_bead_create(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("issue_type must be a string"),
+            "{err}"
+        );
+    }
+
+    // ---- tool_bead_update --------------------------------------------------
+
+    #[tokio::test]
+    async fn update_rejects_blank_title() {
+        let args = json!({ "repo_path": FAKE_REPO, "id": "x-1", "title": "" });
+        let err = tool_bead_update(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("blank"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn update_rejects_priority_wrong_type() {
+        let args = json!({ "repo_path": FAKE_REPO, "id": "x-1", "priority": -1 });
+        let err = tool_bead_update(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("priority must be an integer"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_rejects_out_of_range_priority() {
+        let args = json!({ "repo_path": FAKE_REPO, "id": "x-1", "priority": 99 });
+        let err = tool_bead_update(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("priority must be 0"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn update_rejects_unknown_issue_type() {
+        let args = json!({ "repo_path": FAKE_REPO, "id": "x-1", "issue_type": "spike" });
+        let err = tool_bead_update(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown issue_type"), "{err}");
+    }
+
+    // ---- tool_bead_comment -------------------------------------------------
+
+    #[tokio::test]
+    async fn comment_rejects_blank_body() {
+        let args = json!({ "repo_path": FAKE_REPO, "id": "x-1", "body": "  " });
+        let err = tool_bead_comment(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("blank"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn comment_rejects_oversized_body() {
+        let big = "a".repeat(BODY_MAX_LEN + 1);
+        let args = json!({ "repo_path": FAKE_REPO, "id": "x-1", "body": big });
+        let err = tool_bead_comment(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("exceeds"), "{err}");
+    }
+
+    // ---- tool_bead_link ----------------------------------------------------
+
+    #[tokio::test]
+    async fn link_rejects_self_dependency() {
+        let args = json!({ "repo_path": FAKE_REPO, "id": "x-1", "depends_on": "x-1" });
+        let err = tool_bead_link(&args, &empty_pool()).await.unwrap_err();
+        assert!(err.to_string().contains("cannot depend on itself"), "{err}");
     }
 }

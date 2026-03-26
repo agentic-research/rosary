@@ -148,6 +148,12 @@ impl From<&str> for BeadState {
 ///
 /// This enables parallel dispatch: beads with non-overlapping scopes can
 /// run concurrently, while overlapping scopes serialize execution.
+/// All recognized `issue_type` values accepted by the MCP API.
+/// Used for validation in tool handlers and as the canonical source for MCP schema docs.
+pub const VALID_ISSUE_TYPES: &[&str] = &[
+    "bug", "feature", "task", "chore", "review", "epic", "design", "research",
+];
+
 pub fn requires_files(issue_type: &str) -> bool {
     // Epics/design/research are planning beads — they don't touch code directly.
     // They decompose into child beads that DO have file scopes.
