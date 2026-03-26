@@ -669,7 +669,7 @@ async fn verify_completed_verify_fail_retries() {
     assert_eq!(result.status_updates.len(), 2);
     assert_eq!(
         result.status_updates[0].2, "verifying",
-        "enters review before verify"
+        "enters review before outcome/decision"
     );
     assert_eq!(result.status_updates[1].2, "open", "retry reopens bead");
 }
@@ -732,7 +732,7 @@ async fn verify_completed_terminal_sets_pr_open() {
     assert_eq!(result.status_updates.len(), 2);
     assert_eq!(
         result.status_updates[0].2, "verifying",
-        "enters review before verify"
+        "enters review before outcome/decision"
     );
     assert_eq!(result.status_updates[1].2, "pr_open", "terminal → pr_open");
 }
@@ -775,7 +775,7 @@ async fn verify_completed_task_terminal_immediately() {
     assert_eq!(result.status_updates.len(), 2);
     assert_eq!(
         result.status_updates[0].2, "verifying",
-        "enters review before verify"
+        "enters review before outcome/decision"
     );
     assert_eq!(
         result.status_updates[1].2, "pr_open",

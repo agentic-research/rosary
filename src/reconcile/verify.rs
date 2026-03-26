@@ -355,7 +355,7 @@ impl Reconciler {
                     &agent,
                     phase,
                     Verdict::Verifying,
-                    "running verification",
+                    "entering verifying state",
                 )
                 .await;
                 result
@@ -499,7 +499,7 @@ impl Reconciler {
                         &agent,
                         phase,
                         Verdict::Verifying,
-                        "running verification",
+                        "entering verifying state",
                     )
                     .await;
                 }
