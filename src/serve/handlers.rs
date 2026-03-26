@@ -241,6 +241,11 @@ async fn tool_run_once(
         pipelines: cfg.pipelines,
         max_pipeline_depth: cfg.max_pipeline_depth,
         user_id: user_id.map(|s| s.to_string()),
+        default_branch: cfg
+            .github
+            .as_ref()
+            .map(|g| g.base.clone())
+            .unwrap_or_else(|| "main".to_string()),
         ..Default::default()
     };
 
@@ -979,11 +984,17 @@ async fn tool_workspace_merge(args: &Value) -> Result<Value> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     let issue_type = args["issue_type"].as_str().unwrap_or("task");
+    let base_branch = args.get("base_branch").and_then(|v| v.as_str());
+    if let Some(b) = base_branch {
+        anyhow::ensure!(!b.trim().is_empty(), "base_branch must not be blank");
+    }
 
     let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
     let branch = format!("fix/{bead_id}");
 
-    let result = crate::workspace::merge_or_pr(&root, &branch, bead_id, issue_type).await?;
+    let result =
+        crate::workspace::merge_or_pr_with_base(&root, &branch, bead_id, issue_type, base_branch)
+            .await?;
 
     // Unregister the session after merge — agent is done, work is landed.
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {

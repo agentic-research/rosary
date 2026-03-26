@@ -160,8 +160,9 @@ impl Reconciler {
                 "task".to_string()
             };
             // Resolve the PR base: thread feature branch if bead belongs to a thread,
-            // otherwise default (main). BDR→git: bead PRs into thread branch.
-            let base: Option<String> = if let Some(ref hierarchy) = self.hierarchy {
+            // otherwise the configured default branch (from `[github] base`).
+            // BDR→git: bead PRs into thread branch, standalone beads PR into default.
+            let thread_base: Option<String> = if let Some(ref hierarchy) = self.hierarchy {
                 let bead_ref = BeadRef {
                     repo: repo.clone(),
                     bead_id: bead_id.to_string(),
@@ -184,13 +185,16 @@ impl Reconciler {
             } else {
                 None
             };
+            let base = thread_base
+                .as_deref()
+                .unwrap_or(&self.config.default_branch);
 
             if let Ok(result) = crate::workspace::merge_or_pr_with_base(
                 &ws_repo_path,
                 &branch,
                 bead_id,
                 &issue_type,
-                base.as_deref(),
+                Some(base),
             )
             .await
             {
