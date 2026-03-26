@@ -74,6 +74,19 @@ struct InstallationTokenResponse {
     expires_at: String,
 }
 
+/// Scope for a GitHub installation token — restricts repositories and permissions.
+///
+/// Passed to `fetch_installation_token` when a narrow-scope token is needed.
+/// Without scope, GitHub issues a broad token covering all repos/permissions
+/// the installation was granted.
+#[derive(Debug, Serialize)]
+struct TokenScope {
+    /// Repository names (without owner prefix) to scope the token to.
+    repositories: Vec<String>,
+    /// GitHub permission names → access level ("read" | "write").
+    permissions: std::collections::HashMap<String, String>,
+}
+
 impl GitHubClient {
     /// Create a client from config, preferring App auth over PAT.
     pub fn from_config(config: &crate::config::GitHubConfig) -> Result<Self> {
@@ -156,10 +169,15 @@ impl GitHubClient {
                     }
                 }
 
-                // Generate new installation token.
-                let token =
-                    fetch_installation_token(&self.client, *app_id, *installation_id, private_key)
-                        .await?;
+                // Generate new installation token (broad scope).
+                let token = fetch_installation_token(
+                    &self.client,
+                    *app_id,
+                    *installation_id,
+                    private_key,
+                    None,
+                )
+                .await?;
                 let result = token.token.clone();
                 *cache = Some(token);
                 Ok(result)
@@ -170,6 +188,40 @@ impl GitHubClient {
     /// Returns whether this client is using App auth (bot identity).
     pub fn is_app_auth(&self) -> bool {
         matches!(self.auth, AuthStrategy::App { .. })
+    }
+
+    /// Get a scoped installation token for a specific repository.
+    ///
+    /// Scoped to `contents:write` + `pull_requests:write` on the given repo.
+    /// Falls back to the broad token for PAT auth (PATs can't be further scoped).
+    /// Not cached — each call requests a fresh token.
+    pub(crate) async fn scoped_bearer_token(&self, repo: &str) -> Result<String> {
+        match &self.auth {
+            AuthStrategy::Pat(token) => Ok(token.clone()),
+            AuthStrategy::App {
+                app_id,
+                installation_id,
+                private_key,
+                ..
+            } => {
+                let mut permissions = std::collections::HashMap::new();
+                permissions.insert("contents".to_string(), "write".to_string());
+                permissions.insert("pull_requests".to_string(), "write".to_string());
+                let scope = TokenScope {
+                    repositories: vec![repo.to_string()],
+                    permissions,
+                };
+                let token = fetch_installation_token(
+                    &self.client,
+                    *app_id,
+                    *installation_id,
+                    private_key,
+                    Some(&scope),
+                )
+                .await?;
+                Ok(token.token)
+            }
+        }
     }
 
     /// Push a local branch to origin, then create a PR.
@@ -198,8 +250,9 @@ impl GitHubClient {
         }
         eprintln!("[github] pushed {branch}");
 
-        // Create PR via REST API
-        let token = self.bearer_token().await?;
+        // Create PR via REST API using a scoped token (contents:write + pull_requests:write
+        // on this specific repo). Falls back to broad token for PAT auth.
+        let token = self.scoped_bearer_token(repo).await?;
         let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls");
         let pr_request = CreatePrRequest {
             title: title.to_string(),
@@ -250,22 +303,32 @@ fn generate_app_jwt(app_id: u64, private_key: &jsonwebtoken::EncodingKey) -> Res
 }
 
 /// Exchange a JWT for an installation access token.
+///
+/// Pass `scope` to restrict the token to specific repositories and permissions.
+/// Without scope, GitHub issues a broad token for the full installation.
 async fn fetch_installation_token(
     client: &reqwest::Client,
     app_id: u64,
     installation_id: u64,
     private_key: &jsonwebtoken::EncodingKey,
+    scope: Option<&TokenScope>,
 ) -> Result<CachedToken> {
     let jwt = generate_app_jwt(app_id, private_key)?;
 
     let url = format!("https://api.github.com/app/installations/{installation_id}/access_tokens");
 
-    let resp = client
+    let mut req = client
         .post(&url)
         .header("Authorization", format!("Bearer {jwt}"))
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
-        .header("User-Agent", "rosary-stringer[bot]")
+        .header("User-Agent", "rosary-stringer[bot]");
+
+    if let Some(s) = scope {
+        req = req.json(s);
+    }
+
+    let resp = req
         .send()
         .await
         .context("requesting installation access token")?;
@@ -544,6 +607,31 @@ owner = "agentic-research"
         let buffer = chrono::Duration::minutes(5);
         // Expired token should NOT pass the freshness check
         assert!(chrono::Utc::now() + buffer >= cached.expires_at);
+    }
+
+    #[tokio::test]
+    async fn scoped_bearer_token_pat_returns_static() {
+        let client = GitHubClient {
+            client: reqwest::Client::new(),
+            auth: AuthStrategy::Pat("ghp_static_token".into()),
+        };
+        let token = client.scoped_bearer_token("some-repo").await.unwrap();
+        assert_eq!(token, "ghp_static_token");
+    }
+
+    #[test]
+    fn token_scope_serializes_correctly() {
+        let mut permissions = std::collections::HashMap::new();
+        permissions.insert("contents".to_string(), "write".to_string());
+        permissions.insert("pull_requests".to_string(), "write".to_string());
+        let scope = TokenScope {
+            repositories: vec!["my-repo".to_string()],
+            permissions,
+        };
+        let json: serde_json::Value = serde_json::to_value(&scope).unwrap();
+        assert_eq!(json["repositories"][0], "my-repo");
+        assert_eq!(json["permissions"]["contents"], "write");
+        assert_eq!(json["permissions"]["pull_requests"], "write");
     }
 
     // --- Test RSA keys (2048-bit, generated for tests only) ---
