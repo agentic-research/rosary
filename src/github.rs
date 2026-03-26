@@ -609,6 +609,31 @@ owner = "agentic-research"
         assert!(chrono::Utc::now() + buffer >= cached.expires_at);
     }
 
+    #[tokio::test]
+    async fn scoped_bearer_token_pat_returns_static() {
+        let client = GitHubClient {
+            client: reqwest::Client::new(),
+            auth: AuthStrategy::Pat("ghp_static_token".into()),
+        };
+        let token = client.scoped_bearer_token("some-repo").await.unwrap();
+        assert_eq!(token, "ghp_static_token");
+    }
+
+    #[test]
+    fn token_scope_serializes_correctly() {
+        let mut permissions = std::collections::HashMap::new();
+        permissions.insert("contents".to_string(), "write".to_string());
+        permissions.insert("pull_requests".to_string(), "write".to_string());
+        let scope = TokenScope {
+            repositories: vec!["my-repo".to_string()],
+            permissions,
+        };
+        let json: serde_json::Value = serde_json::to_value(&scope).unwrap();
+        assert_eq!(json["repositories"][0], "my-repo");
+        assert_eq!(json["permissions"]["contents"], "write");
+        assert_eq!(json["permissions"]["pull_requests"], "write");
+    }
+
     // --- Test RSA keys (2048-bit, generated for tests only) ---
 
     // Test-only RSA 2048-bit keypair. Not a secret — generated for unit tests.
