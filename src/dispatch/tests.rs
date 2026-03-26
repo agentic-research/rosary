@@ -855,3 +855,81 @@ async fn spawn_without_compute_uses_local() {
     let mut handle = handle;
     assert_eq!(handle.session.try_wait().unwrap(), Some(true));
 }
+
+// -----------------------------------------------------------------------
+// Hook installation tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn detect_language_rust() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+    assert_eq!(detect_language(dir.path()), "rust");
+}
+
+#[test]
+fn detect_language_go() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("go.mod"), "module example.com/foo").unwrap();
+    assert_eq!(detect_language(dir.path()), "go");
+}
+
+#[test]
+fn detect_language_unknown() {
+    let dir = TempDir::new().unwrap();
+    assert_eq!(detect_language(dir.path()), "unknown");
+}
+
+#[test]
+fn install_hooks_creates_hook_files() {
+    let work_dir = TempDir::new().unwrap();
+    let repo_dir = TempDir::new().unwrap();
+    // Mark repo as Rust
+    std::fs::write(repo_dir.path().join("Cargo.toml"), "[package]").unwrap();
+
+    // Need a git repo for core.hooksPath to be settable
+    let _ = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(work_dir.path())
+        .output();
+
+    install_hooks(work_dir.path(), repo_dir.path());
+
+    let hooks_dir = work_dir.path().join(".rsry-hooks");
+    assert!(hooks_dir.exists(), ".rsry-hooks dir created");
+    assert!(
+        hooks_dir.join("commit-msg").exists(),
+        "commit-msg hook present"
+    );
+    assert!(
+        hooks_dir.join("pre-commit").exists(),
+        "pre-commit hook present"
+    );
+
+    let pre_commit = std::fs::read_to_string(hooks_dir.join("pre-commit")).unwrap();
+    assert!(
+        pre_commit.contains("cargo check"),
+        "rust hook runs cargo check"
+    );
+}
+
+#[test]
+fn install_hooks_go_uses_go_build() {
+    let work_dir = TempDir::new().unwrap();
+    let repo_dir = TempDir::new().unwrap();
+    std::fs::write(repo_dir.path().join("go.mod"), "module example.com/foo").unwrap();
+
+    let _ = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(work_dir.path())
+        .output();
+
+    install_hooks(work_dir.path(), repo_dir.path());
+
+    let pre_commit =
+        std::fs::read_to_string(work_dir.path().join(".rsry-hooks/pre-commit")).unwrap();
+    assert!(
+        pre_commit.contains("go build ./..."),
+        "go hook runs go build"
+    );
+}

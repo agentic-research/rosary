@@ -281,18 +281,13 @@ pub async fn spawn(
         Ok::<(), std::io::Error>(())
     })();
 
-    // Set core.hooksPath to ~/.rsry/hooks/ so the worktree uses our
-    // inject hook instead of the main repo's pre-commit framework wrapper.
-    // Only set in isolated worktrees to avoid mutating the user's main repo config.
-    if isolate
-        && let Some(hooks) = dirs_next::home_dir()
-            .map(|h| h.join(".rsry/hooks"))
-            .filter(|p| p.exists())
-    {
-        let _ = std::process::Command::new("git")
-            .args(["config", "core.hooksPath", &hooks.to_string_lossy()])
-            .current_dir(&work_dir)
-            .output();
+    // Install per-dispatch git hooks into .rsry-hooks/ (already excluded
+    // from git via .rsry-* in info/exclude). This sets core.hooksPath to
+    // the per-worktree dir, giving us both bead-id injection (commit-msg)
+    // and a language-aware fast check (pre-commit) without touching the
+    // repo's own hooks or requiring ~/.rsry/hooks/ to exist.
+    if isolate {
+        install_hooks(&work_dir, &path);
     }
 
     let prompt = build_prompt(
@@ -494,4 +489,100 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Hook installation
+// ---------------------------------------------------------------------------
+
+/// Detect the primary language of a repo from well-known marker files.
+pub fn detect_language(repo_path: &Path) -> &'static str {
+    if repo_path.join("Cargo.toml").exists() {
+        "rust"
+    } else if repo_path.join("go.mod").exists() {
+        "go"
+    } else {
+        "unknown"
+    }
+}
+
+/// Install per-dispatch git hooks into `work_dir/.rsry-hooks/`.
+///
+/// Writes:
+/// - `commit-msg`: injects `[bead-id]` prefix from `.rsry-bead-id` (Golden Rule 11)
+/// - `pre-commit`: runs a fast language-specific compile check before each commit,
+///   so agents can't commit code that fails `cargo check` / `go build ./...`
+///
+/// Sets `core.hooksPath` to `.rsry-hooks` (relative) so these take effect
+/// without touching the repo's own hooks or requiring `~/.rsry/hooks/` to exist.
+/// `.rsry-hooks/` is already excluded from git via `.rsry-*` in info/exclude.
+pub fn install_hooks(work_dir: &Path, repo_path: &Path) {
+    let hooks_dir = work_dir.join(".rsry-hooks");
+    if std::fs::create_dir_all(&hooks_dir).is_err() {
+        return;
+    }
+
+    let lang = detect_language(repo_path);
+
+    // commit-msg: bead-id injection (Golden Rule 11 — every commit references a bead).
+    let commit_msg_hook = r#"#!/usr/bin/env bash
+# Golden Rule 11: every commit must reference a bead.
+# If .rsry-bead-id exists (agent worktree), inject the prefix automatically.
+msg=$(cat "$1")
+if echo "$msg" | grep -qiE "^Merge |^initial commit"; then exit 0; fi
+if echo "$msg" | grep -qE '^\[[-a-zA-Z0-9]+\] '; then exit 0; fi
+if echo "$msg" | grep -qiE "bead:"; then exit 0; fi
+BEAD_ID_FILE="$(git rev-parse --show-toplevel 2>/dev/null)/.rsry-bead-id"
+if [ -f "$BEAD_ID_FILE" ]; then
+  BEAD_ID=$(cat "$BEAD_ID_FILE" | tr -d '[:space:]')
+  if [ -n "$BEAD_ID" ]; then
+    echo "[$BEAD_ID] $msg" > "$1"
+    exit 0
+  fi
+fi
+echo "error: commit message must reference a bead (Golden Rule 11)" >&2
+exit 1
+"#;
+
+    // pre-commit: fast compile check — catches broken code before the verify pipeline.
+    let pre_commit_hook = match lang {
+        "rust" => {
+            "#!/usr/bin/env bash\n\
+             # Rosary pre-commit: fast compile check (cargo check).\n\
+             # Prevents committing code that fails to compile.\n\
+             exec cargo check 2>&1\n"
+        }
+        "go" => {
+            "#!/usr/bin/env bash\n\
+             # Rosary pre-commit: fast compile check (go build ./...).\n\
+             # Prevents committing code that fails to compile.\n\
+             exec go build ./... 2>&1\n"
+        }
+        _ => "#!/usr/bin/env bash\nexit 0\n",
+    };
+
+    let write_executable = |name: &str, content: &str| {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+        let path = hooks_dir.join(name);
+        if std::fs::write(&path, content).is_ok() {
+            #[cfg(unix)]
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+        }
+    };
+
+    write_executable("commit-msg", commit_msg_hook);
+    write_executable("pre-commit", pre_commit_hook);
+
+    // Point this worktree at the per-dispatch hooks dir (relative path keeps
+    // the config valid regardless of where the worktree is on disk).
+    let _ = std::process::Command::new("git")
+        .args(["config", "core.hooksPath", ".rsry-hooks"])
+        .current_dir(work_dir)
+        .output();
+
+    eprintln!(
+        "[hooks] installed {lang} pre-commit hook in {}",
+        work_dir.display()
+    );
 }
