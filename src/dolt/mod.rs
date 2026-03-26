@@ -130,12 +130,13 @@ pub async fn init_beads_db(repo_path: &Path) -> Result<()> {
 
     std::fs::create_dir_all(&db_dir).with_context(|| format!("creating {}", db_dir.display()))?;
 
-    let status = std::process::Command::new("dolt")
+    let status = tokio::process::Command::new("dolt")
         .args(["init"])
         .current_dir(&db_dir)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
+        .await
         .context("running dolt init")?;
     if !status.success() {
         anyhow::bail!("dolt init failed in {}", db_dir.display());

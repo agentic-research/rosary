@@ -635,8 +635,8 @@ impl Reconciler {
                             self.provider.name(),
                             agent_label,
                         );
-                        self.persist_status(&entry.bead_id, &entry.repo, "dispatched")
-                            .await;
+                        // Audit FIRST: observations and events must precede the state transition.
+                        // If the process crashes, the audit trail must already exist.
                         self.append_observation(
                             &entry.bead_id,
                             &entry.repo,
@@ -664,6 +664,10 @@ impl Reconciler {
                                 client.log_event(&entry.bead_id, "chain_hash", sha).await;
                             }
                         }
+
+                        // State transition LAST: after all audit events are persisted.
+                        self.persist_status(&entry.bead_id, &entry.repo, "dispatched")
+                            .await;
 
                         // Unique per-dispatch ID: bead_id + started_at millis (generation
                         // is a content hash that doesn't change on retry, so it's not unique).

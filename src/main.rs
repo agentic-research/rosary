@@ -556,6 +556,7 @@ async fn main() -> Result<()> {
             }
 
             let log_file = std::fs::File::create(&log_path)?;
+            // nosemgrep: blocking-subprocess-in-async — .spawn() returns immediately (non-blocking)
             let child = std::process::Command::new(std::env::current_exe()?)
                 .args(&args)
                 .stdout(log_file.try_clone()?)
@@ -581,6 +582,7 @@ async fn main() -> Result<()> {
         Command::Logs => {
             let log_path = daemon_log_path();
             if log_path.exists() {
+                // nosemgrep: blocking-subprocess-in-async — intentionally blocking: interactive tail -f
                 let status = std::process::Command::new("tail")
                     .args(["-f", &log_path.to_string_lossy()])
                     .status()?;
