@@ -211,6 +211,15 @@ enum Command {
         #[arg(short, long, default_value = ".")]
         repo: String,
     },
+    /// Garbage-collect merged agent branches from origin
+    Sweep {
+        /// Repo path (defaults to current directory)
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+        /// Preview what would be deleted without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Export orchestrator backend state to JSON backup
     Backup {
         /// Output directory (default: ~/.rsry/backups/<timestamp>)
@@ -754,6 +763,21 @@ async fn main() -> Result<()> {
                         r.imported, r.skipped
                     );
                 }
+            }
+        }
+        Command::Sweep { repo, dry_run } => {
+            let repo_path = scanner::resolve_repo_path(std::path::Path::new(&repo));
+            let result = workspace::sweep_agent_branches(&repo_path, dry_run).await;
+            if dry_run {
+                println!(
+                    "dry-run: {} checked, {} would delete, {} skipped (active), {} skipped (unmerged)",
+                    result.checked, result.deleted, result.skipped_active, result.skipped_unmerged
+                );
+            } else {
+                println!(
+                    "sweep: {} checked, {} deleted, {} skipped (active), {} skipped (unmerged)",
+                    result.checked, result.deleted, result.skipped_active, result.skipped_unmerged
+                );
             }
         }
         Command::Backup { output } => {
