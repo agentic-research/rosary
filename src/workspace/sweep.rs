@@ -193,6 +193,145 @@ pub fn cleanup_git_worktree(repo_path: &Path, id: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// Branch sweep
+// ---------------------------------------------------------------------------
+
+/// Result of a branch sweep operation.
+pub struct BranchSweepResult {
+    /// Branches checked.
+    pub checked: usize,
+    /// Branches deleted (or that would be deleted in dry-run).
+    pub deleted: usize,
+    /// Branches skipped because bead is not closed/done.
+    pub skipped_active: usize,
+    /// Branches skipped because they have unmerged commits.
+    pub skipped_unmerged: usize,
+}
+
+/// Garbage-collect merged `fix/{bead-id}` branches from origin.
+///
+/// Safety rules:
+/// 1. **Closed bead check**: the branch is only deleted if the corresponding
+///    bead is in `closed` or `done` status in the local `.beads/` store.
+/// 2. **Merged check**: the branch must have no commits ahead of `main`
+///    (i.e. appears in `git branch -r --merged origin/main`).
+///
+/// `dry_run = true` logs what would be deleted without touching anything.
+pub async fn sweep_agent_branches(repo_path: &Path, dry_run: bool) -> BranchSweepResult {
+    let mut result = BranchSweepResult {
+        checked: 0,
+        deleted: 0,
+        skipped_active: 0,
+        skipped_unmerged: 0,
+    };
+
+    // List all remote branches
+    let branches_out = tokio::process::Command::new("git")
+        .args(["branch", "-r", "--format", "%(refname:short)"])
+        .current_dir(repo_path)
+        .output()
+        .await;
+
+    let branches_text = match branches_out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        _ => return result,
+    };
+
+    // Fetch the set of branches already merged into origin/main — one call,
+    // then use a HashSet for O(1) lookup per branch.
+    let merged_out = tokio::process::Command::new("git")
+        .args(["branch", "-r", "--merged", "origin/main"])
+        .current_dir(repo_path)
+        .output()
+        .await;
+
+    let merged_set: std::collections::HashSet<String> = match merged_out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .collect(),
+        _ => std::collections::HashSet::new(),
+    };
+
+    // Connect to the local bead store once for all lookups
+    let beads_dir = crate::resolve_beads_dir(repo_path);
+    let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
+        .await
+        .ok();
+    let repo_name = repo_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    for line in branches_text.lines() {
+        let remote_branch = line.trim(); // e.g. "origin/fix/rsry-abc123"
+        let Some(local) = remote_branch.strip_prefix("origin/") else {
+            continue;
+        };
+        // Only handle agent dispatch branches (fix/{bead-id})
+        let Some(bead_id) = local.strip_prefix("fix/") else {
+            continue;
+        };
+        // bead_id must contain a dash — skip generic fix/* branches
+        if !bead_id.contains('-') {
+            continue;
+        }
+
+        result.checked += 1;
+
+        // Safety rule 1: bead must be closed/done
+        let is_closed = if let Some(ref store) = store {
+            match store.get_bead(bead_id, &repo_name).await {
+                Ok(Some(b)) => matches!(b.status.as_str(), "closed" | "done"),
+                _ => false,
+            }
+        } else {
+            false
+        };
+
+        if !is_closed {
+            result.skipped_active += 1;
+            continue;
+        }
+
+        // Safety rule 2: branch must be merged into main
+        if !merged_set.contains(remote_branch) {
+            eprintln!("[sweep] {remote_branch}: bead closed but has unmerged commits — skipping");
+            result.skipped_unmerged += 1;
+            continue;
+        }
+
+        if dry_run {
+            eprintln!("[sweep] would delete {remote_branch} (bead {bead_id} closed, merged)");
+            result.deleted += 1;
+        } else {
+            eprintln!("[sweep] deleting {remote_branch} (bead {bead_id} closed, merged)");
+            let del = tokio::process::Command::new("git")
+                .args(["push", "origin", "--delete", local])
+                .current_dir(repo_path)
+                .output()
+                .await;
+            match del {
+                Ok(o) if o.status.success() => {
+                    result.deleted += 1;
+                }
+                Ok(o) => {
+                    eprintln!(
+                        "[sweep] failed to delete {remote_branch}: {}",
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[sweep] failed to delete {remote_branch}: {e}");
+                }
+            }
+        }
+    }
+
+    result
+}
+
+// ---------------------------------------------------------------------------
 // Orphan sweep
 // ---------------------------------------------------------------------------
 
