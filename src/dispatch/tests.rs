@@ -887,11 +887,17 @@ fn install_hooks_creates_hook_files() {
     // Mark repo as Rust
     std::fs::write(repo_dir.path().join("Cargo.toml"), "[package]").unwrap();
 
-    // Need a git repo for core.hooksPath to be settable
-    let _ = std::process::Command::new("git")
+    // Need a git repo for core.hooksPath to be settable; skip if git unavailable.
+    let git_ok = std::process::Command::new("git")
         .args(["init"])
         .current_dir(work_dir.path())
-        .output();
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !git_ok {
+        eprintln!("skipping: git not available");
+        return;
+    }
 
     install_hooks(work_dir.path(), repo_dir.path());
 
@@ -919,10 +925,16 @@ fn install_hooks_go_uses_go_build() {
     let repo_dir = TempDir::new().unwrap();
     std::fs::write(repo_dir.path().join("go.mod"), "module example.com/foo").unwrap();
 
-    let _ = std::process::Command::new("git")
+    let git_ok = std::process::Command::new("git")
         .args(["init"])
         .current_dir(work_dir.path())
-        .output();
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !git_ok {
+        eprintln!("skipping: git not available");
+        return;
+    }
 
     install_hooks(work_dir.path(), repo_dir.path());
 

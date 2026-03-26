@@ -496,7 +496,7 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Detect the primary language of a repo from well-known marker files.
-pub fn detect_language(repo_path: &Path) -> &'static str {
+pub(crate) fn detect_language(repo_path: &Path) -> &'static str {
     if repo_path.join("Cargo.toml").exists() {
         "rust"
     } else if repo_path.join("go.mod").exists() {
@@ -516,7 +516,7 @@ pub fn detect_language(repo_path: &Path) -> &'static str {
 /// Sets `core.hooksPath` to `.rsry-hooks` (relative) so these take effect
 /// without touching the repo's own hooks or requiring `~/.rsry/hooks/` to exist.
 /// `.rsry-hooks/` is already excluded from git via `.rsry-*` in info/exclude.
-pub fn install_hooks(work_dir: &Path, repo_path: &Path) {
+fn install_hooks(work_dir: &Path, repo_path: &Path) {
     let hooks_dir = work_dir.join(".rsry-hooks");
     if std::fs::create_dir_all(&hooks_dir).is_err() {
         return;
@@ -525,18 +525,26 @@ pub fn install_hooks(work_dir: &Path, repo_path: &Path) {
     let lang = detect_language(repo_path);
 
     // commit-msg: bead-id injection (Golden Rule 11 — every commit references a bead).
+    // Checks only the first line for existing refs (body/footer may contain bead: references
+    // without the prefix format). Uses awk to prefix only the subject line, preserving the
+    // full message body unchanged.
     let commit_msg_hook = r#"#!/usr/bin/env bash
 # Golden Rule 11: every commit must reference a bead.
 # If .rsry-bead-id exists (agent worktree), inject the prefix automatically.
-msg=$(cat "$1")
-if echo "$msg" | grep -qiE "^Merge |^initial commit"; then exit 0; fi
-if echo "$msg" | grep -qE '^\[[-a-zA-Z0-9]+\] '; then exit 0; fi
-if echo "$msg" | grep -qiE "bead:"; then exit 0; fi
-BEAD_ID_FILE="$(git rev-parse --show-toplevel 2>/dev/null)/.rsry-bead-id"
+if head -n1 "$1" | grep -qiE "^Merge |^initial commit"; then exit 0; fi
+if head -n1 "$1" | grep -qE '^\[[-a-zA-Z0-9]+\] '; then exit 0; fi
+if grep -qiE "bead:" "$1"; then exit 0; fi
+TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || echo '')"
+if [ -z "$TOPLEVEL" ]; then
+  echo "error: not in a git repo" >&2
+  exit 1
+fi
+BEAD_ID_FILE="$TOPLEVEL/.rsry-bead-id"
 if [ -f "$BEAD_ID_FILE" ]; then
   BEAD_ID=$(cat "$BEAD_ID_FILE" | tr -d '[:space:]')
   if [ -n "$BEAD_ID" ]; then
-    echo "[$BEAD_ID] $msg" > "$1"
+    tmp="$1.rsry-tmp"
+    awk -v bead="$BEAD_ID" 'NR==1{$0="["bead"] "$0}1' "$1" > "$tmp" && mv "$tmp" "$1"
     exit 0
   fi
 fi
@@ -576,10 +584,21 @@ exit 1
 
     // Point this worktree at the per-dispatch hooks dir (relative path keeps
     // the config valid regardless of where the worktree is on disk).
-    let _ = std::process::Command::new("git")
-        .args(["config", "core.hooksPath", ".rsry-hooks"])
+    // Try --worktree first (git ≥2.20, requires extensions.worktreeConfig)
+    // to write only to this worktree's config without affecting the main repo.
+    // Fall back to --local if --worktree isn't supported.
+    let worktree_ok = std::process::Command::new("git")
+        .args(["config", "--worktree", "core.hooksPath", ".rsry-hooks"])
         .current_dir(work_dir)
-        .output();
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !worktree_ok {
+        let _ = std::process::Command::new("git")
+            .args(["config", "core.hooksPath", ".rsry-hooks"])
+            .current_dir(work_dir)
+            .output();
+    }
 
     eprintln!(
         "[hooks] installed {lang} pre-commit hook in {}",
