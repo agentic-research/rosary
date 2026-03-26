@@ -69,6 +69,12 @@ pub struct Handoff {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_chain_hash: Option<String>,
 
+    /// Git commit SHAs produced during this phase.
+    /// Binds the provenance chain to the actual committed code — two handoffs
+    /// with identical summaries but different commits will have different chain hashes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commit_shas: Vec<String>,
+
     pub timestamp: DateTime<Utc>,
 }
 
@@ -125,6 +131,12 @@ impl Handoff {
         hasher.update(b"\0");
         for f in &self.files_changed {
             hasher.update(f.as_bytes());
+            hasher.update(b"\0");
+        }
+        // Bind to the actual code committed — prevents two handoffs with
+        // identical summaries but different code from sharing a chain hash.
+        for sha in &self.commit_shas {
+            hasher.update(sha.as_bytes());
             hasher.update(b"\0");
         }
         // Chain: include CONTENT HASH of previous phase (not file path).
@@ -211,6 +223,7 @@ impl Handoff {
             },
             verdict: None,
             previous_chain_hash: previous.map(|p| p.chain_hash_hex()),
+            commit_shas: work.commits.iter().map(|c| c.sha.clone()).collect(),
             timestamp: Utc::now(),
         }
     }
@@ -467,6 +480,41 @@ mod tests {
         assert!(
             h0.previous_chain_hash.is_none(),
             "phase 0 has no previous hash"
+        );
+    }
+
+    #[test]
+    fn chain_hash_changes_with_commit_sha() {
+        let work_a = Work {
+            commits: vec![CommitInfo {
+                sha: "aaaaaa".to_string(),
+                message: "same message".to_string(),
+                author: "dev-agent".to_string(),
+            }],
+            files_changed: vec!["src/foo.rs".to_string()],
+            lines_added: 10,
+            lines_removed: 5,
+            diff_stat: None,
+        };
+        let work_b = Work {
+            commits: vec![CommitInfo {
+                sha: "bbbbbb".to_string(),
+                message: "same message".to_string(),
+                author: "dev-agent".to_string(),
+            }],
+            files_changed: vec!["src/foo.rs".to_string()],
+            lines_added: 10,
+            lines_removed: 5,
+            diff_stat: None,
+        };
+        let ha = Handoff::new(0, "dev-agent", None, "rsry-x", "claude", &work_a, None);
+        let hb = Handoff::new(0, "dev-agent", None, "rsry-x", "claude", &work_b, None);
+        // Same summary, files, phase — only commit SHA differs
+        assert_eq!(ha.summary, hb.summary);
+        assert_ne!(
+            ha.chain_hash(),
+            hb.chain_hash(),
+            "different commit SHAs must produce different chain hashes"
         );
     }
 
