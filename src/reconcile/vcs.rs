@@ -101,20 +101,53 @@ impl Reconciler {
                 continue;
             };
 
-            // Check PR state via `gh pr view`
+            // Check PR state and fetch merge SHA in one gh call.
+            // jq: emit "STATE|sha" — sha is empty string when not yet merged.
             let output = std::process::Command::new("gh")
-                .args(["pr", "view", &url, "--json", "state", "-q", ".state"])
+                .args([
+                    "pr",
+                    "view",
+                    &url,
+                    "--json",
+                    "state,mergeCommit",
+                    "-q",
+                    ".state + \"|\" + (.mergeCommit.oid // \"\")",
+                ])
                 .output();
 
-            let merged = match output {
+            let (merged, merge_sha) = match output {
                 Ok(o) if o.status.success() => {
-                    let state = String::from_utf8_lossy(&o.stdout);
-                    state.trim() == "MERGED"
+                    let raw = String::from_utf8_lossy(&o.stdout);
+                    let line = raw.trim();
+                    if let Some((state, sha)) = line.split_once('|') {
+                        (state == "MERGED", sha.to_string())
+                    } else {
+                        (line == "MERGED", String::new())
+                    }
                 }
                 _ => continue, // gh not available or API error — skip
             };
 
             if merged {
+                // Log merge SHA + add audit comment before persisting status
+                // so the audit trail precedes the state transition.
+                if let Some(client) = self.dolt_client(&bead.repo).await {
+                    if !merge_sha.is_empty() {
+                        client.log_event(&bead.id, "merge_sha", &merge_sha).await;
+                    }
+                    let comment = if merge_sha.is_empty() {
+                        format!("Merged: {url}")
+                    } else {
+                        format!("Merged: {url} (SHA: {merge_sha})")
+                    };
+                    if let Err(e) = client.add_comment(&bead.id, &comment, "rosary").await {
+                        eprintln!(
+                            "[pr-merged] failed to add merge comment for {}: {e}",
+                            bead.id
+                        );
+                    }
+                }
+
                 eprintln!("[pr-merged] {} — PR merged, closing bead", bead.id);
                 self.persist_status(&bead.id, &bead.repo, "closed").await;
 
