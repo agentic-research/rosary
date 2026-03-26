@@ -223,14 +223,14 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_workspace_merge",
-                "description": "Push agent worktree branch and open PR. Rebases onto base_branch first.",
+                "description": "Rebase the agent worktree branch onto base_branch, then push and open a PR when a remote is configured; in repos without a remote (e.g., local/test), perform a local fast-forward merge into base_branch instead.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "bead_id": { "type": "string", "description": "Bead ID (branch is fix/{bead_id})" },
                         "repo_path": { "type": "string", "description": "Path to the repo root" },
                         "issue_type": { "type": "string", "description": "Issue type: bug, feature, task, chore, review, epic, design, research", "default": "task" },
-                        "base_branch": { "type": "string", "description": "Branch to PR into. Defaults to the configured [github] base (usually main)." }
+                        "base_branch": { "type": "string", "description": "Branch to PR into. Defaults to \"main\" if omitted." }
                     },
                     "required": ["bead_id", "repo_path"]
                 }

@@ -341,9 +341,10 @@ pub async fn merge_or_pr(
 
 /// Terminal step with explicit base branch override.
 ///
-/// When `base` is None, falls back to `"main"`. Callers that have config
-/// access should pass the configured default branch explicitly rather than
-/// relying on this fallback.
+/// Rebases the work branch onto `base` if provided, otherwise onto `"main"`.
+/// The PR base is resolved from the same effective target so the rebase and
+/// PR base are always consistent. Callers that know the configured default
+/// branch should pass it explicitly rather than relying on the "main" fallback.
 pub async fn merge_or_pr_with_base(
     repo_path: &Path,
     branch: &str,
@@ -386,8 +387,9 @@ pub async fn merge_or_pr_with_base(
     }
     eprintln!("[terminal] {bead_id}: pushed {branch}");
 
-    // Try to create PR via GitHub App or PAT
-    let pr_url = match create_pr_for_bead(repo_path, branch, bead_id, issue_type, base).await {
+    // Try to create PR via GitHub App or PAT — use the same effective base as
+    // the rebase target so both operations are consistent.
+    let pr_url = match create_pr_for_bead(repo_path, branch, bead_id, issue_type, Some(rebase_target)).await {
         Ok(url) => Some(url),
         Err(e) => {
             eprintln!(

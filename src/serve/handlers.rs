@@ -985,6 +985,9 @@ async fn tool_workspace_merge(args: &Value) -> Result<Value> {
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     let issue_type = args["issue_type"].as_str().unwrap_or("task");
     let base_branch = args.get("base_branch").and_then(|v| v.as_str());
+    if let Some(b) = base_branch {
+        anyhow::ensure!(!b.trim().is_empty(), "base_branch must not be blank");
+    }
 
     let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
     let branch = format!("fix/{bead_id}");
