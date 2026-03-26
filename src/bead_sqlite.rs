@@ -528,8 +528,8 @@ impl BeadStore for SqliteBeadStore {
                   ON dep.depends_on_id = i.id
              LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
                        FROM dependencies d
-                       JOIN issues dep_i ON dep_i.id = d.depends_on_id
-                       WHERE dep_i.status NOT IN ('closed', 'done')
+                       LEFT JOIN issues dep_i ON dep_i.id = d.depends_on_id
+                       WHERE dep_i.id IS NULL OR dep_i.status NOT IN ('closed', 'done')
                        GROUP BY d.issue_id) deps
                   ON deps.issue_id = i.id
              LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
@@ -768,6 +768,34 @@ mod tests {
         let results = store.search_beads("dispatch", "repo", 10).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "a");
+    }
+
+    #[tokio::test]
+    async fn search_excludes_closed_deps_from_dependency_count() {
+        let store = test_store();
+        // Create dep bead and main bead with a dependency on it.
+        store
+            .create_bead("dep", "Dep", "", 1, "task")
+            .await
+            .unwrap();
+        store
+            .create_bead("main", "Main", "", 1, "task")
+            .await
+            .unwrap();
+        store.add_dependency("main", "dep").await.unwrap();
+
+        // Before closing dep: search should show dependency_count = 1 (blocked).
+        let results = store.search_beads("Main", "repo", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].dependency_count, 1);
+        assert!(results[0].is_blocked());
+
+        // After closing dep: search should show dependency_count = 0 (unblocked).
+        store.close_bead("dep").await.unwrap();
+        let results = store.search_beads("Main", "repo", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].dependency_count, 0);
+        assert!(!results[0].is_blocked());
     }
 
     #[tokio::test]
