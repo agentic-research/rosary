@@ -400,10 +400,11 @@ pub async fn spawn(
 
     // Capture HEAD commit SHA for APAS chain integrity (L1 anchor).
     // Runs after workspace creation so the SHA reflects the isolated worktree state.
-    let chain_hash = std::process::Command::new("git")
+    let chain_hash = tokio::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(&work_dir)
         .output()
+        .await
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
@@ -455,10 +456,11 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
     } else {
         // Check if agent produced any artifacts (commits in worktree)
         let has_commits = if let Some(ref ws_path) = handle.workspace_path {
-            std::process::Command::new("git")
+            tokio::process::Command::new("git")
                 .args(["log", "--oneline", "-1", "HEAD", "--not", "HEAD~1"])
                 .current_dir(ws_path)
                 .output()
+                .await
                 .map(|o| o.status.success())
                 .unwrap_or(false)
         } else {
