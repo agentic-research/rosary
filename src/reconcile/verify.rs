@@ -347,7 +347,7 @@ impl Reconciler {
             let outcome_str = match &outcome {
                 ActionOutcome::Advanced { .. } => "success",
                 ActionOutcome::Completed => "success",
-                ActionOutcome::Retrying => "retry",
+                ActionOutcome::Retrying => "failure",
                 ActionOutcome::Deadlettered => "deadletter",
             };
             if let Some(dispatch_id) = self
@@ -459,6 +459,23 @@ impl Reconciler {
                     )
                     .await;
 
+                // Record completion for every dispatch attempt in --once mode.
+                let outcome_str = match &outcome {
+                    ActionOutcome::Advanced { .. } => "success",
+                    ActionOutcome::Completed => "success",
+                    ActionOutcome::Retrying => "failure",
+                    ActionOutcome::Deadlettered => "deadletter",
+                };
+                if let Some(dispatch_id) = self
+                    .trackers
+                    .get(bead_id.as_str())
+                    .and_then(|t| t.dispatch_id.as_deref())
+                {
+                    self.pipeline
+                        .complete_dispatch(dispatch_id, outcome_str)
+                        .await;
+                }
+
                 // wait_and_verify dispatches the next agent inline (unlike verify_completed
                 // which defers to the next triage pass).
                 if let ActionOutcome::Advanced { ref next_agent } = outcome {
@@ -518,6 +535,29 @@ impl Reconciler {
                     {
                         Ok(handle) => {
                             eprintln!("[dispatch] {bead_id} phase {phase} → {next_agent}");
+                            // Record this inline re-dispatch and update tracker.
+                            let new_dispatch_id =
+                                format!("{}-{}", bead_id, handle.started_at.timestamp_millis());
+                            let dispatch_record = crate::store::DispatchRecord {
+                                id: new_dispatch_id.clone(),
+                                bead_ref: crate::store::BeadRef {
+                                    repo: repo.clone(),
+                                    bead_id: bead_id.clone(),
+                                },
+                                agent: next_agent.clone(),
+                                provider: self.provider.name().to_string(),
+                                started_at: handle.started_at,
+                                completed_at: None,
+                                outcome: None,
+                                work_dir: handle.work_dir.display().to_string(),
+                                session_id: None,
+                                workspace_path: handle.workspace_path.clone(),
+                                chain_hash: handle.chain_hash.clone(),
+                            };
+                            self.pipeline.record_dispatch(&dispatch_record).await;
+                            if let Some(tracker) = self.trackers.get_mut(bead_id.as_str()) {
+                                tracker.dispatch_id = Some(new_dispatch_id);
+                            }
                             self.persist_status(bead_id, &repo, "dispatched").await;
                             self.append_observation(
                                 bead_id,
