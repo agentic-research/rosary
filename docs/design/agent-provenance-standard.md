@@ -81,16 +81,16 @@ Inspired by SLSA, APAS defines four conformance levels. Each builds on the previ
 > debugging and audit, but an attacker who compromises the orchestrator can forge
 > records. Do not treat L1 as a security boundary.
 
-### Level 2: Signed Attestations (L2) **[TARGET]**
+### Level 2: Signed Attestations (L2) **[TARGET — prerequisite shipped]**
 
 **Requirement**: Every attestation is cryptographically signed by the entity that produced it.
 
-- Dispatch manifests signed by orchestrator key
-- Handoff documents signed by the phase's agent key (or orchestrator on behalf)
-- Commit signatures via signet bridge certificates (see `signet/docs/design/004-bridge-certs.md`)
-- Hash chain links content hashes, not file paths (implemented in PR #117)
-- Attestations use in-toto envelope format with APAS predicate type
-- Signing uses ley-line's CMS/Ed25519 implementation (`ley-line/rs/crates/sign/`)
+- Hash chain links content hashes, not file paths — **shipped** (PR #117, `Handoff::previous_chain_hash`)
+- Dispatch manifests signed by orchestrator key — **not yet implemented**
+- Handoff documents signed by the phase's agent key (or orchestrator on behalf) — **not yet implemented**
+- Commit signatures via signet bridge certificates (see `signet/docs/design/004-bridge-certs.md`) — **not yet implemented**
+- Attestations use in-toto envelope format with APAS predicate type — **not yet implemented**
+- Signing uses ley-line's CMS/Ed25519 implementation (`ley-line/rs/crates/sign/`) — **not yet implemented**
 
 **What it proves**: "We know what happened AND who attests to it." Tamper-evident.
 
@@ -312,21 +312,19 @@ H(Decade)     = SHA256(H(Thread_0) || H(Thread_1) || ... || H(Thread_k))
 > in `CommitInfo.sha`, not as part of the hash chain. When git repos opt into
 > SHA-256 object format, commit references will be natively compatible.
 
-### 4.3 Critical Fix Required
+### 4.3 Content-Linked Chain Hash (Shipped)
 
-The current `Handoff::chain_hash()` includes `artifacts.previous_handoff` as a **file path string**, not the **content hash of the previous handoff**. This means an attacker can replace the previous handoff file without invalidating the chain. The fix:
-
-```rust
-// BEFORE (path-linked, breakable):
-if let Some(ref prev) = self.artifacts.previous_handoff {
-    hasher.update(prev.as_bytes()); // just the path string!
-}
-
-// AFTER (hash-linked, tamper-evident):
-if let Some(ref prev_hash) = self.previous_phase_hash {
-    hasher.update(prev_hash.as_bytes()); // content hash of previous phase
-}
-```
+> **Resolved in PR #117** (`fix(handoff): content-linked chain hash`).
+> The `Handoff` struct carries `previous_chain_hash: Option<String>` —
+> the hex-encoded SHA-256 of the previous phase's handoff content.
+> `chain_hash()` hashes this content hash, not a file path. Replacing a
+> previous handoff file without knowing its hash breaks the chain.
+>
+> PR #130 further strengthened the chain by adding `commit_shas: Vec<String>`
+> to `Handoff`, so the hash now binds to the actual committed code — two
+> handoffs with identical summaries but different commits produce different hashes.
+>
+> See `src/handoff.rs` for the implementation and chain_hash test suite.
 
 ## 5. Adversarial Model
 
