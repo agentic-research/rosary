@@ -8,6 +8,9 @@ on:
     # Weekly clean build (no cache) to catch stale-cache regressions
     - cron: '17 4 * * 1'
 
+permissions:
+  contents: read
+
 env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
