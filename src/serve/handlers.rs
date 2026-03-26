@@ -13,6 +13,16 @@ const SEARCH_DEFAULT_LIMIT: u64 = 20;
 const SEARCH_MAX_LIMIT: u64 = 50;
 /// Truncate bead descriptions in search results to this many bytes.
 const SEARCH_DESC_TRUNCATE: usize = 200;
+/// Maximum bytes for a bead title.
+const TITLE_MAX_LEN: usize = 512;
+/// Maximum bytes for a bead description or comment body.
+const BODY_MAX_LEN: usize = 50_000;
+/// Maximum valid priority value (P0–P3).
+const PRIORITY_MAX: u64 = 3;
+/// All recognized issue_type values.
+const VALID_ISSUE_TYPES: &[&str] = &[
+    "bug", "feature", "task", "chore", "review", "epic", "design", "research",
+];
 
 // ---------------------------------------------------------------------------
 // Argument parsing helpers
@@ -310,9 +320,34 @@ async fn tool_bead_create(
     let title = args["title"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("title required"))?;
+    if title.trim().is_empty() {
+        anyhow::bail!("title must not be blank");
+    }
+    if title.len() > TITLE_MAX_LEN {
+        anyhow::bail!("title exceeds {TITLE_MAX_LEN} bytes (got {})", title.len());
+    }
     let description = args["description"].as_str().unwrap_or("");
-    let priority = args["priority"].as_u64().unwrap_or(2) as u8;
+    if description.len() > BODY_MAX_LEN {
+        anyhow::bail!(
+            "description exceeds {BODY_MAX_LEN} bytes (got {})",
+            description.len()
+        );
+    }
+    let priority_raw = args["priority"].as_u64().unwrap_or(2);
+    if priority_raw > PRIORITY_MAX {
+        anyhow::bail!(
+            "priority must be 0–{PRIORITY_MAX} (P0=critical … P3=low), got {priority_raw}"
+        );
+    }
+    let priority = priority_raw as u8;
     let issue_type = args["issue_type"].as_str().unwrap_or("task");
+    if !VALID_ISSUE_TYPES.contains(&issue_type) {
+        anyhow::bail!(
+            "unknown issue_type {:?} — valid values: {}",
+            issue_type,
+            VALID_ISSUE_TYPES.join(", ")
+        );
+    }
     let owner = args
         .get("owner")
         .and_then(|v| v.as_str())
@@ -396,6 +431,37 @@ async fn tool_bead_update(
     let id = args["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("id required"))?;
+
+    // Validate optional fields before constructing the update.
+    if let Some(t) = args.get("title").and_then(|v| v.as_str()) {
+        if t.trim().is_empty() {
+            anyhow::bail!("title must not be blank");
+        }
+        if t.len() > TITLE_MAX_LEN {
+            anyhow::bail!("title exceeds {TITLE_MAX_LEN} bytes (got {})", t.len());
+        }
+    }
+    if let Some(d) = args.get("description").and_then(|v| v.as_str()) {
+        anyhow::ensure!(
+            d.len() <= BODY_MAX_LEN,
+            "description exceeds {BODY_MAX_LEN} bytes (got {})",
+            d.len()
+        );
+    }
+    if let Some(p) = args.get("priority").and_then(|v| v.as_u64()) {
+        anyhow::ensure!(
+            p <= PRIORITY_MAX,
+            "priority must be 0–{PRIORITY_MAX} (P0=critical … P3=low), got {p}"
+        );
+    }
+    if let Some(it) = args.get("issue_type").and_then(|v| v.as_str()) {
+        anyhow::ensure!(
+            VALID_ISSUE_TYPES.contains(&it),
+            "unknown issue_type {:?} — valid values: {}",
+            it,
+            VALID_ISSUE_TYPES.join(", ")
+        );
+    }
 
     let update = crate::bead::BeadUpdate {
         title: args.get("title").and_then(|v| v.as_str()).map(String::from),
@@ -482,6 +548,12 @@ async fn tool_bead_comment(
     let body = args["body"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("body required"))?;
+    if body.trim().is_empty() {
+        anyhow::bail!("body must not be blank");
+    }
+    if body.len() > BODY_MAX_LEN {
+        anyhow::bail!("body exceeds {BODY_MAX_LEN} bytes (got {})", body.len());
+    }
 
     let client_ref = get_client(repo_path, pool).await?;
     let client = client_ref.as_store();
@@ -509,6 +581,10 @@ async fn tool_bead_link(args: &Value, pool: &RepoPool) -> Result<Value> {
         .get("remove")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+
+    if id == depends_on {
+        anyhow::bail!("a bead cannot depend on itself ({id})");
+    }
 
     let client_ref = get_client(repo_path, pool).await?;
     let client = client_ref.as_store();
