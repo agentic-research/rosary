@@ -389,15 +389,17 @@ pub async fn merge_or_pr_with_base(
 
     // Try to create PR via GitHub App or PAT — use the same effective base as
     // the rebase target so both operations are consistent.
-    let pr_url = match create_pr_for_bead(repo_path, branch, bead_id, issue_type, Some(rebase_target)).await {
-        Ok(url) => Some(url),
-        Err(e) => {
-            eprintln!(
-                "[terminal] {bead_id}: PR creation failed ({e}), branch pushed for manual PR"
-            );
-            None
-        }
-    };
+    let pr_url =
+        match create_pr_for_bead(repo_path, branch, bead_id, issue_type, Some(rebase_target)).await
+        {
+            Ok(url) => Some(url),
+            Err(e) => {
+                eprintln!(
+                    "[terminal] {bead_id}: PR creation failed ({e}), branch pushed for manual PR"
+                );
+                None
+            }
+        };
 
     let message = if let Some(ref url) = pr_url {
         format!("pushed {branch}, PR: {url}")
