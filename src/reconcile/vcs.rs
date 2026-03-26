@@ -73,6 +73,85 @@ impl Reconciler {
         transitions
     }
 
+    /// Poll beads in `pr_open` status — log review feedback when changes are requested.
+    ///
+    /// Uses `gh pr view` to read the review decision. When a reviewer has requested
+    /// changes, logs a `pr_feedback` event so the bead audit trail surfaces the
+    /// outstanding work. The bead stays in `pr_open`; a human or re-dispatched agent
+    /// must push new commits to satisfy the reviewer before the PR can merge.
+    ///
+    /// Returns the number of beads with outstanding change requests.
+    pub(super) async fn poll_pr_feedback(&mut self, beads: &[crate::bead::Bead]) -> usize {
+        let pr_open_beads: Vec<&crate::bead::Bead> =
+            beads.iter().filter(|b| b.status == "pr_open").collect();
+
+        if pr_open_beads.is_empty() {
+            return 0;
+        }
+
+        let mut flagged = 0;
+        for bead in &pr_open_beads {
+            let pr_url = if let Some(client) = self.dolt_client(&bead.repo).await {
+                client
+                    .get_latest_event(&bead.id, "pr_url")
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+
+            let Some(url) = pr_url else {
+                continue;
+            };
+
+            // Fetch overall review decision and reviewer list in one gh call.
+            // jq: emit "DECISION|reviewer1,reviewer2" — reviewer list empty when approved/none.
+            let output = std::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "view",
+                    &url,
+                    "--json",
+                    "reviewDecision,reviews",
+                    "-q",
+                    ".reviewDecision + \"|\" + ([.reviews[] | select(.state == \"CHANGES_REQUESTED\") | .author.login] | join(\",\"))",
+                ])
+                .output();
+
+            let (decision, reviewers) = match output {
+                Ok(o) if o.status.success() => {
+                    let raw = String::from_utf8_lossy(&o.stdout);
+                    let line = raw.trim();
+                    if let Some((d, r)) = line.split_once('|') {
+                        (d.to_string(), r.to_string())
+                    } else {
+                        (line.to_string(), String::new())
+                    }
+                }
+                _ => continue, // gh not available or API error — skip
+            };
+
+            if decision == "CHANGES_REQUESTED" {
+                let detail = if reviewers.is_empty() {
+                    format!("CHANGES_REQUESTED — {url}")
+                } else {
+                    format!("CHANGES_REQUESTED by {reviewers} — {url}")
+                };
+                eprintln!(
+                    "[pr-feedback] {} — changes requested ({})",
+                    bead.id, reviewers
+                );
+                if let Some(client) = self.dolt_client(&bead.repo).await {
+                    let _ = client.log_event(&bead.id, "pr_feedback", &detail).await;
+                }
+                flagged += 1;
+            }
+        }
+
+        flagged
+    }
+
     /// Poll beads in `pr_open` status — close when their PR merges.
     /// Uses `gh pr view` (works locally and in CI). Falls back gracefully
     /// if `gh` isn't available or the PR URL isn't recorded.

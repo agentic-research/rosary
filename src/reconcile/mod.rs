@@ -525,7 +525,10 @@ impl Reconciler {
         // Phase 1.5: VCS SCAN — detect bead refs in recent jj commits
         summary.vcs_transitions = self.scan_vcs(&beads).await;
 
-        // Phase 1.6: PR MERGE POLL — close beads whose PRs have merged
+        // Phase 1.6: PR FEEDBACK POLL — surface CHANGES_REQUESTED review decisions
+        self.poll_pr_feedback(&beads).await;
+
+        // Phase 1.65: PR MERGE POLL — close beads whose PRs have merged
         self.poll_pr_merges(&beads).await;
 
         // Phase 1.75: CROSS-REPO SYNC — propagate external refs across repos
