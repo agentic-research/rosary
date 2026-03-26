@@ -665,8 +665,13 @@ async fn verify_completed_verify_fail_retries() {
     assert_eq!(result.failed, 1, "verify failure → retry");
     assert_eq!(result.deadlettered, 0);
     assert_eq!(result.phase_advances.len(), 0, "no advance on verify fail");
-    assert_eq!(result.status_updates.len(), 1);
-    assert_eq!(result.status_updates[0].2, "open", "retry reopens bead");
+    // exit_success=true → verifying emitted before verify runs, then open on retry
+    assert_eq!(result.status_updates.len(), 2);
+    assert_eq!(
+        result.status_updates[0].2, "verifying",
+        "enters review before verify"
+    );
+    assert_eq!(result.status_updates[1].2, "open", "retry reopens bead");
 }
 
 /// Agent process exits non-zero → Retry (regardless of verify).
@@ -723,8 +728,13 @@ async fn verify_completed_terminal_sets_pr_open() {
 
     assert_eq!(result.passed, 1);
     assert_eq!(result.failed, 0);
-    assert_eq!(result.status_updates.len(), 1);
-    assert_eq!(result.status_updates[0].2, "pr_open", "terminal → pr_open");
+    // exit_success=true → verifying emitted, then pr_open on terminal
+    assert_eq!(result.status_updates.len(), 2);
+    assert_eq!(
+        result.status_updates[0].2, "verifying",
+        "enters review before verify"
+    );
+    assert_eq!(result.status_updates[1].2, "pr_open", "terminal → pr_open");
 }
 
 /// scoping-agent passes → Advance to dev-agent (first phase of bug pipeline).
@@ -761,9 +771,14 @@ async fn verify_completed_task_terminal_immediately() {
 
     assert_eq!(result.passed, 1);
     assert_eq!(result.phase_advances.len(), 0, "task has no next phase");
-    assert_eq!(result.status_updates.len(), 1);
+    // exit_success=true → verifying emitted, then pr_open on terminal
+    assert_eq!(result.status_updates.len(), 2);
     assert_eq!(
-        result.status_updates[0].2, "pr_open",
+        result.status_updates[0].2, "verifying",
+        "enters review before verify"
+    );
+    assert_eq!(
+        result.status_updates[1].2, "pr_open",
         "task terminal → pr_open"
     );
 }
@@ -804,10 +819,70 @@ async fn verify_completed_mixed_batch() {
 
     assert_eq!(result.passed, 1, "one pass");
     assert_eq!(result.failed, 1, "one fail");
-    assert_eq!(
-        result.phase_advances.len() + result.status_updates.len(),
-        2,
-        "each bead gets an outcome"
+    // mix-pass (exit_success=true): "verifying" in status_updates + phase_advances[0]
+    // mix-fail (exit_success=false): "open" in status_updates, no verifying
+    assert_eq!(result.phase_advances.len(), 1, "one advance");
+    assert_eq!(result.status_updates.len(), 2, "verifying + open");
+    assert!(
+        result.status_updates.iter().any(|u| u.2 == "verifying"),
+        "exit_success bead enters verifying before verify"
+    );
+    assert!(
+        result.status_updates.iter().any(|u| u.2 == "open"),
+        "failed bead retries to open"
+    );
+}
+
+/// exit_success=true → "verifying" emitted first, then final state.
+/// exit_success=false → "verifying" NOT emitted (crash → retry directly).
+#[tokio::test]
+async fn verify_completed_verifying_state_gated_on_exit_success() {
+    let beads = vec![
+        crate::testutil::make_bead("ok-bead", "task", "test-repo"),
+        crate::testutil::make_bead("crash-bead", "task", "test-repo"),
+    ];
+    let thread_map = std::collections::HashMap::new();
+
+    let mut r = reconciler_with_bead("ok-bead", "test-repo", "task", "dev-agent", 0).await;
+    r.trackers.insert(
+        "crash-bead".to_string(),
+        super::BeadTracker {
+            repo: "test-repo".to_string(),
+            last_generation: 1,
+            retries: 0,
+            consecutive_reverts: 0,
+            highest_tier: None,
+            current_agent: Some("dev-agent".to_string()),
+            phase_index: 1,
+            issue_type: "task".to_string(),
+            dispatch_id: None,
+        },
+    );
+
+    let completed = vec![
+        ("ok-bead".to_string(), true),     // success → verifying emitted
+        ("crash-bead".to_string(), false), // crash   → verifying NOT emitted
+    ];
+    let result = r.verify_completed(&completed, &beads, &thread_map).await;
+
+    let ok_updates: Vec<_> = result
+        .status_updates
+        .iter()
+        .filter(|u| u.0 == "ok-bead")
+        .collect();
+    let crash_updates: Vec<_> = result
+        .status_updates
+        .iter()
+        .filter(|u| u.0 == "crash-bead")
+        .collect();
+
+    assert!(
+        ok_updates.iter().any(|u| u.2 == "verifying"),
+        "successful agent enters verifying before verify tiers"
+    );
+    assert!(
+        !crash_updates.iter().any(|u| u.2 == "verifying"),
+        "crashed agent must not enter verifying"
     );
 }
 
@@ -976,7 +1051,9 @@ async fn verify_completed_feature_four_phase_progression() {
         .verify_completed(&[("feat-4".to_string(), true)], &beads, &thread_map)
         .await;
     assert_eq!(result.phase_advances.len(), 0, "prod → no more phases");
-    assert_eq!(result.status_updates[0].2, "pr_open", "Terminal → pr_open");
+    // exit_success=true → verifying first, then pr_open
+    assert_eq!(result.status_updates[0].2, "verifying");
+    assert_eq!(result.status_updates[1].2, "pr_open", "Terminal → pr_open");
 }
 
 /// Source-level lint: reconcile/ must never use println! (corrupts MCP stdio).
