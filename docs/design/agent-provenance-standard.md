@@ -308,21 +308,23 @@ H(Decade)     = SHA256(H(Thread_0) || H(Thread_1) || ... || H(Thread_k))
 - **Rooted**: The decade hash is the root of trust for the entire work decomposition
 
 > **SHA-256 vs git SHA-1**: APAS uses SHA-256 throughout. Git commit SHAs
-> (currently SHA-1, transitioning to SHA-256) are referenced as opaque identifiers
-> in `CommitInfo.sha`, not as part of the hash chain. When git repos opt into
-> SHA-256 object format, commit references will be natively compatible.
+> (currently SHA-1, transitioning to SHA-256) are included in `Handoff::commit_shas`
+> and hashed into `chain_hash()` as opaque byte strings — binding the provenance
+> chain to the actual code committed. When git repos opt into SHA-256 object
+> format, the commit references will be natively compatible with APAS hashes.
 
 ### 4.3 Content-Linked Chain Hash (Shipped)
 
 > **Resolved in PR #117** (`fix(handoff): content-linked chain hash`).
 > The `Handoff` struct carries `previous_chain_hash: Option<String>` —
-> the hex-encoded SHA-256 of the previous phase's handoff content.
-> `chain_hash()` hashes this content hash, not a file path. Replacing a
-> previous handoff file without knowing its hash breaks the chain.
+> the hex-encoded SHA-256 produced by `chain_hash()` on the previous phase's
+> `Handoff` struct (hashing phase, agent, bead_id, summary, files, commit SHAs,
+> and the prior chain link — not raw JSON bytes). `chain_hash()` includes this
+> hash, not a file path. Replacing a handoff file without knowing its hash breaks the chain.
 >
-> PR #130 further strengthened the chain by adding `commit_shas: Vec<String>`
-> to `Handoff`, so the hash now binds to the actual committed code — two
-> handoffs with identical summaries but different commits produce different hashes.
+> PR #130 added `commit_shas: Vec<String>` to `Handoff`, binding the chain to
+> the actual committed code — two handoffs with identical summaries but different
+> commits produce different hashes.
 >
 > See `src/handoff.rs` for the implementation and chain_hash test suite.
 
