@@ -154,6 +154,7 @@ impl Reconciler {
                             current_agent: Some(ps.pipeline_agent.clone()),
                             phase_index: ps.pipeline_phase as u32,
                             issue_type: bead.issue_type.clone(),
+                            dispatch_id: None,
                         },
                     );
                 }

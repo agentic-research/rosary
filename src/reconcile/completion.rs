@@ -129,6 +129,7 @@ impl Reconciler {
                 current_agent: None,
                 phase_index: 0,
                 issue_type: "task".into(),
+                dispatch_id: None,
             });
 
         // Check for revert (regression from previous best)
@@ -182,6 +183,7 @@ impl Reconciler {
                 current_agent: None,
                 phase_index: 0,
                 issue_type: "task".into(),
+                dispatch_id: None,
             });
         tracker.retries += 1;
 

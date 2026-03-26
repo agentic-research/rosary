@@ -124,6 +124,7 @@ async fn on_pass_clears_state() {
             current_agent: None,
             phase_index: 0,
             issue_type: "task".into(),
+            dispatch_id: None,
         },
     );
 
@@ -169,6 +170,7 @@ async fn on_fail_consecutive_reverts_deadletter() {
             current_agent: None,
             phase_index: 0,
             issue_type: "task".into(),
+            dispatch_id: None,
         },
     );
 
@@ -214,6 +216,7 @@ async fn failed_bead_retries_despite_same_generation() {
             current_agent: None,
             phase_index: 0,
             issue_type: "task".into(),
+            dispatch_id: None,
         },
     );
     // Record backoff (retry is pending)
@@ -364,6 +367,7 @@ async fn repo_busy_check_uses_trackers() {
             current_agent: None,
             phase_index: 0,
             issue_type: "task".into(),
+            dispatch_id: None,
         },
     );
     // Mark it as active (need a dummy handle — use the key presence)
@@ -600,6 +604,7 @@ async fn reconciler_with_bead(
                 2
             },
             issue_type: issue_type.to_string(),
+            dispatch_id: None,
         },
     );
     r
@@ -779,6 +784,7 @@ async fn verify_completed_mixed_batch() {
             current_agent: Some("dev-agent".to_string()),
             phase_index: 1,
             issue_type: "task".to_string(),
+            dispatch_id: None,
         },
     );
 
