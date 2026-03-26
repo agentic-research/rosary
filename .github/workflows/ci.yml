@@ -48,8 +48,8 @@ jobs:
           shared-key: rosary-${{ hashFiles('Cargo.lock') }}
       - run: cargo test
 
-  clippy:
-    name: clippy
+  pre-commit:
+    name: pre-commit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -59,20 +59,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: rustfmt,clippy
+      - name: install semgrep
+        run: pip install semgrep
       - uses: swatinem/rust-cache@v2
         if: github.event_name != 'schedule'
         with:
           shared-key: rosary-${{ hashFiles('Cargo.lock') }}
-      - run: cargo clippy -- -D warnings
-
-  fmt:
-    name: rustfmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
         with:
-          components: rustfmt
-      - run: cargo fmt --check
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+      - uses: pre-commit/action@v3.0.1
 
