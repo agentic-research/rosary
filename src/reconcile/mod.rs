@@ -99,7 +99,7 @@ struct BeadTracker {
     /// Bead's issue type (e.g. "bug", "task"). Captured at dispatch time so
     /// wait_and_verify can determine pipeline advancement without a fresh scan.
     issue_type: String,
-    /// Backend dispatch record ID for this active dispatch (format: "{bead_id}-{gen}").
+    /// Backend dispatch record ID for this active dispatch (format: "{bead_id}-{started_at_millis}").
     /// Set on dispatch, used to call complete_dispatch when the agent finishes.
     dispatch_id: Option<String>,
 }
@@ -661,15 +661,24 @@ impl Reconciler {
                             }
                         }
 
-                        let dispatch_id = format!("{}-{}", entry.bead_id, entry.generation);
-                        // Record dispatch to backend store (captures chain_hash + workspace)
+                        // Unique per-dispatch ID: bead_id + started_at millis (generation
+                        // is a content hash that doesn't change on retry, so it's not unique).
+                        let dispatch_id =
+                            format!("{}-{}", entry.bead_id, handle.started_at.timestamp_millis());
+                        // Record dispatch to backend store (captures chain_hash + workspace).
+                        // Use dispatch_bead.owner (may differ from bead.owner if the pipeline
+                        // corrected a stale assignee above).
                         let dispatch_record = DispatchRecord {
                             id: dispatch_id.clone(),
                             bead_ref: BeadRef {
                                 repo: entry.repo.clone(),
                                 bead_id: entry.bead_id.clone(),
                             },
-                            agent: bead.owner.as_deref().unwrap_or("generic").to_string(),
+                            agent: dispatch_bead
+                                .owner
+                                .as_deref()
+                                .unwrap_or("generic")
+                                .to_string(),
                             provider: self.provider.name().to_string(),
                             started_at: handle.started_at,
                             completed_at: None,
