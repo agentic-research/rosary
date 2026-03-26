@@ -80,7 +80,7 @@ pub(crate) fn tool_definitions() -> Value {
                         "title": { "type": "string", "description": "Bead title" },
                         "description": { "type": "string", "description": "Bead description", "default": "" },
                         "priority": { "type": "integer", "description": "Priority 0-3 (0=P0 highest)", "default": 2 },
-                        "issue_type": { "type": "string", "description": "Issue type (bug, task, feature, review, epic)", "default": "task" },
+                        "issue_type": { "type": "string", "description": "Issue type: bug, feature, task, chore, review, epic, design, research", "default": "task" },
                         "owner": { "type": "string", "description": "Agent owner (dev-agent, staging-agent, etc.). Auto-assigned from issue_type if omitted." },
                         "files": { "type": "array", "items": { "type": "string" }, "description": "Source files this bead touches. CRITICAL: these scope parallel dispatch — has_file_overlap() (epic.rs:386-393) blocks concurrent beads sharing files, and reconcile.rs:372-380 enforces it at dispatch time. Set scopes ONLY after reading the code; guessed scopes cause false-negative overlap and agent collisions. Include both files being modified AND files needing wiring changes (imports, call sites). New files are safe — no overlap possible." },
                         "test_files": { "type": "array", "items": { "type": "string" }, "description": "Test files to validate the change. Also checked for overlap — two beads sharing a test file will be serialized, not parallelized." },
