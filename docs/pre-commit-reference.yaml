@@ -1,0 +1,102 @@
+# .pre-commit-config.yaml — ART ecosystem reference template
+# Copy to your repo root and uncomment sections for your languages.
+# Prefers Taskfile tasks where available — replace `entry:` with
+# `entry: task lint` if your Taskfile wraps these tools.
+
+repos:
+  # ── Universal (always enabled) ──────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
+    hooks:
+      - id: hadolint-docker
+
+  # ── Rust (uncomment if repo contains Cargo.toml) ───────────────
+  # - repo: local
+  #   hooks:
+  #     - id: cargo-fmt
+  #       name: cargo fmt
+  #       entry: cargo fmt --all -- --check
+  #       language: system
+  #       types: [rust]
+  #       pass_filenames: false
+  #     - id: cargo-clippy
+  #       name: cargo clippy
+  #       entry: cargo clippy --all-targets -- -D warnings
+  #       language: system
+  #       types: [rust]
+  #       pass_filenames: false
+
+  # ── Go (uncomment if repo contains go.mod) ─────────────────────
+  # - repo: local
+  #   hooks:
+  #     - id: go-vet
+  #       name: go vet
+  #       entry: go vet ./...
+  #       language: system
+  #       types: [go]
+  #       pass_filenames: false
+  #     - id: golangci-lint
+  #       name: golangci-lint
+  #       entry: golangci-lint run
+  #       language: system
+  #       types: [go]
+  #       pass_filenames: false
+
+  # ── TypeScript/JavaScript (uncomment if repo contains package.json)
+  # - repo: local
+  #   hooks:
+  #     - id: eslint
+  #       name: eslint
+  #       entry: npx eslint
+  #       language: system
+  #       types_or: [javascript, jsx, ts, tsx]
+  #     - id: typecheck
+  #       name: tsc --noEmit
+  #       entry: npx tsc --noEmit
+  #       language: system
+  #       types_or: [ts, tsx]
+  #       pass_filenames: false
+
+  # ── Elixir (uncomment if repo contains mix.exs) ────────────────
+  # - repo: local
+  #   hooks:
+  #     - id: mix-format
+  #       name: mix format
+  #       entry: mix format --check-formatted
+  #       language: system
+  #       types: [elixir]
+  #       pass_filenames: false
+
+  # ── Python (uncomment if repo contains pyproject.toml) ─────────
+  # - repo: https://github.com/astral-sh/ruff-pre-commit
+  #   rev: v0.4.0
+  #   hooks:
+  #     - id: ruff
+  #       args: [--fix]
+  #     - id: ruff-format
+
+  # ── Terraform/Tofu (uncomment if repo contains .tf files) ──────
+  # - repo: local
+  #   hooks:
+  #     - id: tofu-fmt
+  #       name: tofu fmt
+  #       entry: tofu fmt -check -recursive
+  #       language: system
+  #       types: [terraform]
+  #       pass_filenames: false
