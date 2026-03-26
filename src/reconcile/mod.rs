@@ -25,9 +25,9 @@ use crate::epic;
 use crate::pipeline::PipelineEngine;
 use crate::queue::WorkQueue;
 use crate::scanner;
-use crate::store::{BeadRef, DispatchRecord};
 #[allow(unused_imports)]
 use crate::store::BeadStore;
+use crate::store::{BeadRef, DispatchRecord};
 use crate::sync::IssueTracker;
 use crate::xref;
 
@@ -661,8 +661,7 @@ impl Reconciler {
                             }
                         }
 
-                        let dispatch_id =
-                            format!("{}-{}", entry.bead_id, entry.generation);
+                        let dispatch_id = format!("{}-{}", entry.bead_id, entry.generation);
                         // Record dispatch to backend store (captures chain_hash + workspace)
                         let dispatch_record = DispatchRecord {
                             id: dispatch_id.clone(),
@@ -670,11 +669,7 @@ impl Reconciler {
                                 repo: entry.repo.clone(),
                                 bead_id: entry.bead_id.clone(),
                             },
-                            agent: bead
-                                .owner
-                                .as_deref()
-                                .unwrap_or("generic")
-                                .to_string(),
+                            agent: bead.owner.as_deref().unwrap_or("generic").to_string(),
                             provider: self.provider.name().to_string(),
                             started_at: handle.started_at,
                             completed_at: None,

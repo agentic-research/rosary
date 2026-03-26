@@ -355,7 +355,9 @@ impl Reconciler {
                 .get(bead_id.as_str())
                 .and_then(|t| t.dispatch_id.as_deref())
             {
-                self.pipeline.complete_dispatch(dispatch_id, outcome_str).await;
+                self.pipeline
+                    .complete_dispatch(dispatch_id, outcome_str)
+                    .await;
             }
 
             match outcome {
