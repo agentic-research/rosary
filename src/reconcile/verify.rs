@@ -331,8 +331,37 @@ impl Reconciler {
                         .unwrap_or_default()
                 });
 
-            // Signal "In Review" in Linear while verification runs.
-            self.persist_status(bead_id, &repo, "verifying").await;
+            // Signal "In Review" in Linear while verification tiers run —
+            // but only when the agent exited successfully. A crashed agent
+            // (exit_success=false) goes straight to retry/deadletter without
+            // running any verification, so "verifying" would be misleading.
+            if *exit_success {
+                let (agent, phase) = self
+                    .trackers
+                    .get(bead_id.as_str())
+                    .map(|t| {
+                        (
+                            t.current_agent
+                                .clone()
+                                .unwrap_or_else(|| "unknown".to_string()),
+                            t.phase_index,
+                        )
+                    })
+                    .unwrap_or_else(|| ("unknown".to_string(), 0));
+                self.persist_status(bead_id, &repo, "verifying").await;
+                self.append_observation(
+                    bead_id,
+                    &repo,
+                    &agent,
+                    phase,
+                    Verdict::Verifying,
+                    "entering verifying state",
+                )
+                .await;
+                result
+                    .status_updates
+                    .push((bead_id.clone(), repo.clone(), "verifying".into()));
+            }
 
             let (action, verify_summary) = self.verify_and_decide(bead_id, *exit_success, beads);
 
@@ -448,8 +477,32 @@ impl Reconciler {
                     .map(|t| t.issue_type.clone())
                     .unwrap_or_default();
 
-                // Signal "In Review" in Linear while verification runs.
-                self.persist_status(bead_id, &repo, "verifying").await;
+                // Signal "In Review" in Linear while verification runs —
+                // only when the agent exited successfully (same guard as verify_completed).
+                if *exit_success {
+                    let (agent, phase) = self
+                        .trackers
+                        .get(bead_id.as_str())
+                        .map(|t| {
+                            (
+                                t.current_agent
+                                    .clone()
+                                    .unwrap_or_else(|| "unknown".to_string()),
+                                t.phase_index,
+                            )
+                        })
+                        .unwrap_or_else(|| ("unknown".to_string(), 0));
+                    self.persist_status(bead_id, &repo, "verifying").await;
+                    self.append_observation(
+                        bead_id,
+                        &repo,
+                        &agent,
+                        phase,
+                        Verdict::Verifying,
+                        "entering verifying state",
+                    )
+                    .await;
+                }
 
                 let (action, verify_summary) =
                     self.verify_and_decide(bead_id, *exit_success, &empty_beads);
