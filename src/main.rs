@@ -766,7 +766,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Sweep { repo, dry_run } => {
-            let repo_path = std::path::Path::new(&repo).canonicalize()?;
+            let repo_path = scanner::resolve_repo_path(std::path::Path::new(&repo));
             let result = workspace::sweep_agent_branches(&repo_path, dry_run).await;
             if dry_run {
                 println!(

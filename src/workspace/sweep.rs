@@ -239,6 +239,8 @@ pub async fn sweep_agent_branches(repo_path: &Path, dry_run: bool) -> BranchSwee
 
     // Fetch the set of branches already merged into origin/main — one call,
     // then use a HashSet for O(1) lookup per branch.
+    // If this fails (no origin, no origin/main) we abort: an empty set would
+    // incorrectly report every branch as "unmerged" and silently skip them all.
     let merged_out = tokio::process::Command::new("git")
         .args(["branch", "-r", "--merged", "origin/main"])
         .current_dir(repo_path)
@@ -250,14 +252,30 @@ pub async fn sweep_agent_branches(repo_path: &Path, dry_run: bool) -> BranchSwee
             .lines()
             .map(|l| l.trim().to_string())
             .collect(),
-        _ => std::collections::HashSet::new(),
+        Ok(o) => {
+            eprintln!(
+                "[sweep] git branch --merged failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            return result;
+        }
+        Err(e) => {
+            eprintln!("[sweep] git branch --merged error: {e}");
+            return result;
+        }
     };
 
-    // Connect to the local bead store once for all lookups
+    // Connect to the local bead store only if .beads/ already exists.
+    // Connecting would create the directory + database on first access, which
+    // is a surprising side-effect of running `rsry sweep` in a non-beads repo.
     let beads_dir = crate::resolve_beads_dir(repo_path);
-    let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
-        .await
-        .ok();
+    let store = if beads_dir.exists() {
+        crate::bead_sqlite::connect_bead_store(&beads_dir)
+            .await
+            .ok()
+    } else {
+        None
+    };
     let repo_name = repo_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -279,7 +297,15 @@ pub async fn sweep_agent_branches(repo_path: &Path, dry_run: bool) -> BranchSwee
 
         result.checked += 1;
 
-        // Safety rule 1: bead must be closed/done
+        // Safety rule 1 (most critical): branch must be merged into main.
+        // Check first — an unmerged branch is unsafe to delete regardless of bead status.
+        if !merged_set.contains(remote_branch) {
+            eprintln!("[sweep] {remote_branch}: has unmerged commits — skipping");
+            result.skipped_unmerged += 1;
+            continue;
+        }
+
+        // Safety rule 2: bead must be closed/done.
         let is_closed = if let Some(ref store) = store {
             match store.get_bead(bead_id, &repo_name).await {
                 Ok(Some(b)) => matches!(b.status.as_str(), "closed" | "done"),
@@ -291,13 +317,6 @@ pub async fn sweep_agent_branches(repo_path: &Path, dry_run: bool) -> BranchSwee
 
         if !is_closed {
             result.skipped_active += 1;
-            continue;
-        }
-
-        // Safety rule 2: branch must be merged into main
-        if !merged_set.contains(remote_branch) {
-            eprintln!("[sweep] {remote_branch}: bead closed but has unmerged commits — skipping");
-            result.skipped_unmerged += 1;
             continue;
         }
 
@@ -867,5 +886,116 @@ async fn enforce_bead_refs(repo_path: &Path, branch: &str, bead_id: &str) {
         && out.status.success()
     {
         eprintln!("[workspace] auto-amended last commit with [{bead_id}] prefix");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Set up a bare "origin" + a work clone with one optional fix/* branch.
+    ///
+    /// Returns (origin_dir, work_dir). The TempDirs must be kept alive for the
+    /// duration of the test.
+    async fn setup_origin_and_clone(
+        origin_dir: &tempfile::TempDir,
+        work_dir: &tempfile::TempDir,
+        branch: &str,
+        merged: bool,
+    ) -> (PathBuf, PathBuf) {
+        let origin = origin_dir.path().to_path_buf();
+        let work = work_dir.path().to_path_buf();
+
+        macro_rules! git_in {
+            ($dir:expr, $($arg:expr),+) => {{
+                tokio::process::Command::new("git")
+                    .args([$($arg),+])
+                    .current_dir($dir)
+                    .output()
+                    .await
+                    .unwrap()
+            }};
+        }
+
+        // Initialise bare origin
+        git_in!(&origin, "init", "-q", "--bare", "--initial-branch", "main");
+
+        // Clone into work dir
+        git_in!(
+            &work,
+            "clone",
+            "-q",
+            origin.to_str().unwrap(),
+            work.to_str().unwrap()
+        );
+        git_in!(&work, "config", "user.email", "test@test.com");
+        git_in!(&work, "config", "user.name", "test");
+
+        // Push an initial commit so origin/main exists
+        std::fs::write(work.join("file.txt"), "hello").unwrap();
+        git_in!(&work, "add", ".");
+        git_in!(&work, "commit", "-q", "-m", "init");
+        git_in!(&work, "push", "-q", "origin", "main");
+
+        if merged {
+            // Branch from main, then push without extra commits — same SHA as main,
+            // so it shows up in `git branch -r --merged origin/main`.
+            git_in!(&work, "checkout", "-q", "-b", branch);
+            git_in!(&work, "push", "-q", "origin", branch);
+            git_in!(&work, "checkout", "-q", "main");
+        } else {
+            // Branch with a new commit so it is NOT merged into main.
+            git_in!(&work, "checkout", "-q", "-b", branch);
+            std::fs::write(work.join("new.txt"), "change").unwrap();
+            git_in!(&work, "add", ".");
+            git_in!(&work, "commit", "-q", "-m", "unmerged change");
+            git_in!(&work, "push", "-q", "origin", branch);
+            git_in!(&work, "checkout", "-q", "main");
+        }
+
+        // Fetch so remote-tracking refs are up to date
+        git_in!(&work, "fetch", "-q", "origin");
+
+        (origin, work)
+    }
+
+    #[tokio::test]
+    async fn sweep_skips_when_no_beads_dir() {
+        let origin_dir = tempfile::TempDir::new().unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let (_, work) =
+            setup_origin_and_clone(&origin_dir, &work_dir, "fix/rsry-abc123", true).await;
+
+        // No .beads/ dir — store is None, bead not found → skipped_active
+        let result = sweep_agent_branches(&work, true).await;
+        assert_eq!(result.checked, 1);
+        assert_eq!(result.deleted, 0);
+        assert_eq!(result.skipped_active, 1);
+        assert_eq!(result.skipped_unmerged, 0);
+    }
+
+    #[tokio::test]
+    async fn sweep_skips_unmerged_branch() {
+        let origin_dir = tempfile::TempDir::new().unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let (_, work) =
+            setup_origin_and_clone(&origin_dir, &work_dir, "fix/rsry-def456", false).await;
+
+        let result = sweep_agent_branches(&work, true).await;
+        assert_eq!(result.checked, 1);
+        assert_eq!(result.skipped_unmerged, 1);
+        assert_eq!(result.deleted, 0);
+    }
+
+    #[tokio::test]
+    async fn sweep_skips_non_fix_branches() {
+        let origin_dir = tempfile::TempDir::new().unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let (_, work) =
+            setup_origin_and_clone(&origin_dir, &work_dir, "feature/something", true).await;
+
+        // feature/* is not fix/* — should not be checked at all
+        let result = sweep_agent_branches(&work, true).await;
+        assert_eq!(result.checked, 0);
     }
 }
