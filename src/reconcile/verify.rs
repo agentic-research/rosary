@@ -331,6 +331,9 @@ impl Reconciler {
                         .unwrap_or_default()
                 });
 
+            // Signal "In Review" in Linear while verification runs.
+            self.persist_status(bead_id, &repo, "verifying").await;
+
             let (action, verify_summary) = self.verify_and_decide(bead_id, *exit_success, beads);
 
             let outcome = self
@@ -444,6 +447,9 @@ impl Reconciler {
                     .get(bead_id.as_str())
                     .map(|t| t.issue_type.clone())
                     .unwrap_or_default();
+
+                // Signal "In Review" in Linear while verification runs.
+                self.persist_status(bead_id, &repo, "verifying").await;
 
                 let (action, verify_summary) =
                     self.verify_and_decide(bead_id, *exit_success, &empty_beads);
