@@ -47,7 +47,7 @@ tasks:
       - cargo clippy -- -D warnings
       - |
         if command -v semgrep >/dev/null 2>&1; then
-          semgrep --config .semgrep/rules.yml src/ --error
+          semgrep --config .semgrep/rules.yml --error .
         else
           echo "SKIP: semgrep not installed (brew install semgrep)"
         fi

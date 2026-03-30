@@ -10,7 +10,12 @@ rules:
     severity: ERROR
     languages: [rust]
     patterns:
-      - pattern: std::process::Command::new(...)
+      - pattern-either:
+          - pattern: std::process::Command::new(...).$METHOD(...)
+          - pattern: std::process::Command::new(...).args(...).$METHOD(...)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ^(status|output|wait)$
       - pattern-inside: |
           async fn $FUNC(...) {
             ...
@@ -30,7 +35,12 @@ rules:
       Move log_event / add_comment calls above persist_status.
     severity: WARNING
     languages: [rust]
-    pattern: |
-      $SELF.persist_status($A, $B, $C).await;
-      ...
-      $CLIENT.log_event($D, $E, $F).await;
+    pattern-either:
+      - pattern: |
+          $SELF.persist_status($A, $B, $C).await;
+          ...
+          $CLIENT.log_event($D, $E, $F).await;
+      - pattern: |
+          $SELF.persist_status($A, $B, $C).await;
+          ...
+          $CLIENT.add_comment($D, $E, $F).await;
