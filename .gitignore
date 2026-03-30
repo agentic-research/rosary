@@ -36,6 +36,7 @@
 !/.pre-commit-config.yaml
 !/.github
 !/.claude-plugin
+!/.semgrep
 
 # === BEADS (tracked config, not data) ===
 !/.beads

@@ -1,0 +1,46 @@
+rules:
+  # Detect std::process::Command (blocking) inside async fn bodies.
+  # async fn bodies share a single-threaded executor pool — a blocking
+  # subprocess stalls every other task on that thread.
+  # Fix: use tokio::process::Command::new(...).output().await instead.
+  - id: blocking-subprocess-in-async
+    message: >
+      std::process::Command blocks the async runtime.
+      Use tokio::process::Command instead.
+    severity: ERROR
+    languages: [rust]
+    patterns:
+      - pattern-either:
+          - pattern: std::process::Command::new(...).$METHOD(...)
+          - pattern: std::process::Command::new(...).args(...).$METHOD(...)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ^(status|output|wait)$
+      - pattern-inside: |
+          async fn $FUNC(...) {
+            ...
+          }
+    paths:
+      exclude:
+        - "**/tests.rs"
+        - "**/testutil.rs"
+
+  # Detect persist_status called before log_event in the same block.
+  # State transitions must be preceded by their audit record — if the
+  # process crashes between persist_status and log_event, the audit
+  # trail has a gap. Log first, then transition.
+  - id: audit-log-before-status-change
+    message: >
+      persist_status called before log_event — audit trail must precede state transition.
+      Move log_event / add_comment calls above persist_status.
+    severity: WARNING
+    languages: [rust]
+    pattern-either:
+      - pattern: |
+          $SELF.persist_status($A, $B, $C).await;
+          ...
+          $CLIENT.log_event($D, $E, $F).await;
+      - pattern: |
+          $SELF.persist_status($A, $B, $C).await;
+          ...
+          $CLIENT.add_comment($D, $E, $F).await;
