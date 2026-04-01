@@ -40,6 +40,11 @@ pub struct Config {
     /// The hosted service sets this based on the customer's plan.
     #[serde(default)]
     pub max_pipeline_depth: usize,
+    /// Orchestration mode and behavior.
+    /// Controls whether the reconciler uses flat dispatch or hierarchical
+    /// feature orchestrators with synthesis, fan-out, and plan gates.
+    #[serde(default)]
+    pub orchestration: Option<OrchestrationConfig>,
 }
 
 /// Compute provider selection + backend-specific settings.
@@ -196,6 +201,85 @@ fn default_dispatch_provider() -> String {
 
 fn default_max_concurrent() -> usize {
     3
+}
+
+/// Orchestration mode and behavior.
+///
+/// Controls how the reconciler manages per-bead lifecycles:
+/// - `flat` (default): current behavior — reconciler directly dispatches agents
+/// - `hierarchical`: reconciler spawns FeatureOrchestrators that coordinate workers
+///
+/// The hierarchical mode enables synthesis between phases, parallel research
+/// fan-out, plan-mode approval gates, and mid-flight communication.
+///
+/// Designed as a generic pipeline — orchestrators can nest to arbitrary depth,
+/// like ComfyUI/n8n workflow nodes. Each node in the pipeline can itself
+/// contain a sub-pipeline, enabling patterns like:
+///
+/// ```text
+/// grand-orchestrator
+///   └─ feature-orchestrator (bead X)
+///        ├─ research-pipeline (parallel fan-out)
+///        │    ├─ impl-researcher
+///        │    ├─ test-researcher
+///        │    └─ deps-researcher
+///        ├─ synthesis (reads research, builds prompt)
+///        └─ impl-pipeline (sequential)
+///             ├─ dev-agent
+///             ├─ staging-agent
+///             └─ prod-agent
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestrationConfig {
+    /// "flat" (default) or "hierarchical".
+    #[serde(default = "default_orchestration_mode")]
+    pub mode: String,
+    /// Enable synthesis LLM call between phases.
+    /// The orchestrator reads worker output and builds contextualized prompts
+    /// instead of forwarding raw handoff JSON.
+    #[serde(default = "default_true")]
+    pub synthesis: bool,
+    /// Enable parallel research fan-out for scoping phase.
+    /// Spawns multiple read-only workers in parallel instead of one scoping-agent.
+    #[serde(default)]
+    pub fan_out: bool,
+    /// Enable plan-mode approval gate before implementation.
+    /// Workers propose plans; orchestrator validates scope/risk before approving.
+    #[serde(default)]
+    pub plan_gate: bool,
+    /// Max parallel research workers during fan-out.
+    #[serde(default = "default_max_research_workers")]
+    pub max_research_workers: usize,
+    /// Pass transcript excerpts (fork-style) instead of just handoff JSON.
+    /// Gives the next agent concrete observations from the previous agent's work.
+    #[serde(default = "default_true")]
+    pub fork_context: bool,
+    /// Maximum nesting depth for sub-orchestrators.
+    /// 0 = no nesting (feature orchestrator only). N = N levels of sub-pipelines.
+    #[serde(default)]
+    pub max_nesting_depth: usize,
+}
+
+fn default_orchestration_mode() -> String {
+    "flat".to_string()
+}
+
+fn default_max_research_workers() -> usize {
+    3
+}
+
+impl Default for OrchestrationConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_orchestration_mode(),
+            synthesis: true,
+            fan_out: false,
+            plan_gate: false,
+            max_research_workers: default_max_research_workers(),
+            fork_context: true,
+            max_nesting_depth: 0,
+        }
+    }
 }
 
 /// Built-in pipeline definitions: issue_type → ordered agent sequence.
