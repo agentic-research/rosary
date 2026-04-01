@@ -12,8 +12,8 @@
 use crate::bead::Bead;
 use crate::handoff::Handoff;
 
-use super::transcript::TranscriptEntry;
 use super::ResearchFinding;
+use super::transcript::TranscriptEntry;
 
 /// Context gathered from previous phases, used to synthesize the next prompt.
 pub struct SynthesisContext {
