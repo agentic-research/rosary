@@ -147,7 +147,7 @@ impl Mailbox {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => {
-                return Err(e).with_context(|| format!("reading mailbox {}", self.path.display()))
+                return Err(e).with_context(|| format!("reading mailbox {}", self.path.display()));
             }
         };
 

@@ -212,7 +212,236 @@ impl Default for OrchestratorBehavior {
     }
 }
 
+/// Outcome of a single orchestrator tick — tells the reconciler what to do.
+#[derive(Debug)]
+pub enum TickOutcome {
+    /// No state change — orchestrator is waiting for something.
+    Idle,
+    /// Orchestrator needs a worker spawned.
+    /// The reconciler should call `dispatch::spawn()` and hand the AgentHandle back.
+    NeedsSpawn {
+        agent: String,
+        phase: u32,
+        /// Whether to resume an existing session or start fresh.
+        session_decision: SessionDecision,
+    },
+    /// Current worker completed. Orchestrator provides the exit status.
+    WorkerCompleted { exit_success: bool },
+    /// Orchestrator wants to advance to next pipeline phase.
+    /// The reconciler should verify, then call `advance()`.
+    ReadyToAdvance { next_agent: String },
+    /// Pipeline is done — bead can be closed/PR'd.
+    Terminal,
+    /// Pipeline failed permanently.
+    Failed { reason: String },
+}
+
 impl FeatureOrchestrator {
+    /// Create a new orchestrator for a bead.
+    pub fn new(
+        bead_ref: BeadRef,
+        issue_type: String,
+        pipeline: Vec<String>,
+        work_dir: PathBuf,
+        config: OrchestratorBehavior,
+    ) -> Self {
+        let mailbox = mailbox::Mailbox::new(work_dir.join(".rsry-mailbox.jsonl"));
+        Self {
+            bead_ref,
+            issue_type,
+            pipeline,
+            current_phase: 0,
+            state: OrchestratorState::Idle,
+            work_dir,
+            mailbox,
+            worker_handle: None,
+            handoff_chain: Vec::new(),
+            transcript_cache: Vec::new(),
+            last_session_id: None,
+            retries: 0,
+            created_at: Utc::now(),
+            config,
+        }
+    }
+
+    /// Drive the orchestrator state machine forward one step.
+    ///
+    /// Called by the reconciler each iteration. Returns what action (if any)
+    /// the reconciler should take. This keeps the orchestrator deterministic —
+    /// it never spawns agents itself, it just tells the reconciler what it needs.
+    pub fn tick(&mut self) -> TickOutcome {
+        match &self.state {
+            OrchestratorState::Idle => {
+                // First tick — request the first pipeline agent.
+                if let Some(agent) = self.pipeline.first().cloned() {
+                    let decision = self.session_decision(&agent);
+                    self.state = OrchestratorState::AwaitingWorker {
+                        agent: agent.clone(),
+                        phase: 0,
+                    };
+                    TickOutcome::NeedsSpawn {
+                        agent,
+                        phase: 0,
+                        session_decision: decision,
+                    }
+                } else {
+                    self.state = OrchestratorState::Terminal;
+                    TickOutcome::Terminal
+                }
+            }
+
+            OrchestratorState::AwaitingWorker { .. } => {
+                // Check if worker has completed.
+                if let Some(ref mut handle) = self.worker_handle {
+                    match handle.try_wait() {
+                        Ok(Some(success)) => {
+                            // Worker done — take the handle out.
+                            let _handle = self.worker_handle.take();
+                            TickOutcome::WorkerCompleted {
+                                exit_success: success,
+                            }
+                        }
+                        Ok(None) => {
+                            // Still running — check for hard timeout.
+                            if handle.elapsed() > chrono::Duration::hours(4) {
+                                eprintln!(
+                                    "[orchestrator] {} killing worker (4h timeout)",
+                                    self.bead_ref.bead_id
+                                );
+                                let _ = handle.kill();
+                                let _handle = self.worker_handle.take();
+                                TickOutcome::WorkerCompleted {
+                                    exit_success: false,
+                                }
+                            } else {
+                                TickOutcome::Idle
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[orchestrator] {} poll error: {e}", self.bead_ref.bead_id);
+                            let _handle = self.worker_handle.take();
+                            TickOutcome::WorkerCompleted {
+                                exit_success: false,
+                            }
+                        }
+                    }
+                } else {
+                    // No handle yet — reconciler hasn't given us one.
+                    // Request spawn again.
+                    if let OrchestratorState::AwaitingWorker { ref agent, phase } = self.state {
+                        TickOutcome::NeedsSpawn {
+                            agent: agent.clone(),
+                            phase: *phase,
+                            session_decision: self.session_decision(agent),
+                        }
+                    } else {
+                        unreachable!()
+                    }
+                }
+            }
+
+            OrchestratorState::Terminal => TickOutcome::Terminal,
+
+            OrchestratorState::Failed { reason, .. } => TickOutcome::Failed {
+                reason: reason.clone(),
+            },
+
+            // Synthesis, PlanApproval, ResearchFanOut — these will be
+            // implemented in later phases. For now, skip straight through.
+            OrchestratorState::Synthesizing => {
+                // Synthesis not yet wired — advance to next spawn.
+                self.advance_to_next_phase();
+                self.tick() // re-enter with updated state
+            }
+            OrchestratorState::PlanApproval { .. } => {
+                // Auto-approve for now.
+                self.advance_to_next_phase();
+                self.tick()
+            }
+            OrchestratorState::ResearchFanOut { .. } => {
+                // Fan-out not yet wired — skip to first pipeline agent.
+                self.advance_to_next_phase();
+                self.tick()
+            }
+        }
+    }
+
+    /// Record that a worker completed and decide the next step.
+    ///
+    /// Called by the reconciler after verification. If verification passed and
+    /// there's a next agent, transitions to the appropriate state. If this was
+    /// the last agent, moves to Terminal.
+    pub fn on_worker_completed(&mut self, passed: bool, max_retries: u32) {
+        if passed {
+            self.retries = 0;
+            let next_phase = self.current_phase + 1;
+            if next_phase < self.pipeline.len() {
+                self.current_phase = next_phase;
+                let next_agent = self.pipeline[next_phase].clone();
+                if self.config.synthesis {
+                    self.state = OrchestratorState::Synthesizing;
+                } else {
+                    let decision = self.session_decision(&next_agent);
+                    self.state = OrchestratorState::AwaitingWorker {
+                        agent: next_agent,
+                        phase: next_phase as u32,
+                    };
+                    // Decision is used on the next tick().
+                    let _ = decision;
+                }
+            } else {
+                self.state = OrchestratorState::Terminal;
+            }
+        } else {
+            self.retries += 1;
+            if self.retries >= max_retries {
+                self.state = OrchestratorState::Failed {
+                    retries: self.retries,
+                    reason: format!(
+                        "max retries ({}) exceeded at phase {}",
+                        max_retries, self.current_phase
+                    ),
+                };
+            } else {
+                // Retry same phase — set state back to AwaitingWorker with no handle.
+                let agent = self.pipeline[self.current_phase].clone();
+                self.state = OrchestratorState::AwaitingWorker {
+                    agent,
+                    phase: self.current_phase as u32,
+                };
+                self.worker_handle = None;
+            }
+        }
+    }
+
+    /// Give the orchestrator a spawned worker handle.
+    pub fn set_worker_handle(&mut self, handle: AgentHandle) {
+        self.worker_handle = Some(handle);
+    }
+
+    /// Get the current agent name (if in AwaitingWorker state).
+    pub fn current_agent(&self) -> Option<&str> {
+        match &self.state {
+            OrchestratorState::AwaitingWorker { agent, .. } => Some(agent.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Advance to the next pipeline phase (helper for synthesis/plan_gate skip).
+    fn advance_to_next_phase(&mut self) {
+        let next = self.current_phase + 1;
+        if next < self.pipeline.len() {
+            self.current_phase = next;
+            let agent = self.pipeline[next].clone();
+            self.state = OrchestratorState::AwaitingWorker {
+                agent,
+                phase: next as u32,
+            };
+        } else {
+            self.state = OrchestratorState::Terminal;
+        }
+    }
+
     /// Decide whether to continue an existing worker session or spawn fresh.
     ///
     /// Based on Claude Code's decision matrix:
