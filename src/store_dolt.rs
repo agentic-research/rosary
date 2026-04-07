@@ -37,12 +37,13 @@ impl DoltBackend {
         if !data_dir.join(".dolt").exists() {
             std::fs::create_dir_all(&data_dir)
                 .with_context(|| format!("creating backend dir {}", data_dir.display()))?;
-            let status = std::process::Command::new("dolt")
+            let status = tokio::process::Command::new("dolt")
                 .args(["init"])
                 .current_dir(&data_dir)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
+                .await
                 .with_context(|| {
                     format!(
                         "running dolt init in {} (is dolt installed?)",
@@ -877,6 +878,7 @@ mod tests {
     #[tokio::test]
     async fn dolt_backend_lifecycle() {
         // Check if dolt is installed
+        // nosemgrep: blocking-subprocess-in-async — test availability probe, sync is fine in tests
         if std::process::Command::new("dolt")
             .arg("version")
             .stdout(std::process::Stdio::null())
