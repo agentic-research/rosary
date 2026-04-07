@@ -7,6 +7,7 @@
 
 mod completion;
 mod helpers;
+mod orchestration;
 mod persistence;
 mod threading;
 mod triage;
@@ -19,9 +20,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::config::{self, RepoConfig};
+use crate::config::{self, OrchestrationConfig, RepoConfig};
 use crate::dispatch::{self, AgentHandle};
 use crate::epic;
+use crate::orchestrate::FeatureOrchestrator;
 use crate::pipeline::PipelineEngine;
 use crate::queue::WorkQueue;
 use crate::scanner;
@@ -63,6 +65,10 @@ pub struct ReconcilerConfig {
     /// Default base branch for agent PRs when no thread feature branch is found.
     /// Populated from `[github] base` in config. Defaults to "main".
     pub default_branch: String,
+    /// Orchestration config: "flat" (default) or "hierarchical".
+    /// When hierarchical, beads are managed by FeatureOrchestrators instead
+    /// of raw agent dispatches.
+    pub orchestration: OrchestrationConfig,
 }
 
 impl Default for ReconcilerConfig {
@@ -84,6 +90,7 @@ impl Default for ReconcilerConfig {
             max_pipeline_depth: 0,
             user_id: None,
             default_branch: "main".to_string(),
+            orchestration: OrchestrationConfig::default(),
         }
     }
 }
@@ -145,6 +152,10 @@ pub struct Reconciler {
     pending_remote_urls: Vec<String>,
     /// On-demand clone cache for remote repos (wasteland mode).
     repo_cache: std::sync::Arc<crate::repo_cache::RepoCache>,
+    /// Feature orchestrators keyed by bead_id (hierarchical mode only).
+    /// Each orchestrator owns one bead's full lifecycle: research → synthesis →
+    /// implementation → verification, with mid-flight messaging and session reuse.
+    orchestrators: HashMap<String, FeatureOrchestrator>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -375,6 +386,7 @@ impl Reconciler {
             remote_repos,
             pending_remote_urls,
             repo_cache,
+            orchestrators: HashMap::new(),
         }
     }
 
@@ -397,6 +409,10 @@ impl Reconciler {
                 self.config.dry_run,
             );
         }
+
+        // Recover orchestrators first — they claim their beads before the
+        // stuck-bead sweep runs, preventing accidental resets.
+        self.recover_orchestrators().await;
 
         // Recover beads stuck at 'dispatched' from previous crashed run
         self.recover_stuck_beads().await;
@@ -557,6 +573,17 @@ impl Reconciler {
         let completed = self.check_completed();
         summary.completed = completed.len();
 
+        // Phase 2.1: ORCHESTRATOR TICK — advance orchestrator state machines.
+        // Only runs in hierarchical mode. Orchestrators may spawn agents
+        // (which go into self.active) or complete/fail their beads.
+        if self.is_hierarchical() && !self.orchestrators.is_empty() {
+            let orch_result = self.orchestrator_tick(&beads).await;
+            summary.dispatched += orch_result.dispatched;
+            summary.passed += orch_result.passed;
+            summary.failed += orch_result.failed;
+            summary.deadlettered += orch_result.deadlettered;
+        }
+
         // Phase 2.5 + 2.75: AUTO-THREAD + BUILD THREAD MAP
         self.auto_thread(&beads).await;
         let thread_map = self.build_thread_map(&beads).await;
@@ -614,6 +641,22 @@ impl Reconciler {
                     }
                 }
 
+                // ── Hierarchical mode: create orchestrator instead of raw dispatch ──
+                if self.is_hierarchical() {
+                    self.create_orchestrator(
+                        &entry.bead_id,
+                        &entry.repo,
+                        &bead.issue_type,
+                        path.clone(),
+                    );
+                    self.persist_status(&entry.bead_id, &entry.repo, "dispatched")
+                        .await;
+                    summary.dispatched += 1;
+                    // Orchestrator will request its first agent spawn on next tick.
+                    continue;
+                }
+
+                // ── Flat mode: direct agent dispatch ────────────────────────────────
                 match dispatch::spawn(
                     &dispatch_bead,
                     &path,
@@ -744,6 +787,11 @@ impl Reconciler {
         summary.failed += vr.failed;
         summary.deadlettered += vr.deadlettered;
 
+        // Phase 6: PERSIST orchestrator state for crash recovery
+        if self.is_hierarchical() && !self.orchestrators.is_empty() {
+            self.persist_orchestrator_records();
+        }
+
         Ok(summary)
     }
 }
@@ -775,6 +823,7 @@ pub async fn run(
         .map(|l| l.states.clone())
         .unwrap_or_default();
 
+    let orchestration = cfg.orchestration.clone().unwrap_or_default();
     let reconciler_config = ReconcilerConfig {
         max_concurrent: concurrency,
         scan_interval: Duration::from_secs(interval),
@@ -793,6 +842,7 @@ pub async fn run(
             .as_ref()
             .map(|g| g.base.clone())
             .unwrap_or_else(|| "main".to_string()),
+        orchestration,
         ..Default::default()
     };
 

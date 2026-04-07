@@ -29,6 +29,7 @@ mod linear_tracker;
 mod manifest;
 #[allow(dead_code)]
 mod migrate;
+mod orchestrate;
 mod pipeline;
 mod pool;
 mod queue;
