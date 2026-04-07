@@ -1,4 +1,5 @@
 //! Plan-mode approval gate.
+#![allow(dead_code)]
 //!
 //! Before a worker starts implementing, it can propose a plan that the
 //! orchestrator validates. This prevents the "agent rewrites half the

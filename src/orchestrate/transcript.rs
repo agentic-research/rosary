@@ -1,4 +1,5 @@
 //! Parse `.rsry-stream.jsonl` for fork-style context sharing.
+#![allow(dead_code)]
 //!
 //! Claude Code's fork subagent pattern: instead of summarizing what a worker did,
 //! pass the relevant parts of their actual transcript to the next worker.
@@ -201,7 +202,7 @@ fn summarize_tool_use(tool: &str, input: &serde_json::Value) -> String {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             let truncated = if cmd.len() > 80 {
-                format!("{}...", &cmd[..80])
+                format!("{}...", cmd.chars().take(80).collect::<String>())
             } else {
                 cmd.to_string()
             };

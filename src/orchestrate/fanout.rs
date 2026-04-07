@@ -1,4 +1,5 @@
 //! Parallel research fan-out for the scoping phase.
+#![allow(dead_code)]
 //!
 //! Instead of a single scoping-agent doing all research sequentially,
 //! fan out multiple read-only workers in parallel to explore different

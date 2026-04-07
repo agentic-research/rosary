@@ -42,7 +42,7 @@ impl Reconciler {
 
     /// Verify an agent's work and compute the pipeline decision.
     /// Returns (action, verify_summary) for the caller to execute.
-    fn verify_and_decide(
+    pub(super) fn verify_and_decide(
         &mut self,
         bead_id: &str,
         exit_success: bool,
@@ -323,7 +323,7 @@ impl Reconciler {
             // by orchestrator_tick() which calls on_worker_completed().
             if self.orchestrators.contains_key(bead_id.as_str()) {
                 // Feed the completion back to the orchestrator.
-                let (action, verify_summary) =
+                let (action, _verify_summary) =
                     self.verify_and_decide(bead_id, *exit_success, beads);
                 let passed = matches!(
                     action,

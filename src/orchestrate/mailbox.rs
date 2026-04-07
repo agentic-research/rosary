@@ -1,4 +1,5 @@
 //! File-based mailbox for mid-flight agent communication.
+#![allow(dead_code)]
 //!
 //! Each bead's workspace contains a `.rsry-mailbox.jsonl` file where the
 //! orchestrator and workers exchange messages during execution.

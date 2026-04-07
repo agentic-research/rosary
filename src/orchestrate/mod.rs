@@ -154,6 +154,7 @@ pub enum SessionDecision {
 /// - Send mid-flight messages via mailbox
 /// - Decide continue-vs-spawn for session reuse
 /// - Apply plan-mode approval gates
+#[allow(dead_code)]
 pub struct FeatureOrchestrator {
     /// The bead this orchestrator owns.
     pub bead_ref: BeadRef,
@@ -187,6 +188,7 @@ pub struct FeatureOrchestrator {
 
 /// Per-orchestrator behavior flags (from global OrchestrationConfig).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct OrchestratorBehavior {
     /// Enable synthesis LLM call between phases.
     pub synthesis: bool,
@@ -229,6 +231,7 @@ pub enum TickOutcome {
     WorkerCompleted { exit_success: bool },
     /// Orchestrator wants to advance to next pipeline phase.
     /// The reconciler should verify, then call `advance()`.
+    #[allow(dead_code)]
     ReadyToAdvance { next_agent: String },
     /// Pipeline is done — bead can be closed/PR'd.
     Terminal,
@@ -245,7 +248,7 @@ impl FeatureOrchestrator {
         work_dir: PathBuf,
         config: OrchestratorBehavior,
     ) -> Self {
-        let mailbox = mailbox::Mailbox::new(work_dir.join(".rsry-mailbox.jsonl"));
+        let mailbox = mailbox::Mailbox::new(&work_dir);
         Self {
             bead_ref,
             issue_type,
@@ -326,17 +329,9 @@ impl FeatureOrchestrator {
                         }
                     }
                 } else {
-                    // No handle yet — reconciler hasn't given us one.
-                    // Request spawn again.
-                    if let OrchestratorState::AwaitingWorker { ref agent, phase } = self.state {
-                        TickOutcome::NeedsSpawn {
-                            agent: agent.clone(),
-                            phase: *phase,
-                            session_decision: self.session_decision(agent),
-                        }
-                    } else {
-                        unreachable!()
-                    }
+                    // Handle is owned by the reconciler (self.active) — just wait.
+                    // The reconciler calls on_worker_completed() when the handle exits.
+                    TickOutcome::Idle
                 }
             }
 
@@ -349,9 +344,18 @@ impl FeatureOrchestrator {
             // Synthesis, PlanApproval, ResearchFanOut — these will be
             // implemented in later phases. For now, skip straight through.
             OrchestratorState::Synthesizing => {
-                // Synthesis not yet wired — advance to next spawn.
-                self.advance_to_next_phase();
-                self.tick() // re-enter with updated state
+                // Synthesis not yet wired. current_phase was already advanced by
+                // on_worker_completed before entering this state — don't increment
+                // again or we'd skip a pipeline phase.
+                if let Some(agent) = self.pipeline.get(self.current_phase).cloned() {
+                    self.state = OrchestratorState::AwaitingWorker {
+                        agent,
+                        phase: self.current_phase as u32,
+                    };
+                } else {
+                    self.state = OrchestratorState::Terminal;
+                }
+                self.tick()
             }
             OrchestratorState::PlanApproval { .. } => {
                 // Auto-approve for now.
@@ -415,6 +419,7 @@ impl FeatureOrchestrator {
     }
 
     /// Give the orchestrator a spawned worker handle.
+    #[allow(dead_code)]
     pub fn set_worker_handle(&mut self, handle: AgentHandle) {
         self.worker_handle = Some(handle);
     }
@@ -471,9 +476,6 @@ impl FeatureOrchestrator {
 
             // Scoping → dev: research explored the files, dev needs that context
             ("scoping-agent", "dev-agent") => SessionDecision::Continue,
-
-            // Dev → staging: fresh eyes for adversarial review
-            ("dev-agent", "staging-agent") => SessionDecision::SpawnFresh,
 
             // Default: spawn fresh for unrelated agents
             _ => SessionDecision::SpawnFresh,

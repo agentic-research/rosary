@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use crate::config::{self, OrchestrationConfig, RepoConfig};
 use crate::dispatch::{self, AgentHandle};
 use crate::epic;
-use crate::orchestrate::{FeatureOrchestrator, OrchestratorBehavior, OrchestratorState};
+use crate::orchestrate::FeatureOrchestrator;
 use crate::pipeline::PipelineEngine;
 use crate::queue::WorkQueue;
 use crate::scanner;
@@ -410,11 +410,12 @@ impl Reconciler {
             );
         }
 
+        // Recover orchestrators first — they claim their beads before the
+        // stuck-bead sweep runs, preventing accidental resets.
+        self.recover_orchestrators().await;
+
         // Recover beads stuck at 'dispatched' from previous crashed run
         self.recover_stuck_beads().await;
-
-        // Recover orchestrators from workspace directories (hierarchical mode)
-        self.recover_orchestrators().await;
 
         // Sweep orphaned workspaces from previous runs
         let repo_paths: Vec<PathBuf> = self.repo_info.values().map(|(p, _)| p.clone()).collect();

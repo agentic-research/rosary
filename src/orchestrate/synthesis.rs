@@ -1,4 +1,5 @@
 //! Context synthesis between pipeline phases.
+#![allow(dead_code)]
 //!
 //! The "never delegate understanding" pattern from Claude Code's coordinator mode.
 //! Instead of forwarding raw handoff JSON to the next agent, the orchestrator:
@@ -164,7 +165,7 @@ impl SynthesisContext {
                 TranscriptEntry::AssistantText { text, .. } => {
                     // Truncate long texts
                     let truncated = if text.len() > 500 {
-                        format!("{}...", &text[..500])
+                        format!("{}...", text.chars().take(500).collect::<String>())
                     } else {
                         text.clone()
                     };
