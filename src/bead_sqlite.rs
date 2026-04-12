@@ -429,7 +429,29 @@ impl BeadStore for SqliteBeadStore {
     }
 
     async fn update_status(&self, id: &str, status: &str) -> Result<()> {
+        use crate::bead::BeadState;
+        let next = BeadState::from(status);
         let conn = self.conn.lock().unwrap();
+        // Validate transition before writing. Read current status under the same lock
+        // so the check-then-act is atomic within this process.
+        let current_str: Option<String> = conn
+            .query_row(
+                "SELECT status FROM issues WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(ref cs) = current_str {
+            let current = BeadState::from(cs.as_str());
+            if !current.can_transition_to(next) {
+                return Err(anyhow::anyhow!(
+                    "invalid state transition: {} -> {} for bead {}",
+                    current,
+                    next,
+                    id
+                ));
+            }
+        }
         conn.execute(
             "UPDATE issues SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
             params![status, id],
