@@ -608,12 +608,29 @@ fn build_system_prompt_missing_agent_falls_back() {
     assert!(!prompt.contains("Agent Perspective"));
 }
 
+/// Finding #1: dispatch::agent_pipeline diverged from config::default_pipelines().
+/// CLI dispatch used to give dev-agent first for bugs; reconciler gives scoping-agent.
+/// A bug dispatched via CLI skipped the scoping phase entirely.
 #[test]
-fn default_agent_maps_issue_type() {
-    assert_eq!(default_agent("bug"), "dev-agent");
+fn default_agent_matches_pipeline_engine() {
+    use crate::config::default_pipelines;
+    use crate::pipeline::PipelineEngine;
+    let engine = PipelineEngine::new(default_pipelines(), None, 0);
+
+    // dispatch::default_agent must agree with PipelineEngine::default_agent for every type
+    for issue_type in &["bug", "feature", "task", "chore", "review", "epic"] {
+        assert_eq!(
+            default_agent(issue_type),
+            engine.default_agent(issue_type),
+            "dispatch::default_agent diverges from PipelineEngine for issue_type={issue_type}"
+        );
+    }
+    // Spot-check the values that were wrong before the fix
+    assert_eq!(default_agent("bug"), "scoping-agent", "bugs must start with scoping-agent");
+    assert_eq!(default_agent("feature"), "scoping-agent", "features must start with scoping-agent");
     assert_eq!(default_agent("review"), "staging-agent");
     assert_eq!(default_agent("epic"), "pm-agent");
-    assert_eq!(default_agent("xyz"), "dev-agent");
+    assert_eq!(default_agent("xyz"), "dev-agent"); // fallback
 }
 
 // -----------------------------------------------------------------------
