@@ -37,6 +37,9 @@ pub mod plan_gate;
 pub mod synthesis;
 pub mod transcript;
 
+#[cfg(test)]
+mod tests;
+
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
