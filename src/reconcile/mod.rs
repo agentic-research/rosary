@@ -461,13 +461,18 @@ impl Reconciler {
                         break;
                     }
 
+                    let target_repo = self
+                        .trackers
+                        .get(target.as_str())
+                        .map(|t| t.repo.clone())
+                        .unwrap_or_default();
                     let still_active = summary.dispatched > 0
-                        || self.queue.has_backoff(target)
+                        || self.queue.has_backoff(&target_repo, target)
                         || !self.active.is_empty();
 
                     if still_active {
                         let elapsed = start.elapsed();
-                        let reason = if self.queue.has_backoff(target) {
+                        let reason = if self.queue.has_backoff(&target_repo, target) {
                             "waiting for backoff"
                         } else {
                             "retry pass"
@@ -786,6 +791,20 @@ impl Reconciler {
         summary.passed += vr.passed;
         summary.failed += vr.failed;
         summary.deadlettered += vr.deadlettered;
+        summary.agent_closed += vr.agent_closed;
+
+        // Phase 5.5: FEATURE ASSEMBLY — when the last bead in a thread reaches
+        // pr_open, open the feature branch PR (feature/{thread} → default_branch).
+        // Dev PRs from this iteration that just landed are the trigger set.
+        let newly_pr_open: Vec<(String, String)> = vr
+            .status_updates
+            .iter()
+            .filter(|(_, _, status)| status == "pr_open")
+            .map(|(bead_id, repo, _)| (bead_id.clone(), repo.clone()))
+            .collect();
+        if !newly_pr_open.is_empty() {
+            self.assemble_feature_prs(&newly_pr_open).await;
+        }
 
         // Phase 6: PERSIST orchestrator state for crash recovery
         if self.is_hierarchical() && !self.orchestrators.is_empty() {

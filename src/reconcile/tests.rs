@@ -77,6 +77,7 @@ async fn severity_floor_blocks_p3_with_min_priority_2() {
         external_ref: None,
         files: Vec::new(),
         test_files: Vec::new(),
+        created_by: None,
     };
 
     let config = ReconcilerConfig::default();
@@ -221,6 +222,7 @@ async fn failed_bead_retries_despite_same_generation() {
     );
     // Record backoff (retry is pending)
     r.queue.record_backoff(
+        "test",
         "x",
         1,
         std::time::Instant::now() - std::time::Duration::from_secs(60),
@@ -247,10 +249,11 @@ async fn failed_bead_retries_despite_same_generation() {
         branch: None,
         pr_url: None,
         jj_change_id: None,
+        created_by: None,
     };
 
     // The bead should still be triageable despite same generation
-    let retries = r.queue.retries(&bead.id);
+    let retries = r.queue.retries(&bead.repo, &bead.id);
     assert_eq!(retries, 1, "should have 1 retry recorded");
 
     // Check: tracker has same generation, but retries > 0
@@ -294,6 +297,7 @@ fn blocked_bead_filtered_by_triage() {
         external_ref: None,
         files: Vec::new(),
         test_files: Vec::new(),
+        created_by: None,
     };
 
     // is_blocked returns true for open beads with deps
@@ -329,6 +333,7 @@ fn self_managed_repo_gets_score_boost() {
         external_ref: None,
         files: Vec::new(),
         test_files: Vec::new(),
+        created_by: None,
     };
 
     let base_score = queue::triage_score(&bead, 0, now);

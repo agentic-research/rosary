@@ -414,6 +414,9 @@ async fn tool_bead_create(
         })
         .unwrap_or_default();
 
+    // Capture git username from the repo's git config for creator attribution.
+    let created_by = crate::git_config_user_name(std::path::Path::new(repo_path));
+
     // Single transaction: INSERT + assignee + files + deps → one dolt commit
     client
         .create_bead_full(
@@ -426,6 +429,7 @@ async fn tool_bead_create(
             &files,
             &test_files,
             &depends_on,
+            created_by.as_deref(),
         )
         .await?;
 
@@ -563,7 +567,11 @@ async fn tool_bead_close(
     // Unregister the session so rsry_active stops showing it.
     // Best-effort — session may not exist if bead was closed manually.
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {
-        let _ = registry.unregister(id);
+        let repo = std::path::Path::new(repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let _ = registry.unregister(id, repo);
     }
 
     Ok(json!({ "id": id, "status": "closed" }))
@@ -596,7 +604,11 @@ async fn tool_bead_comment(
 
     // Update session registry so rsry_active shows last activity
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {
-        let _ = registry.touch(id, body);
+        let repo = std::path::Path::new(repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let _ = registry.touch(id, repo, body);
     }
 
     Ok(json!({ "id": id, "comment_added": true }))
@@ -998,7 +1010,11 @@ async fn tool_workspace_merge(args: &Value) -> Result<Value> {
 
     // Unregister the session after merge — agent is done, work is landed.
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {
-        let _ = registry.unregister(bead_id);
+        let repo = std::path::Path::new(repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let _ = registry.unregister(bead_id, repo);
     }
 
     Ok(json!({

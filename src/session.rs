@@ -80,16 +80,18 @@ impl SessionRegistry {
     /// Register a new session.
     #[allow(dead_code)] // Used by reconciler path
     pub fn register(&mut self, entry: SessionEntry) -> Result<()> {
-        // Remove any stale entry for the same bead
-        self.sessions.retain(|s| s.bead_id != entry.bead_id);
+        // Remove any stale entry for the same (repo, bead) pair
+        self.sessions
+            .retain(|s| !(s.bead_id == entry.bead_id && s.repo == entry.repo));
         self.sessions.push(entry);
         self.save()
     }
 
-    /// Remove a session by bead ID.
+    /// Remove a session by bead ID and repo.
     #[allow(dead_code)] // Used by reconciler on completion
-    pub fn unregister(&mut self, bead_id: &str) -> Result<()> {
-        self.sessions.retain(|s| s.bead_id != bead_id);
+    pub fn unregister(&mut self, bead_id: &str, repo: &str) -> Result<()> {
+        self.sessions
+            .retain(|s| !(s.bead_id == bead_id && s.repo == repo));
         self.save()
     }
 
@@ -102,8 +104,12 @@ impl SessionRegistry {
     }
 
     /// Record activity for a session (called on bead_comment).
-    pub fn touch(&mut self, bead_id: &str, comment: &str) -> Result<()> {
-        if let Some(session) = self.sessions.iter_mut().find(|s| s.bead_id == bead_id) {
+    pub fn touch(&mut self, bead_id: &str, repo: &str, comment: &str) -> Result<()> {
+        if let Some(session) = self
+            .sessions
+            .iter_mut()
+            .find(|s| s.bead_id == bead_id && s.repo == repo)
+        {
             session.last_activity = Some(chrono::Utc::now());
             session.last_comment = Some(comment.chars().take(200).collect());
             self.save()?;

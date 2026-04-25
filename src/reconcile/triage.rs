@@ -42,7 +42,7 @@ impl Reconciler {
             if self.active.contains_key(&bead.id) {
                 continue;
             }
-            if self.queue.is_deadlettered(&bead.id) {
+            if self.queue.is_deadlettered(&bead.repo, &bead.id) {
                 continue;
             }
 
@@ -108,7 +108,8 @@ impl Reconciler {
                 .iter()
                 .filter(|other| other.id != bead.id)
                 .filter(|other| {
-                    self.active.contains_key(&other.id) || self.queue.contains(&other.id)
+                    self.active.contains_key(&other.id)
+                        || self.queue.contains(&other.repo, &other.id)
                 })
                 .collect();
             if let Some(dominator) = epic::is_dominated_by(bead, &active_beads) {
@@ -128,7 +129,7 @@ impl Reconciler {
                 continue;
             }
 
-            let retries = self.queue.retries(&bead.id);
+            let retries = self.queue.retries(&bead.repo, &bead.id);
             let score = if target_filter.is_some() {
                 // Targeted dispatch: force max score to bypass threshold
                 1.0
