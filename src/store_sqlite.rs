@@ -243,6 +243,7 @@ impl HierarchyStore for SqliteBackend {
         let rows = stmt.query_map(params![thread_id], |row| {
             Ok(BeadRef {
                 repo: row.get(0)?,
+                scope: String::new(),
                 bead_id: row.get(1)?,
             })
         })?;
@@ -424,10 +425,12 @@ impl LinkageStore for SqliteBackend {
             Ok(CrossRepoDep {
                 from: BeadRef {
                     repo: row.get(0)?,
+                    scope: String::new(),
                     bead_id: row.get(1)?,
                 },
                 to: BeadRef {
                     repo: row.get(2)?,
+                    scope: String::new(),
                     bead_id: row.get(3)?,
                 },
                 dep_type: row.get(4)?,
@@ -446,10 +449,12 @@ impl LinkageStore for SqliteBackend {
             Ok(CrossRepoDep {
                 from: BeadRef {
                     repo: row.get(0)?,
+                    scope: String::new(),
                     bead_id: row.get(1)?,
                 },
                 to: BeadRef {
                     repo: row.get(2)?,
+                    scope: String::new(),
                     bead_id: row.get(3)?,
                 },
                 dep_type: row.get(4)?,
@@ -477,6 +482,7 @@ impl LinkageStore for SqliteBackend {
         Ok(rows.next()?.map(|row| LinearLink {
             bead_ref: BeadRef {
                 repo: row.get(0).unwrap(),
+                scope: String::new(),
                 bead_id: row.get(1).unwrap(),
             },
             linear_id: row.get(2).unwrap(),
@@ -553,6 +559,7 @@ impl BackendExport for SqliteBackend {
                 row.get::<_, String>(0)?,
                 BeadRef {
                     repo: row.get(1)?,
+                    scope: String::new(),
                     bead_id: row.get(2)?,
                 },
             ))
@@ -580,10 +587,12 @@ impl BackendExport for SqliteBackend {
             Ok(CrossRepoDep {
                 from: BeadRef {
                     repo: row.get(0)?,
+                    scope: String::new(),
                     bead_id: row.get(1)?,
                 },
                 to: BeadRef {
                     repo: row.get(2)?,
+                    scope: String::new(),
                     bead_id: row.get(3)?,
                 },
                 dep_type: row.get(4)?,
@@ -601,6 +610,7 @@ impl BackendExport for SqliteBackend {
             Ok(LinearLink {
                 bead_ref: BeadRef {
                     repo: row.get(0)?,
+                    scope: String::new(),
                     bead_id: row.get(1)?,
                 },
                 linear_id: row.get(2)?,
@@ -635,6 +645,7 @@ fn row_to_pipeline(row: &rusqlite::Row) -> rusqlite::Result<PipelineState> {
     Ok(PipelineState {
         bead_ref: BeadRef {
             repo: row.get(0)?,
+            scope: String::new(),
             bead_id: row.get(1)?,
         },
         pipeline_phase: row.get::<_, u8>(2)?,
@@ -659,6 +670,7 @@ fn row_to_dispatch(row: &rusqlite::Row) -> rusqlite::Result<DispatchRecord> {
         id: row.get(0)?,
         bead_ref: BeadRef {
             repo: row.get(1)?,
+            scope: String::new(),
             bead_id: row.get(2)?,
         },
         agent: row.get(3)?,
@@ -701,6 +713,7 @@ mod tests {
         let bead = BeadRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
         let state = PipelineState {
             bead_ref: bead.clone(),
@@ -731,6 +744,7 @@ mod tests {
             bead_ref: BeadRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-001".into(),
+                scope: String::new(),
             },
             agent: "dev-agent".into(),
             provider: "claude".into(),
@@ -778,6 +792,7 @@ mod tests {
         let bead = BeadRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
         store
             .add_bead_to_thread("ADR-001/impl", &bead)
@@ -795,10 +810,12 @@ mod tests {
         let from = BeadRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
         let to = BeadRef {
             repo: "mache".into(),
             bead_id: "mch-001".into(),
+            scope: String::new(),
         };
 
         store
@@ -901,6 +918,7 @@ mod tests {
                     bead_ref: BeadRef {
                         repo: "rosary".into(),
                         bead_id: format!("rsry-{i:03}"),
+                        scope: String::new(),
                     },
                     pipeline_phase: 0,
                     pipeline_agent: "dev-agent".into(),
@@ -924,6 +942,7 @@ mod tests {
         let bead = BeadRef {
             repo: "rosary".into(),
             bead_id: "rsry-bo".into(),
+            scope: String::new(),
         };
         store
             .upsert_pipeline(&PipelineState {
@@ -954,6 +973,7 @@ mod tests {
             bead_ref: BeadRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-001".into(),
+                scope: String::new(),
             },
             agent: "dev-agent".into(),
             provider: "claude".into(),
@@ -1039,6 +1059,7 @@ mod tests {
             bead_ref: BeadRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-crashed".into(),
+                scope: String::new(),
             },
             agent: "dev-agent".into(),
             provider: "claude".into(),

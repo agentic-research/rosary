@@ -290,6 +290,7 @@ fn build_prompt_includes_title_and_description() {
         files: Vec::new(),
         test_files: Vec::new(),
         created_by: None,
+        scope: String::new(),
     };
 
     let prompt = build_prompt(&bead, "/tmp/test-repo", None, None);
@@ -346,6 +347,7 @@ fn build_prompt_uses_workspace_for_repo_line() {
         files: Vec::new(),
         test_files: Vec::new(),
         created_by: None,
+        scope: String::new(),
     };
 
     let ws = PathBuf::from("/home/user/.rsry/worktrees/myrepo/iso-1");
@@ -391,6 +393,7 @@ fn build_prompt_varies_framing_by_agent() {
         files: Vec::new(),
         test_files: Vec::new(),
         created_by: None,
+        scope: String::new(),
     };
 
     // Default (dev-agent) framing

@@ -430,6 +430,7 @@ async fn tool_bead_create(
             &test_files,
             &depends_on,
             created_by.as_deref(),
+            "",
         )
         .await?;
 
@@ -1145,6 +1146,7 @@ pub(crate) async fn tool_pipeline_upsert(
     let state = PipelineState {
         bead_ref: BeadRef {
             repo: repo.to_string(),
+            scope: String::new(),
             bead_id: bead_id.to_string(),
         },
         pipeline_phase,
@@ -1179,6 +1181,7 @@ async fn tool_pipeline_query(args: &Value, backend: Option<&dyn BackendStore>) -
         (Some(repo), Some(bead_id)) => {
             let bead_ref = BeadRef {
                 repo: repo.to_string(),
+                scope: String::new(),
                 bead_id: bead_id.to_string(),
             };
             let pipeline = backend.get_pipeline(&bead_ref).await?;
@@ -1243,6 +1246,7 @@ async fn tool_dispatch_record(args: &Value, backend: Option<&dyn BackendStore>) 
         id: id.to_string(),
         bead_ref: BeadRef {
             repo: repo.to_string(),
+            scope: String::new(),
             bead_id: bead_id.to_string(),
         },
         agent: agent.to_string(),
@@ -1349,6 +1353,7 @@ async fn tool_thread_list(args: &Value, backend: Option<&dyn BackendStore>) -> R
     ) {
         let bead_ref = crate::store::BeadRef {
             repo: repo.to_string(),
+            scope: String::new(),
             bead_id: bead_id.to_string(),
         };
         let thread_id = backend.find_thread_for_bead(&bead_ref).await?;
@@ -1414,6 +1419,7 @@ async fn tool_thread_assign(args: &Value, backend: Option<&dyn BackendStore>) ->
 
     let bead_ref = BeadRef {
         repo: repo.to_string(),
+        scope: String::new(),
         bead_id: bead_id.to_string(),
     };
     backend.add_bead_to_thread(thread_id, &bead_ref).await?;

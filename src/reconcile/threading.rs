@@ -48,6 +48,7 @@ impl Reconciler {
                         .find(|b| b.id == *bid)
                         .map(|b| b.repo.clone())
                         .unwrap_or_default(),
+                    scope: String::new(),
                     bead_id: bid.clone(),
                 };
                 if let Ok(Some(_)) = hierarchy.find_thread_for_bead(&bead_ref).await {
@@ -108,6 +109,7 @@ impl Reconciler {
                         .find(|b| b.id == *bid)
                         .map(|b| b.repo.clone())
                         .unwrap_or_default(),
+                    scope: String::new(),
                     bead_id: bid.clone(),
                 };
                 let _ = hierarchy.add_bead_to_thread(&thread_id, &bead_ref).await;
@@ -135,6 +137,7 @@ impl Reconciler {
         for bead in beads {
             let bead_ref = crate::store::BeadRef {
                 repo: bead.repo.clone(),
+                scope: String::new(),
                 bead_id: bead.id.clone(),
             };
             if let Ok(Some(thread_id)) = hierarchy.find_thread_for_bead(&bead_ref).await {
@@ -190,6 +193,7 @@ impl Reconciler {
             for (bead_id, repo) in newly_pr_open {
                 let bead_ref = crate::store::BeadRef {
                     repo: repo.clone(),
+                    scope: String::new(),
                     bead_id: bead_id.clone(),
                 };
                 if let Ok(Some(thread_id)) = hierarchy.find_thread_for_bead(&bead_ref).await

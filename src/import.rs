@@ -98,6 +98,7 @@ pub async fn import_bead(
             &test_files,
             &[],
             None,
+            "",
         )
         .await?;
 

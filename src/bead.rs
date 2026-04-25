@@ -224,6 +224,10 @@ pub struct Bead {
     /// Not included in generation() — metadata, not semantic content.
     #[serde(default)]
     pub created_by: Option<String>,
+    /// Team/folder scope within a monorepo (e.g. "auth", "payments/core").
+    /// Empty string for cross-repo and single-team repos — backward compatible.
+    #[serde(default)]
+    pub scope: String,
 }
 
 impl Bead {
@@ -320,6 +324,7 @@ impl Bead {
                 })
                 .unwrap_or_default(),
             created_by: None,
+            scope: String::new(),
         })
     }
 

@@ -90,6 +90,7 @@ pub fn make_bead(id: &str, issue_type: &str, repo: &str) -> crate::bead::Bead {
         files: Vec::new(),
         test_files: Vec::new(),
         created_by: None,
+        scope: String::new(),
     }
 }
 

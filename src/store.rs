@@ -22,6 +22,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BeadRef {
     pub repo: String,
+    /// Team/folder scope within a monorepo (e.g. "auth", "payments/core").
+    /// Empty string for cross-repo and single-team repos — backward compatible.
+    // TODO(rosary-scope): rename BeadRef → WorkRef when scope usage is widespread
+    #[serde(default)]
+    pub scope: String,
     pub bead_id: String,
 }
 
@@ -217,6 +222,7 @@ pub trait BeadStore: Send + Sync {
         test_files: &[String],
         depends_on: &[String],
         created_by: Option<&str>,
+        scope: &str,
     ) -> Result<()>;
 
     // ── Field updates ──
@@ -575,10 +581,12 @@ mod tests {
         let bead1 = BeadRef {
             repo: "rosary".into(),
             bead_id: "rsry-abc".into(),
+            scope: String::new(),
         };
         let bead2 = BeadRef {
             repo: "mache".into(),
             bead_id: "mch-def".into(),
+            scope: String::new(),
         };
 
         store
@@ -605,6 +613,7 @@ mod tests {
             .find_thread_for_bead(&BeadRef {
                 repo: "x".into(),
                 bead_id: "y".into(),
+                scope: String::new(),
             })
             .await
             .unwrap();
@@ -619,6 +628,7 @@ mod tests {
         let bead = BeadRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
         let state = PipelineState {
             bead_ref: bead.clone(),
@@ -664,6 +674,7 @@ mod tests {
             bead_ref: BeadRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-001".into(),
+                scope: String::new(),
             },
             agent: "dev-agent".into(),
             provider: "claude".into(),
@@ -696,6 +707,7 @@ mod tests {
             bead_ref: BeadRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-002".into(),
+                scope: String::new(),
             },
             agent: "dev-agent".into(),
             provider: "claude".into(),
@@ -736,6 +748,7 @@ mod tests {
             bead_ref: BeadRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-001".into(),
+                scope: String::new(),
             },
             agent: "dev-agent".into(),
             provider: "claude".into(),
@@ -770,10 +783,12 @@ mod tests {
         let from = BeadRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
         let to = BeadRef {
             repo: "mache".into(),
             bead_id: "mch-001".into(),
+            scope: String::new(),
         };
 
         let dep = CrossRepoDep {
@@ -801,6 +816,7 @@ mod tests {
             bead_ref: BeadRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-001".into(),
+                scope: String::new(),
             },
             linear_id: "AGE-330".into(),
             linear_type: "issue".into(),

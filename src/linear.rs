@@ -541,6 +541,7 @@ pub async fn sync(
         let parent_linear_uuid: Option<String> = if let Some(hier) = hierarchy {
             let bead_ref = crate::store::BeadRef {
                 repo: bead.repo.clone(),
+                scope: String::new(),
                 bead_id: bead.id.clone(),
             };
             if let Ok(Some(thread_id)) = hier.find_thread_for_bead(&bead_ref).await {
@@ -589,6 +590,7 @@ pub async fn sync(
                     if let Some(hier) = hierarchy {
                         let bead_ref = crate::store::BeadRef {
                             repo: bead.repo.clone(),
+                            scope: String::new(),
                             bead_id: bead.id.clone(),
                         };
                         if let Ok(Some(thread_id)) = hier.find_thread_for_bead(&bead_ref).await

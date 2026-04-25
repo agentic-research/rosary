@@ -49,6 +49,11 @@ const MIGRATIONS: &[Migration] = &[
         sql: "ALTER TABLE issues ADD COLUMN created_by VARCHAR(255) DEFAULT NULL",
         description: "Git username of bead creator captured at creation time",
     },
+    Migration {
+        version: "004_add_scope",
+        sql: "ALTER TABLE issues ADD COLUMN scope VARCHAR(255) NOT NULL DEFAULT ''",
+        description: "Team/folder scope for monorepo multi-team contexts",
+    },
 ];
 
 impl DoltClient {

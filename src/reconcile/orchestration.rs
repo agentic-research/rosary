@@ -46,6 +46,7 @@ impl Reconciler {
     ) {
         let bead_ref = BeadRef {
             repo: repo.to_string(),
+            scope: String::new(),
             bead_id: bead_id.to_string(),
         };
         let pipeline = self.pipeline.agents_for(issue_type);
@@ -146,6 +147,7 @@ impl Reconciler {
                                     id: dispatch_id.clone(),
                                     bead_ref: BeadRef {
                                         repo: bead.repo.clone(),
+                                        scope: String::new(),
                                         bead_id: bead_id.clone(),
                                     },
                                     agent: agent.clone(),
@@ -240,6 +242,7 @@ impl Reconciler {
                     self.cleanup_workspace(&bead_id);
                     let bead_ref = BeadRef {
                         repo: repo.clone(),
+                        scope: String::new(),
                         bead_id: bead_id.clone(),
                     };
                     self.pipeline.clear_state(&bead_ref).await;

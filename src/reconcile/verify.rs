@@ -179,6 +179,7 @@ impl Reconciler {
                 self.cleanup_workspace(bead_id);
                 let bead_ref = BeadRef {
                     repo: repo.to_string(),
+                    scope: String::new(),
                     bead_id: bead_id.to_string(),
                 };
                 self.pipeline.clear_state(&bead_ref).await;
@@ -269,6 +270,7 @@ impl Reconciler {
 
         let bead_ref = BeadRef {
             repo: repo.to_string(),
+            scope: String::new(),
             bead_id: bead_id.to_string(),
         };
         self.pipeline
@@ -610,6 +612,7 @@ impl Reconciler {
                         files: Vec::new(),
                         test_files: Vec::new(),
                         created_by: None,
+                        scope: String::new(),
                     };
                     if let Some(client) = self.dolt_client(&repo).await
                         && let Ok(Some(full)) = client.get_bead(bead_id, &repo).await
@@ -641,6 +644,7 @@ impl Reconciler {
                                 id: new_dispatch_id.clone(),
                                 bead_ref: crate::store::BeadRef {
                                     repo: repo.clone(),
+                                    scope: String::new(),
                                     bead_id: bead_id.clone(),
                                 },
                                 agent: next_agent.clone(),

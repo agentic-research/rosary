@@ -365,6 +365,7 @@ impl HierarchyStore for DoltBackend {
             .iter()
             .map(|r| BeadRef {
                 repo: r.get("repo"),
+                scope: String::new(),
                 bead_id: r.get("bead_id"),
             })
             .collect())
@@ -632,6 +633,7 @@ impl LinkageStore for DoltBackend {
         Ok(row.map(|r| LinearLink {
             bead_ref: BeadRef {
                 repo: r.get("repo"),
+                scope: String::new(),
                 bead_id: r.get("bead_id"),
             },
             linear_id: r.get("linear_id"),
@@ -694,6 +696,7 @@ fn row_to_pipeline_state(r: &sqlx_mysql::MySqlRow) -> PipelineState {
     PipelineState {
         bead_ref: BeadRef {
             repo: r.get("repo"),
+            scope: String::new(),
             bead_id: r.get("bead_id"),
         },
         pipeline_phase: r.try_get::<u8, _>("pipeline_phase").unwrap_or(0),
@@ -718,6 +721,7 @@ fn row_to_dispatch_record(r: &sqlx_mysql::MySqlRow) -> DispatchRecord {
         id: r.get("id"),
         bead_ref: BeadRef {
             repo: r.get("repo"),
+            scope: String::new(),
             bead_id: r.get("bead_id"),
         },
         agent: r.get("agent"),
@@ -740,10 +744,12 @@ fn row_to_cross_repo_dep(r: &sqlx_mysql::MySqlRow) -> CrossRepoDep {
     CrossRepoDep {
         from: BeadRef {
             repo: r.get("from_repo"),
+            scope: String::new(),
             bead_id: r.get("from_bead"),
         },
         to: BeadRef {
             repo: r.get("to_repo"),
+            scope: String::new(),
             bead_id: r.get("to_bead"),
         },
         dep_type: r.get("dep_type"),
@@ -784,6 +790,7 @@ impl BackendExport for DoltBackend {
                     r.get::<String, _>("thread_id"),
                     BeadRef {
                         repo: r.get("repo"),
+                        scope: String::new(),
                         bead_id: r.get("bead_id"),
                     },
                 )
@@ -822,6 +829,7 @@ impl BackendExport for DoltBackend {
             .map(|r| LinearLink {
                 bead_ref: BeadRef {
                     repo: r.get("repo"),
+                    scope: String::new(),
                     bead_id: r.get("bead_id"),
                 },
                 linear_id: r.get("linear_id"),
@@ -933,6 +941,7 @@ mod tests {
         let bead = BeadRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
         backend
             .add_bead_to_thread("ADR-003/impl", &bead)
@@ -995,10 +1004,12 @@ mod tests {
         let from = BeadRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
         let to = BeadRef {
             repo: "mache".into(),
             bead_id: "mch-001".into(),
+            scope: String::new(),
         };
         let dep = CrossRepoDep {
             from: from.clone(),

@@ -728,6 +728,7 @@ impl Reconciler {
                             id: dispatch_id.clone(),
                             bead_ref: BeadRef {
                                 repo: entry.repo.clone(),
+                                scope: String::new(),
                                 bead_id: entry.bead_id.clone(),
                             },
                             agent: dispatch_bead
@@ -771,6 +772,7 @@ impl Reconciler {
                         // Persist initial pipeline state to backend store
                         let bead_ref = BeadRef {
                             repo: entry.repo.clone(),
+                            scope: String::new(),
                             bead_id: entry.bead_id.clone(),
                         };
                         let pipeline_state =

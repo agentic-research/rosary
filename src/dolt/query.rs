@@ -100,6 +100,7 @@ impl DoltClient {
                     files,
                     test_files,
                     created_by: None,
+                    scope: String::new(),
                 }
             })
             .collect();
@@ -187,6 +188,7 @@ impl DoltClient {
                 files: Vec::new(),
                 test_files: Vec::new(),
                 created_by: None,
+                scope: String::new(),
             })
             .collect();
 

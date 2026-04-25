@@ -694,6 +694,7 @@ async fn main() -> Result<()> {
                                 &[],
                                 &[], // TODO: populate from thread ordering
                                 None,
+                                "",
                             )
                             .await?;
                         created += 1;
@@ -746,6 +747,7 @@ async fn main() -> Result<()> {
                             &test_files,
                             &[], // CLI doesn't support depends_on yet
                             created_by.as_deref(),
+                            "",
                         )
                         .await?;
                     cli::bead_created(&id, &title);

@@ -331,6 +331,7 @@ mod tests {
         let bead = BeadRef {
             repo: "rosary".into(),
             bead_id: "b1".into(),
+            scope: String::new(),
         };
         store.add_bead_to_thread("t1", &bead).await.unwrap();
 
@@ -372,6 +373,7 @@ mod tests {
         let dep_target = BeadRef {
             repo: "mache".into(),
             bead_id: "m1".into(),
+            scope: String::new(),
         };
         store
             .add_dependency(&CrossRepoDep {
@@ -438,6 +440,7 @@ mod tests {
         let bead = BeadRef {
             repo: "rosary".into(),
             bead_id: "b1".into(),
+            scope: String::new(),
         };
         store.add_bead_to_thread("t1", &bead).await.unwrap();
         store
@@ -476,6 +479,7 @@ mod tests {
                 to: BeadRef {
                     repo: "mache".into(),
                     bead_id: "m1".into(),
+                    scope: String::new(),
                 },
                 dep_type: "blocks".into(),
             })

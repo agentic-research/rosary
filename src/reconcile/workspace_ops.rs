@@ -106,6 +106,7 @@ impl Reconciler {
             if let Some(ref hierarchy) = self.hierarchy {
                 let bead_ref = BeadRef {
                     repo: repo.clone(),
+                    scope: String::new(),
                     bead_id: bead_id.to_string(),
                 };
                 if let Ok(Some(tid)) = hierarchy.find_thread_for_bead(&bead_ref).await {
@@ -165,6 +166,7 @@ impl Reconciler {
             let thread_base: Option<String> = if let Some(ref hierarchy) = self.hierarchy {
                 let bead_ref = BeadRef {
                     repo: repo.clone(),
+                    scope: String::new(),
                     bead_id: bead_id.to_string(),
                 };
                 if let Ok(Some(thread_id)) = hierarchy.find_thread_for_bead(&bead_ref).await {

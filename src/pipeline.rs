@@ -428,6 +428,7 @@ mod tests {
         let bead_ref = BeadRef {
             repo: "test-repo".into(),
             bead_id: "test-001".into(),
+            scope: String::new(),
         };
         let state = e.initial_state(bead_ref.clone(), "bug");
         assert_eq!(state.pipeline_agent, "scoping-agent");

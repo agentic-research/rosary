@@ -59,6 +59,7 @@ impl DoltClient {
                     files,
                     test_files,
                     created_by: None,
+                    scope: String::new(),
                 }
             })
             .collect();
@@ -131,6 +132,7 @@ impl DoltClient {
                             files,
                             test_files,
                             created_by: None,
+                            scope: String::new(),
                         }
                     })
                     .collect())
@@ -183,6 +185,7 @@ impl DoltClient {
                 files,
                 test_files,
                 created_by: None,
+                scope: String::new(),
             }
         }))
     }
@@ -264,6 +267,7 @@ impl DoltClient {
         test_files: &[String],
         depends_on: &[String],
         created_by: Option<&str>,
+        scope: &str,
     ) -> Result<()> {
         let mut tx = self
             .pool
@@ -273,8 +277,8 @@ impl DoltClient {
 
         // 1. Insert the bead
         query(
-            r#"INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_by, created_at, updated_at)
-               VALUES (?, ?, ?, '', '', '', 'open', ?, ?, ?, NOW(), NOW())"#,
+            r#"INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_by, scope, created_at, updated_at)
+               VALUES (?, ?, ?, '', '', '', 'open', ?, ?, ?, ?, NOW(), NOW())"#,
         )
         .bind(id)
         .bind(title)
@@ -282,6 +286,7 @@ impl DoltClient {
         .bind(priority as i32)
         .bind(issue_type)
         .bind(created_by)
+        .bind(scope)
         .execute(&mut *tx)
         .await
         .with_context(|| format!("creating bead {id}"))?;

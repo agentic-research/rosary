@@ -208,6 +208,7 @@ impl Reconciler {
                 // Now clear pipeline state
                 let bead_ref = crate::store::BeadRef {
                     repo: bead.repo.clone(),
+                    scope: String::new(),
                     bead_id: bead.id.clone(),
                 };
                 self.pipeline.clear_state(&bead_ref).await;
