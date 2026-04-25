@@ -99,6 +99,7 @@ impl DoltClient {
                     external_ref: row.try_get("external_ref").ok(),
                     files,
                     test_files,
+                    created_by: None,
                 }
             })
             .collect();
@@ -185,6 +186,7 @@ impl DoltClient {
                 external_ref: row.try_get("external_ref").ok(),
                 files: Vec::new(),
                 test_files: Vec::new(),
+                created_by: None,
             })
             .collect();
 

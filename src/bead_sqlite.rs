@@ -80,6 +80,7 @@ fn bead_from_row(row: &rusqlite::Row<'_>, repo_name: &str) -> rusqlite::Result<B
         external_ref: row.get("external_ref")?,
         files,
         test_files,
+        created_by: row.get::<_, Option<String>>("created_by").unwrap_or(None),
     })
 }
 
@@ -137,6 +138,9 @@ impl SqliteBeadStore {
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA)?;
+        // Additive migration: safe on existing databases.
+        // Fails silently if the column already exists.
+        let _ = conn.execute_batch("ALTER TABLE issues ADD COLUMN created_by TEXT");
         Ok(SqliteBeadStore {
             conn: Mutex::new(conn),
             path: path.to_path_buf(),
@@ -158,6 +162,7 @@ CREATE TABLE IF NOT EXISTS issues (
     assignee TEXT,
     external_ref TEXT,
     user_id TEXT,
+    created_by TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -190,6 +195,7 @@ CREATE TABLE IF NOT EXISTS events (
 const LIST_BEADS_SQL: &str = "
 SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
        i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+       i.created_by,
        COALESCE(dep.cnt, 0) as dep_count,
        COALESCE(deps.cnt, 0) as dependency_count,
        COALESCE(cmt.cnt, 0) as comment_count
@@ -260,6 +266,7 @@ impl BeadStore for SqliteBeadStore {
         let mut stmt = conn.prepare(
             "SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                     i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                    i.created_by,
                     (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
                     (SELECT COUNT(*) FROM dependencies d
                             JOIN issues dep_i ON dep_i.id = d.depends_on_id
@@ -304,14 +311,15 @@ impl BeadStore for SqliteBeadStore {
         files: &[String],
         test_files: &[String],
         depends_on: &[String],
+        created_by: Option<&str>,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
 
         tx.execute(
-            "INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_at, updated_at)
-             VALUES (?1, ?2, ?3, '', '', '', 'open', ?4, ?5, datetime('now'), datetime('now'))",
-            params![id, title, description, priority as i32, issue_type],
+            "INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_by, created_at, updated_at)
+             VALUES (?1, ?2, ?3, '', '', '', 'open', ?4, ?5, ?6, datetime('now'), datetime('now'))",
+            params![id, title, description, priority as i32, issue_type, created_by],
         )?;
 
         tx.execute(
@@ -740,6 +748,7 @@ mod tests {
                 &["src/main.rs".into()],
                 &["src/main_test.rs".into()],
                 &["dep-1".into()],
+                Some("test-user"),
             )
             .await
             .unwrap();

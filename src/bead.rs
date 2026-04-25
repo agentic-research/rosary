@@ -219,6 +219,11 @@ pub struct Bead {
     /// Test files to validate the change.
     #[serde(default)]
     pub test_files: Vec<String>,
+    /// Git username of the creator (from `git config user.name` at creation time).
+    /// None if created in a non-git context or if git config is absent.
+    /// Not included in generation() — metadata, not semantic content.
+    #[serde(default)]
+    pub created_by: Option<String>,
 }
 
 impl Bead {
@@ -314,6 +319,7 @@ impl Bead {
                         .collect()
                 })
                 .unwrap_or_default(),
+            created_by: None,
         })
     }
 

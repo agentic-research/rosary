@@ -304,6 +304,21 @@ pub fn generate_bead_id(prefix: &str) -> String {
     format!("{prefix}-{:06x}", millis & 0xffffff)
 }
 
+/// Capture git username from `git config user.name` at bead creation time.
+/// Returns None if git is not available or user.name is not set.
+/// Imprecise (self-reported) but Good Enough for team attribution.
+fn git_config_user_name(repo_root: &Path) -> Option<String> {
+    std::process::Command::new("git")
+        .args(["config", "user.name"])
+        .current_dir(repo_root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Resolve the .beads/ directory for a repo, handling git/jj worktrees.
 /// In a worktree, .beads/ lives in the main worktree — resolve via git commondir.
 pub fn resolve_beads_dir(repo_root: &Path) -> PathBuf {
@@ -678,6 +693,7 @@ async fn main() -> Result<()> {
                                 &[], // TODO: populate from BeadSpec.references
                                 &[],
                                 &[], // TODO: populate from thread ordering
+                                None,
                             )
                             .await?;
                         created += 1;
@@ -717,6 +733,7 @@ async fn main() -> Result<()> {
                     }
                     let id = generate_bead_id(&repo_name);
                     let owner = dispatch::default_agent(&issue_type);
+                    let created_by = git_config_user_name(&repo_root);
                     client
                         .create_bead_full(
                             &id,
@@ -728,6 +745,7 @@ async fn main() -> Result<()> {
                             &files,
                             &test_files,
                             &[], // CLI doesn't support depends_on yet
+                            created_by.as_deref(),
                         )
                         .await?;
                     cli::bead_created(&id, &title);

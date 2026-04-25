@@ -147,6 +147,7 @@ mod tests {
             external_ref: ext_ref.map(|s| s.to_string()),
             files: Vec::new(),
             test_files: Vec::new(),
+            created_by: None,
         }
     }
 

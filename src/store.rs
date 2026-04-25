@@ -216,6 +216,7 @@ pub trait BeadStore: Send + Sync {
         files: &[String],
         test_files: &[String],
         depends_on: &[String],
+        created_by: Option<&str>,
     ) -> Result<()>;
 
     // ── Field updates ──

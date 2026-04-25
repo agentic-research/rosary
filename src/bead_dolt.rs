@@ -58,6 +58,7 @@ impl BeadStore for DoltBeadStore {
         files: &[String],
         test_files: &[String],
         depends_on: &[String],
+        created_by: Option<&str>,
     ) -> Result<()> {
         self.client
             .create_bead_full(
@@ -70,6 +71,7 @@ impl BeadStore for DoltBeadStore {
                 files,
                 test_files,
                 depends_on,
+                created_by,
             )
             .await
     }

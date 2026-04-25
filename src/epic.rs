@@ -601,6 +601,7 @@ mod tests {
             external_ref: None,
             files: Vec::new(),
             test_files: Vec::new(),
+            created_by: None,
         }
     }
 

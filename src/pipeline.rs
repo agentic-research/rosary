@@ -195,6 +195,16 @@ impl PipelineEngine {
         }
     }
 
+    /// List all dispatch records with no completion timestamp.
+    /// Used by crash recovery to abandon orphaned dispatches from a previous run.
+    pub async fn active_dispatches(&self) -> Vec<crate::store::DispatchRecord> {
+        if let Some(ref store) = self.store {
+            store.active_dispatches().await.unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// List all active pipeline states. Returns empty vec if store unavailable.
     pub async fn list_active(&self) -> Vec<PipelineState> {
         if let Some(ref store) = self.store {
