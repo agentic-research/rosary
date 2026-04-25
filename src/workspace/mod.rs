@@ -23,7 +23,10 @@ use crate::backend::ExecHandle;
 
 // Re-export public API from submodules.
 pub(crate) use sweep::{cleanup_git_worktree, cleanup_jj_workspace, workspace_dir};
-pub use sweep::{merge_or_pr_with_base, sweep_agent_branches, sweep_orphaned, thread_branch_name};
+pub use sweep::{
+    ensure_thread_branch, merge_or_pr_with_base, sweep_agent_branches, sweep_orphaned,
+    thread_branch_name,
+};
 
 /// VCS backend for code isolation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +72,18 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Tear down the workspace — removes the worktree or jj workspace.
+    ///
+    /// Called when spawn fails after workspace creation, ensuring no orphaned
+    /// worktrees are left on disk. For `VcsKind::None` (in-place), this is a no-op.
+    pub fn cleanup(self) {
+        match self.vcs {
+            VcsKind::Git => cleanup_git_worktree(&self.repo_path, &self.id),
+            VcsKind::Jj => cleanup_jj_workspace(&self.repo_path, &self.id),
+            VcsKind::None => {}
+        }
+    }
+
     /// Reconstruct a workspace from existing on-disk state.
     ///
     /// Used by MCP tools that need to operate on a workspace created by

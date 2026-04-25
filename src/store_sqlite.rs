@@ -1022,4 +1022,55 @@ mod tests {
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0].github_token_ref.as_deref(), Some("new-tok"));
     }
+
+    /// Regression (GAP 4): when a reconciler crashes between record_dispatch() and
+    /// complete_dispatch(), the dispatch record is left with completed_at=NULL.
+    /// On the next startup, recover_stuck_beads calls complete_dispatch("abandoned")
+    /// on each orphaned record. This test verifies that "abandoned" records are
+    /// no longer returned by active_dispatches(), which is the query the recovery
+    /// loop uses to detect orphans.
+    #[tokio::test]
+    async fn abandoned_dispatch_not_in_active_dispatches() {
+        let (store, _dir) = temp_backend();
+
+        // Simulate: previous reconciler created a dispatch record and crashed
+        let record = DispatchRecord {
+            id: "orphan-001".into(),
+            bead_ref: BeadRef {
+                repo: "rosary".into(),
+                bead_id: "rsry-crashed".into(),
+            },
+            agent: "dev-agent".into(),
+            provider: "claude".into(),
+            started_at: Utc::now(),
+            completed_at: None, // crash — never completed
+            outcome: None,
+            work_dir: "/tmp/work".into(),
+            session_id: None,
+            workspace_path: None,
+            chain_hash: None,
+        };
+        store.record_dispatch(&record).await.unwrap();
+
+        // Before recovery: appears as orphan
+        let orphans = store.active_dispatches().await.unwrap();
+        assert_eq!(
+            orphans.len(),
+            1,
+            "orphaned record must appear in active_dispatches"
+        );
+
+        // Recovery action: mark abandoned
+        store
+            .complete_dispatch("orphan-001", "abandoned")
+            .await
+            .unwrap();
+
+        // After recovery: no longer orphaned
+        let orphans = store.active_dispatches().await.unwrap();
+        assert!(
+            orphans.is_empty(),
+            "abandoned dispatch must not appear in active_dispatches (GAP 4 regression)"
+        );
+    }
 }

@@ -68,7 +68,6 @@ impl Reconciler {
     /// This is the "agent-first" fast path: when agents self-close beads,
     /// we skip the full verification pipeline (compile+test+lint+diff-sanity),
     /// which is the main consumption throughput bottleneck.
-    #[allow(dead_code)] // Used when agents have bead_close permission
     pub(super) async fn is_bead_agent_closed(&mut self, bead_id: &str, repo: &str) -> bool {
         if let Some(client) = self.dolt_client(repo).await {
             match client.get_status(bead_id).await {
@@ -161,6 +160,28 @@ impl Reconciler {
 
                 eprintln!("[recover] resetting stuck bead {} to open", bead.id);
                 self.persist_status(&bead.id, &bead.repo, "open").await;
+            }
+        }
+
+        // Abandon orphaned dispatch records — these have completed_at=NULL because
+        // the previous reconciler process died between record_dispatch() and
+        // complete_dispatch(). Without cleanup they accumulate indefinitely.
+        // The pipeline is authoritative: if no process owns a dispatch, it is abandoned.
+        let orphaned = self.pipeline.active_dispatches().await;
+        if !orphaned.is_empty() {
+            eprintln!(
+                "[recover] abandoning {} orphaned dispatch record(s) from previous run",
+                orphaned.len()
+            );
+            for record in orphaned {
+                eprintln!(
+                    "[recover] abandoning dispatch {} (bead={})",
+                    record.id, record.bead_ref.bead_id
+                );
+                let _ = self
+                    .pipeline
+                    .complete_dispatch(&record.id, "abandoned")
+                    .await;
             }
         }
     }

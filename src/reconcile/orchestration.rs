@@ -167,6 +167,12 @@ impl Reconciler {
                             }
                             Err(e) => {
                                 eprintln!("[orchestrator] spawn failed for {bead_id}/{agent}: {e}");
+                                // The orchestrator already moved to AwaitingWorker before
+                                // returning NeedsSpawn. Without feedback it returns Idle
+                                // forever. Notify it so it can retry or deadletter.
+                                if let Some(orch) = self.orchestrators.get_mut(&bead_id) {
+                                    orch.on_worker_completed(false, self.config.max_retries);
+                                }
                             }
                         }
                     }
@@ -197,11 +203,19 @@ impl Reconciler {
 
                 TickOutcome::Terminal => {
                     eprintln!("[orchestrator] {} pipeline complete", bead_id);
-                    let repo = self
+                    let Some(repo) = self
                         .orchestrators
                         .get(&bead_id)
                         .map(|o| o.bead_ref.repo.clone())
-                        .unwrap_or_default();
+                    else {
+                        eprintln!(
+                            "[orchestrator] BUG: {} terminal but missing from map — \
+                             workspace and status update skipped",
+                            bead_id
+                        );
+                        result.completed += 1;
+                        continue;
+                    };
                     self.checkpoint_and_cleanup(&bead_id).await;
                     self.persist_status(&bead_id, &repo, "pr_open").await;
                     self.orchestrators.remove(&bead_id);
@@ -210,11 +224,19 @@ impl Reconciler {
 
                 TickOutcome::Failed { reason } => {
                     eprintln!("[orchestrator] {} failed: {reason}", bead_id);
-                    let repo = self
+                    let Some(repo) = self
                         .orchestrators
                         .get(&bead_id)
                         .map(|o| o.bead_ref.repo.clone())
-                        .unwrap_or_default();
+                    else {
+                        eprintln!(
+                            "[orchestrator] BUG: {} failed but missing from map — \
+                             status update skipped",
+                            bead_id
+                        );
+                        result.deadlettered += 1;
+                        continue;
+                    };
                     self.cleanup_workspace(&bead_id);
                     let bead_ref = BeadRef {
                         repo: repo.clone(),
