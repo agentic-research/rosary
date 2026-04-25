@@ -3,6 +3,7 @@
 use crate::atom::{Atom, AtomKind};
 use crate::channels::BdrChannel;
 use crate::parse::AdrMeta;
+use crate::provenance::ProvenanceRef;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -16,7 +17,8 @@ pub struct BeadSpec {
     pub channel: BdrChannel,
     pub thread_group: String,
     pub source_atom: AtomKind,
-    pub source_adr: String,
+    /// Where this bead originated — ADR, Slack thread, meeting, or manual entry.
+    pub source: ProvenanceRef,
     pub source_line: usize,
     pub references: Vec<String>,
     /// Target repo for this bead (from ADR frontmatter or reference analysis).
@@ -121,7 +123,9 @@ pub fn decompose_with_meta(atoms: &[Atom], adr_id: &str, meta: &AdrMeta) -> Vec<
                 channel,
                 thread_group,
                 source_atom: atom.kind,
-                source_adr: adr_id.to_string(),
+                source: ProvenanceRef::Adr {
+                    id: adr_id.to_string(),
+                },
                 source_line: atom.source_line,
                 references: atom.references.clone(),
                 target_repo,
@@ -332,7 +336,12 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].issue_type, "task");
         assert_eq!(specs[0].channel, BdrChannel::Decade);
-        assert_eq!(specs[0].source_adr, "ADR-001");
+        assert_eq!(
+            specs[0].source,
+            ProvenanceRef::Adr {
+                id: "ADR-001".into()
+            }
+        );
         assert!(specs[0].title.starts_with("[ADR-001]"));
     }
 
@@ -402,7 +411,9 @@ mod tests {
             channel: BdrChannel::Thread,
             thread_group: "implementation".into(),
             source_atom: AtomKind::Phase,
-            source_adr: "ADR-001".into(),
+            source: ProvenanceRef::Adr {
+                id: "ADR-001".into(),
+            },
             source_line: 42,
             references: vec!["mache-85t".into()],
             target_repo: Some("mache".into()),
@@ -488,7 +499,9 @@ mod tests {
             channel: BdrChannel::Bead,
             thread_group: "core".into(),
             source_atom: AtomKind::TechnicalSpec,
-            source_adr: "ADR-001".into(),
+            source: ProvenanceRef::Adr {
+                id: "ADR-001".into(),
+            },
             source_line: 10,
             references: vec![],
             target_repo: None,
@@ -510,7 +523,9 @@ mod tests {
             channel: BdrChannel::Bead,
             thread_group: "core".into(),
             source_atom: AtomKind::TechnicalSpec,
-            source_adr: "ADR-001".into(),
+            source: ProvenanceRef::Adr {
+                id: "ADR-001".into(),
+            },
             source_line: 10,
             references: vec![],
             target_repo: None,
@@ -525,7 +540,7 @@ mod tests {
 
     #[test]
     fn content_hash_ignores_metadata() {
-        // source_adr, source_line, references, target_repo, depends_on
+        // source, source_line, references, target_repo, depends_on
         // are metadata about WHERE the spec came from, not WHAT it defines.
         // Changing them should NOT change the content hash.
         let spec1 = BeadSpec {
@@ -536,7 +551,9 @@ mod tests {
             channel: BdrChannel::Bead,
             thread_group: "core".into(),
             source_atom: AtomKind::TechnicalSpec,
-            source_adr: "ADR-001".into(),
+            source: ProvenanceRef::Adr {
+                id: "ADR-001".into(),
+            },
             source_line: 10,
             references: vec!["ref-1".into()],
             target_repo: Some("mache".into()),
@@ -544,7 +561,9 @@ mod tests {
             success_criteria: vec![],
         };
         let spec2 = BeadSpec {
-            source_adr: "ADR-999".into(),
+            source: ProvenanceRef::Adr {
+                id: "ADR-999".into(),
+            },
             source_line: 999,
             references: vec![],
             target_repo: None,
@@ -568,7 +587,7 @@ mod tests {
             channel: BdrChannel::Bead,
             thread_group: "g".into(),
             source_atom: AtomKind::TechnicalSpec,
-            source_adr: "A".into(),
+            source: ProvenanceRef::Adr { id: "A".into() },
             source_line: 1,
             references: vec![],
             target_repo: None,
