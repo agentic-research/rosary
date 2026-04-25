@@ -114,6 +114,11 @@ impl Verifier {
             max_lines: 500,
         }));
 
+        // Mache structural checks: blast radius + duplication.
+        // Both are advisory (Partial) and fail-open when mache is unavailable.
+        tiers.push(Box::new(MacheBlastRadiusCheck::default()));
+        tiers.push(Box::new(MacheDuplicationCheck));
+
         tiers.push(Box::new(ReviewCheck));
 
         Verifier::new(tiers)
@@ -397,6 +402,282 @@ impl VerifyTier for DiffSanityCheck {
     }
 }
 
+// ── Mache structural tiers ────────────────────────────────────────────────────
+//
+// Both tiers call the mache HTTP MCP server (localhost:7532) using reqwest::blocking.
+// The Streamable HTTP transport responds with either plain JSON or SSE; we drain
+// the body synchronously — one response event per tools/call.
+//
+// Design: fail-open on any error (mache not running, timeout, parse failure).
+// Both tiers return Partial (advisory) rather than Fail — they inform the human
+// reviewer without blocking the pipeline.
+
+/// POST a tools/call to the mache MCP HTTP server and return the text content.
+/// Returns None if mache is unreachable, times out, or the call fails.
+fn mache_call(tool: &str, args: serde_json::Value) -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": tool, "arguments": args }
+    });
+
+    let resp = client
+        .post("http://localhost:7532/mcp")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .json(&body)
+        .send()
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let body_text = resp.text().ok()?;
+
+    if ct.contains("text/event-stream") {
+        parse_mache_sse(&body_text)
+    } else {
+        let json: serde_json::Value = serde_json::from_str(&body_text).ok()?;
+        extract_mache_text(json.get("result")?)
+    }
+}
+
+/// Drain a Streamable HTTP SSE body and return the first result's text content.
+fn parse_mache_sse(body: &str) -> Option<String> {
+    for line in body.lines() {
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        if data.trim() == "[DONE]" {
+            continue;
+        }
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(data)
+            && let Some(result) = json.get("result")
+        {
+            return extract_mache_text(result);
+        }
+    }
+    None
+}
+
+/// Extract concatenated text from an MCP result's content array.
+fn extract_mache_text(result: &serde_json::Value) -> Option<String> {
+    let content = result.get("content")?.as_array()?;
+    let text: String = content
+        .iter()
+        .filter_map(|item| {
+            if item.get("type")?.as_str()? == "text" {
+                item.get("text")?.as_str().map(str::to_string)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.is_empty() { None } else { Some(text) }
+}
+
+/// Extract public/exported symbol names introduced in HEAD (added lines only).
+/// Used by both mache tiers to know which symbols to query.
+fn added_symbols(work_dir: &Path) -> Vec<String> {
+    let output = match std::process::Command::new("git")
+        .args(["diff", "HEAD~1..HEAD"])
+        .current_dir(work_dir)
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+
+    let diff = String::from_utf8_lossy(&output.stdout);
+    let mut symbols: Vec<String> = Vec::new();
+
+    for line in diff.lines() {
+        let Some(content) = line.strip_prefix('+') else {
+            continue;
+        };
+        // Skip diff file headers (+++ b/path)
+        if content.starts_with('+') {
+            continue;
+        }
+        let trimmed = content.trim();
+
+        // Rust: public items (skip pub(crate)/pub(super) — they start with '(')
+        for prefix in &[
+            "pub fn ",
+            "pub async fn ",
+            "pub struct ",
+            "pub enum ",
+            "pub trait ",
+            "pub type ",
+        ] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                if rest.starts_with('(') {
+                    break;
+                }
+                if let Some(name) = rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    && !name.is_empty()
+                {
+                    symbols.push(name.to_string());
+                }
+                break;
+            }
+        }
+
+        // Go: exported functions (uppercase first char)
+        if let Some(rest) = trimmed.strip_prefix("func ") {
+            // Strip receiver: func (r *T) Name( → Name
+            let name_part = if rest.starts_with('(') {
+                rest.find(')')
+                    .and_then(|i| rest.get(i + 1..))
+                    .map(str::trim)
+            } else {
+                Some(rest.trim())
+            };
+            if let Some(np) = name_part
+                && let Some(name) = np.split(|c: char| !c.is_alphanumeric() && c != '_').next()
+                && name.chars().next().is_some_and(|c| c.is_uppercase())
+            {
+                symbols.push(name.to_string());
+            }
+        }
+    }
+
+    symbols.sort();
+    symbols.dedup();
+    symbols
+}
+
+/// Blast radius check via `mache get_impact`.
+///
+/// For each public symbol introduced by the commit, queries mache for its
+/// combined caller/callee impact. Returns Partial (advisory) if the total
+/// estimated call sites exceed `max_callers`. Fail-open if mache is unavailable.
+///
+/// This is an advisory tier — large blast radius is a signal to the human
+/// reviewer, not a pipeline block.
+pub struct MacheBlastRadiusCheck {
+    /// Advisory threshold: total impact lines across all changed symbols.
+    pub max_callers: usize,
+}
+
+impl Default for MacheBlastRadiusCheck {
+    fn default() -> Self {
+        MacheBlastRadiusCheck { max_callers: 20 }
+    }
+}
+
+impl VerifyTier for MacheBlastRadiusCheck {
+    fn name(&self) -> &str {
+        "mache-blast-radius"
+    }
+
+    fn check(&self, work_dir: &Path) -> Result<VerifyResult> {
+        let symbols = added_symbols(work_dir);
+        if symbols.is_empty() {
+            return Ok(VerifyResult::Pass);
+        }
+
+        let mut total = 0usize;
+        let mut hottest = (String::new(), 0usize);
+
+        for symbol in &symbols {
+            let Some(text) = mache_call("get_impact", serde_json::json!({ "symbol": symbol }))
+            else {
+                // mache not running — skip entire tier
+                return Ok(VerifyResult::Pass);
+            };
+            let lines = text.lines().filter(|l| !l.trim().is_empty()).count();
+            total += lines;
+            if lines > hottest.1 {
+                hottest = (symbol.clone(), lines);
+            }
+        }
+
+        if total > self.max_callers {
+            return Ok(VerifyResult::Partial(format!(
+                "blast radius: ~{total} impact lines across {} changed symbols \
+                 (largest: {} ~{}, threshold {})",
+                symbols.len(),
+                hottest.0,
+                hottest.1,
+                self.max_callers,
+            )));
+        }
+
+        Ok(VerifyResult::Pass)
+    }
+}
+
+/// Near-duplicate detection via `mache search`.
+///
+/// For each public symbol introduced by the commit, searches the codebase for
+/// the same name. If a symbol exists in more than one location it likely already
+/// existed — either the agent reinvented something or left duplication behind.
+/// Returns Partial (advisory) with the offending names. Fail-open if mache is
+/// unavailable.
+pub struct MacheDuplicationCheck;
+
+impl VerifyTier for MacheDuplicationCheck {
+    fn name(&self) -> &str {
+        "mache-duplication"
+    }
+
+    fn check(&self, work_dir: &Path) -> Result<VerifyResult> {
+        let symbols = added_symbols(work_dir);
+        if symbols.is_empty() {
+            return Ok(VerifyResult::Pass);
+        }
+
+        let mut dupes: Vec<String> = Vec::new();
+
+        for symbol in &symbols {
+            let Some(text) = mache_call("search", serde_json::json!({ "query": symbol })) else {
+                return Ok(VerifyResult::Pass);
+            };
+
+            // Count non-empty, non-error lines as distinct match sites.
+            let matches = text
+                .lines()
+                .filter(|l| {
+                    let t = l.trim();
+                    !t.is_empty() && !t.starts_with("No results") && !t.starts_with("Error")
+                })
+                .count();
+
+            // >1 means the name existed before this commit in another location.
+            if matches > 1 {
+                dupes.push(format!("{symbol} ({matches} locations)"));
+            }
+        }
+
+        if !dupes.is_empty() {
+            return Ok(VerifyResult::Partial(format!(
+                "near-duplicate symbols: {}",
+                dupes.join(", ")
+            )));
+        }
+
+        Ok(VerifyResult::Pass)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,13 +864,15 @@ mod tests {
     #[test]
     fn for_language_builds_correct_tiers() {
         let rust_v = Verifier::for_language("rust");
-        assert_eq!(rust_v.tiers.len(), 7); // commit, bead_ref, compile, test, lint, diff-sanity, review
+        // commit, bead_ref, compile, test, lint, diff-sanity, blast-radius, duplication, review
+        assert_eq!(rust_v.tiers.len(), 9);
 
         let go_v = Verifier::for_language("go");
-        assert_eq!(go_v.tiers.len(), 7);
+        assert_eq!(go_v.tiers.len(), 9);
 
         let unknown_v = Verifier::for_language("brainfuck");
-        assert_eq!(unknown_v.tiers.len(), 4); // commit, bead_ref, diff-sanity, review
+        // commit, bead_ref, diff-sanity, blast-radius, duplication, review
+        assert_eq!(unknown_v.tiers.len(), 6);
     }
 
     #[test]
