@@ -100,7 +100,12 @@ pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> 
     if dolt_dir.exists() {
         match crate::dolt::DoltConfig::from_beads_dir(beads_dir) {
             Ok(config) => match crate::dolt::DoltClient::connect(&config).await {
-                Ok(client) => return Ok(Box::new(crate::bead_dolt::DoltBeadStore::new(client))),
+                Ok(client) => {
+                    if let Err(e) = client.migrate().await {
+                        eprintln!("[bead] migration warning for {}: {e}", beads_dir.display());
+                    }
+                    return Ok(Box::new(crate::bead_dolt::DoltBeadStore::new(client)));
+                }
                 Err(e) => {
                     eprintln!(
                         "[bead] Dolt connect failed for {}, trying SQLite fallback: {e}",
