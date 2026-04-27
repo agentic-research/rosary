@@ -169,13 +169,16 @@ impl AgentHandle {
 // Agent pipeline -- phase progression
 // ---------------------------------------------------------------------------
 
-/// The hardcoded agent pipeline for a given issue type.
-/// Used by `default_agent()` for callers without a PipelineEngine.
-/// The reconciler uses PipelineEngine (config-driven) instead.
+/// The default agent pipeline for a given issue type.
+///
+/// Must match `config::default_pipelines()` exactly — divergence here causes
+/// `dispatch::default_agent()` (used by CLI and MCP handlers) to dispatch a
+/// different first agent than the reconciler's PipelineEngine, silently skipping
+/// the scoping phase for bugs and features dispatched via CLI.
 fn agent_pipeline(issue_type: &str) -> &'static [&'static str] {
     match issue_type {
-        "bug" => &["dev-agent", "staging-agent"],
-        "feature" => &["dev-agent", "staging-agent", "prod-agent"],
+        "bug" => &["scoping-agent", "dev-agent", "staging-agent"],
+        "feature" => &["scoping-agent", "dev-agent", "staging-agent", "prod-agent"],
         "task" | "chore" => &["dev-agent"],
         "review" => &["staging-agent"],
         "design" | "research" => &["architect-agent"],

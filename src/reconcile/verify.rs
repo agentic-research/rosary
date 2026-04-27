@@ -332,13 +332,26 @@ impl Reconciler {
         };
 
         for (bead_id, exit_success) in completed {
-            // Skip orchestrator-managed beads — orchestrator_tick() already called
-            // on_worker_completed() for them. Running verify_and_decide + on_worker_completed
-            // a second time here would drive the orchestrator state machine twice per tick.
+            // Skip orchestrator-managed beads — their completions are handled
+            // by orchestrator_tick() which calls on_worker_completed().
             if self.orchestrators.contains_key(bead_id.as_str()) {
+                // Feed the completion back to the orchestrator.
+                let (action, _verify_summary) =
+                    self.verify_and_decide(bead_id, *exit_success, beads);
+                let passed = matches!(
+                    action,
+                    CompletionAction::Advance { .. } | CompletionAction::Terminal
+                );
+                if let Some(orch) = self.orchestrators.get_mut(bead_id.as_str()) {
+                    orch.on_worker_completed(passed, self.config.max_retries);
+                }
+                if passed {
+                    result.passed += 1;
+                } else {
+                    result.failed += 1;
+                }
                 continue;
             }
-
             let repo = self
                 .trackers
                 .get(bead_id.as_str())

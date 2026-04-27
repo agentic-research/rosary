@@ -817,6 +817,11 @@ impl Reconciler {
             self.persist_orchestrator_records();
         }
 
+        // Phase 6: PERSIST orchestrator state for crash recovery
+        if self.is_hierarchical() && !self.orchestrators.is_empty() {
+            self.persist_orchestrator_records();
+        }
+
         Ok(summary)
     }
 }

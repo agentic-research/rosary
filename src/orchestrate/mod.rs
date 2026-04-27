@@ -37,6 +37,9 @@ pub mod plan_gate;
 pub mod synthesis;
 pub mod transcript;
 
+#[cfg(test)]
+mod tests;
+
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
@@ -178,6 +181,10 @@ pub struct FeatureOrchestrator {
     pub transcript_cache: Vec<transcript::TranscriptEntry>,
     /// Last worker's session ID (for continue-vs-spawn decision).
     pub last_session_id: Option<String>,
+    /// Agent that most recently completed work (for session_decision from_agent).
+    /// Saved before incrementing current_phase so session_decision can compare
+    /// the outgoing agent against the incoming one without an off-by-one error.
+    pub last_completed_agent: Option<String>,
     /// Retry count for the current phase.
     pub retries: u32,
     /// When this orchestrator was created.
@@ -261,6 +268,7 @@ impl FeatureOrchestrator {
             handoff_chain: Vec::new(),
             transcript_cache: Vec::new(),
             last_session_id: None,
+            last_completed_agent: None,
             retries: 0,
             created_at: Utc::now(),
             config,
@@ -275,16 +283,18 @@ impl FeatureOrchestrator {
     pub fn tick(&mut self) -> TickOutcome {
         match &self.state {
             OrchestratorState::Idle => {
-                // First tick — request the first pipeline agent.
-                if let Some(agent) = self.pipeline.first().cloned() {
+                // Emit NeedsSpawn for the current pipeline phase.
+                // On the very first tick this is phase 0; after on_worker_completed
+                // advances current_phase and resets state to Idle, it's the next phase.
+                if let Some(agent) = self.pipeline.get(self.current_phase).cloned() {
                     let decision = self.session_decision(&agent);
                     self.state = OrchestratorState::AwaitingWorker {
                         agent: agent.clone(),
-                        phase: 0,
+                        phase: self.current_phase as u32,
                     };
                     TickOutcome::NeedsSpawn {
                         agent,
-                        phase: 0,
+                        phase: self.current_phase as u32,
                         session_decision: decision,
                     }
                 } else {
@@ -345,13 +355,12 @@ impl FeatureOrchestrator {
             // implemented in later phases. For now, skip straight through.
             OrchestratorState::Synthesizing => {
                 // Synthesis not yet wired. current_phase was already advanced by
-                // on_worker_completed before entering this state — don't increment
-                // again or we'd skip a pipeline phase.
-                if let Some(agent) = self.pipeline.get(self.current_phase).cloned() {
-                    self.state = OrchestratorState::AwaitingWorker {
-                        agent,
-                        phase: self.current_phase as u32,
-                    };
+                // on_worker_completed before entering this state — reset to Idle
+                // so the next tick() emits NeedsSpawn for the current phase.
+                // (Setting AwaitingWorker here causes a recursive tick() on a state
+                // with no handle, which returns Idle — the pipeline deadlocks.)
+                if self.current_phase < self.pipeline.len() {
+                    self.state = OrchestratorState::Idle;
                 } else {
                     self.state = OrchestratorState::Terminal;
                 }
@@ -378,20 +387,22 @@ impl FeatureOrchestrator {
     pub fn on_worker_completed(&mut self, passed: bool, max_retries: u32) {
         if passed {
             self.retries = 0;
+            // Bug 3 fix: save current agent BEFORE advancing current_phase.
+            // session_decision() uses last_completed_agent as "from_agent" —
+            // if we read pipeline[current_phase] after incrementing, it gives
+            // the next agent, causing every non-retry transition to look like
+            // a same-agent retry and return Continue instead of SpawnFresh.
+            self.last_completed_agent = self.pipeline.get(self.current_phase).cloned();
             let next_phase = self.current_phase + 1;
             if next_phase < self.pipeline.len() {
                 self.current_phase = next_phase;
-                let next_agent = self.pipeline[next_phase].clone();
                 if self.config.synthesis {
                     self.state = OrchestratorState::Synthesizing;
                 } else {
-                    let decision = self.session_decision(&next_agent);
-                    self.state = OrchestratorState::AwaitingWorker {
-                        agent: next_agent,
-                        phase: next_phase as u32,
-                    };
-                    // Decision is used on the next tick().
-                    let _ = decision;
+                    // Bug 1 fix: set Idle instead of AwaitingWorker.
+                    // AwaitingWorker with no handle → tick() returns Idle → pipeline
+                    // deadlocks. Idle → tick() emits NeedsSpawn for current_phase.
+                    self.state = OrchestratorState::Idle;
                 }
             } else {
                 self.state = OrchestratorState::Terminal;
@@ -407,12 +418,11 @@ impl FeatureOrchestrator {
                     ),
                 };
             } else {
-                // Retry same phase — set state back to AwaitingWorker with no handle.
-                let agent = self.pipeline[self.current_phase].clone();
-                self.state = OrchestratorState::AwaitingWorker {
-                    agent,
-                    phase: self.current_phase as u32,
-                };
+                // Retry same phase — record the failing agent for session_decision,
+                // then reset to Idle so tick() emits NeedsSpawn (consistent with the
+                // success path; AwaitingWorker with no handle returns Idle and deadlocks).
+                self.last_completed_agent = self.pipeline.get(self.current_phase).cloned();
+                self.state = OrchestratorState::Idle;
                 self.worker_handle = None;
             }
         }
@@ -461,13 +471,13 @@ impl FeatureOrchestrator {
             return SessionDecision::SpawnFresh;
         }
 
-        let current_agent = self
-            .pipeline
-            .get(self.current_phase)
-            .map(|s| s.as_str())
-            .unwrap_or("");
+        // Bug 3 fix: use last_completed_agent (saved before current_phase was
+        // incremented) as the "from" agent. Reading pipeline[current_phase] here
+        // returns the NEXT agent (already incremented), which caused every
+        // non-retry advancement to match the "same-agent retry" arm.
+        let from_agent = self.last_completed_agent.as_deref().unwrap_or("");
 
-        match (current_agent, next_agent) {
+        match (from_agent, next_agent) {
             // Verification should always get fresh eyes
             (_, "staging-agent" | "prod-agent" | "skeptic-agent") => SessionDecision::SpawnFresh,
 

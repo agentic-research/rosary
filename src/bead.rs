@@ -1,6 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
 use std::fmt;
-use std::hash::{Hash, Hasher};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -36,14 +34,27 @@ pub enum BeadState {
 
 impl BeadState {
     /// Valid successor states from this state.
-    #[allow(dead_code)] // API surface — used in tests, will be used for transition validation
+    ///
+    /// Used by `can_transition_to()` to enforce the LTS at write time.
+    /// Includes both the "happy path" transitions and operational recovery edges
+    /// (e.g., `Dispatched → Open` for stuck-bead recovery).
     pub fn valid_transitions(self) -> &'static [BeadState] {
         match self {
             BeadState::Backlog => &[BeadState::Open],
-            BeadState::Open => &[BeadState::Queued],
+            // Open → Dispatched: reconciler's triage→dispatch path (skips Queued in practice)
+            BeadState::Open => &[BeadState::Queued, BeadState::Dispatched],
             BeadState::Queued => &[BeadState::Dispatched],
-            BeadState::Dispatched => &[BeadState::Verifying],
-            BeadState::Verifying => &[BeadState::Done, BeadState::Rejected, BeadState::Blocked],
+            // Dispatched → Open: recovery for stuck agents
+            BeadState::Dispatched => &[BeadState::Verifying, BeadState::Open],
+            // Verifying → PrOpen: pipeline complete, PR created
+            // Verifying → Open: phase failed, retry (reconciler uses "open" not "rejected")
+            BeadState::Verifying => &[
+                BeadState::Done,
+                BeadState::Rejected,
+                BeadState::Blocked,
+                BeadState::PrOpen,
+                BeadState::Open,
+            ],
             BeadState::PrOpen => &[BeadState::Done],
             BeadState::Rejected => &[BeadState::Open],
             BeadState::Blocked => &[BeadState::Open],
@@ -53,7 +64,6 @@ impl BeadState {
     }
 
     /// Check if transitioning to `next` is valid.
-    #[allow(dead_code)]
     pub fn can_transition_to(self, next: BeadState) -> bool {
         self.valid_transitions().contains(&next)
     }
@@ -234,13 +244,22 @@ impl Bead {
     /// Content-based generation hash. Changes when semantic content changes,
     /// but not when status/timestamps change. Used for idempotency —
     /// if generation matches last processed, skip re-dispatch.
+    ///
+    /// Uses SHA-256 (first 8 bytes as u64) for cross-restart determinism.
+    /// `std::collections::hash_map::DefaultHasher` is explicitly NOT used here
+    /// because its output is not stable across process restarts (Rust docs warn).
     pub fn generation(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.id.hash(&mut hasher);
-        self.title.hash(&mut hasher);
-        self.description.hash(&mut hasher);
-        self.priority.hash(&mut hasher);
-        hasher.finish()
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(self.id.as_bytes());
+        h.update(b"\0");
+        h.update(self.title.as_bytes());
+        h.update(b"\0");
+        h.update(self.description.as_bytes());
+        h.update(b"\0");
+        h.update(&[self.priority]);
+        let digest = h.finalize();
+        u64::from_le_bytes(digest[..8].try_into().unwrap())
     }
 
     /// Parse the status string into a typed BeadState.
@@ -248,7 +267,11 @@ impl Bead {
         BeadState::from(self.status.as_str())
     }
 
-    /// Parse from `bd list --json` output
+    /// Parse from `bd list --json` output.
+    ///
+    /// Returns `None` if any required field is missing or invalid.
+    /// `id`, `title`, `status`, and `priority` are required — a bare
+    /// `{"id":"x","title":"y"}` must NOT silently create a dispatchable bead.
     #[allow(dead_code)] // used in tests and future CLI integration
     pub fn from_bd_json(value: &serde_json::Value, repo: &str) -> Option<Self> {
         Some(Bead {
@@ -259,12 +282,10 @@ impl Bead {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
-            status: value
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("open")
-                .to_string(),
-            priority: value.get("priority").and_then(|v| v.as_u64()).unwrap_or(2) as u8,
+            // status and priority are required — default values here would silently
+            // create dispatchable beads from incomplete JSON (e.g. {"id","title"} → priority-2 open bead)
+            status: value.get("status")?.as_str()?.to_string(),
+            priority: value.get("priority")?.as_u64()? as u8,
             issue_type: value
                 .get("issue_type")
                 .and_then(|v| v.as_str())
@@ -766,5 +787,95 @@ mod tests {
             display.contains("https://github.com/org/repo/pull/42"),
             "display should include pr_url: {display}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Architecture review harness — bugs found 2026-04-07
+    // -----------------------------------------------------------------------
+
+    /// Finding #3: Verifying → PrOpen was missing from valid_transitions().
+    /// PrOpen existed as a state with no incoming edge — a bead could never
+    /// legally reach pr_open via the declared LTS.
+    #[test]
+    fn verifying_can_reach_pr_open() {
+        assert!(
+            BeadState::Verifying.can_transition_to(BeadState::PrOpen),
+            "Verifying must be able to reach PrOpen (pipeline complete, PR created)"
+        );
+        // PrOpen still leads only to Done
+        assert!(BeadState::PrOpen.can_transition_to(BeadState::Done));
+        assert!(!BeadState::PrOpen.can_transition_to(BeadState::Open));
+    }
+
+    /// Finding #2: can_transition_to was #[allow(dead_code)] and unenforced.
+    /// Verify that genuinely invalid transitions are rejected.
+    #[test]
+    fn invalid_transitions_are_rejected() {
+        // Cannot jump from Backlog straight to Done
+        assert!(!BeadState::Backlog.can_transition_to(BeadState::Done));
+        // Done is terminal — no outgoing edges
+        assert!(BeadState::Done.is_terminal());
+        assert!(!BeadState::Done.can_transition_to(BeadState::Open));
+        // PrOpen cannot go back to Verifying
+        assert!(!BeadState::PrOpen.can_transition_to(BeadState::Verifying));
+        // Queued cannot skip to Done
+        assert!(!BeadState::Queued.can_transition_to(BeadState::Done));
+    }
+
+    /// Finding #6: DefaultHasher is non-deterministic across process restarts.
+    /// Verify that generation() returns a stable value across repeated calls
+    /// (cross-restart stability is guaranteed by SHA-256, not testable here,
+    /// but determinism within a run is the minimum bar).
+    #[test]
+    fn generation_is_deterministic() {
+        let make = |title: &str| {
+            Bead::from_bd_json(
+                &json!({
+                    "id": "x-1", "title": title, "description": "desc",
+                    "status": "open", "priority": 1,
+                    "created_at": "2026-03-12T00:00:00Z",
+                    "updated_at": "2026-03-12T00:00:00Z"
+                }),
+                "repo",
+            )
+            .unwrap()
+        };
+        let b = make("fix the bug");
+        // Repeated calls must return the same value
+        assert_eq!(b.generation(), b.generation(), "generation must be idempotent");
+        // Same content → same generation
+        assert_eq!(make("fix the bug").generation(), make("fix the bug").generation());
+        // Different content → different generation
+        assert_ne!(make("fix the bug").generation(), make("fix the other bug").generation());
+    }
+
+    /// Finding #16: from_bd_json silently defaulted every field except id/title.
+    /// A bare {"id":"x","title":"y"} created a dispatchable priority-2 open bead.
+    /// Now status and priority are required — missing either must return None.
+    #[test]
+    fn from_bd_json_requires_status_and_priority() {
+        // Missing both → None
+        assert!(
+            Bead::from_bd_json(&json!({"id": "x", "title": "t"}), "repo").is_none(),
+            "missing status and priority must return None"
+        );
+        // Missing priority → None
+        assert!(
+            Bead::from_bd_json(&json!({"id": "x", "title": "t", "status": "open"}), "repo")
+                .is_none(),
+            "missing priority must return None"
+        );
+        // Missing status → None
+        assert!(
+            Bead::from_bd_json(&json!({"id": "x", "title": "t", "priority": 1}), "repo")
+                .is_none(),
+            "missing status must return None"
+        );
+        // Both present → Ok
+        let b = Bead::from_bd_json(
+            &json!({"id": "x", "title": "t", "status": "open", "priority": 2}),
+            "repo",
+        );
+        assert!(b.is_some(), "id+title+status+priority should be sufficient");
     }
 }

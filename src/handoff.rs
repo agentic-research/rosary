@@ -246,11 +246,47 @@ impl Handoff {
         Ok(serde_json::from_str(&content)?)
     }
 
-    /// Read all handoffs in a workspace (the full chain).
+    /// Read all handoffs in a workspace (the full chain), verifying hash integrity.
+    ///
+    /// Reads phases 0, 1, 2, … until the first missing file. For each phase > 0,
+    /// verifies that `previous_chain_hash` matches the computed hash of the preceding
+    /// handoff. Returns an empty vec and logs a warning on hash mismatch — the
+    /// tamper-evident property is only useful if we actually check it.
     pub fn read_chain(workspace_dir: &Path) -> Vec<Self> {
-        (0..10)
-            .map_while(|phase| Self::read_from(workspace_dir, phase).ok())
-            .collect()
+        let mut chain: Vec<Self> = Vec::new();
+        for phase in 0.. {
+            let h = match Self::read_from(workspace_dir, phase) {
+                Ok(h) => h,
+                Err(_) => break, // No file for this phase — chain is complete
+            };
+            // Verify the hash link for all phases after the first
+            if phase > 0 {
+                if let Some(prev) = chain.last() {
+                    let expected = prev.chain_hash_hex();
+                    match &h.previous_chain_hash {
+                        Some(actual) if actual == &expected => {} // chain intact
+                        Some(actual) => {
+                            eprintln!(
+                                "[handoff] chain integrity FAIL at phase {phase}: \
+                                 expected previous_chain_hash={expected}, got={actual}. \
+                                 A handoff file may have been tampered with."
+                            );
+                            return chain; // Truncate — don't process past a broken link
+                        }
+                        None => {
+                            eprintln!(
+                                "[handoff] chain integrity WARNING at phase {phase}: \
+                                 previous_chain_hash is missing (expected link to phase {})",
+                                phase - 1
+                            );
+                            // Allow but warn — older handoffs may predate hash chaining
+                        }
+                    }
+                }
+            }
+            chain.push(h);
+        }
+        chain
     }
 
     /// Format the handoff chain as context for the next agent's prompt.
@@ -541,5 +577,76 @@ mod tests {
 
         assert!(h.review_hints.iter().any(|r| r.contains("concurrency")));
         assert!(h.review_hints.iter().any(|r| r.contains("coverage")));
+    }
+
+    // -----------------------------------------------------------------------
+    // Architecture review harness — bugs found 2026-04-07
+    // -----------------------------------------------------------------------
+
+    /// Finding #4: read_chain was hardcoded to 10 phases via (0..10).
+    /// A chain longer than 10 was silently truncated. The map_while already
+    /// terminates on missing files, so (0..) is correct.
+    #[test]
+    fn read_chain_not_limited_to_ten_phases() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = sample_work();
+
+        // Write 12 handoffs (would be silently truncated by the old (0..10) bound)
+        let mut prev: Option<Handoff> = None;
+        for phase in 0u32..12 {
+            let h = Handoff::new(
+                phase,
+                "dev-agent",
+                None,
+                "rsry-x",
+                "claude",
+                &work,
+                prev.as_ref(),
+            );
+            h.write_to(tmp.path()).unwrap();
+            prev = Some(h);
+        }
+
+        let chain = Handoff::read_chain(tmp.path());
+        assert_eq!(
+            chain.len(),
+            12,
+            "read_chain must not stop at 10 — got {}",
+            chain.len()
+        );
+    }
+
+    /// Finding #5: chain hashes were computed and stored but never verified on read.
+    /// A replaced intermediate handoff file went undetected.
+    /// read_chain must detect tampering and truncate the chain at the broken link.
+    #[test]
+    fn read_chain_detects_tampering() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = sample_work();
+
+        let h0 = Handoff::new(0, "dev-agent", Some("staging-agent"), "rsry-x", "claude", &work, None);
+        let h1 = Handoff::new(1, "staging-agent", None, "rsry-x", "claude", &work, Some(&h0));
+        let h2 = Handoff::new(2, "prod-agent", None, "rsry-x", "claude", &work, Some(&h1));
+
+        h0.write_to(tmp.path()).unwrap();
+        h1.write_to(tmp.path()).unwrap();
+        h2.write_to(tmp.path()).unwrap();
+
+        // Sanity: clean chain reads all 3
+        let clean = Handoff::read_chain(tmp.path());
+        assert_eq!(clean.len(), 3, "clean chain should have 3 entries");
+
+        // Tamper with phase 0 (change its summary)
+        let mut h0_tampered = h0.clone();
+        h0_tampered.summary = "TAMPERED".to_string();
+        h0_tampered.write_to(tmp.path()).unwrap();
+
+        // read_chain must detect that h1.previous_chain_hash no longer matches h0_tampered
+        let tampered = Handoff::read_chain(tmp.path());
+        assert!(
+            tampered.len() < 3,
+            "tampered chain should be truncated — got {} entries (expected < 3)",
+            tampered.len()
+        );
     }
 }
