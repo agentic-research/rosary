@@ -842,11 +842,21 @@ mod tests {
         };
         let b = make("fix the bug");
         // Repeated calls must return the same value
-        assert_eq!(b.generation(), b.generation(), "generation must be idempotent");
+        assert_eq!(
+            b.generation(),
+            b.generation(),
+            "generation must be idempotent"
+        );
         // Same content → same generation
-        assert_eq!(make("fix the bug").generation(), make("fix the bug").generation());
+        assert_eq!(
+            make("fix the bug").generation(),
+            make("fix the bug").generation()
+        );
         // Different content → different generation
-        assert_ne!(make("fix the bug").generation(), make("fix the other bug").generation());
+        assert_ne!(
+            make("fix the bug").generation(),
+            make("fix the other bug").generation()
+        );
     }
 
     /// Finding #16: from_bd_json silently defaulted every field except id/title.
@@ -867,8 +877,7 @@ mod tests {
         );
         // Missing status → None
         assert!(
-            Bead::from_bd_json(&json!({"id": "x", "title": "t", "priority": 1}), "repo")
-                .is_none(),
+            Bead::from_bd_json(&json!({"id": "x", "title": "t", "priority": 1}), "repo").is_none(),
             "missing status must return None"
         );
         // Both present → Ok

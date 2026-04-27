@@ -632,8 +632,16 @@ fn default_agent_matches_pipeline_engine() {
         );
     }
     // Spot-check the values that were wrong before the fix
-    assert_eq!(default_agent("bug"), "scoping-agent", "bugs must start with scoping-agent");
-    assert_eq!(default_agent("feature"), "scoping-agent", "features must start with scoping-agent");
+    assert_eq!(
+        default_agent("bug"),
+        "scoping-agent",
+        "bugs must start with scoping-agent"
+    );
+    assert_eq!(
+        default_agent("feature"),
+        "scoping-agent",
+        "features must start with scoping-agent"
+    );
     assert_eq!(default_agent("review"), "staging-agent");
     assert_eq!(default_agent("epic"), "pm-agent");
     assert_eq!(default_agent("xyz"), "dev-agent"); // fallback
