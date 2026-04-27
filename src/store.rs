@@ -24,7 +24,6 @@ pub struct WorkRef {
     pub repo: String,
     /// Team/folder scope within a monorepo (e.g. "auth", "payments/core").
     /// Empty string for cross-repo and single-team repos — backward compatible.
-    // TODO(rosary-scope): rename WorkRef → WorkRef when scope usage is widespread
     #[serde(default)]
     pub scope: String,
     pub bead_id: String,
