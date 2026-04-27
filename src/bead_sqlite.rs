@@ -556,6 +556,7 @@ impl BeadStore for SqliteBeadStore {
         let sql = format!(
             "SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                     i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                    i.created_by, i.scope,
                     COALESCE(dep.cnt, 0) as dep_count,
                     COALESCE(deps.cnt, 0) as dependency_count,
                     COALESCE(cmt.cnt, 0) as comment_count

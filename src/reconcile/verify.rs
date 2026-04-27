@@ -651,7 +651,11 @@ impl Reconciler {
                                 id: new_dispatch_id.clone(),
                                 bead_ref: crate::store::WorkRef {
                                     repo: repo.clone(),
-                                    scope: String::new(),
+                                    scope: self
+                                        .trackers
+                                        .get(bead_id.as_str())
+                                        .map(|t| t.scope.clone())
+                                        .unwrap_or_default(),
                                     bead_id: bead_id.clone(),
                                 },
                                 agent: next_agent.clone(),

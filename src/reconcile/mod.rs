@@ -653,6 +653,7 @@ impl Reconciler {
                     self.create_orchestrator(
                         &entry.bead_id,
                         &entry.repo,
+                        &bead.scope,
                         &bead.issue_type,
                         path.clone(),
                     );

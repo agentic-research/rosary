@@ -41,12 +41,13 @@ impl Reconciler {
         &mut self,
         bead_id: &str,
         repo: &str,
+        scope: &str,
         issue_type: &str,
         work_dir: PathBuf,
     ) {
         let bead_ref = WorkRef {
             repo: repo.to_string(),
-            scope: String::new(),
+            scope: scope.to_string(),
             bead_id: bead_id.to_string(),
         };
         let pipeline = self.pipeline.agents_for(issue_type);
