@@ -11,7 +11,7 @@ use anyhow::Result;
 use crate::dispatch;
 use crate::dolt::observations::Verdict;
 use crate::pipeline::CompletionAction;
-use crate::store::BeadRef;
+use crate::store::WorkRef;
 use crate::verify::VerifySummary;
 
 use super::Reconciler;
@@ -177,7 +177,7 @@ impl Reconciler {
                 self.append_observation(bead_id, repo, &agent, phase, Verdict::Deadletter, detail)
                     .await;
                 self.cleanup_workspace(bead_id);
-                let bead_ref = BeadRef {
+                let bead_ref = WorkRef {
                     repo: repo.to_string(),
                     scope: String::new(),
                     bead_id: bead_id.to_string(),
@@ -268,7 +268,7 @@ impl Reconciler {
             tracker.phase_index = phase + 1;
         }
 
-        let bead_ref = BeadRef {
+        let bead_ref = WorkRef {
             repo: repo.to_string(),
             scope: String::new(),
             bead_id: bead_id.to_string(),
@@ -642,7 +642,7 @@ impl Reconciler {
                                 format!("{}-{}", bead_id, handle.started_at.timestamp_millis());
                             let dispatch_record = crate::store::DispatchRecord {
                                 id: new_dispatch_id.clone(),
-                                bead_ref: crate::store::BeadRef {
+                                bead_ref: crate::store::WorkRef {
                                     repo: repo.clone(),
                                     scope: String::new(),
                                     bead_id: bead_id.clone(),

@@ -539,7 +539,7 @@ pub async fn sync(
         // Resolve thread → Linear parent issue UUID for sub-issue creation.
         // thread_parent_ids maps thread_id → Linear issue UUID.
         let parent_linear_uuid: Option<String> = if let Some(hier) = hierarchy {
-            let bead_ref = crate::store::BeadRef {
+            let bead_ref = crate::store::WorkRef {
                 repo: bead.repo.clone(),
                 scope: String::new(),
                 bead_id: bead.id.clone(),
@@ -588,7 +588,7 @@ pub async fn sync(
                     }
                     // Store UUID so siblings in the same thread get this as parentId
                     if let Some(hier) = hierarchy {
-                        let bead_ref = crate::store::BeadRef {
+                        let bead_ref = crate::store::WorkRef {
                             repo: bead.repo.clone(),
                             scope: String::new(),
                             bead_id: bead.id.clone(),

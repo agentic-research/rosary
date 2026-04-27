@@ -510,7 +510,7 @@ fn mock_agent_verify_decide_compose_to_advance() {
     use crate::dispatch::AgentProvider;
     use crate::dispatch::tests::MockAgentProvider;
     use crate::pipeline::{CompletionAction, PipelineEngine};
-    use crate::verify::{BeadRefCheck, CommitCheck, Verifier};
+    use crate::verify::{WorkRefCheck, CommitCheck, Verifier};
 
     let repo = crate::testutil::TestRepo::new();
     let pipeline = PipelineEngine::new(default_pipelines(), None, 0);
@@ -532,7 +532,7 @@ fn mock_agent_verify_decide_compose_to_advance() {
         .unwrap();
 
     // Verify the commit (what the reconciler does after agent completes)
-    let verifier = Verifier::new(vec![Box::new(CommitCheck), Box::new(BeadRefCheck)]);
+    let verifier = Verifier::new(vec![Box::new(CommitCheck), Box::new(WorkRefCheck)]);
     let summary = verifier.run(repo.path()).unwrap();
     assert!(
         summary.passed(),
@@ -559,13 +559,13 @@ fn mock_agent_verify_decide_compose_to_advance() {
 fn mock_agent_bad_commit_verify_fails_triggers_retry() {
     use crate::config::default_pipelines;
     use crate::pipeline::{CompletionAction, PipelineEngine};
-    use crate::verify::{BeadRefCheck, CommitCheck, Verifier};
+    use crate::verify::{WorkRefCheck, CommitCheck, Verifier};
 
     let repo = crate::testutil::TestRepo::new();
     // Create a commit WITHOUT bead reference
     repo.commit_plain("bad.rs", "fn bad() {}");
 
-    let verifier = Verifier::new(vec![Box::new(CommitCheck), Box::new(BeadRefCheck)]);
+    let verifier = Verifier::new(vec![Box::new(CommitCheck), Box::new(WorkRefCheck)]);
     let summary = verifier.run(repo.path()).unwrap();
     assert!(!summary.passed(), "commit without bead ref should fail");
 

@@ -75,7 +75,7 @@ impl Verifier {
     /// Build the default verification pipeline for a given language.
     pub fn for_language(lang: &str) -> Self {
         let mut tiers: Vec<Box<dyn VerifyTier>> =
-            vec![Box::new(CommitCheck), Box::new(BeadRefCheck)];
+            vec![Box::new(CommitCheck), Box::new(WorkRefCheck)];
 
         match lang {
             "rust" => {
@@ -174,9 +174,9 @@ impl VerifyTier for CommitCheck {
 
 /// Tier 0.5: Does the agent's commit reference a bead?
 /// Enforces Golden Rule 11: every commit must include `bead:ID`.
-pub struct BeadRefCheck;
+pub struct WorkRefCheck;
 
-impl VerifyTier for BeadRefCheck {
+impl VerifyTier for WorkRefCheck {
     fn name(&self) -> &str {
         "bead_ref"
     }
@@ -920,21 +920,21 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Adversarial: BeadRefCheck (Golden Rule 11)
+    // Adversarial: WorkRefCheck (Golden Rule 11)
     // -----------------------------------------------------------------------
 
     #[test]
     fn bead_ref_check_passes_with_bead_ref() {
         let repo = crate::testutil::TestRepo::new();
         repo.commit_with_bead_ref("rsry-abc123", "fix.rs", "fn fix() {}");
-        assert_eq!(BeadRefCheck.check(repo.path()).unwrap(), VerifyResult::Pass);
+        assert_eq!(WorkRefCheck.check(repo.path()).unwrap(), VerifyResult::Pass);
     }
 
     #[test]
     fn bead_ref_check_fails_without_bead_ref() {
         let repo = crate::testutil::TestRepo::new();
         repo.commit_plain("fix.rs", "fn fix() {}");
-        let result = BeadRefCheck.check(repo.path()).unwrap();
+        let result = WorkRefCheck.check(repo.path()).unwrap();
         match &result {
             VerifyResult::Fail(msg) => assert!(
                 msg.contains("Golden Rule 11"),
@@ -954,11 +954,11 @@ mod tests {
         std::fs::write(path.join("test.rs"), "fn test() {}").unwrap();
         run_git(path, &["add", "."]);
         run_git(path, &["commit", "-m", "[rsry-abc] fix: no footer"]);
-        let result = BeadRefCheck.check(path).unwrap();
+        let result = WorkRefCheck.check(path).unwrap();
         assert_eq!(
             result,
             VerifyResult::Pass,
-            "bracket-format commit should pass BeadRefCheck"
+            "bracket-format commit should pass WorkRefCheck"
         );
     }
 
@@ -1036,7 +1036,7 @@ mod tests {
 
         let verifier = Verifier::new(vec![
             Box::new(CommitCheck),
-            Box::new(BeadRefCheck),
+            Box::new(WorkRefCheck),
             Box::new(ShellCheck::new("should-not-run", "false", &[])),
         ]);
 

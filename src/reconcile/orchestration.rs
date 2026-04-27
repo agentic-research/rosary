@@ -13,7 +13,7 @@ use crate::dispatch;
 use crate::orchestrate::{
     FeatureOrchestrator, OrchestratorBehavior, OrchestratorState, TickOutcome,
 };
-use crate::store::{BeadRef, DispatchRecord};
+use crate::store::{WorkRef, DispatchRecord};
 
 impl Reconciler {
     /// Returns true if we're in hierarchical orchestration mode.
@@ -44,7 +44,7 @@ impl Reconciler {
         issue_type: &str,
         work_dir: PathBuf,
     ) {
-        let bead_ref = BeadRef {
+        let bead_ref = WorkRef {
             repo: repo.to_string(),
             scope: String::new(),
             bead_id: bead_id.to_string(),
@@ -145,7 +145,7 @@ impl Reconciler {
                                     format!("{}-{}", bead_id, handle.started_at.timestamp_millis());
                                 let dispatch_record = DispatchRecord {
                                     id: dispatch_id.clone(),
-                                    bead_ref: BeadRef {
+                                    bead_ref: WorkRef {
                                         repo: bead.repo.clone(),
                                         scope: String::new(),
                                         bead_id: bead_id.clone(),
@@ -240,7 +240,7 @@ impl Reconciler {
                         continue;
                     };
                     self.cleanup_workspace(&bead_id);
-                    let bead_ref = BeadRef {
+                    let bead_ref = WorkRef {
                         repo: repo.clone(),
                         scope: String::new(),
                         bead_id: bead_id.clone(),

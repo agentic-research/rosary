@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::config;
 use crate::pool::RepoPool;
-use crate::store::{BackendStore, BeadRef, BeadStore, DispatchRecord, PipelineState};
+use crate::store::{BackendStore, WorkRef, BeadStore, DispatchRecord, PipelineState};
 
 /// Default result limit for bead search (keeps MCP responses bounded).
 const SEARCH_DEFAULT_LIMIT: u64 = 20;
@@ -1144,7 +1144,7 @@ pub(crate) async fn tool_pipeline_upsert(
         .transpose()?;
 
     let state = PipelineState {
-        bead_ref: BeadRef {
+        bead_ref: WorkRef {
             repo: repo.to_string(),
             scope: String::new(),
             bead_id: bead_id.to_string(),
@@ -1179,7 +1179,7 @@ async fn tool_pipeline_query(args: &Value, backend: Option<&dyn BackendStore>) -
 
     match (repo, bead_id) {
         (Some(repo), Some(bead_id)) => {
-            let bead_ref = BeadRef {
+            let bead_ref = WorkRef {
                 repo: repo.to_string(),
                 scope: String::new(),
                 bead_id: bead_id.to_string(),
@@ -1244,7 +1244,7 @@ async fn tool_dispatch_record(args: &Value, backend: Option<&dyn BackendStore>) 
 
     let record = DispatchRecord {
         id: id.to_string(),
-        bead_ref: BeadRef {
+        bead_ref: WorkRef {
             repo: repo.to_string(),
             scope: String::new(),
             bead_id: bead_id.to_string(),
@@ -1351,7 +1351,7 @@ async fn tool_thread_list(args: &Value, backend: Option<&dyn BackendStore>) -> R
         args.get("bead_id").and_then(|v| v.as_str()),
         args.get("repo").and_then(|v| v.as_str()),
     ) {
-        let bead_ref = crate::store::BeadRef {
+        let bead_ref = crate::store::WorkRef {
             repo: repo.to_string(),
             scope: String::new(),
             bead_id: bead_id.to_string(),
@@ -1365,7 +1365,7 @@ async fn tool_thread_list(args: &Value, backend: Option<&dyn BackendStore>) -> R
 
 async fn tool_thread_assign(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
     let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
-    use crate::store::{BeadRef, ThreadRecord};
+    use crate::store::{WorkRef, ThreadRecord};
 
     let thread_id = args["thread_id"]
         .as_str()
@@ -1417,7 +1417,7 @@ async fn tool_thread_assign(args: &Value, backend: Option<&dyn BackendStore>) ->
         })
         .await?;
 
-    let bead_ref = BeadRef {
+    let bead_ref = WorkRef {
         repo: repo.to_string(),
         scope: String::new(),
         bead_id: bead_id.to_string(),

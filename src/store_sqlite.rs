@@ -226,7 +226,7 @@ impl HierarchyStore for SqliteBackend {
             .map_err(Into::into)
     }
 
-    async fn add_bead_to_thread(&self, thread_id: &str, bead: &BeadRef) -> Result<()> {
+    async fn add_bead_to_thread(&self, thread_id: &str, bead: &WorkRef) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO thread_members (thread_id, repo, bead_id) VALUES (?1, ?2, ?3)",
@@ -235,13 +235,13 @@ impl HierarchyStore for SqliteBackend {
         Ok(())
     }
 
-    async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<BeadRef>> {
+    async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<WorkRef>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT repo, bead_id FROM thread_members WHERE thread_id = ?1 ORDER BY repo, bead_id",
         )?;
         let rows = stmt.query_map(params![thread_id], |row| {
-            Ok(BeadRef {
+            Ok(WorkRef {
                 repo: row.get(0)?,
                 scope: String::new(),
                 bead_id: row.get(1)?,
@@ -251,7 +251,7 @@ impl HierarchyStore for SqliteBackend {
             .map_err(Into::into)
     }
 
-    async fn find_thread_for_bead(&self, bead: &BeadRef) -> Result<Option<String>> {
+    async fn find_thread_for_bead(&self, bead: &WorkRef) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT thread_id FROM thread_members WHERE repo = ?1 AND bead_id = ?2 LIMIT 1",
@@ -287,7 +287,7 @@ impl DispatchStore for SqliteBackend {
         Ok(())
     }
 
-    async fn get_pipeline(&self, bead: &BeadRef) -> Result<Option<PipelineState>> {
+    async fn get_pipeline(&self, bead: &WorkRef) -> Result<Option<PipelineState>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT repo, bead_id, pipeline_phase, pipeline_agent, phase_status, retries, consecutive_reverts, highest_verify_tier, last_generation, backoff_until
@@ -308,7 +308,7 @@ impl DispatchStore for SqliteBackend {
             .map_err(Into::into)
     }
 
-    async fn clear_pipeline(&self, bead: &BeadRef) -> Result<()> {
+    async fn clear_pipeline(&self, bead: &WorkRef) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "DELETE FROM pipelines WHERE repo = ?1 AND bead_id = ?2",
@@ -416,19 +416,19 @@ impl LinkageStore for SqliteBackend {
         Ok(())
     }
 
-    async fn dependencies_of(&self, bead: &BeadRef) -> Result<Vec<CrossRepoDep>> {
+    async fn dependencies_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT from_repo, from_bead, to_repo, to_bead, dep_type FROM dependencies WHERE from_repo = ?1 AND from_bead = ?2",
         )?;
         let rows = stmt.query_map(params![bead.repo, bead.bead_id], |row| {
             Ok(CrossRepoDep {
-                from: BeadRef {
+                from: WorkRef {
                     repo: row.get(0)?,
                     scope: String::new(),
                     bead_id: row.get(1)?,
                 },
-                to: BeadRef {
+                to: WorkRef {
                     repo: row.get(2)?,
                     scope: String::new(),
                     bead_id: row.get(3)?,
@@ -440,19 +440,19 @@ impl LinkageStore for SqliteBackend {
             .map_err(Into::into)
     }
 
-    async fn dependents_of(&self, bead: &BeadRef) -> Result<Vec<CrossRepoDep>> {
+    async fn dependents_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT from_repo, from_bead, to_repo, to_bead, dep_type FROM dependencies WHERE to_repo = ?1 AND to_bead = ?2",
         )?;
         let rows = stmt.query_map(params![bead.repo, bead.bead_id], |row| {
             Ok(CrossRepoDep {
-                from: BeadRef {
+                from: WorkRef {
                     repo: row.get(0)?,
                     scope: String::new(),
                     bead_id: row.get(1)?,
                 },
-                to: BeadRef {
+                to: WorkRef {
                     repo: row.get(2)?,
                     scope: String::new(),
                     bead_id: row.get(3)?,
@@ -480,7 +480,7 @@ impl LinkageStore for SqliteBackend {
         )?;
         let mut rows = stmt.query(params![linear_id])?;
         Ok(rows.next()?.map(|row| LinearLink {
-            bead_ref: BeadRef {
+            bead_ref: WorkRef {
                 repo: row.get(0).unwrap(),
                 scope: String::new(),
                 bead_id: row.get(1).unwrap(),
@@ -549,7 +549,7 @@ impl BackendExport for SqliteBackend {
             .map_err(Into::into)
     }
 
-    async fn all_thread_members(&self) -> Result<Vec<(String, BeadRef)>> {
+    async fn all_thread_members(&self) -> Result<Vec<(String, WorkRef)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT thread_id, repo, bead_id FROM thread_members ORDER BY thread_id, repo, bead_id",
@@ -557,7 +557,7 @@ impl BackendExport for SqliteBackend {
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                BeadRef {
+                WorkRef {
                     repo: row.get(1)?,
                     scope: String::new(),
                     bead_id: row.get(2)?,
@@ -585,12 +585,12 @@ impl BackendExport for SqliteBackend {
             .prepare("SELECT from_repo, from_bead, to_repo, to_bead, dep_type FROM dependencies")?;
         let rows = stmt.query_map([], |row| {
             Ok(CrossRepoDep {
-                from: BeadRef {
+                from: WorkRef {
                     repo: row.get(0)?,
                     scope: String::new(),
                     bead_id: row.get(1)?,
                 },
-                to: BeadRef {
+                to: WorkRef {
                     repo: row.get(2)?,
                     scope: String::new(),
                     bead_id: row.get(3)?,
@@ -608,7 +608,7 @@ impl BackendExport for SqliteBackend {
             conn.prepare("SELECT repo, bead_id, linear_id, linear_type FROM linear_links")?;
         let rows = stmt.query_map([], |row| {
             Ok(LinearLink {
-                bead_ref: BeadRef {
+                bead_ref: WorkRef {
                     repo: row.get(0)?,
                     scope: String::new(),
                     bead_id: row.get(1)?,
@@ -643,7 +643,7 @@ impl BackendExport for SqliteBackend {
 fn row_to_pipeline(row: &rusqlite::Row) -> rusqlite::Result<PipelineState> {
     let backoff_str: Option<String> = row.get(9)?;
     Ok(PipelineState {
-        bead_ref: BeadRef {
+        bead_ref: WorkRef {
             repo: row.get(0)?,
             scope: String::new(),
             bead_id: row.get(1)?,
@@ -668,7 +668,7 @@ fn row_to_dispatch(row: &rusqlite::Row) -> rusqlite::Result<DispatchRecord> {
     let completed_str: Option<String> = row.get(6)?;
     Ok(DispatchRecord {
         id: row.get(0)?,
-        bead_ref: BeadRef {
+        bead_ref: WorkRef {
             repo: row.get(1)?,
             scope: String::new(),
             bead_id: row.get(2)?,
@@ -710,7 +710,7 @@ mod tests {
     #[tokio::test]
     async fn pipeline_crud() {
         let (store, _dir) = temp_backend();
-        let bead = BeadRef {
+        let bead = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
             scope: String::new(),
@@ -741,7 +741,7 @@ mod tests {
         let (store, _dir) = temp_backend();
         let record = DispatchRecord {
             id: "d-001".into(),
-            bead_ref: BeadRef {
+            bead_ref: WorkRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-001".into(),
                 scope: String::new(),
@@ -789,7 +789,7 @@ mod tests {
         store.upsert_thread(&thread).await.unwrap();
         assert_eq!(store.list_threads("ADR-001").await.unwrap().len(), 1);
 
-        let bead = BeadRef {
+        let bead = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
             scope: String::new(),
@@ -807,12 +807,12 @@ mod tests {
     #[tokio::test]
     async fn linkage_crud() {
         let (store, _dir) = temp_backend();
-        let from = BeadRef {
+        let from = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
             scope: String::new(),
         };
-        let to = BeadRef {
+        let to = WorkRef {
             repo: "mache".into(),
             bead_id: "mch-001".into(),
             scope: String::new(),
@@ -915,7 +915,7 @@ mod tests {
         for i in 0..3 {
             store
                 .upsert_pipeline(&PipelineState {
-                    bead_ref: BeadRef {
+                    bead_ref: WorkRef {
                         repo: "rosary".into(),
                         bead_id: format!("rsry-{i:03}"),
                         scope: String::new(),
@@ -939,7 +939,7 @@ mod tests {
     async fn pipeline_backoff_roundtrip() {
         let (store, _dir) = temp_backend();
         let now = Utc::now();
-        let bead = BeadRef {
+        let bead = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-bo".into(),
             scope: String::new(),
@@ -970,7 +970,7 @@ mod tests {
         let (store, _dir) = temp_backend();
         let record = DispatchRecord {
             id: "d-sess".into(),
-            bead_ref: BeadRef {
+            bead_ref: WorkRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-001".into(),
                 scope: String::new(),
@@ -1056,7 +1056,7 @@ mod tests {
         // Simulate: previous reconciler created a dispatch record and crashed
         let record = DispatchRecord {
             id: "orphan-001".into(),
-            bead_ref: BeadRef {
+            bead_ref: WorkRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-crashed".into(),
                 scope: String::new(),

@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::store::{BeadRef, DispatchRecord, DispatchStore, PipelineState};
+use crate::store::{WorkRef, DispatchRecord, DispatchStore, PipelineState};
 
 /// What the reconciler should do after a bead's agent completes.
 #[derive(Debug, Clone, PartialEq)]
@@ -148,7 +148,7 @@ impl PipelineEngine {
 
     /// Read pipeline state from backend. Returns None if store unavailable.
     #[allow(dead_code)] // API surface — per-bead lookup for future use
-    pub async fn get_state(&self, bead_ref: &BeadRef) -> Option<PipelineState> {
+    pub async fn get_state(&self, bead_ref: &WorkRef) -> Option<PipelineState> {
         if let Some(ref store) = self.store {
             match store.get_pipeline(bead_ref).await {
                 Ok(state) => state,
@@ -166,7 +166,7 @@ impl PipelineEngine {
     }
 
     /// Clear pipeline state (bead done or deadlettered). No-op if store unavailable.
-    pub async fn clear_state(&self, bead_ref: &BeadRef) {
+    pub async fn clear_state(&self, bead_ref: &WorkRef) {
         if let Some(ref store) = self.store
             && let Err(e) = store.clear_pipeline(bead_ref).await
         {
@@ -215,7 +215,7 @@ impl PipelineEngine {
     }
 
     /// Build a PipelineState for a freshly dispatched bead.
-    pub fn initial_state(&self, bead_ref: BeadRef, issue_type: &str) -> PipelineState {
+    pub fn initial_state(&self, bead_ref: WorkRef, issue_type: &str) -> PipelineState {
         let agent = self.default_agent(issue_type);
         PipelineState {
             bead_ref,
@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn initial_state_uses_config() {
         let e = engine();
-        let bead_ref = BeadRef {
+        let bead_ref = WorkRef {
             repo: "test-repo".into(),
             bead_id: "test-001".into(),
             scope: String::new(),

@@ -667,7 +667,7 @@ fn mock_commit_passes_verification() {
 
     let verifier = crate::verify::Verifier::new(vec![
         Box::new(crate::verify::CommitCheck),
-        Box::new(crate::verify::BeadRefCheck),
+        Box::new(crate::verify::WorkRefCheck),
     ]);
     let summary = verifier.run(repo.path()).unwrap();
     assert!(summary.passed(), "verification should pass: {summary:?}");
@@ -680,7 +680,7 @@ fn plain_commit_fails_bead_ref_check() {
 
     let verifier = crate::verify::Verifier::new(vec![
         Box::new(crate::verify::CommitCheck),
-        Box::new(crate::verify::BeadRefCheck),
+        Box::new(crate::verify::WorkRefCheck),
     ]);
     let summary = verifier.run(repo.path()).unwrap();
     assert!(!summary.passed(), "should fail bead ref check");

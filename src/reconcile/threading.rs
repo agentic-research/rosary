@@ -42,7 +42,7 @@ impl Reconciler {
             // Check if any bead in the cluster already has a thread
             let mut already_threaded = false;
             for bid in &cluster.bead_ids {
-                let bead_ref = crate::store::BeadRef {
+                let bead_ref = crate::store::WorkRef {
                     repo: owned
                         .iter()
                         .find(|b| b.id == *bid)
@@ -103,7 +103,7 @@ impl Reconciler {
                 continue;
             }
             for bid in &cluster.bead_ids {
-                let bead_ref = crate::store::BeadRef {
+                let bead_ref = crate::store::WorkRef {
                     repo: owned
                         .iter()
                         .find(|b| b.id == *bid)
@@ -135,7 +135,7 @@ impl Reconciler {
 
         let mut map = HashMap::new();
         for bead in beads {
-            let bead_ref = crate::store::BeadRef {
+            let bead_ref = crate::store::WorkRef {
                 repo: bead.repo.clone(),
                 scope: String::new(),
                 bead_id: bead.id.clone(),
@@ -177,7 +177,7 @@ impl Reconciler {
         struct Candidate {
             thread_id: String,
             feature_branch: String,
-            bead_refs: Vec<crate::store::BeadRef>,
+            bead_refs: Vec<crate::store::WorkRef>,
             /// Repo of the first bead — used to look up repo_path in Phase 2.
             first_repo: String,
         }
@@ -191,7 +191,7 @@ impl Reconciler {
             // Collect unique thread_ids triggered by the newly-completed beads.
             let mut triggered: Vec<String> = Vec::new();
             for (bead_id, repo) in newly_pr_open {
-                let bead_ref = crate::store::BeadRef {
+                let bead_ref = crate::store::WorkRef {
                     repo: repo.clone(),
                     scope: String::new(),
                     bead_id: bead_id.clone(),

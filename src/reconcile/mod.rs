@@ -29,7 +29,7 @@ use crate::queue::WorkQueue;
 use crate::scanner;
 #[allow(unused_imports)]
 use crate::store::BeadStore;
-use crate::store::{BeadRef, DispatchRecord};
+use crate::store::{WorkRef, DispatchRecord};
 use crate::sync::IssueTracker;
 use crate::xref;
 
@@ -726,7 +726,7 @@ impl Reconciler {
                         // corrected a stale assignee above).
                         let dispatch_record = DispatchRecord {
                             id: dispatch_id.clone(),
-                            bead_ref: BeadRef {
+                            bead_ref: WorkRef {
                                 repo: entry.repo.clone(),
                                 scope: String::new(),
                                 bead_id: entry.bead_id.clone(),
@@ -770,7 +770,7 @@ impl Reconciler {
                         tracker.dispatch_id = Some(dispatch_id);
 
                         // Persist initial pipeline state to backend store
-                        let bead_ref = BeadRef {
+                        let bead_ref = WorkRef {
                             repo: entry.repo.clone(),
                             scope: String::new(),
                             bead_id: entry.bead_id.clone(),
