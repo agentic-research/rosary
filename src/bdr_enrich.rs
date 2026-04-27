@@ -1,0 +1,216 @@
+//! LLM-assisted BDR atom extraction for non-ADR documents.
+//!
+//! When `rsry decompose --model <haiku|sonnet>` is used and the document is not
+//! ADR-shaped (no ## Status / ## Context / ## Decision headings), this module
+//! calls the Anthropic Messages API to extract atoms from arbitrary structured
+//! docs (design specs, SDDs, roadmaps, README sections).
+//!
+//! The heuristic path (`bdr::parse::parse_adr_full`) remains the default and
+//! is always used for ADR-shaped documents regardless of `--model`.
+
+use anyhow::{Context, Result};
+use bdr::atom::{Atom, AtomKind};
+use serde::Deserialize;
+
+const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+const SYSTEM_PROMPT: &str = r#"You are a BDR (Bead Decision Record) decomposition engine.
+Extract actionable work items from the provided document and return them as a JSON array.
+
+Each element has these fields:
+  kind          - one of the AtomKind values below (string)
+  title         - short imperative title, max 60 chars
+  body          - full description: what, why, acceptance criteria
+  source_section - the document heading this item came from
+  references    - array of strings: bead IDs, repo names, or related items mentioned in the text
+
+AtomKind values and when to use each:
+  Phase           - an implementation milestone or stage (produces an epic bead)
+  TechnicalSpec   - concrete implementation detail: algorithm, schema, API contract, wire format
+  ValidationPoint - success criterion, acceptance test, observable metric
+  OpenQuestion    - explicit unknown that needs resolution before or during implementation
+  FrictionPoint   - problem or pain point motivating the work (produces a task bead)
+  Decision        - an explicit architectural choice being made
+  Constraint      - hard requirement that limits design choices
+  Consequence     - outcome or tradeoff of a decision
+  Alternative     - an approach considered but rejected, with reasoning
+
+Rules:
+- Prefer Phase atoms for top-level milestones; nest detail as TechnicalSpec / ValidationPoint
+- Every phase should have at least one ValidationPoint
+- Skip pure prose/background sections with no actionable content
+- Do NOT include the document title itself as an atom
+- Return ONLY a JSON array, no prose, no markdown fences"#;
+
+/// Call the Anthropic Messages API to extract BDR atoms from a document.
+///
+/// This is the LLM-assisted path, used when the document is not ADR-shaped.
+/// The returned atoms feed directly into `bdr::decompose::decompose_with_meta`.
+pub async fn extract_atoms_with_llm(
+    markdown: &str,
+    api_key: &str,
+    model: &str,
+) -> Result<Vec<Atom>> {
+    let client = reqwest::Client::new();
+
+    let model_id = resolve_model_id(model);
+    eprintln!("[bdr-enrich] extracting atoms via {model_id}...");
+
+    let user_content = format!("Extract BDR atoms from this document:\n\n{markdown}");
+
+    let body = serde_json::json!({
+        "model": model_id,
+        "max_tokens": 4096,
+        "system": SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": user_content}]
+    });
+
+    let resp = client
+        .post(ANTHROPIC_API_URL)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", ANTHROPIC_VERSION)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .context("calling Anthropic API")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Anthropic API error {status}: {text}");
+    }
+
+    let resp_json: serde_json::Value = resp.json().await.context("parsing API response")?;
+    let text = resp_json["content"][0]["text"]
+        .as_str()
+        .context("no text content in API response")?;
+
+    parse_llm_atoms(text)
+}
+
+/// Map shorthand model names to full Anthropic model IDs.
+fn resolve_model_id(model: &str) -> &str {
+    match model {
+        "haiku" => "claude-haiku-4-5-20251001",
+        "sonnet" => "claude-sonnet-4-6",
+        "opus" => "claude-opus-4-6",
+        other => other, // pass through full IDs unchanged
+    }
+}
+
+/// Parse the LLM JSON response into atoms.
+fn parse_llm_atoms(text: &str) -> Result<Vec<Atom>> {
+    // Strip markdown code fences if the model wrapped the output
+    let json_str = text
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    #[derive(Deserialize)]
+    struct LlmAtom {
+        kind: String,
+        title: String,
+        body: String,
+        source_section: String,
+        #[serde(default)]
+        references: Vec<String>,
+    }
+
+    let llm_atoms: Vec<LlmAtom> = serde_json::from_str(json_str)
+        .with_context(|| format!("parsing LLM atom JSON:\n{json_str}"))?;
+
+    eprintln!("[bdr-enrich] extracted {} atoms", llm_atoms.len());
+
+    Ok(llm_atoms
+        .into_iter()
+        .enumerate()
+        .map(|(i, a)| Atom {
+            kind: parse_atom_kind(&a.kind),
+            title: a.title,
+            body: a.body,
+            source_line: i + 1,
+            source_section: a.source_section,
+            references: a.references,
+        })
+        .collect())
+}
+
+fn parse_atom_kind(s: &str) -> AtomKind {
+    match s {
+        "FrictionPoint" | "friction_point" => AtomKind::FrictionPoint,
+        "Decision" | "decision" => AtomKind::Decision,
+        "Constraint" | "constraint" => AtomKind::Constraint,
+        "Consequence" | "consequence" => AtomKind::Consequence,
+        "Alternative" | "alternative" => AtomKind::Alternative,
+        "OpenQuestion" | "open_question" => AtomKind::OpenQuestion,
+        "Phase" | "phase" => AtomKind::Phase,
+        "ValidationPoint" | "validation_point" => AtomKind::ValidationPoint,
+        "TechnicalSpec" | "technical_spec" => AtomKind::TechnicalSpec,
+        _ => AtomKind::TechnicalSpec, // safe default for unrecognized kinds
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_atom_kind_handles_all_variants() {
+        let cases = [
+            ("FrictionPoint", AtomKind::FrictionPoint),
+            ("friction_point", AtomKind::FrictionPoint),
+            ("Phase", AtomKind::Phase),
+            ("phase", AtomKind::Phase),
+            ("ValidationPoint", AtomKind::ValidationPoint),
+            ("OpenQuestion", AtomKind::OpenQuestion),
+            ("TechnicalSpec", AtomKind::TechnicalSpec),
+            ("unknown-kind", AtomKind::TechnicalSpec),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(parse_atom_kind(input), expected, "failed for {input}");
+        }
+    }
+
+    #[test]
+    fn resolve_model_id_maps_shorthand() {
+        assert_eq!(resolve_model_id("haiku"), "claude-haiku-4-5-20251001");
+        assert_eq!(resolve_model_id("sonnet"), "claude-sonnet-4-6");
+        assert_eq!(resolve_model_id("claude-opus-4-6"), "claude-opus-4-6");
+    }
+
+    #[test]
+    fn parse_llm_atoms_valid_json() {
+        // Use escaped JSON (no raw string) to avoid r#"..."# delimiter collision with ## headings
+        let json = "[\
+            {\"kind\":\"Phase\",\"title\":\"Implement ingestion pipeline\",\
+             \"body\":\"Build the data ingestion layer.\",\
+             \"source_section\":\"Sub-Project A\",\"references\":[\"rosary-abc\"]},\
+            {\"kind\":\"ValidationPoint\",\"title\":\"Ingestion processes 1k docs per sec\",\
+             \"body\":\"Throughput at p99.\",\
+             \"source_section\":\"Sub-Project A\",\"references\":[]}\
+        ]";
+        let atoms = parse_llm_atoms(json).unwrap();
+        assert_eq!(atoms.len(), 2);
+        assert_eq!(atoms[0].kind, AtomKind::Phase);
+        assert_eq!(atoms[1].kind, AtomKind::ValidationPoint);
+        assert_eq!(atoms[0].source_line, 1);
+        assert_eq!(atoms[1].source_line, 2);
+    }
+
+    #[test]
+    fn parse_llm_atoms_strips_code_fences() {
+        let json = "```json\n[{\"kind\":\"Phase\",\"title\":\"T\",\"body\":\"B\",\"source_section\":\"S\",\"references\":[]}]\n```";
+        let atoms = parse_llm_atoms(json).unwrap();
+        assert_eq!(atoms.len(), 1);
+    }
+
+    #[test]
+    fn parse_llm_atoms_invalid_json_returns_error() {
+        let result = parse_llm_atoms("not json");
+        assert!(result.is_err());
+    }
+}

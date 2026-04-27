@@ -42,6 +42,28 @@ enum SectionKind {
     Other,
 }
 
+/// Detect whether a markdown document is shaped like an ADR.
+///
+/// ADRs follow the MADR/Nygard convention with headings like "## Status",
+/// "## Context", "## Decision", "## Consequences". Design specs, SDDs, and
+/// README-style docs use different heading conventions (## Sub-Project, ## Phase,
+/// ## Hypothesis) and are better decomposed via the LLM-assisted path.
+///
+/// Returns true if at least two ADR-standard headings are present.
+pub fn is_adr_shaped(markdown: &str) -> bool {
+    let adr_headings = [
+        "## status",
+        "## context",
+        "## decision",
+        "## consequences",
+        "## alternatives",
+        "## problem statement",
+        "## proposed solution",
+    ];
+    let lower = markdown.to_lowercase();
+    adr_headings.iter().filter(|h| lower.contains(*h)).count() >= 2
+}
+
 /// Parse an ADR markdown string into atoms (backward-compatible).
 pub fn parse_adr(markdown: &str) -> Vec<Atom> {
     parse_adr_full(markdown).atoms

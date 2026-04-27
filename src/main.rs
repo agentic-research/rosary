@@ -8,6 +8,7 @@ use std::time::SystemTime;
 mod acp;
 #[allow(dead_code)] // API surface — wired in rsry-e608bb (reconciler integration)
 mod backend;
+mod bdr_enrich;
 mod bead;
 mod bead_dolt;
 mod bead_sqlite;
@@ -203,6 +204,12 @@ enum Command {
         /// Preview without creating beads
         #[arg(long)]
         dry_run: bool,
+        /// LLM model for non-ADR docs (haiku, sonnet, or full model ID).
+        /// When set and the document is not ADR-shaped, uses the Anthropic
+        /// Messages API to extract atoms instead of the heuristic parser.
+        /// Requires ANTHROPIC_API_KEY env var.
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Manage beads directly
     Bead {
@@ -627,11 +634,26 @@ async fn main() -> Result<()> {
             title,
             repo,
             dry_run,
+            model,
         } => {
             let markdown =
                 std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
-            let parsed = bdr::parse::parse_adr_full(&markdown);
-            if parsed.atoms.is_empty() {
+
+            // Route: ADR-shaped docs use the heuristic parser.
+            // Non-ADR docs with --model set use LLM extraction.
+            let (atoms, meta) = if model.is_some() && !bdr::parse::is_adr_shaped(&markdown) {
+                let api_key = std::env::var("ANTHROPIC_API_KEY")
+                    .context("ANTHROPIC_API_KEY required for --model flag")?;
+                let model_name = model.as_deref().unwrap();
+                let atoms =
+                    bdr_enrich::extract_atoms_with_llm(&markdown, &api_key, model_name).await?;
+                (atoms, bdr::parse::AdrMeta::default())
+            } else {
+                let parsed = bdr::parse::parse_adr_full(&markdown);
+                (parsed.atoms, parsed.meta)
+            };
+
+            if atoms.is_empty() {
                 println!("No decomposable atoms found in {path}");
                 return Ok(());
             }
@@ -644,8 +666,7 @@ async fn main() -> Result<()> {
                     .unwrap_or_else(|| path.clone())
             });
 
-            let decade =
-                bdr::thread::build_decade_with_meta(&path, &adr_title, &parsed.atoms, &parsed.meta);
+            let decade = bdr::thread::build_decade_with_meta(&path, &adr_title, &atoms, &meta);
 
             cli::decompose_decade(
                 &decade.title,
