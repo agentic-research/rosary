@@ -148,6 +148,14 @@ impl SqliteBeadStore {
         // Fail silently if the column already exists.
         let _ = conn.execute_batch("ALTER TABLE issues ADD COLUMN created_by TEXT");
         let _ = conn.execute_batch("ALTER TABLE issues ADD COLUMN scope TEXT NOT NULL DEFAULT ''");
+        // FTS5 index for full-text search with porter stemmer.
+        // Separate from issues table — manually kept in sync on create/update.
+        let _ = conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS bead_fts USING fts5(\
+                id UNINDEXED, title, description,\
+                tokenize='porter unicode61'\
+            );",
+        );
         Ok(SqliteBeadStore {
             conn: Mutex::new(conn),
             path: path.to_path_buf(),
@@ -306,6 +314,11 @@ impl BeadStore for SqliteBeadStore {
             params![id, title, description, priority as i32, issue_type],
         )
         .with_context(|| format!("creating bead {id}"))?;
+        // Sync FTS index (best-effort)
+        let _ = conn.execute(
+            "INSERT INTO bead_fts(id, title, description) VALUES (?1, ?2, ?3)",
+            params![id, title, description],
+        );
         Ok(())
     }
 
@@ -351,6 +364,12 @@ impl BeadStore for SqliteBeadStore {
                 params![id, dep_id],
             )?;
         }
+
+        // Sync FTS index (best-effort — secondary index, never fails the create)
+        let _ = tx.execute(
+            "INSERT INTO bead_fts(id, title, description) VALUES (?1, ?2, ?3)",
+            params![id, title, description],
+        );
 
         tx.commit()?;
         Ok(())
@@ -441,6 +460,19 @@ impl BeadStore for SqliteBeadStore {
             if update.test_files.is_some() {
                 updated_fields.push("test_files".to_string());
             }
+        }
+
+        // Re-sync FTS if title or description changed (delete + re-insert from issues)
+        if updated_fields
+            .iter()
+            .any(|f| f == "title" || f == "description")
+        {
+            let _ = conn.execute("DELETE FROM bead_fts WHERE id = ?1", params![id]);
+            let _ = conn.execute(
+                "INSERT INTO bead_fts(id, title, description) \
+                 SELECT id, title, description FROM issues WHERE id = ?1",
+                params![id],
+            );
         }
 
         Ok(updated_fields)
@@ -598,6 +630,57 @@ impl BeadStore for SqliteBeadStore {
 
         let beads = stmt
             .query_map(param_refs.as_slice(), |row| bead_from_row(row, repo_name))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(beads)
+    }
+
+    async fn search_beads_fts(
+        &self,
+        query_str: &str,
+        repo_name: &str,
+        limit: u32,
+    ) -> Result<Vec<Bead>> {
+        let conn = self.conn.lock().unwrap();
+        // Wrap each token in double quotes: "word" prevents FTS5 operator interpretation
+        // and gives "all words must appear" semantics (implicit AND).
+        let fts_query: String = query_str
+            .split_whitespace()
+            .map(|w| format!("\"{}\"", w.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if fts_query.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let sql = "SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
+                        i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                        i.created_by, i.scope,
+                        COALESCE(dep.cnt, 0) as dep_count,
+                        COALESCE(deps.cnt, 0) as dependency_count,
+                        COALESCE(cmt.cnt, 0) as comment_count
+                 FROM bead_fts f
+                 JOIN issues i ON i.id = f.id
+                 LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
+                      ON dep.depends_on_id = i.id
+                 LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
+                           FROM dependencies d
+                           LEFT JOIN issues dep_i ON dep_i.id = d.depends_on_id
+                           WHERE dep_i.id IS NULL OR dep_i.status NOT IN ('closed', 'done')
+                           GROUP BY d.issue_id) deps
+                      ON deps.issue_id = i.id
+                 LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
+                      ON cmt.issue_id = i.id
+                 WHERE bead_fts MATCH ?1
+                 ORDER BY rank
+                 LIMIT ?2";
+
+        let mut stmt = conn.prepare(sql)?;
+        let beads = stmt
+            .query_map(params![fts_query, limit as i64], |row| {
+                bead_from_row(row, repo_name)
+            })?
             .filter_map(|r| r.ok())
             .collect();
         Ok(beads)
@@ -838,6 +921,47 @@ mod tests {
         // Partial ID prefix match
         let results = store.search_beads("rosary-", "repo", 10).await.unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_beads_fts_stemming() {
+        let store = test_store();
+        store
+            .create_bead(
+                "a",
+                "Dispatch agent workers",
+                "Fix dispatching logic",
+                1,
+                "bug",
+            )
+            .await
+            .unwrap();
+        store
+            .create_bead("b", "Add feature X", "Unrelated", 2, "feature")
+            .await
+            .unwrap();
+
+        // Porter stemmer: "dispatching" matches "dispatch"
+        let results = store
+            .search_beads_fts("dispatch", "repo", 10)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1, "FTS should find stemmed match");
+        assert_eq!(results[0].id, "a");
+
+        // Multi-word: both terms must appear
+        let results = store
+            .search_beads_fts("dispatch workers", "repo", 10)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+
+        // No match for unrelated term
+        let results = store
+            .search_beads_fts("nonexistent", "repo", 10)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
     }
 
     #[tokio::test]

@@ -245,6 +245,19 @@ pub trait BeadStore: Send + Sync {
         limit: u32,
     ) -> Result<Vec<crate::bead::Bead>>;
 
+    /// Full-text search using FTS5 (SQLite-only, porter stemmer).
+    ///
+    /// Falls back to LIKE-based `search_beads` on backends that don't support
+    /// FTS5 (Dolt). SQLiteBeadStore overrides this with the real FTS5 path.
+    async fn search_beads_fts(
+        &self,
+        query: &str,
+        repo_name: &str,
+        limit: u32,
+    ) -> Result<Vec<crate::bead::Bead>> {
+        self.search_beads(query, repo_name, limit).await
+    }
+
     // ── External references (Linear linkage) ──
     async fn get_external_ref(&self, id: &str) -> Result<Option<String>>;
     async fn set_external_ref(&self, id: &str, external_ref: &str) -> Result<()>;
