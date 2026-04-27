@@ -3,7 +3,7 @@
 //! Sentry spans: `reconcile.workspace.checkpoint`, `reconcile.workspace.cleanup`
 
 use super::Reconciler;
-use crate::store::BeadRef;
+use crate::store::WorkRef;
 
 impl Reconciler {
     /// Checkpoint workspace (jj commit + bookmark) without cleanup.
@@ -104,8 +104,9 @@ impl Reconciler {
             );
             // Look up thread_id from hierarchy if available
             if let Some(ref hierarchy) = self.hierarchy {
-                let bead_ref = BeadRef {
+                let bead_ref = WorkRef {
                     repo: repo.clone(),
+                    scope: String::new(),
                     bead_id: bead_id.to_string(),
                 };
                 if let Ok(Some(tid)) = hierarchy.find_thread_for_bead(&bead_ref).await {
@@ -163,8 +164,9 @@ impl Reconciler {
             // otherwise the configured default branch (from `[github] base`).
             // BDR→git: bead PRs into thread branch, standalone beads PR into default.
             let thread_base: Option<String> = if let Some(ref hierarchy) = self.hierarchy {
-                let bead_ref = BeadRef {
+                let bead_ref = WorkRef {
                     repo: repo.clone(),
+                    scope: String::new(),
                     bead_id: bead_id.to_string(),
                 };
                 if let Ok(Some(thread_id)) = hierarchy.find_thread_for_bead(&bead_ref).await {

@@ -180,9 +180,9 @@ fn parse_jj_log_output(output: &str) -> Vec<VcsCommit> {
 
 /// Scan a repo's jj log and extract bead references from recent commits.
 ///
-/// Returns a list of (change_id, BeadRef) pairs — the reconciler uses these
+/// Returns a list of (change_id, WorkRef) pairs — the reconciler uses these
 /// to trigger bead state transitions.
-pub fn scan_vcs_bead_refs(repo_path: &Path) -> Result<Vec<(String, BeadRef)>> {
+pub fn scan_vcs_bead_refs(repo_path: &Path) -> Result<Vec<(String, WorkRef)>> {
     // Scan recent non-immutable commits (working copy + recent work)
     let commits = scan_jj_log(repo_path, "mine()", 50)?;
 
@@ -203,7 +203,7 @@ pub fn scan_vcs_bead_refs(repo_path: &Path) -> Result<Vec<(String, BeadRef)>> {
 
 /// A bead reference found in a commit message.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BeadRef {
+pub struct WorkRef {
     /// The bead ID (e.g., "rsry-abc123", "loom-7sd", "mache-tgl")
     pub id: String,
     /// Whether this reference closes the bead (e.g., "closes bead:...", "fixes bead:...")
@@ -220,7 +220,7 @@ pub struct BeadRef {
 ///
 /// Bead IDs follow the pattern: `{prefix}-{suffix}` where prefix is lowercase
 /// alpha and suffix is lowercase alphanumeric (hex or base36).
-pub fn extract_bead_refs(message: &str) -> Vec<BeadRef> {
+pub fn extract_bead_refs(message: &str) -> Vec<WorkRef> {
     let mut refs = Vec::new();
     let lower = message.to_lowercase();
 
@@ -240,7 +240,7 @@ pub fn extract_bead_refs(message: &str) -> Vec<BeadRef> {
                     && prefix.chars().all(|c| c.is_ascii_lowercase() || c == '.')
                     && suffix.chars().all(|c| c.is_ascii_alphanumeric())
                 {
-                    refs.push(BeadRef {
+                    refs.push(WorkRef {
                         id: id.to_string(),
                         closes: false,
                     });
@@ -278,7 +278,7 @@ pub fn extract_bead_refs(message: &str) -> Vec<BeadRef> {
                     || before.ends_with("close")
                     || before.ends_with("fix");
 
-                refs.push(BeadRef {
+                refs.push(WorkRef {
                     id: id.clone(),
                     closes,
                 });

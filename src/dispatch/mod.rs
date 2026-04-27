@@ -385,10 +385,18 @@ pub async fn spawn(
             result: None,
         })
     } else {
-        // Local dispatch: spawn agent process directly (existing behavior)
-        provider
+        // Local dispatch: spawn agent process directly (existing behavior).
+        // On failure, clean up the workspace so no orphaned worktrees are left.
+        match provider
             .spawn_agent(&prompt, &work_dir, &permissions, &system_prompt)
-            .with_context(|| format!("spawning {} for {}", provider.name(), bead.id))?
+            .with_context(|| format!("spawning {} for {}", provider.name(), bead.id))
+        {
+            Ok(session) => session,
+            Err(e) => {
+                workspace.cleanup();
+                return Err(e);
+            }
+        }
     };
 
     // Record workspace path for dispatch tracking (resume + debugging).
@@ -454,43 +462,71 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
     .await?;
     let success = handle.wait().await?;
 
-    if success {
-        eprintln!("[dispatch] {bead_id} completed successfully");
-    } else {
-        // Check if agent produced any artifacts (commits in worktree)
-        let has_commits = if let Some(ref ws_path) = handle.workspace_path {
-            tokio::process::Command::new("git")
-                .args(["log", "--oneline", "-1", "HEAD", "--not", "HEAD~1"])
-                .current_dir(ws_path)
-                .output()
-                .await
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        } else {
-            false
-        };
+    // The pipeline is authoritative for lifecycle transitions — not the agent.
+    // If the agent already transitioned the bead (via MCP tools), respect that.
+    // If it's still Dispatched after exit, the pipeline infers the next state
+    // from artifacts so the bead never gets permanently stuck.
+    let current_state = client
+        .get_bead(bead_id, &path.display().to_string())
+        .await
+        .ok()
+        .flatten()
+        .map(|b| b.status);
 
+    let still_dispatched = current_state
+        .as_deref()
+        .map(|s| crate::bead::BeadState::from(s) == crate::bead::BeadState::Dispatched)
+        .unwrap_or(true);
+
+    if !still_dispatched {
+        eprintln!(
+            "[dispatch] {bead_id} agent already transitioned to {:?} — pipeline defers",
+            current_state
+        );
+        return Ok(());
+    }
+
+    // Bead is still Dispatched — pipeline takes over.
+    let has_commits = if let Some(ref ws_path) = handle.workspace_path {
+        tokio::process::Command::new("git")
+            .args(["log", "--oneline", "HEAD", "--not", "origin/HEAD", "--"])
+            .current_dir(ws_path)
+            .output()
+            .await
+            .map(|o| o.status.success() && !o.stdout.is_empty())
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    if success {
         if has_commits {
-            eprintln!("[dispatch] {bead_id} failed but left commits -- marking blocked for review");
-            let _ = client
-                .add_comment(
-                    bead_id,
-                    "agent",
-                    "Agent exited with failure but produced commits. Needs human review.",
-                )
-                .await;
-            let _ = client.update_status(bead_id, "blocked").await;
+            eprintln!("[dispatch] {bead_id} exited clean with commits — marking verifying");
+            let _ = client.update_status(bead_id, "verifying").await;
         } else {
-            eprintln!("[dispatch] {bead_id} crashed silently -- no commits, no artifacts");
-            let _ = client
-                .add_comment(
-                    bead_id,
-                    "agent",
-                    "Agent crashed silently -- no commits produced. Returning to open for retry.",
-                )
-                .await;
-            let _ = client.update_status(bead_id, "open").await;
+            eprintln!("[dispatch] {bead_id} exited clean, no new commits — closing");
+            let _ = client.update_status(bead_id, "closed").await;
         }
+    } else if has_commits {
+        eprintln!("[dispatch] {bead_id} failed but left commits -- marking blocked for review");
+        let _ = client
+            .add_comment(
+                bead_id,
+                "agent",
+                "Agent exited with failure but produced commits. Needs human review.",
+            )
+            .await;
+        let _ = client.update_status(bead_id, "blocked").await;
+    } else {
+        eprintln!("[dispatch] {bead_id} crashed silently -- no commits, no artifacts");
+        let _ = client
+            .add_comment(
+                bead_id,
+                "agent",
+                "Agent crashed silently -- no commits produced. Returning to open for retry.",
+            )
+            .await;
+        let _ = client.update_status(bead_id, "open").await;
     }
 
     Ok(())

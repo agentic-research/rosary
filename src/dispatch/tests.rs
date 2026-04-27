@@ -289,6 +289,8 @@ fn build_prompt_includes_title_and_description() {
         external_ref: None,
         files: Vec::new(),
         test_files: Vec::new(),
+        created_by: None,
+        scope: String::new(),
     };
 
     let prompt = build_prompt(&bead, "/tmp/test-repo", None, None);
@@ -344,6 +346,8 @@ fn build_prompt_uses_workspace_for_repo_line() {
         external_ref: None,
         files: Vec::new(),
         test_files: Vec::new(),
+        created_by: None,
+        scope: String::new(),
     };
 
     let ws = PathBuf::from("/home/user/.rsry/worktrees/myrepo/iso-1");
@@ -388,6 +392,8 @@ fn build_prompt_varies_framing_by_agent() {
         external_ref: None,
         files: Vec::new(),
         test_files: Vec::new(),
+        created_by: None,
+        scope: String::new(),
     };
 
     // Default (dev-agent) framing
@@ -626,8 +632,16 @@ fn default_agent_matches_pipeline_engine() {
         );
     }
     // Spot-check the values that were wrong before the fix
-    assert_eq!(default_agent("bug"), "scoping-agent", "bugs must start with scoping-agent");
-    assert_eq!(default_agent("feature"), "scoping-agent", "features must start with scoping-agent");
+    assert_eq!(
+        default_agent("bug"),
+        "scoping-agent",
+        "bugs must start with scoping-agent"
+    );
+    assert_eq!(
+        default_agent("feature"),
+        "scoping-agent",
+        "features must start with scoping-agent"
+    );
     assert_eq!(default_agent("review"), "staging-agent");
     assert_eq!(default_agent("epic"), "pm-agent");
     assert_eq!(default_agent("xyz"), "dev-agent"); // fallback
@@ -678,7 +692,7 @@ fn mock_commit_passes_verification() {
 
     let verifier = crate::verify::Verifier::new(vec![
         Box::new(crate::verify::CommitCheck),
-        Box::new(crate::verify::BeadRefCheck),
+        Box::new(crate::verify::WorkRefCheck),
     ]);
     let summary = verifier.run(repo.path()).unwrap();
     assert!(summary.passed(), "verification should pass: {summary:?}");
@@ -691,7 +705,7 @@ fn plain_commit_fails_bead_ref_check() {
 
     let verifier = crate::verify::Verifier::new(vec![
         Box::new(crate::verify::CommitCheck),
-        Box::new(crate::verify::BeadRefCheck),
+        Box::new(crate::verify::WorkRefCheck),
     ]);
     let summary = verifier.run(repo.path()).unwrap();
     assert!(!summary.passed(), "should fail bead ref check");
@@ -960,5 +974,80 @@ fn install_hooks_go_uses_go_build() {
     assert!(
         pre_commit.contains("go build ./..."),
         "go hook runs go build"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Lifecycle invariant regression tests
+// GAP 2: workspace must be cleaned up when spawn_agent fails
+// -----------------------------------------------------------------------
+
+/// Provider whose spawn_agent always returns Err — used to test cleanup paths.
+struct FailingAgentProvider;
+
+impl AgentProvider for FailingAgentProvider {
+    fn spawn_agent(
+        &self,
+        _prompt: &str,
+        _work_dir: &Path,
+        _permissions: &PermissionProfile,
+        _system_prompt: &str,
+    ) -> Result<Box<dyn AgentSession>> {
+        anyhow::bail!("injected spawn failure")
+    }
+
+    fn build_command(
+        &self,
+        _prompt: &str,
+        _permissions: &PermissionProfile,
+        _system_prompt: &str,
+    ) -> (String, Vec<String>) {
+        ("false".to_string(), vec![])
+    }
+
+    fn name(&self) -> &str {
+        "failing"
+    }
+}
+
+/// Regression: if spawn_agent fails after a git worktree has been created,
+/// the worktree must be removed. Without `workspace.cleanup()` in the error
+/// path, the worktree is orphaned and accumulates on disk indefinitely.
+#[tokio::test]
+async fn spawn_failure_cleans_up_git_worktree() {
+    let repo = crate::testutil::TestRepo::new();
+    let bead = crate::testutil::make_bead("gap2-cleanup", "bug", "test");
+
+    // Verify git is available (worktree add requires it)
+    let git_ok = std::process::Command::new("git")
+        .args(["worktree", "list"])
+        .current_dir(repo.path())
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !git_ok {
+        eprintln!("skipping: git worktrees not available");
+        return;
+    }
+
+    let expected_ws = crate::workspace::workspace_dir(repo.path(), "gap2-cleanup");
+
+    let result = spawn(
+        &bead,
+        repo.path(),
+        true, // isolate=true forces worktree creation
+        0,
+        &FailingAgentProvider,
+        None,
+        None,
+    )
+    .await;
+
+    assert!(result.is_err(), "spawn must fail when spawn_agent fails");
+    assert!(
+        !expected_ws.exists(),
+        "worktree at {} must be cleaned up after spawn failure, \
+         but it still exists (GAP 2 regression)",
+        expected_ws.display()
     );
 }

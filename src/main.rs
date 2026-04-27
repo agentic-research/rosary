@@ -8,6 +8,7 @@ use std::time::SystemTime;
 mod acp;
 #[allow(dead_code)] // API surface — wired in rsry-e608bb (reconciler integration)
 mod backend;
+mod bdr_enrich;
 mod bead;
 mod bead_dolt;
 mod bead_sqlite;
@@ -203,6 +204,12 @@ enum Command {
         /// Preview without creating beads
         #[arg(long)]
         dry_run: bool,
+        /// LLM model for non-ADR docs (haiku, sonnet, or full model ID).
+        /// When set and the document is not ADR-shaped, uses the Anthropic
+        /// Messages API to extract atoms instead of the heuristic parser.
+        /// Requires ANTHROPIC_API_KEY env var.
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Manage beads directly
     Bead {
@@ -302,6 +309,21 @@ pub fn generate_bead_id(prefix: &str) -> String {
         .unwrap_or_default()
         .as_millis();
     format!("{prefix}-{:06x}", millis & 0xffffff)
+}
+
+/// Capture git username from `git config user.name` at bead creation time.
+/// Returns None if git is not available or user.name is not set.
+/// Imprecise (self-reported) but Good Enough for team attribution.
+fn git_config_user_name(repo_root: &Path) -> Option<String> {
+    std::process::Command::new("git")
+        .args(["config", "user.name"])
+        .current_dir(repo_root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Resolve the .beads/ directory for a repo, handling git/jj worktrees.
@@ -612,11 +634,26 @@ async fn main() -> Result<()> {
             title,
             repo,
             dry_run,
+            model,
         } => {
             let markdown =
                 std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
-            let parsed = bdr::parse::parse_adr_full(&markdown);
-            if parsed.atoms.is_empty() {
+
+            // Route: ADR-shaped docs use the heuristic parser.
+            // Non-ADR docs with --model set use LLM extraction.
+            let (atoms, meta) = if model.is_some() && !bdr::parse::is_adr_shaped(&markdown) {
+                let api_key = std::env::var("ANTHROPIC_API_KEY")
+                    .context("ANTHROPIC_API_KEY required for --model flag")?;
+                let model_name = model.as_deref().unwrap();
+                let atoms =
+                    bdr_enrich::extract_atoms_with_llm(&markdown, &api_key, model_name).await?;
+                (atoms, bdr::parse::AdrMeta::default())
+            } else {
+                let parsed = bdr::parse::parse_adr_full(&markdown);
+                (parsed.atoms, parsed.meta)
+            };
+
+            if atoms.is_empty() {
                 println!("No decomposable atoms found in {path}");
                 return Ok(());
             }
@@ -629,8 +666,7 @@ async fn main() -> Result<()> {
                     .unwrap_or_else(|| path.clone())
             });
 
-            let decade =
-                bdr::thread::build_decade_with_meta(&path, &adr_title, &parsed.atoms, &parsed.meta);
+            let decade = bdr::thread::build_decade_with_meta(&path, &adr_title, &atoms, &meta);
 
             cli::decompose_decade(
                 &decade.title,
@@ -678,6 +714,8 @@ async fn main() -> Result<()> {
                                 &[], // TODO: populate from BeadSpec.references
                                 &[],
                                 &[], // TODO: populate from thread ordering
+                                None,
+                                "",
                             )
                             .await?;
                         created += 1;
@@ -717,6 +755,7 @@ async fn main() -> Result<()> {
                     }
                     let id = generate_bead_id(&repo_name);
                     let owner = dispatch::default_agent(&issue_type);
+                    let created_by = git_config_user_name(&repo_root);
                     client
                         .create_bead_full(
                             &id,
@@ -728,6 +767,8 @@ async fn main() -> Result<()> {
                             &files,
                             &test_files,
                             &[], // CLI doesn't support depends_on yet
+                            created_by.as_deref(),
+                            "",
                         )
                         .await?;
                     cli::bead_created(&id, &title);

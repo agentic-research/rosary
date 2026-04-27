@@ -43,11 +43,12 @@
 use std::path::PathBuf;
 
 use crate::orchestrate::{FeatureOrchestrator, OrchestratorBehavior, SessionDecision, TickOutcome};
-use crate::store::BeadRef;
+use crate::store::WorkRef;
 
-fn test_bead() -> BeadRef {
-    BeadRef {
+fn test_bead() -> WorkRef {
+    WorkRef {
         repo: "test-repo".into(),
+        scope: String::new(),
         bead_id: "test-bead".into(),
     }
 }
@@ -112,7 +113,11 @@ fn phase_advance_no_synthesis_emits_needs_spawn() {
 #[test]
 fn three_phase_pipeline_advances_all_phases_no_synthesis() {
     let mut orch = make_orchestrator(
-        vec!["scoping-agent".into(), "dev-agent".into(), "staging-agent".into()],
+        vec![
+            "scoping-agent".into(),
+            "dev-agent".into(),
+            "staging-agent".into(),
+        ],
         false,
     );
 
@@ -200,8 +205,7 @@ fn synthesizing_bypass_emits_needs_spawn() {
 fn session_decision_fresh_for_non_retry_advancement() {
     // Pipeline: dev-agent → prod-agent (neither is a verification agent by
     // the current allow-list, but they are different agents — not a retry).
-    let mut orch =
-        make_orchestrator(vec!["dev-agent".into(), "prod-agent".into()], false);
+    let mut orch = make_orchestrator(vec!["dev-agent".into(), "prod-agent".into()], false);
 
     // Provide a session ID so the decision isn't forced to SpawnFresh by the
     // "no previous session" guard.

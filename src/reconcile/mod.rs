@@ -29,7 +29,7 @@ use crate::queue::WorkQueue;
 use crate::scanner;
 #[allow(unused_imports)]
 use crate::store::BeadStore;
-use crate::store::{BeadRef, DispatchRecord};
+use crate::store::{DispatchRecord, WorkRef};
 use crate::sync::IssueTracker;
 use crate::xref;
 
@@ -99,6 +99,8 @@ impl Default for ReconcilerConfig {
 #[derive(Debug)]
 struct BeadTracker {
     repo: String,
+    /// Team/folder scope (mirrors WorkRef.scope). Captured at dispatch time.
+    scope: String,
     last_generation: u64,
     retries: u32,
     consecutive_reverts: u32,
@@ -461,13 +463,18 @@ impl Reconciler {
                         break;
                     }
 
+                    let target_repo = self
+                        .trackers
+                        .get(target.as_str())
+                        .map(|t| t.repo.clone())
+                        .unwrap_or_default();
                     let still_active = summary.dispatched > 0
-                        || self.queue.has_backoff(target)
+                        || self.queue.has_backoff(&target_repo, target)
                         || !self.active.is_empty();
 
                     if still_active {
                         let elapsed = start.elapsed();
-                        let reason = if self.queue.has_backoff(target) {
+                        let reason = if self.queue.has_backoff(&target_repo, target) {
                             "waiting for backoff"
                         } else {
                             "retry pass"
@@ -646,6 +653,7 @@ impl Reconciler {
                     self.create_orchestrator(
                         &entry.bead_id,
                         &entry.repo,
+                        &bead.scope,
                         &bead.issue_type,
                         path.clone(),
                     );
@@ -721,8 +729,9 @@ impl Reconciler {
                         // corrected a stale assignee above).
                         let dispatch_record = DispatchRecord {
                             id: dispatch_id.clone(),
-                            bead_ref: BeadRef {
+                            bead_ref: WorkRef {
                                 repo: entry.repo.clone(),
+                                scope: String::new(),
                                 bead_id: entry.bead_id.clone(),
                             },
                             agent: dispatch_bead
@@ -748,6 +757,7 @@ impl Reconciler {
                                 .entry(entry.bead_id.clone())
                                 .or_insert(BeadTracker {
                                     repo: entry.repo.clone(),
+                                    scope: bead.scope.clone(),
                                     last_generation: entry.generation,
                                     retries: entry.retries,
                                     consecutive_reverts: 0,
@@ -759,13 +769,15 @@ impl Reconciler {
                                 });
                         tracker.last_generation = entry.generation;
                         tracker.repo = entry.repo.clone();
+                        tracker.scope = bead.scope.clone();
                         tracker.current_agent = agent_name;
                         tracker.issue_type = bead.issue_type.clone();
                         tracker.dispatch_id = Some(dispatch_id);
 
                         // Persist initial pipeline state to backend store
-                        let bead_ref = BeadRef {
+                        let bead_ref = WorkRef {
                             repo: entry.repo.clone(),
+                            scope: bead.scope.clone(),
                             bead_id: entry.bead_id.clone(),
                         };
                         let pipeline_state =
@@ -786,6 +798,25 @@ impl Reconciler {
         summary.passed += vr.passed;
         summary.failed += vr.failed;
         summary.deadlettered += vr.deadlettered;
+        summary.agent_closed += vr.agent_closed;
+
+        // Phase 5.5: FEATURE ASSEMBLY — when the last bead in a thread reaches
+        // pr_open, open the feature branch PR (feature/{thread} → default_branch).
+        // Dev PRs from this iteration that just landed are the trigger set.
+        let newly_pr_open: Vec<(String, String)> = vr
+            .status_updates
+            .iter()
+            .filter(|(_, _, status)| status == "pr_open")
+            .map(|(bead_id, repo, _)| (bead_id.clone(), repo.clone()))
+            .collect();
+        if !newly_pr_open.is_empty() {
+            self.assemble_feature_prs(&newly_pr_open).await;
+        }
+
+        // Phase 6: PERSIST orchestrator state for crash recovery
+        if self.is_hierarchical() && !self.orchestrators.is_empty() {
+            self.persist_orchestrator_records();
+        }
 
         // Phase 6: PERSIST orchestrator state for crash recovery
         if self.is_hierarchical() && !self.orchestrators.is_empty() {

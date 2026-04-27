@@ -108,7 +108,17 @@ impl Reconciler {
 
     pub(super) fn on_pass(&mut self, bead_id: &str) {
         eprintln!("[pass] {bead_id}");
-        self.queue.clear_backoff(bead_id);
+        let repo = self
+            .trackers
+            .get(bead_id)
+            .map(|t| t.repo.clone())
+            .or_else(|| {
+                self.orchestrators
+                    .get(bead_id)
+                    .map(|o| o.bead_ref.repo.clone())
+            })
+            .unwrap_or_default();
+        self.queue.clear_backoff(&repo, bead_id);
         if let Some(tracker) = self.trackers.get_mut(bead_id) {
             tracker.consecutive_reverts = 0;
         }
@@ -117,11 +127,17 @@ impl Reconciler {
 
     /// Handle a verification failure. Returns true if deadlettered.
     pub(super) fn on_fail(&mut self, bead_id: &str, summary: &VerifySummary) -> bool {
+        // Resolve repo before or_insert — orchestrator beads may not be in trackers.
+        let fallback_repo = self
+            .orchestrators
+            .get(bead_id)
+            .map(|o| o.bead_ref.repo.clone())
+            .unwrap_or_default();
         let tracker = self
             .trackers
             .entry(bead_id.to_string())
             .or_insert(BeadTracker {
-                repo: String::new(),
+                repo: fallback_repo,
                 last_generation: 0,
                 retries: 0,
                 consecutive_reverts: 0,
@@ -130,6 +146,7 @@ impl Reconciler {
                 phase_index: 0,
                 issue_type: "task".into(),
                 dispatch_id: None,
+                scope: String::new(),
             });
 
         // Check for revert (regression from previous best)
@@ -157,8 +174,10 @@ impl Reconciler {
         }
 
         // Schedule retry with backoff
+        let repo = tracker.repo.clone();
+        let retries = tracker.retries;
         self.queue
-            .record_backoff(bead_id, tracker.retries, Instant::now());
+            .record_backoff(&repo, bead_id, retries, Instant::now());
         if let Some((name, _)) = summary.first_failure() {
             eprintln!(
                 "[retry] {bead_id}: failed at tier '{name}', retry #{} scheduled",
@@ -171,11 +190,17 @@ impl Reconciler {
 
     /// Handle agent exit failure (non-zero exit). Returns true if deadlettered.
     pub(super) fn on_fail_exit(&mut self, bead_id: &str) -> bool {
+        let fallback_repo = self
+            .orchestrators
+            .get(bead_id)
+            .map(|o| o.bead_ref.repo.clone())
+            .unwrap_or_default();
         let tracker = self
             .trackers
             .entry(bead_id.to_string())
             .or_insert(BeadTracker {
-                repo: String::new(),
+                repo: fallback_repo,
+                scope: String::new(),
                 last_generation: 0,
                 retries: 0,
                 consecutive_reverts: 0,
@@ -195,11 +220,13 @@ impl Reconciler {
             return true;
         }
 
+        let repo = tracker.repo.clone();
+        let retries = tracker.retries;
         self.queue
-            .record_backoff(bead_id, tracker.retries, Instant::now());
+            .record_backoff(&repo, bead_id, retries, Instant::now());
         eprintln!(
             "[retry] {bead_id}: agent exited non-zero, retry #{} scheduled",
-            tracker.retries
+            retries
         );
         // Preserve workspace on failure so stderr/stream logs are readable
         eprintln!("[retry] {bead_id}: preserving workspace for post-mortem");

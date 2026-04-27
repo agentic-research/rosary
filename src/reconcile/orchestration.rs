@@ -13,7 +13,7 @@ use crate::dispatch;
 use crate::orchestrate::{
     FeatureOrchestrator, OrchestratorBehavior, OrchestratorState, TickOutcome,
 };
-use crate::store::{BeadRef, DispatchRecord};
+use crate::store::{DispatchRecord, WorkRef};
 
 impl Reconciler {
     /// Returns true if we're in hierarchical orchestration mode.
@@ -41,11 +41,13 @@ impl Reconciler {
         &mut self,
         bead_id: &str,
         repo: &str,
+        scope: &str,
         issue_type: &str,
         work_dir: PathBuf,
     ) {
-        let bead_ref = BeadRef {
+        let bead_ref = WorkRef {
             repo: repo.to_string(),
+            scope: scope.to_string(),
             bead_id: bead_id.to_string(),
         };
         let pipeline = self.pipeline.agents_for(issue_type);
@@ -144,8 +146,9 @@ impl Reconciler {
                                     format!("{}-{}", bead_id, handle.started_at.timestamp_millis());
                                 let dispatch_record = DispatchRecord {
                                     id: dispatch_id.clone(),
-                                    bead_ref: BeadRef {
+                                    bead_ref: WorkRef {
                                         repo: bead.repo.clone(),
+                                        scope: String::new(),
                                         bead_id: bead_id.clone(),
                                     },
                                     agent: agent.clone(),
@@ -167,6 +170,12 @@ impl Reconciler {
                             }
                             Err(e) => {
                                 eprintln!("[orchestrator] spawn failed for {bead_id}/{agent}: {e}");
+                                // The orchestrator already moved to AwaitingWorker before
+                                // returning NeedsSpawn. Without feedback it returns Idle
+                                // forever. Notify it so it can retry or deadletter.
+                                if let Some(orch) = self.orchestrators.get_mut(&bead_id) {
+                                    orch.on_worker_completed(false, self.config.max_retries);
+                                }
                             }
                         }
                     }
@@ -197,11 +206,19 @@ impl Reconciler {
 
                 TickOutcome::Terminal => {
                     eprintln!("[orchestrator] {} pipeline complete", bead_id);
-                    let repo = self
+                    let Some(repo) = self
                         .orchestrators
                         .get(&bead_id)
                         .map(|o| o.bead_ref.repo.clone())
-                        .unwrap_or_default();
+                    else {
+                        eprintln!(
+                            "[orchestrator] BUG: {} terminal but missing from map — \
+                             workspace and status update skipped",
+                            bead_id
+                        );
+                        result.completed += 1;
+                        continue;
+                    };
                     self.checkpoint_and_cleanup(&bead_id).await;
                     self.persist_status(&bead_id, &repo, "pr_open").await;
                     self.orchestrators.remove(&bead_id);
@@ -210,14 +227,23 @@ impl Reconciler {
 
                 TickOutcome::Failed { reason } => {
                     eprintln!("[orchestrator] {} failed: {reason}", bead_id);
-                    let repo = self
+                    let Some(repo) = self
                         .orchestrators
                         .get(&bead_id)
                         .map(|o| o.bead_ref.repo.clone())
-                        .unwrap_or_default();
+                    else {
+                        eprintln!(
+                            "[orchestrator] BUG: {} failed but missing from map — \
+                             status update skipped",
+                            bead_id
+                        );
+                        result.deadlettered += 1;
+                        continue;
+                    };
                     self.cleanup_workspace(&bead_id);
-                    let bead_ref = BeadRef {
+                    let bead_ref = WorkRef {
                         repo: repo.clone(),
+                        scope: String::new(),
                         bead_id: bead_id.clone(),
                     };
                     self.pipeline.clear_state(&bead_ref).await;
@@ -291,16 +317,13 @@ impl Reconciler {
         }
 
         for (repo_name, (repo_path, _lang)) in &self.repo_info {
-            // Scan for workspace directories containing orchestrator records.
-            // Workspaces are typically at <repo>/.rsry-ws-<bead_id>/ or similar.
-            let entries: Vec<PathBuf> = match std::fs::read_dir(repo_path) {
+            // Workspaces live at ~/.rsry/worktrees/<repo_name>/<bead_id>/
+            // (see workspace::workspace_dir). workspace_dir(path, "") returns the
+            // per-repo worktrees root — scan that, not the repo root.
+            let ws_root = crate::workspace::workspace_dir(repo_path, "");
+            let entries: Vec<PathBuf> = match std::fs::read_dir(&ws_root) {
                 Ok(dir) => dir
                     .filter_map(|e| e.ok())
-                    .filter(|e| {
-                        e.file_name()
-                            .to_str()
-                            .is_some_and(|n| n.starts_with(".rsry-ws-"))
-                    })
                     .map(|e| e.path().join(".rsry-orchestrator.json"))
                     .filter(|p| p.exists())
                     .collect(),

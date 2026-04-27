@@ -18,7 +18,7 @@ pub struct BackendSnapshot {
     pub decades: Vec<DecadeRecord>,
     pub threads: Vec<ThreadRecord>,
     /// (thread_id, bead_ref)
-    pub thread_members: Vec<(String, BeadRef)>,
+    pub thread_members: Vec<(String, WorkRef)>,
     pub pipelines: Vec<PipelineState>,
     pub dispatches: Vec<DispatchRecord>,
     pub dependencies: Vec<CrossRepoDep>,
@@ -328,9 +328,10 @@ mod tests {
             .unwrap();
 
         // Thread member
-        let bead = BeadRef {
+        let bead = WorkRef {
             repo: "rosary".into(),
             bead_id: "b1".into(),
+            scope: String::new(),
         };
         store.add_bead_to_thread("t1", &bead).await.unwrap();
 
@@ -369,9 +370,10 @@ mod tests {
             .unwrap();
 
         // Dependency
-        let dep_target = BeadRef {
+        let dep_target = WorkRef {
             repo: "mache".into(),
             bead_id: "m1".into(),
+            scope: String::new(),
         };
         store
             .add_dependency(&CrossRepoDep {
@@ -435,9 +437,10 @@ mod tests {
             })
             .await
             .unwrap();
-        let bead = BeadRef {
+        let bead = WorkRef {
             repo: "rosary".into(),
             bead_id: "b1".into(),
+            scope: String::new(),
         };
         store.add_bead_to_thread("t1", &bead).await.unwrap();
         store
@@ -473,9 +476,10 @@ mod tests {
         store
             .add_dependency(&CrossRepoDep {
                 from: bead.clone(),
-                to: BeadRef {
+                to: WorkRef {
                     repo: "mache".into(),
                     bead_id: "m1".into(),
+                    scope: String::new(),
                 },
                 dep_type: "blocks".into(),
             })

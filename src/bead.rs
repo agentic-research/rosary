@@ -229,6 +229,15 @@ pub struct Bead {
     /// Test files to validate the change.
     #[serde(default)]
     pub test_files: Vec<String>,
+    /// Git username of the creator (from `git config user.name` at creation time).
+    /// None if created in a non-git context or if git config is absent.
+    /// Not included in generation() — metadata, not semantic content.
+    #[serde(default)]
+    pub created_by: Option<String>,
+    /// Team/folder scope within a monorepo (e.g. "auth", "payments/core").
+    /// Empty string for cross-repo and single-team repos — backward compatible.
+    #[serde(default)]
+    pub scope: String,
 }
 
 impl Bead {
@@ -335,6 +344,8 @@ impl Bead {
                         .collect()
                 })
                 .unwrap_or_default(),
+            created_by: None,
+            scope: String::new(),
         })
     }
 
@@ -831,11 +842,21 @@ mod tests {
         };
         let b = make("fix the bug");
         // Repeated calls must return the same value
-        assert_eq!(b.generation(), b.generation(), "generation must be idempotent");
+        assert_eq!(
+            b.generation(),
+            b.generation(),
+            "generation must be idempotent"
+        );
         // Same content → same generation
-        assert_eq!(make("fix the bug").generation(), make("fix the bug").generation());
+        assert_eq!(
+            make("fix the bug").generation(),
+            make("fix the bug").generation()
+        );
         // Different content → different generation
-        assert_ne!(make("fix the bug").generation(), make("fix the other bug").generation());
+        assert_ne!(
+            make("fix the bug").generation(),
+            make("fix the other bug").generation()
+        );
     }
 
     /// Finding #16: from_bd_json silently defaulted every field except id/title.
@@ -856,8 +877,7 @@ mod tests {
         );
         // Missing status → None
         assert!(
-            Bead::from_bd_json(&json!({"id": "x", "title": "t", "priority": 1}), "repo")
-                .is_none(),
+            Bead::from_bd_json(&json!({"id": "x", "title": "t", "priority": 1}), "repo").is_none(),
             "missing status must return None"
         );
         // Both present → Ok

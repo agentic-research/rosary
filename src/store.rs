@@ -20,8 +20,12 @@ use serde::{Deserialize, Serialize};
 
 /// A reference to a bead across repos.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct BeadRef {
+pub struct WorkRef {
     pub repo: String,
+    /// Team/folder scope within a monorepo (e.g. "auth", "payments/core").
+    /// Empty string for cross-repo and single-team repos — backward compatible.
+    #[serde(default)]
+    pub scope: String,
     pub bead_id: String,
 }
 
@@ -50,7 +54,7 @@ pub struct ThreadRecord {
 /// Pipeline state for a single bead — replaces in-memory BeadTracker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PipelineState {
-    pub bead_ref: BeadRef,
+    pub bead_ref: WorkRef,
     /// Index into the agent sequence (dev=0, staging=1, prod=2, feature=3).
     pub pipeline_phase: u8,
     /// Current agent name (e.g. "dev-agent").
@@ -75,7 +79,7 @@ pub struct PipelineState {
 pub struct DispatchRecord {
     /// UUID v4
     pub id: String,
-    pub bead_ref: BeadRef,
+    pub bead_ref: WorkRef,
     pub agent: String,
     /// claude, gemini, acp
     pub provider: String,
@@ -96,8 +100,8 @@ pub struct DispatchRecord {
 /// Cross-repo dependency between beads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CrossRepoDep {
-    pub from: BeadRef,
-    pub to: BeadRef,
+    pub from: WorkRef,
+    pub to: WorkRef,
     /// blocks, relates_to
     pub dep_type: String,
 }
@@ -105,7 +109,7 @@ pub struct CrossRepoDep {
 /// Mapping between a bead and its Linear representation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LinearLink {
-    pub bead_ref: BeadRef,
+    pub bead_ref: WorkRef,
     /// e.g. "AGE-330"
     pub linear_id: String,
     /// issue, sub_issue, milestone
@@ -125,9 +129,9 @@ pub trait HierarchyStore: Send + Sync {
     async fn upsert_thread(&self, thread: &ThreadRecord) -> Result<()>;
     async fn list_threads(&self, decade_id: &str) -> Result<Vec<ThreadRecord>>;
 
-    async fn add_bead_to_thread(&self, thread_id: &str, bead: &BeadRef) -> Result<()>;
-    async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<BeadRef>>;
-    async fn find_thread_for_bead(&self, bead: &BeadRef) -> Result<Option<String>>;
+    async fn add_bead_to_thread(&self, thread_id: &str, bead: &WorkRef) -> Result<()>;
+    async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<WorkRef>>;
+    async fn find_thread_for_bead(&self, bead: &WorkRef) -> Result<Option<String>>;
 }
 
 /// Pipeline state, dispatch history, backoff.
@@ -135,9 +139,9 @@ pub trait HierarchyStore: Send + Sync {
 #[async_trait]
 pub trait DispatchStore: Send + Sync {
     async fn upsert_pipeline(&self, state: &PipelineState) -> Result<()>;
-    async fn get_pipeline(&self, bead: &BeadRef) -> Result<Option<PipelineState>>;
+    async fn get_pipeline(&self, bead: &WorkRef) -> Result<Option<PipelineState>>;
     async fn list_active_pipelines(&self) -> Result<Vec<PipelineState>>;
-    async fn clear_pipeline(&self, bead: &BeadRef) -> Result<()>;
+    async fn clear_pipeline(&self, bead: &WorkRef) -> Result<()>;
 
     async fn record_dispatch(&self, record: &DispatchRecord) -> Result<()>;
     /// Upsert a dispatch record (insert or update). Used by migration to handle
@@ -154,8 +158,8 @@ pub trait DispatchStore: Send + Sync {
 #[async_trait]
 pub trait LinkageStore: Send + Sync {
     async fn add_dependency(&self, dep: &CrossRepoDep) -> Result<()>;
-    async fn dependencies_of(&self, bead: &BeadRef) -> Result<Vec<CrossRepoDep>>;
-    async fn dependents_of(&self, bead: &BeadRef) -> Result<Vec<CrossRepoDep>>;
+    async fn dependencies_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>>;
+    async fn dependents_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>>;
 
     async fn upsert_linear_link(&self, link: &LinearLink) -> Result<()>;
     async fn find_by_linear_id(&self, linear_id: &str) -> Result<Option<LinearLink>>;
@@ -216,6 +220,8 @@ pub trait BeadStore: Send + Sync {
         files: &[String],
         test_files: &[String],
         depends_on: &[String],
+        created_by: Option<&str>,
+        scope: &str,
     ) -> Result<()>;
 
     // ── Field updates ──
@@ -238,6 +244,19 @@ pub trait BeadStore: Send + Sync {
         repo_name: &str,
         limit: u32,
     ) -> Result<Vec<crate::bead::Bead>>;
+
+    /// Full-text search using FTS5 (SQLite-only, porter stemmer).
+    ///
+    /// Falls back to LIKE-based `search_beads` on backends that don't support
+    /// FTS5 (Dolt). SQLiteBeadStore overrides this with the real FTS5 path.
+    async fn search_beads_fts(
+        &self,
+        query: &str,
+        repo_name: &str,
+        limit: u32,
+    ) -> Result<Vec<crate::bead::Bead>> {
+        self.search_beads(query, repo_name, limit).await
+    }
 
     // ── External references (Linear linkage) ──
     async fn get_external_ref(&self, id: &str) -> Result<Option<String>>;
@@ -272,7 +291,7 @@ impl<T: HierarchyStore + DispatchStore + LinkageStore + UserRepoStore> BackendSt
 #[async_trait]
 pub trait BackendExport: BackendStore {
     async fn all_threads(&self) -> Result<Vec<ThreadRecord>>;
-    async fn all_thread_members(&self) -> Result<Vec<(String, BeadRef)>>;
+    async fn all_thread_members(&self) -> Result<Vec<(String, WorkRef)>>;
     async fn all_dispatches(&self) -> Result<Vec<DispatchRecord>>;
     async fn all_dependencies(&self) -> Result<Vec<CrossRepoDep>>;
     async fn all_linear_links(&self) -> Result<Vec<LinearLink>>;
@@ -289,7 +308,7 @@ mod tests {
         decades: Mutex<Vec<DecadeRecord>>,
         threads: Mutex<Vec<ThreadRecord>>,
         /// (thread_id, beads)
-        thread_members: Mutex<Vec<(String, BeadRef)>>,
+        thread_members: Mutex<Vec<(String, WorkRef)>>,
         pipelines: Mutex<Vec<PipelineState>>,
         dispatches: Mutex<Vec<DispatchRecord>>,
         deps: Mutex<Vec<CrossRepoDep>>,
@@ -354,7 +373,7 @@ mod tests {
                 .collect())
         }
 
-        async fn add_bead_to_thread(&self, thread_id: &str, bead: &BeadRef) -> Result<()> {
+        async fn add_bead_to_thread(&self, thread_id: &str, bead: &WorkRef) -> Result<()> {
             let mut members = self.thread_members.lock().unwrap();
             if !members.iter().any(|(tid, b)| tid == thread_id && b == bead) {
                 members.push((thread_id.to_string(), bead.clone()));
@@ -362,7 +381,7 @@ mod tests {
             Ok(())
         }
 
-        async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<BeadRef>> {
+        async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<WorkRef>> {
             let members = self.thread_members.lock().unwrap();
             Ok(members
                 .iter()
@@ -371,7 +390,7 @@ mod tests {
                 .collect())
         }
 
-        async fn find_thread_for_bead(&self, bead: &BeadRef) -> Result<Option<String>> {
+        async fn find_thread_for_bead(&self, bead: &WorkRef) -> Result<Option<String>> {
             let members = self.thread_members.lock().unwrap();
             Ok(members
                 .iter()
@@ -392,7 +411,7 @@ mod tests {
             Ok(())
         }
 
-        async fn get_pipeline(&self, bead: &BeadRef) -> Result<Option<PipelineState>> {
+        async fn get_pipeline(&self, bead: &WorkRef) -> Result<Option<PipelineState>> {
             let pipelines = self.pipelines.lock().unwrap();
             Ok(pipelines.iter().find(|p| &p.bead_ref == bead).cloned())
         }
@@ -402,7 +421,7 @@ mod tests {
             Ok(pipelines.clone())
         }
 
-        async fn clear_pipeline(&self, bead: &BeadRef) -> Result<()> {
+        async fn clear_pipeline(&self, bead: &WorkRef) -> Result<()> {
             let mut pipelines = self.pipelines.lock().unwrap();
             pipelines.retain(|p| &p.bead_ref != bead);
             Ok(())
@@ -461,12 +480,12 @@ mod tests {
             Ok(())
         }
 
-        async fn dependencies_of(&self, bead: &BeadRef) -> Result<Vec<CrossRepoDep>> {
+        async fn dependencies_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
             let deps = self.deps.lock().unwrap();
             Ok(deps.iter().filter(|d| &d.from == bead).cloned().collect())
         }
 
-        async fn dependents_of(&self, bead: &BeadRef) -> Result<Vec<CrossRepoDep>> {
+        async fn dependents_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
             let deps = self.deps.lock().unwrap();
             Ok(deps.iter().filter(|d| &d.to == bead).cloned().collect())
         }
@@ -571,13 +590,15 @@ mod tests {
     #[tokio::test]
     async fn bead_thread_membership() {
         let store = InMemoryStore::new();
-        let bead1 = BeadRef {
+        let bead1 = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-abc".into(),
+            scope: String::new(),
         };
-        let bead2 = BeadRef {
+        let bead2 = WorkRef {
             repo: "mache".into(),
             bead_id: "mch-def".into(),
+            scope: String::new(),
         };
 
         store
@@ -601,9 +622,10 @@ mod tests {
         assert_eq!(found, Some("ADR-003/impl".into()));
 
         let not_found = store
-            .find_thread_for_bead(&BeadRef {
+            .find_thread_for_bead(&WorkRef {
                 repo: "x".into(),
                 bead_id: "y".into(),
+                scope: String::new(),
             })
             .await
             .unwrap();
@@ -615,9 +637,10 @@ mod tests {
     #[tokio::test]
     async fn pipeline_lifecycle() {
         let store = InMemoryStore::new();
-        let bead = BeadRef {
+        let bead = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
         let state = PipelineState {
             bead_ref: bead.clone(),
@@ -660,9 +683,10 @@ mod tests {
         let store = InMemoryStore::new();
         let record = DispatchRecord {
             id: "d-001".into(),
-            bead_ref: BeadRef {
+            bead_ref: WorkRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-001".into(),
+                scope: String::new(),
             },
             agent: "dev-agent".into(),
             provider: "claude".into(),
@@ -692,9 +716,10 @@ mod tests {
         let store = InMemoryStore::new();
         let record = DispatchRecord {
             id: "d-002".into(),
-            bead_ref: BeadRef {
+            bead_ref: WorkRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-002".into(),
+                scope: String::new(),
             },
             agent: "dev-agent".into(),
             provider: "claude".into(),
@@ -732,9 +757,10 @@ mod tests {
         let store = InMemoryStore::new();
         let record = DispatchRecord {
             id: "d-upsert".into(),
-            bead_ref: BeadRef {
+            bead_ref: WorkRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-001".into(),
+                scope: String::new(),
             },
             agent: "dev-agent".into(),
             provider: "claude".into(),
@@ -766,13 +792,15 @@ mod tests {
     #[tokio::test]
     async fn cross_repo_dependency() {
         let store = InMemoryStore::new();
-        let from = BeadRef {
+        let from = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
-        let to = BeadRef {
+        let to = WorkRef {
             repo: "mache".into(),
             bead_id: "mch-001".into(),
+            scope: String::new(),
         };
 
         let dep = CrossRepoDep {
@@ -797,9 +825,10 @@ mod tests {
     async fn linear_link_upsert_and_find() {
         let store = InMemoryStore::new();
         let link = LinearLink {
-            bead_ref: BeadRef {
+            bead_ref: WorkRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-001".into(),
+                scope: String::new(),
             },
             linear_id: "AGE-330".into(),
             linear_type: "issue".into(),

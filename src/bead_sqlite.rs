@@ -80,6 +80,8 @@ fn bead_from_row(row: &rusqlite::Row<'_>, repo_name: &str) -> rusqlite::Result<B
         external_ref: row.get("external_ref")?,
         files,
         test_files,
+        created_by: row.get::<_, Option<String>>("created_by").unwrap_or(None),
+        scope: row.get::<_, String>("scope").unwrap_or_default(),
     })
 }
 
@@ -92,31 +94,50 @@ fn bead_from_row(row: &rusqlite::Row<'_>, repo_name: &str) -> rusqlite::Result<B
 ///
 /// SQLite is useful for: tests, offline/lightweight repos, portable exports.
 /// Dolt is the production default for repos with active agent dispatch.
+/// Open a bead store for the given `.beads/` directory.
+///
+/// Priority order:
+///   1. Dolt (`dolt/`) — preferred when a `bd`-initialized repo is present.
+///      `bd` (the upstream beads CLI) uses Dolt as its data layer; rosary reads
+///      from the same `issues` table to stay in sync with the 600+ real beads.
+///   2. SQLite (`beads.db`) — used for repos that were never `bd init`'d, or
+///      when Dolt is unavailable. Also the path for new repos.
+///
+/// Distribution note: Dolt is needed for `bd` interop, not just for distribution.
+/// When we need distribution without `bd`, the migration path is libSQL/Turso.
 pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> {
-    // Try Dolt first (production default)
+    let sqlite_path = beads_dir.join("beads.db");
+
+    // Prefer Dolt when a bd-initialized directory is present — that's where the
+    // real bead data lives (bd writes there, rosary reads the same issues table).
     let dolt_dir = beads_dir.join("dolt");
     if dolt_dir.exists() {
         match crate::dolt::DoltConfig::from_beads_dir(beads_dir) {
             Ok(config) => match crate::dolt::DoltClient::connect(&config).await {
-                Ok(client) => return Ok(Box::new(crate::bead_dolt::DoltBeadStore::new(client))),
+                Ok(client) => {
+                    if let Err(e) = client.migrate().await {
+                        eprintln!("[bead] migration warning for {}: {e}", beads_dir.display());
+                    }
+                    return Ok(Box::new(crate::bead_dolt::DoltBeadStore::new(client)));
+                }
                 Err(e) => {
                     eprintln!(
-                        "[bead] Dolt connect failed for {}, trying SQLite fallback: {e}",
+                        "[bead] Dolt connect failed for {}: {e} — falling back to SQLite",
                         beads_dir.display()
                     );
                 }
             },
             Err(e) => {
                 eprintln!(
-                    "[bead] Dolt config error for {}, trying SQLite fallback: {e}",
+                    "[bead] Dolt config error for {}: {e} — falling back to SQLite",
                     beads_dir.display()
                 );
             }
         }
     }
 
-    // Fallback: SQLite (lightweight, no server needed)
-    let sqlite_path = beads_dir.join("beads.db");
+    // SQLite: new repos (no dolt/ dir) or Dolt unavailable.
+    // Supports FTS5, sqlite-vec — features not available on Dolt.
     let store = SqliteBeadStore::connect(&sqlite_path)?;
     Ok(Box::new(store))
 }
@@ -137,6 +158,18 @@ impl SqliteBeadStore {
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA)?;
+        // Additive migrations: safe on existing databases.
+        // Fail silently if the column already exists.
+        let _ = conn.execute_batch("ALTER TABLE issues ADD COLUMN created_by TEXT");
+        let _ = conn.execute_batch("ALTER TABLE issues ADD COLUMN scope TEXT NOT NULL DEFAULT ''");
+        // FTS5 index for full-text search with porter stemmer.
+        // Separate from issues table — manually kept in sync on create/update.
+        let _ = conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS bead_fts USING fts5(\
+                id UNINDEXED, title, description,\
+                tokenize='porter unicode61'\
+            );",
+        );
         Ok(SqliteBeadStore {
             conn: Mutex::new(conn),
             path: path.to_path_buf(),
@@ -158,6 +191,8 @@ CREATE TABLE IF NOT EXISTS issues (
     assignee TEXT,
     external_ref TEXT,
     user_id TEXT,
+    created_by TEXT,
+    scope TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -190,6 +225,7 @@ CREATE TABLE IF NOT EXISTS events (
 const LIST_BEADS_SQL: &str = "
 SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
        i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+       i.created_by, i.scope,
        COALESCE(dep.cnt, 0) as dep_count,
        COALESCE(deps.cnt, 0) as dependency_count,
        COALESCE(cmt.cnt, 0) as comment_count
@@ -227,6 +263,7 @@ impl BeadStore for SqliteBeadStore {
                 let sql_scoped = "
                     SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                            i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                           i.created_by, i.scope,
                            COALESCE(dep.cnt, 0) as dep_count,
                            COALESCE(deps.cnt, 0) as dependency_count,
                            COALESCE(cmt.cnt, 0) as comment_count
@@ -260,6 +297,7 @@ impl BeadStore for SqliteBeadStore {
         let mut stmt = conn.prepare(
             "SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                     i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                    i.created_by, i.scope,
                     (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
                     (SELECT COUNT(*) FROM dependencies d
                             JOIN issues dep_i ON dep_i.id = d.depends_on_id
@@ -290,6 +328,11 @@ impl BeadStore for SqliteBeadStore {
             params![id, title, description, priority as i32, issue_type],
         )
         .with_context(|| format!("creating bead {id}"))?;
+        // Sync FTS index (best-effort)
+        let _ = conn.execute(
+            "INSERT INTO bead_fts(id, title, description) VALUES (?1, ?2, ?3)",
+            params![id, title, description],
+        );
         Ok(())
     }
 
@@ -304,14 +347,16 @@ impl BeadStore for SqliteBeadStore {
         files: &[String],
         test_files: &[String],
         depends_on: &[String],
+        created_by: Option<&str>,
+        scope: &str,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
 
         tx.execute(
-            "INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_at, updated_at)
-             VALUES (?1, ?2, ?3, '', '', '', 'open', ?4, ?5, datetime('now'), datetime('now'))",
-            params![id, title, description, priority as i32, issue_type],
+            "INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_by, scope, created_at, updated_at)
+             VALUES (?1, ?2, ?3, '', '', '', 'open', ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))",
+            params![id, title, description, priority as i32, issue_type, created_by, scope],
         )?;
 
         tx.execute(
@@ -333,6 +378,12 @@ impl BeadStore for SqliteBeadStore {
                 params![id, dep_id],
             )?;
         }
+
+        // Sync FTS index (best-effort — secondary index, never fails the create)
+        let _ = tx.execute(
+            "INSERT INTO bead_fts(id, title, description) VALUES (?1, ?2, ?3)",
+            params![id, title, description],
+        );
 
         tx.commit()?;
         Ok(())
@@ -423,6 +474,19 @@ impl BeadStore for SqliteBeadStore {
             if update.test_files.is_some() {
                 updated_fields.push("test_files".to_string());
             }
+        }
+
+        // Re-sync FTS if title or description changed (delete + re-insert from issues)
+        if updated_fields
+            .iter()
+            .any(|f| f == "title" || f == "description")
+        {
+            let _ = conn.execute("DELETE FROM bead_fts WHERE id = ?1", params![id]);
+            let _ = conn.execute(
+                "INSERT INTO bead_fts(id, title, description) \
+                 SELECT id, title, description FROM issues WHERE id = ?1",
+                params![id],
+            );
         }
 
         Ok(updated_fields)
@@ -529,10 +593,11 @@ impl BeadStore for SqliteBeadStore {
                 .iter()
                 .enumerate()
                 .map(|(i, _)| {
-                    let p = (i * 2) + 1;
+                    let p = (i * 3) + 1;
                     format!(
-                        "(LOWER(i.title) LIKE ?{p} OR LOWER(i.description) LIKE ?{})",
-                        p + 1
+                        "(LOWER(i.title) LIKE ?{p} OR LOWER(i.description) LIKE ?{} OR i.id LIKE ?{})",
+                        p + 1,
+                        p + 2
                     )
                 })
                 .collect::<Vec<_>>()
@@ -542,6 +607,7 @@ impl BeadStore for SqliteBeadStore {
         let sql = format!(
             "SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                     i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                    i.created_by, i.scope,
                     COALESCE(dep.cnt, 0) as dep_count,
                     COALESCE(deps.cnt, 0) as dependency_count,
                     COALESCE(cmt.cnt, 0) as comment_count
@@ -562,11 +628,12 @@ impl BeadStore for SqliteBeadStore {
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        // Build params: each word appears twice (title + description)
+        // Build params: each word appears three times (title + description + id)
         let param_values: Vec<Box<dyn rusqlite::types::ToSql>> = words
             .iter()
             .flat_map(|w| {
                 vec![
+                    Box::new(w.clone()) as Box<dyn rusqlite::types::ToSql>,
                     Box::new(w.clone()) as Box<dyn rusqlite::types::ToSql>,
                     Box::new(w.clone()) as Box<dyn rusqlite::types::ToSql>,
                 ]
@@ -577,6 +644,57 @@ impl BeadStore for SqliteBeadStore {
 
         let beads = stmt
             .query_map(param_refs.as_slice(), |row| bead_from_row(row, repo_name))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(beads)
+    }
+
+    async fn search_beads_fts(
+        &self,
+        query_str: &str,
+        repo_name: &str,
+        limit: u32,
+    ) -> Result<Vec<Bead>> {
+        let conn = self.conn.lock().unwrap();
+        // Wrap each token in double quotes: "word" prevents FTS5 operator interpretation
+        // and gives "all words must appear" semantics (implicit AND).
+        let fts_query: String = query_str
+            .split_whitespace()
+            .map(|w| format!("\"{}\"", w.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if fts_query.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let sql = "SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
+                        i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                        i.created_by, i.scope,
+                        COALESCE(dep.cnt, 0) as dep_count,
+                        COALESCE(deps.cnt, 0) as dependency_count,
+                        COALESCE(cmt.cnt, 0) as comment_count
+                 FROM bead_fts f
+                 JOIN issues i ON i.id = f.id
+                 LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
+                      ON dep.depends_on_id = i.id
+                 LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
+                           FROM dependencies d
+                           LEFT JOIN issues dep_i ON dep_i.id = d.depends_on_id
+                           WHERE dep_i.id IS NULL OR dep_i.status NOT IN ('closed', 'done')
+                           GROUP BY d.issue_id) deps
+                      ON deps.issue_id = i.id
+                 LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
+                      ON cmt.issue_id = i.id
+                 WHERE bead_fts MATCH ?1
+                 ORDER BY rank
+                 LIMIT ?2";
+
+        let mut stmt = conn.prepare(sql)?;
+        let beads = stmt
+            .query_map(params![fts_query, limit as i64], |row| {
+                bead_from_row(row, repo_name)
+            })?
             .filter_map(|r| r.ok())
             .collect();
         Ok(beads)
@@ -762,6 +880,8 @@ mod tests {
                 &["src/main.rs".into()],
                 &["src/main_test.rs".into()],
                 &["dep-1".into()],
+                Some("test-user"),
+                "",
             )
             .await
             .unwrap();
@@ -790,6 +910,72 @@ mod tests {
         let results = store.search_beads("dispatch", "repo", 10).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "a");
+    }
+
+    #[tokio::test]
+    async fn search_beads_by_id() {
+        let store = test_store();
+        store
+            .create_bead("rosary-abc123", "Fix dispatch bug", "", 1, "bug")
+            .await
+            .unwrap();
+        store
+            .create_bead("rosary-def456", "Add feature X", "", 2, "feature")
+            .await
+            .unwrap();
+
+        // Exact ID match
+        let results = store
+            .search_beads("rosary-abc123", "repo", 10)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "rosary-abc123");
+
+        // Partial ID prefix match
+        let results = store.search_beads("rosary-", "repo", 10).await.unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_beads_fts_stemming() {
+        let store = test_store();
+        store
+            .create_bead(
+                "a",
+                "Dispatch agent workers",
+                "Fix dispatching logic",
+                1,
+                "bug",
+            )
+            .await
+            .unwrap();
+        store
+            .create_bead("b", "Add feature X", "Unrelated", 2, "feature")
+            .await
+            .unwrap();
+
+        // Porter stemmer: "dispatching" matches "dispatch"
+        let results = store
+            .search_beads_fts("dispatch", "repo", 10)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1, "FTS should find stemmed match");
+        assert_eq!(results[0].id, "a");
+
+        // Multi-word: both terms must appear
+        let results = store
+            .search_beads_fts("dispatch workers", "repo", 10)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+
+        // No match for unrelated term
+        let results = store
+            .search_beads_fts("nonexistent", "repo", 10)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
     }
 
     #[tokio::test]
@@ -907,5 +1093,69 @@ mod tests {
         let bead = store.get_bead("u", "repo").await.unwrap().unwrap();
         assert_eq!(bead.title, "Updated");
         assert_eq!(bead.priority, 1);
+    }
+
+    #[tokio::test]
+    async fn created_by_and_scope_round_trip() {
+        let store = test_store();
+        store
+            .create_bead_full(
+                "s-1",
+                "Scoped bead",
+                "desc",
+                2,
+                "task",
+                "agent",
+                &[],
+                &[],
+                &[],
+                Some("alice"),
+                "payments",
+            )
+            .await
+            .unwrap();
+
+        let bead = store.get_bead("s-1", "repo").await.unwrap().unwrap();
+        assert_eq!(bead.created_by.as_deref(), Some("alice"));
+        assert_eq!(bead.scope, "payments");
+    }
+
+    #[tokio::test]
+    async fn scope_defaults_to_empty_for_simple_create() {
+        let store = test_store();
+        store
+            .create_bead("plain", "Plain bead", "", 1, "task")
+            .await
+            .unwrap();
+
+        let bead = store.get_bead("plain", "repo").await.unwrap().unwrap();
+        assert_eq!(bead.scope, "");
+        assert_eq!(bead.created_by, None);
+    }
+
+    #[tokio::test]
+    async fn scope_appears_in_list_beads() {
+        let store = test_store();
+        store
+            .create_bead_full(
+                "ls-1",
+                "Listed bead",
+                "",
+                2,
+                "task",
+                "",
+                &[],
+                &[],
+                &[],
+                Some("bob"),
+                "auth",
+            )
+            .await
+            .unwrap();
+
+        let beads = store.list_beads("repo").await.unwrap();
+        assert_eq!(beads.len(), 1);
+        assert_eq!(beads[0].scope, "auth");
+        assert_eq!(beads[0].created_by.as_deref(), Some("bob"));
     }
 }

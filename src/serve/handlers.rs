@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::config;
 use crate::pool::RepoPool;
-use crate::store::{BackendStore, BeadRef, BeadStore, DispatchRecord, PipelineState};
+use crate::store::{BackendStore, BeadStore, DispatchRecord, PipelineState, WorkRef};
 
 /// Default result limit for bead search (keeps MCP responses bounded).
 const SEARCH_DEFAULT_LIMIT: u64 = 20;
@@ -414,6 +414,9 @@ async fn tool_bead_create(
         })
         .unwrap_or_default();
 
+    // Capture git username from the repo's git config for creator attribution.
+    let created_by = crate::git_config_user_name(std::path::Path::new(repo_path));
+
     // Single transaction: INSERT + assignee + files + deps → one dolt commit
     client
         .create_bead_full(
@@ -426,6 +429,8 @@ async fn tool_bead_create(
             &files,
             &test_files,
             &depends_on,
+            created_by.as_deref(),
+            "",
         )
         .await?;
 
@@ -563,7 +568,11 @@ async fn tool_bead_close(
     // Unregister the session so rsry_active stops showing it.
     // Best-effort — session may not exist if bead was closed manually.
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {
-        let _ = registry.unregister(id);
+        let repo = std::path::Path::new(repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let _ = registry.unregister(id, repo);
     }
 
     Ok(json!({ "id": id, "status": "closed" }))
@@ -596,7 +605,11 @@ async fn tool_bead_comment(
 
     // Update session registry so rsry_active shows last activity
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {
-        let _ = registry.touch(id, body);
+        let repo = std::path::Path::new(repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let _ = registry.touch(id, repo, body);
     }
 
     Ok(json!({ "id": id, "comment_added": true }))
@@ -998,7 +1011,11 @@ async fn tool_workspace_merge(args: &Value) -> Result<Value> {
 
     // Unregister the session after merge — agent is done, work is landed.
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {
-        let _ = registry.unregister(bead_id);
+        let repo = std::path::Path::new(repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let _ = registry.unregister(bead_id, repo);
     }
 
     Ok(json!({
@@ -1127,8 +1144,9 @@ pub(crate) async fn tool_pipeline_upsert(
         .transpose()?;
 
     let state = PipelineState {
-        bead_ref: BeadRef {
+        bead_ref: WorkRef {
             repo: repo.to_string(),
+            scope: String::new(),
             bead_id: bead_id.to_string(),
         },
         pipeline_phase,
@@ -1161,8 +1179,9 @@ async fn tool_pipeline_query(args: &Value, backend: Option<&dyn BackendStore>) -
 
     match (repo, bead_id) {
         (Some(repo), Some(bead_id)) => {
-            let bead_ref = BeadRef {
+            let bead_ref = WorkRef {
                 repo: repo.to_string(),
+                scope: String::new(),
                 bead_id: bead_id.to_string(),
             };
             let pipeline = backend.get_pipeline(&bead_ref).await?;
@@ -1225,8 +1244,9 @@ async fn tool_dispatch_record(args: &Value, backend: Option<&dyn BackendStore>) 
 
     let record = DispatchRecord {
         id: id.to_string(),
-        bead_ref: BeadRef {
+        bead_ref: WorkRef {
             repo: repo.to_string(),
+            scope: String::new(),
             bead_id: bead_id.to_string(),
         },
         agent: agent.to_string(),
@@ -1331,8 +1351,9 @@ async fn tool_thread_list(args: &Value, backend: Option<&dyn BackendStore>) -> R
         args.get("bead_id").and_then(|v| v.as_str()),
         args.get("repo").and_then(|v| v.as_str()),
     ) {
-        let bead_ref = crate::store::BeadRef {
+        let bead_ref = crate::store::WorkRef {
             repo: repo.to_string(),
+            scope: String::new(),
             bead_id: bead_id.to_string(),
         };
         let thread_id = backend.find_thread_for_bead(&bead_ref).await?;
@@ -1344,7 +1365,7 @@ async fn tool_thread_list(args: &Value, backend: Option<&dyn BackendStore>) -> R
 
 async fn tool_thread_assign(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
     let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
-    use crate::store::{BeadRef, ThreadRecord};
+    use crate::store::{ThreadRecord, WorkRef};
 
     let thread_id = args["thread_id"]
         .as_str()
@@ -1396,8 +1417,9 @@ async fn tool_thread_assign(args: &Value, backend: Option<&dyn BackendStore>) ->
         })
         .await?;
 
-    let bead_ref = BeadRef {
+    let bead_ref = WorkRef {
         repo: repo.to_string(),
+        scope: String::new(),
         bead_id: bead_id.to_string(),
     };
     backend.add_bead_to_thread(thread_id, &bead_ref).await?;

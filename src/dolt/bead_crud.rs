@@ -11,6 +11,7 @@ impl DoltClient {
         let rows = query(
             r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                       i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                      i.created_by, i.scope,
                       COALESCE(dep.cnt, 0) as dep_count,
                       COALESCE(deps.cnt, 0) as dependency_count,
                       COALESCE(cmt.cnt, 0) as comment_count
@@ -58,6 +59,8 @@ impl DoltClient {
                     external_ref: row.try_get("external_ref").ok(),
                     files,
                     test_files,
+                    created_by: row.try_get("created_by").ok(),
+                    scope: row.try_get("scope").unwrap_or_default(),
                 }
             })
             .collect();
@@ -79,6 +82,7 @@ impl DoltClient {
                 let rows = query(
                     r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                               i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                              i.created_by, i.scope,
                               COALESCE(dep.cnt, 0) as dep_count,
                               COALESCE(deps.cnt, 0) as dependency_count,
                               COALESCE(cmt.cnt, 0) as comment_count
@@ -129,6 +133,8 @@ impl DoltClient {
                             external_ref: row.try_get("external_ref").ok(),
                             files,
                             test_files,
+                            created_by: row.try_get("created_by").ok(),
+                            scope: row.try_get("scope").unwrap_or_default(),
                         }
                     })
                     .collect())
@@ -142,6 +148,7 @@ impl DoltClient {
         let row = query(
             r#"SELECT id, title, description, status, priority, issue_type,
                       assignee, external_ref, notes, created_at, updated_at,
+                      created_by, scope,
                       (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
                       (SELECT COUNT(*) FROM dependencies d
                               JOIN issues dep_i ON dep_i.id = d.depends_on_id
@@ -180,6 +187,8 @@ impl DoltClient {
                 jj_change_id: None,
                 files,
                 test_files,
+                created_by: row.try_get("created_by").ok(),
+                scope: row.try_get("scope").unwrap_or_default(),
             }
         }))
     }
@@ -260,6 +269,8 @@ impl DoltClient {
         files: &[String],
         test_files: &[String],
         depends_on: &[String],
+        created_by: Option<&str>,
+        scope: &str,
     ) -> Result<()> {
         let mut tx = self
             .pool
@@ -269,14 +280,16 @@ impl DoltClient {
 
         // 1. Insert the bead
         query(
-            r#"INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_at, updated_at)
-               VALUES (?, ?, ?, '', '', '', 'open', ?, ?, NOW(), NOW())"#,
+            r#"INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_by, scope, created_at, updated_at)
+               VALUES (?, ?, ?, '', '', '', 'open', ?, ?, ?, ?, NOW(), NOW())"#,
         )
         .bind(id)
         .bind(title)
         .bind(description)
         .bind(priority as i32)
         .bind(issue_type)
+        .bind(created_by)
+        .bind(scope)
         .execute(&mut *tx)
         .await
         .with_context(|| format!("creating bead {id}"))?;

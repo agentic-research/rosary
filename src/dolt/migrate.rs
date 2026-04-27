@@ -44,6 +44,16 @@ const MIGRATIONS: &[Migration] = &[
         )",
         description: "Append-only agent observations for CRDT-lattice bead state (rosary-45518d)",
     },
+    Migration {
+        version: "003_add_created_by",
+        sql: "ALTER TABLE issues ADD COLUMN created_by VARCHAR(255) DEFAULT NULL",
+        description: "Git username of bead creator captured at creation time",
+    },
+    Migration {
+        version: "004_add_scope",
+        sql: "ALTER TABLE issues ADD COLUMN scope VARCHAR(255) NOT NULL DEFAULT ''",
+        description: "Team/folder scope for monorepo multi-team contexts",
+    },
 ];
 
 impl DoltClient {

@@ -29,9 +29,13 @@ pub struct QueueEntry {
 
 // BinaryHeap is a max-heap; higher score = dequeued first.
 // Ties broken by earlier enqueue time (older first = fairness).
+//
+// PartialEq is consistent with Ord: two entries are equal iff cmp returns Equal.
+// Deduplication is handled externally by `in_queue: HashSet<(repo, bead_id)>`,
+// so the heap never contains two entries with the same (repo, bead_id) pair.
 impl PartialEq for QueueEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.bead_id == other.bead_id
+        self.cmp(other) == Ordering::Equal
     }
 }
 
@@ -83,8 +87,8 @@ impl BackoffState {
 /// Priority work queue with dedup and backoff tracking.
 pub struct WorkQueue {
     heap: BinaryHeap<QueueEntry>,
-    in_queue: HashSet<String>,
-    backoff: HashMap<String, BackoffState>,
+    in_queue: HashSet<(String, String)>,
+    backoff: HashMap<(String, String), BackoffState>,
     /// Minimum priority level for auto-dispatch. Beads with priority > min_priority
     /// are blocked (P0=highest, P3=lowest). Default 2 means P0, P1, P2 pass; P3 blocked.
     pub min_priority: u8,
@@ -103,10 +107,11 @@ impl WorkQueue {
     /// Enqueue a bead if not already in the queue.
     /// Returns true if the bead was added.
     pub fn enqueue(&mut self, entry: QueueEntry) -> bool {
-        if self.in_queue.contains(&entry.bead_id) {
+        let key = (entry.repo.clone(), entry.bead_id.clone());
+        if self.in_queue.contains(&key) {
             return false;
         }
-        self.in_queue.insert(entry.bead_id.clone());
+        self.in_queue.insert(key);
         self.heap.push(entry);
         true
     }
@@ -120,13 +125,14 @@ impl WorkQueue {
             match self.heap.pop() {
                 None => break None,
                 Some(entry) => {
-                    if let Some(state) = self.backoff.get(&entry.bead_id)
+                    let key = (entry.repo.clone(), entry.bead_id.clone());
+                    if let Some(state) = self.backoff.get(&key)
                         && !state.is_eligible(now)
                     {
                         deferred.push(entry);
                         continue;
                     }
-                    self.in_queue.remove(&entry.bead_id);
+                    self.in_queue.remove(&key);
                     break Some(entry);
                 }
             }
@@ -141,19 +147,25 @@ impl WorkQueue {
     }
 
     /// Record a backoff for a failed bead.
-    pub fn record_backoff(&mut self, bead_id: &str, retries: u32, now: Instant) {
-        self.backoff
-            .insert(bead_id.to_string(), BackoffState::new(retries, now));
+    pub fn record_backoff(&mut self, repo: &str, bead_id: &str, retries: u32, now: Instant) {
+        self.backoff.insert(
+            (repo.to_string(), bead_id.to_string()),
+            BackoffState::new(retries, now),
+        );
     }
 
     /// Check if a bead has exceeded max retries.
-    pub fn is_deadlettered(&self, bead_id: &str) -> bool {
-        self.backoff.get(bead_id).is_some_and(|s| s.exceeded_max())
+    pub fn is_deadlettered(&self, repo: &str, bead_id: &str) -> bool {
+        self.backoff
+            .get(&(repo.to_string(), bead_id.to_string()))
+            .is_some_and(|s| s.exceeded_max())
     }
 
     /// Get retry count for a bead.
-    pub fn retries(&self, bead_id: &str) -> u32 {
-        self.backoff.get(bead_id).map_or(0, |s| s.retries)
+    pub fn retries(&self, repo: &str, bead_id: &str) -> u32 {
+        self.backoff
+            .get(&(repo.to_string(), bead_id.to_string()))
+            .map_or(0, |s| s.retries)
     }
 
     /// Number of entries currently in the queue.
@@ -169,18 +181,21 @@ impl WorkQueue {
 
     /// Check if a bead is already enqueued.
     #[allow(dead_code)]
-    pub fn contains(&self, bead_id: &str) -> bool {
-        self.in_queue.contains(bead_id)
+    pub fn contains(&self, repo: &str, bead_id: &str) -> bool {
+        self.in_queue
+            .contains(&(repo.to_string(), bead_id.to_string()))
     }
 
     /// Check if a bead has pending backoff (scheduled for retry).
-    pub fn has_backoff(&self, bead_id: &str) -> bool {
-        self.backoff.contains_key(bead_id)
+    pub fn has_backoff(&self, repo: &str, bead_id: &str) -> bool {
+        self.backoff
+            .contains_key(&(repo.to_string(), bead_id.to_string()))
     }
 
     /// Clear backoff state for a bead (e.g., on successful completion).
-    pub fn clear_backoff(&mut self, bead_id: &str) {
-        self.backoff.remove(bead_id);
+    pub fn clear_backoff(&mut self, repo: &str, bead_id: &str) {
+        self.backoff
+            .remove(&(repo.to_string(), bead_id.to_string()));
     }
 }
 
@@ -261,6 +276,8 @@ mod tests {
             external_ref: None,
             files: Vec::new(),
             test_files: Vec::new(),
+            created_by: None,
+            scope: String::new(),
         }
     }
 
@@ -325,7 +342,7 @@ mod tests {
             generation: 0,
         });
         // Record backoff with future eligibility
-        q.record_backoff("backed-off", 1, now);
+        q.record_backoff("r", "backed-off", 1, now);
 
         // Should skip — still in backoff
         assert!(q.dequeue(now).is_none());
@@ -366,11 +383,11 @@ mod tests {
         let mut q = WorkQueue::new();
         let now = Instant::now();
 
-        q.record_backoff("doomed", MAX_RETRIES, now);
-        assert!(q.is_deadlettered("doomed"));
+        q.record_backoff("r", "doomed", MAX_RETRIES, now);
+        assert!(q.is_deadlettered("r", "doomed"));
 
-        q.record_backoff("ok", 1, now);
-        assert!(!q.is_deadlettered("ok"));
+        q.record_backoff("r", "ok", 1, now);
+        assert!(!q.is_deadlettered("r", "ok"));
     }
 
     #[test]
@@ -378,12 +395,12 @@ mod tests {
         let mut q = WorkQueue::new();
         let now = Instant::now();
 
-        q.record_backoff("x", 3, now);
-        assert_eq!(q.retries("x"), 3);
+        q.record_backoff("r", "x", 3, now);
+        assert_eq!(q.retries("r", "x"), 3);
 
-        q.clear_backoff("x");
-        assert_eq!(q.retries("x"), 0);
-        assert!(!q.is_deadlettered("x"));
+        q.clear_backoff("r", "x");
+        assert_eq!(q.retries("r", "x"), 0);
+        assert!(!q.is_deadlettered("r", "x"));
     }
 
     #[test]
@@ -552,5 +569,37 @@ mod tests {
             task_score > epic_score,
             "overnight should prefer task ({task_score}) over epic ({epic_score})"
         );
+    }
+
+    #[test]
+    fn same_bead_id_different_repos_both_enqueued() {
+        // Regression: prior to composite-key fix, the second enqueue would be
+        // rejected as a duplicate because in_queue was keyed on bead_id alone.
+        let mut q = WorkQueue::new();
+        let now = Instant::now();
+
+        let added1 = q.enqueue(QueueEntry {
+            bead_id: "shared-id".into(),
+            repo: "repo-a".into(),
+            score: 0.5,
+            enqueued_at: now,
+            retries: 0,
+            generation: 0,
+        });
+        let added2 = q.enqueue(QueueEntry {
+            bead_id: "shared-id".into(),
+            repo: "repo-b".into(),
+            score: 0.5,
+            enqueued_at: now,
+            retries: 0,
+            generation: 0,
+        });
+
+        assert!(added1, "first enqueue should succeed");
+        assert!(
+            added2,
+            "second enqueue with same bead_id but different repo should succeed"
+        );
+        assert_eq!(q.len(), 2, "both entries should be in the queue");
     }
 }

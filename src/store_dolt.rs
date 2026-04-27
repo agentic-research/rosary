@@ -162,6 +162,7 @@ impl DoltBackend {
                 thread_id VARCHAR(256) NOT NULL,
                 repo VARCHAR(128) NOT NULL,
                 bead_id VARCHAR(128) NOT NULL,
+                scope VARCHAR(255) NOT NULL DEFAULT '',
                 ordinal INT UNSIGNED NOT NULL DEFAULT 0,
                 PRIMARY KEY (thread_id, repo, bead_id)
             )",
@@ -227,6 +228,39 @@ impl DoltBackend {
                 .execute(&self.pool)
                 .await
                 .with_context(|| format!("creating schema: {}", &sql[..sql.len().min(60)]))?;
+        }
+
+        // Additive migrations — only run if the column doesn't already exist.
+        // Attempting ALTER TABLE on an existing column causes a DDL error that
+        // can corrupt sqlx connection pool state even when silently discarded.
+        let migrations: &[(&str, &str, &str)] = &[
+            (
+                "dispatches",
+                "chain_hash",
+                "ALTER TABLE dispatches ADD COLUMN chain_hash VARCHAR(64)",
+            ),
+            (
+                "thread_members",
+                "scope",
+                "ALTER TABLE thread_members ADD COLUMN scope VARCHAR(255) NOT NULL DEFAULT ''",
+            ),
+        ];
+        for (table, column, sql) in migrations {
+            let exists = query(
+                "SELECT COUNT(*) FROM information_schema.columns \
+                 WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+            )
+            .bind(table)
+            .bind(column)
+            .fetch_one(&self.pool)
+            .await
+            .map(|r| r.try_get::<i64, _>(0).unwrap_or(0) > 0)
+            .unwrap_or(true); // default true = skip, safe fallback
+            if !exists {
+                if let Err(e) = query(sql).execute(&self.pool).await {
+                    eprintln!("[backend] migration warning ({table}.{column}): {e}");
+                }
+            }
         }
 
         Ok(())
@@ -333,11 +367,11 @@ impl HierarchyStore for DoltBackend {
             .collect())
     }
 
-    async fn add_bead_to_thread(&self, thread_id: &str, bead: &BeadRef) -> Result<()> {
+    async fn add_bead_to_thread(&self, thread_id: &str, bead: &WorkRef) -> Result<()> {
         // Insert with next ordinal, no-op on duplicate
         query(
-            "INSERT INTO thread_members (thread_id, repo, bead_id, ordinal)
-             VALUES (?, ?, ?, (
+            "INSERT INTO thread_members (thread_id, repo, scope, bead_id, ordinal)
+             VALUES (?, ?, ?, ?, (
                  SELECT COALESCE(MAX(t.ordinal), 0) + 1
                  FROM (SELECT ordinal FROM thread_members WHERE thread_id = ?) t
              ))
@@ -345,6 +379,7 @@ impl HierarchyStore for DoltBackend {
         )
         .bind(thread_id)
         .bind(&bead.repo)
+        .bind(&bead.scope)
         .bind(&bead.bead_id)
         .bind(thread_id)
         .execute(&self.pool)
@@ -353,33 +388,36 @@ impl HierarchyStore for DoltBackend {
         Ok(())
     }
 
-    async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<BeadRef>> {
-        let rows =
-            query("SELECT repo, bead_id FROM thread_members WHERE thread_id = ? ORDER BY ordinal")
-                .bind(thread_id)
-                .fetch_all(&self.pool)
-                .await
-                .with_context(|| format!("listing beads in thread {thread_id}"))?;
+    async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<WorkRef>> {
+        let rows = query(
+            "SELECT repo, scope, bead_id FROM thread_members WHERE thread_id = ? ORDER BY ordinal",
+        )
+        .bind(thread_id)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| format!("listing beads in thread {thread_id}"))?;
 
         Ok(rows
             .iter()
-            .map(|r| BeadRef {
+            .map(|r| WorkRef {
                 repo: r.get("repo"),
+                scope: r.try_get("scope").unwrap_or_default(),
                 bead_id: r.get("bead_id"),
             })
             .collect())
     }
 
-    async fn find_thread_for_bead(&self, bead: &BeadRef) -> Result<Option<String>> {
-        let row =
-            query("SELECT thread_id FROM thread_members WHERE repo = ? AND bead_id = ? LIMIT 1")
-                .bind(&bead.repo)
-                .bind(&bead.bead_id)
-                .fetch_optional(&self.pool)
-                .await
-                .with_context(|| {
-                    format!("finding thread for bead {}/{}", bead.repo, bead.bead_id)
-                })?;
+    async fn find_thread_for_bead(&self, bead: &WorkRef) -> Result<Option<String>> {
+        let row = query(
+            "SELECT thread_id FROM thread_members \
+             WHERE repo = ? AND bead_id = ? AND scope = ? LIMIT 1",
+        )
+        .bind(&bead.repo)
+        .bind(&bead.bead_id)
+        .bind(&bead.scope)
+        .fetch_optional(&self.pool)
+        .await
+        .with_context(|| format!("finding thread for bead {}/{}", bead.repo, bead.bead_id))?;
 
         Ok(row.map(|r| r.get("thread_id")))
     }
@@ -430,7 +468,7 @@ impl DispatchStore for DoltBackend {
         Ok(())
     }
 
-    async fn get_pipeline(&self, bead: &BeadRef) -> Result<Option<PipelineState>> {
+    async fn get_pipeline(&self, bead: &WorkRef) -> Result<Option<PipelineState>> {
         let row = query(
             "SELECT repo, bead_id, pipeline_phase, pipeline_agent, phase_status,
                     retries, consecutive_reverts, highest_verify_tier, last_generation, backoff_until
@@ -458,7 +496,7 @@ impl DispatchStore for DoltBackend {
         Ok(rows.iter().map(row_to_pipeline_state).collect())
     }
 
-    async fn clear_pipeline(&self, bead: &BeadRef) -> Result<()> {
+    async fn clear_pipeline(&self, bead: &WorkRef) -> Result<()> {
         query("DELETE FROM pipeline_state WHERE repo = ? AND bead_id = ?")
             .bind(&bead.repo)
             .bind(&bead.bead_id)
@@ -575,7 +613,7 @@ impl LinkageStore for DoltBackend {
         Ok(())
     }
 
-    async fn dependencies_of(&self, bead: &BeadRef) -> Result<Vec<CrossRepoDep>> {
+    async fn dependencies_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
         let rows = query(
             "SELECT from_repo, from_bead, to_repo, to_bead, dep_type
              FROM cross_repo_deps WHERE from_repo = ? AND from_bead = ?",
@@ -589,7 +627,7 @@ impl LinkageStore for DoltBackend {
         Ok(rows.iter().map(row_to_cross_repo_dep).collect())
     }
 
-    async fn dependents_of(&self, bead: &BeadRef) -> Result<Vec<CrossRepoDep>> {
+    async fn dependents_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
         let rows = query(
             "SELECT from_repo, from_bead, to_repo, to_bead, dep_type
              FROM cross_repo_deps WHERE to_repo = ? AND to_bead = ?",
@@ -630,8 +668,9 @@ impl LinkageStore for DoltBackend {
         .with_context(|| format!("finding bead by linear ID {linear_id}"))?;
 
         Ok(row.map(|r| LinearLink {
-            bead_ref: BeadRef {
+            bead_ref: WorkRef {
                 repo: r.get("repo"),
+                scope: String::new(),
                 bead_id: r.get("bead_id"),
             },
             linear_id: r.get("linear_id"),
@@ -692,8 +731,9 @@ impl UserRepoStore for DoltBackend {
 fn row_to_pipeline_state(r: &sqlx_mysql::MySqlRow) -> PipelineState {
     let backoff_naive: Option<chrono::NaiveDateTime> = r.try_get("backoff_until").ok();
     PipelineState {
-        bead_ref: BeadRef {
+        bead_ref: WorkRef {
             repo: r.get("repo"),
+            scope: String::new(),
             bead_id: r.get("bead_id"),
         },
         pipeline_phase: r.try_get::<u8, _>("pipeline_phase").unwrap_or(0),
@@ -716,8 +756,9 @@ fn row_to_dispatch_record(r: &sqlx_mysql::MySqlRow) -> DispatchRecord {
 
     DispatchRecord {
         id: r.get("id"),
-        bead_ref: BeadRef {
+        bead_ref: WorkRef {
             repo: r.get("repo"),
+            scope: String::new(),
             bead_id: r.get("bead_id"),
         },
         agent: r.get("agent"),
@@ -738,12 +779,14 @@ fn row_to_dispatch_record(r: &sqlx_mysql::MySqlRow) -> DispatchRecord {
 
 fn row_to_cross_repo_dep(r: &sqlx_mysql::MySqlRow) -> CrossRepoDep {
     CrossRepoDep {
-        from: BeadRef {
+        from: WorkRef {
             repo: r.get("from_repo"),
+            scope: String::new(),
             bead_id: r.get("from_bead"),
         },
-        to: BeadRef {
+        to: WorkRef {
             repo: r.get("to_repo"),
+            scope: String::new(),
             bead_id: r.get("to_bead"),
         },
         dep_type: r.get("dep_type"),
@@ -770,9 +813,9 @@ impl BackendExport for DoltBackend {
             .collect())
     }
 
-    async fn all_thread_members(&self) -> Result<Vec<(String, BeadRef)>> {
+    async fn all_thread_members(&self) -> Result<Vec<(String, WorkRef)>> {
         let rows = query(
-            "SELECT thread_id, repo, bead_id FROM thread_members ORDER BY thread_id, ordinal",
+            "SELECT thread_id, repo, scope, bead_id FROM thread_members ORDER BY thread_id, ordinal",
         )
         .fetch_all(&self.pool)
         .await
@@ -782,8 +825,9 @@ impl BackendExport for DoltBackend {
             .map(|r| {
                 (
                     r.get::<String, _>("thread_id"),
-                    BeadRef {
+                    WorkRef {
                         repo: r.get("repo"),
+                        scope: r.try_get("scope").unwrap_or_default(),
                         bead_id: r.get("bead_id"),
                     },
                 )
@@ -820,8 +864,9 @@ impl BackendExport for DoltBackend {
         Ok(rows
             .iter()
             .map(|r| LinearLink {
-                bead_ref: BeadRef {
+                bead_ref: WorkRef {
                     repo: r.get("repo"),
+                    scope: String::new(),
                     bead_id: r.get("bead_id"),
                 },
                 linear_id: r.get("linear_id"),
@@ -930,9 +975,10 @@ mod tests {
         let threads = backend.list_threads("ADR-003").await.unwrap();
         assert_eq!(threads.len(), 1);
 
-        let bead = BeadRef {
+        let bead = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
         backend
             .add_bead_to_thread("ADR-003/impl", &bead)
@@ -992,13 +1038,15 @@ mod tests {
         assert!(active.is_empty());
 
         // -- LinkageStore --
-        let from = BeadRef {
+        let from = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
-        let to = BeadRef {
+        let to = WorkRef {
             repo: "mache".into(),
             bead_id: "mch-001".into(),
+            scope: String::new(),
         };
         let dep = CrossRepoDep {
             from: from.clone(),

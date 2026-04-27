@@ -85,6 +85,25 @@ async fn workspace_provision_and_exec() {
     assert_eq!(provisions[0].bead_id, "test-1");
 }
 
+/// Regression (GAP 2): Workspace::cleanup() must not panic for VcsKind::None.
+/// cleanup() is called in dispatch::spawn() when spawn_agent fails after workspace
+/// creation. If cleanup() is removed or panics, orphaned worktrees accumulate.
+#[tokio::test]
+async fn workspace_cleanup_noop_is_safe() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let ws = Workspace::create("gap2-noop", "repo", tmp.path(), false)
+        .await
+        .unwrap();
+    assert_eq!(ws.vcs, VcsKind::None);
+    // Must not panic and must leave the work_dir intact (it's the repo dir itself)
+    let work_dir = ws.work_dir.clone();
+    ws.cleanup();
+    assert!(
+        work_dir.exists(),
+        "cleanup on VcsKind::None must not remove the repo dir"
+    );
+}
+
 /// Regression: git worktree must branch from HEAD, not an orphan.
 /// Bug: worktree only had .beads/ bd init commit, no source code.
 #[tokio::test]

@@ -39,6 +39,8 @@ impl SqliteBackend {
 
         // Additive migrations — safe to run on every connect (IF NOT EXISTS / column-exists guard)
         let _ = conn.execute_batch("ALTER TABLE dispatches ADD COLUMN chain_hash TEXT;");
+        let _ = conn
+            .execute_batch("ALTER TABLE thread_members ADD COLUMN scope TEXT NOT NULL DEFAULT '';");
 
         Ok(SqliteBackend {
             conn: Mutex::new(conn),
@@ -73,6 +75,7 @@ CREATE TABLE IF NOT EXISTS thread_members (
     thread_id TEXT NOT NULL,
     repo TEXT NOT NULL,
     bead_id TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (thread_id, repo, bead_id)
 );
 
@@ -226,36 +229,37 @@ impl HierarchyStore for SqliteBackend {
             .map_err(Into::into)
     }
 
-    async fn add_bead_to_thread(&self, thread_id: &str, bead: &BeadRef) -> Result<()> {
+    async fn add_bead_to_thread(&self, thread_id: &str, bead: &WorkRef) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR IGNORE INTO thread_members (thread_id, repo, bead_id) VALUES (?1, ?2, ?3)",
-            params![thread_id, bead.repo, bead.bead_id],
+            "INSERT OR IGNORE INTO thread_members (thread_id, repo, scope, bead_id) VALUES (?1, ?2, ?3, ?4)",
+            params![thread_id, bead.repo, bead.scope, bead.bead_id],
         )?;
         Ok(())
     }
 
-    async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<BeadRef>> {
+    async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<WorkRef>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT repo, bead_id FROM thread_members WHERE thread_id = ?1 ORDER BY repo, bead_id",
+            "SELECT repo, scope, bead_id FROM thread_members WHERE thread_id = ?1 ORDER BY repo, bead_id",
         )?;
         let rows = stmt.query_map(params![thread_id], |row| {
-            Ok(BeadRef {
+            Ok(WorkRef {
                 repo: row.get(0)?,
-                bead_id: row.get(1)?,
+                scope: row.get::<_, String>(1).unwrap_or_default(),
+                bead_id: row.get(2)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
-    async fn find_thread_for_bead(&self, bead: &BeadRef) -> Result<Option<String>> {
+    async fn find_thread_for_bead(&self, bead: &WorkRef) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT thread_id FROM thread_members WHERE repo = ?1 AND bead_id = ?2 LIMIT 1",
+            "SELECT thread_id FROM thread_members WHERE repo = ?1 AND bead_id = ?2 AND scope = ?3 LIMIT 1",
         )?;
-        let mut rows = stmt.query(params![bead.repo, bead.bead_id])?;
+        let mut rows = stmt.query(params![bead.repo, bead.bead_id, bead.scope])?;
         Ok(rows.next()?.map(|row| row.get(0).unwrap()))
     }
 }
@@ -286,7 +290,7 @@ impl DispatchStore for SqliteBackend {
         Ok(())
     }
 
-    async fn get_pipeline(&self, bead: &BeadRef) -> Result<Option<PipelineState>> {
+    async fn get_pipeline(&self, bead: &WorkRef) -> Result<Option<PipelineState>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT repo, bead_id, pipeline_phase, pipeline_agent, phase_status, retries, consecutive_reverts, highest_verify_tier, last_generation, backoff_until
@@ -307,7 +311,7 @@ impl DispatchStore for SqliteBackend {
             .map_err(Into::into)
     }
 
-    async fn clear_pipeline(&self, bead: &BeadRef) -> Result<()> {
+    async fn clear_pipeline(&self, bead: &WorkRef) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "DELETE FROM pipelines WHERE repo = ?1 AND bead_id = ?2",
@@ -415,19 +419,21 @@ impl LinkageStore for SqliteBackend {
         Ok(())
     }
 
-    async fn dependencies_of(&self, bead: &BeadRef) -> Result<Vec<CrossRepoDep>> {
+    async fn dependencies_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT from_repo, from_bead, to_repo, to_bead, dep_type FROM dependencies WHERE from_repo = ?1 AND from_bead = ?2",
         )?;
         let rows = stmt.query_map(params![bead.repo, bead.bead_id], |row| {
             Ok(CrossRepoDep {
-                from: BeadRef {
+                from: WorkRef {
                     repo: row.get(0)?,
+                    scope: String::new(),
                     bead_id: row.get(1)?,
                 },
-                to: BeadRef {
+                to: WorkRef {
                     repo: row.get(2)?,
+                    scope: String::new(),
                     bead_id: row.get(3)?,
                 },
                 dep_type: row.get(4)?,
@@ -437,19 +443,21 @@ impl LinkageStore for SqliteBackend {
             .map_err(Into::into)
     }
 
-    async fn dependents_of(&self, bead: &BeadRef) -> Result<Vec<CrossRepoDep>> {
+    async fn dependents_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT from_repo, from_bead, to_repo, to_bead, dep_type FROM dependencies WHERE to_repo = ?1 AND to_bead = ?2",
         )?;
         let rows = stmt.query_map(params![bead.repo, bead.bead_id], |row| {
             Ok(CrossRepoDep {
-                from: BeadRef {
+                from: WorkRef {
                     repo: row.get(0)?,
+                    scope: String::new(),
                     bead_id: row.get(1)?,
                 },
-                to: BeadRef {
+                to: WorkRef {
                     repo: row.get(2)?,
+                    scope: String::new(),
                     bead_id: row.get(3)?,
                 },
                 dep_type: row.get(4)?,
@@ -475,8 +483,9 @@ impl LinkageStore for SqliteBackend {
         )?;
         let mut rows = stmt.query(params![linear_id])?;
         Ok(rows.next()?.map(|row| LinearLink {
-            bead_ref: BeadRef {
+            bead_ref: WorkRef {
                 repo: row.get(0).unwrap(),
+                scope: String::new(),
                 bead_id: row.get(1).unwrap(),
             },
             linear_id: row.get(2).unwrap(),
@@ -543,17 +552,18 @@ impl BackendExport for SqliteBackend {
             .map_err(Into::into)
     }
 
-    async fn all_thread_members(&self) -> Result<Vec<(String, BeadRef)>> {
+    async fn all_thread_members(&self) -> Result<Vec<(String, WorkRef)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT thread_id, repo, bead_id FROM thread_members ORDER BY thread_id, repo, bead_id",
+            "SELECT thread_id, repo, scope, bead_id FROM thread_members ORDER BY thread_id, repo, bead_id",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                BeadRef {
+                WorkRef {
                     repo: row.get(1)?,
-                    bead_id: row.get(2)?,
+                    scope: row.get::<_, String>(2).unwrap_or_default(),
+                    bead_id: row.get(3)?,
                 },
             ))
         })?;
@@ -578,12 +588,14 @@ impl BackendExport for SqliteBackend {
             .prepare("SELECT from_repo, from_bead, to_repo, to_bead, dep_type FROM dependencies")?;
         let rows = stmt.query_map([], |row| {
             Ok(CrossRepoDep {
-                from: BeadRef {
+                from: WorkRef {
                     repo: row.get(0)?,
+                    scope: String::new(),
                     bead_id: row.get(1)?,
                 },
-                to: BeadRef {
+                to: WorkRef {
                     repo: row.get(2)?,
+                    scope: String::new(),
                     bead_id: row.get(3)?,
                 },
                 dep_type: row.get(4)?,
@@ -599,8 +611,9 @@ impl BackendExport for SqliteBackend {
             conn.prepare("SELECT repo, bead_id, linear_id, linear_type FROM linear_links")?;
         let rows = stmt.query_map([], |row| {
             Ok(LinearLink {
-                bead_ref: BeadRef {
+                bead_ref: WorkRef {
                     repo: row.get(0)?,
+                    scope: String::new(),
                     bead_id: row.get(1)?,
                 },
                 linear_id: row.get(2)?,
@@ -633,8 +646,9 @@ impl BackendExport for SqliteBackend {
 fn row_to_pipeline(row: &rusqlite::Row) -> rusqlite::Result<PipelineState> {
     let backoff_str: Option<String> = row.get(9)?;
     Ok(PipelineState {
-        bead_ref: BeadRef {
+        bead_ref: WorkRef {
             repo: row.get(0)?,
+            scope: String::new(),
             bead_id: row.get(1)?,
         },
         pipeline_phase: row.get::<_, u8>(2)?,
@@ -657,8 +671,9 @@ fn row_to_dispatch(row: &rusqlite::Row) -> rusqlite::Result<DispatchRecord> {
     let completed_str: Option<String> = row.get(6)?;
     Ok(DispatchRecord {
         id: row.get(0)?,
-        bead_ref: BeadRef {
+        bead_ref: WorkRef {
             repo: row.get(1)?,
+            scope: String::new(),
             bead_id: row.get(2)?,
         },
         agent: row.get(3)?,
@@ -698,9 +713,10 @@ mod tests {
     #[tokio::test]
     async fn pipeline_crud() {
         let (store, _dir) = temp_backend();
-        let bead = BeadRef {
+        let bead = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
         let state = PipelineState {
             bead_ref: bead.clone(),
@@ -728,9 +744,10 @@ mod tests {
         let (store, _dir) = temp_backend();
         let record = DispatchRecord {
             id: "d-001".into(),
-            bead_ref: BeadRef {
+            bead_ref: WorkRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-001".into(),
+                scope: String::new(),
             },
             agent: "dev-agent".into(),
             provider: "claude".into(),
@@ -775,9 +792,10 @@ mod tests {
         store.upsert_thread(&thread).await.unwrap();
         assert_eq!(store.list_threads("ADR-001").await.unwrap().len(), 1);
 
-        let bead = BeadRef {
+        let bead = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
         store
             .add_bead_to_thread("ADR-001/impl", &bead)
@@ -792,13 +810,15 @@ mod tests {
     #[tokio::test]
     async fn linkage_crud() {
         let (store, _dir) = temp_backend();
-        let from = BeadRef {
+        let from = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-001".into(),
+            scope: String::new(),
         };
-        let to = BeadRef {
+        let to = WorkRef {
             repo: "mache".into(),
             bead_id: "mch-001".into(),
+            scope: String::new(),
         };
 
         store
@@ -898,9 +918,10 @@ mod tests {
         for i in 0..3 {
             store
                 .upsert_pipeline(&PipelineState {
-                    bead_ref: BeadRef {
+                    bead_ref: WorkRef {
                         repo: "rosary".into(),
                         bead_id: format!("rsry-{i:03}"),
+                        scope: String::new(),
                     },
                     pipeline_phase: 0,
                     pipeline_agent: "dev-agent".into(),
@@ -921,9 +942,10 @@ mod tests {
     async fn pipeline_backoff_roundtrip() {
         let (store, _dir) = temp_backend();
         let now = Utc::now();
-        let bead = BeadRef {
+        let bead = WorkRef {
             repo: "rosary".into(),
             bead_id: "rsry-bo".into(),
+            scope: String::new(),
         };
         store
             .upsert_pipeline(&PipelineState {
@@ -951,9 +973,10 @@ mod tests {
         let (store, _dir) = temp_backend();
         let record = DispatchRecord {
             id: "d-sess".into(),
-            bead_ref: BeadRef {
+            bead_ref: WorkRef {
                 repo: "rosary".into(),
                 bead_id: "rsry-001".into(),
+                scope: String::new(),
             },
             agent: "dev-agent".into(),
             provider: "claude".into(),
@@ -1021,5 +1044,57 @@ mod tests {
         let repos = store.list_user_repos("user-1").await.unwrap();
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0].github_token_ref.as_deref(), Some("new-tok"));
+    }
+
+    /// Regression (GAP 4): when a reconciler crashes between record_dispatch() and
+    /// complete_dispatch(), the dispatch record is left with completed_at=NULL.
+    /// On the next startup, recover_stuck_beads calls complete_dispatch("abandoned")
+    /// on each orphaned record. This test verifies that "abandoned" records are
+    /// no longer returned by active_dispatches(), which is the query the recovery
+    /// loop uses to detect orphans.
+    #[tokio::test]
+    async fn abandoned_dispatch_not_in_active_dispatches() {
+        let (store, _dir) = temp_backend();
+
+        // Simulate: previous reconciler created a dispatch record and crashed
+        let record = DispatchRecord {
+            id: "orphan-001".into(),
+            bead_ref: WorkRef {
+                repo: "rosary".into(),
+                bead_id: "rsry-crashed".into(),
+                scope: String::new(),
+            },
+            agent: "dev-agent".into(),
+            provider: "claude".into(),
+            started_at: Utc::now(),
+            completed_at: None, // crash — never completed
+            outcome: None,
+            work_dir: "/tmp/work".into(),
+            session_id: None,
+            workspace_path: None,
+            chain_hash: None,
+        };
+        store.record_dispatch(&record).await.unwrap();
+
+        // Before recovery: appears as orphan
+        let orphans = store.active_dispatches().await.unwrap();
+        assert_eq!(
+            orphans.len(),
+            1,
+            "orphaned record must appear in active_dispatches"
+        );
+
+        // Recovery action: mark abandoned
+        store
+            .complete_dispatch("orphan-001", "abandoned")
+            .await
+            .unwrap();
+
+        // After recovery: no longer orphaned
+        let orphans = store.active_dispatches().await.unwrap();
+        assert!(
+            orphans.is_empty(),
+            "abandoned dispatch must not appear in active_dispatches (GAP 4 regression)"
+        );
     }
 }

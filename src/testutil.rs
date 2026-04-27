@@ -28,7 +28,7 @@ impl TestRepo {
         Self { dir }
     }
 
-    /// Create a commit with a bead reference (passes BeadRefCheck + CommitCheck).
+    /// Create a commit with a bead reference (passes WorkRefCheck + CommitCheck).
     pub fn commit_with_bead_ref(&self, bead_id: &str, filename: &str, content: &str) {
         let path = self.path();
         // Ensure parent dirs exist
@@ -43,7 +43,7 @@ impl TestRepo {
         run_git(path, &["commit", "-m", &msg]);
     }
 
-    /// Create a plain commit without bead reference (fails BeadRefCheck).
+    /// Create a plain commit without bead reference (fails WorkRefCheck).
     pub fn commit_plain(&self, filename: &str, content: &str) {
         let path = self.path();
         std::fs::write(path.join(filename), content).unwrap();
@@ -89,6 +89,8 @@ pub fn make_bead(id: &str, issue_type: &str, repo: &str) -> crate::bead::Bead {
         external_ref: None,
         files: Vec::new(),
         test_files: Vec::new(),
+        created_by: None,
+        scope: String::new(),
     }
 }
 

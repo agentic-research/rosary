@@ -11,7 +11,7 @@ use anyhow::Result;
 use crate::dispatch;
 use crate::dolt::observations::Verdict;
 use crate::pipeline::CompletionAction;
-use crate::store::BeadRef;
+use crate::store::WorkRef;
 use crate::verify::VerifySummary;
 
 use super::Reconciler;
@@ -23,6 +23,8 @@ pub(super) struct VerifyResult {
     pub passed: usize,
     pub failed: usize,
     pub deadlettered: usize,
+    /// Beads already closed by the agent via MCP — verification skipped.
+    pub agent_closed: usize,
 }
 
 /// Outcome of executing a single CompletionAction.
@@ -175,8 +177,13 @@ impl Reconciler {
                 self.append_observation(bead_id, repo, &agent, phase, Verdict::Deadletter, detail)
                     .await;
                 self.cleanup_workspace(bead_id);
-                let bead_ref = BeadRef {
+                let bead_ref = WorkRef {
                     repo: repo.to_string(),
+                    scope: self
+                        .trackers
+                        .get(bead_id)
+                        .map(|t| t.scope.clone())
+                        .unwrap_or_default(),
                     bead_id: bead_id.to_string(),
                 };
                 self.pipeline.clear_state(&bead_ref).await;
@@ -265,8 +272,13 @@ impl Reconciler {
             tracker.phase_index = phase + 1;
         }
 
-        let bead_ref = BeadRef {
+        let bead_ref = WorkRef {
             repo: repo.to_string(),
+            scope: self
+                .trackers
+                .get(bead_id)
+                .map(|t| t.scope.clone())
+                .unwrap_or_default(),
             bead_id: bead_id.to_string(),
         };
         self.pipeline
@@ -316,6 +328,7 @@ impl Reconciler {
             passed: 0,
             failed: 0,
             deadlettered: 0,
+            agent_closed: 0,
         };
 
         for (bead_id, exit_success) in completed {
@@ -339,7 +352,6 @@ impl Reconciler {
                 }
                 continue;
             }
-
             let repo = self
                 .trackers
                 .get(bead_id.as_str())
@@ -351,6 +363,21 @@ impl Reconciler {
                         .map(|b| b.repo.clone())
                         .unwrap_or_default()
                 });
+
+            // Agent-first fast path: the agent already closed the bead via MCP
+            // (rsry_bead_close). Skip the full compile/test/lint pipeline — it's
+            // wasted compute and would produce noisy rejected-state-transition logs
+            // (BeadState validation blocks Closed → Verifying and Closed → PrOpen).
+            // Design note: this path trusts the agent's self-close signal, which is
+            // a conscious tradeoff against the "pipeline enforces shape" principle.
+            // The dev-tier refinement loop (compile/test/lint) is bypassed for
+            // self-closing agents. The feature-tier verification (Phase 5.5) still
+            // runs on the assembled thread branch, providing a downstream gate.
+            if self.is_bead_agent_closed(bead_id, &repo).await {
+                self.trackers.remove(bead_id.as_str());
+                result.agent_closed += 1;
+                continue;
+            }
 
             // Signal "In Review" in Linear while verification tiers run —
             // but only when the agent exited successfully. A crashed agent
@@ -591,6 +618,8 @@ impl Reconciler {
                         external_ref: None,
                         files: Vec::new(),
                         test_files: Vec::new(),
+                        created_by: None,
+                        scope: String::new(),
                     };
                     if let Some(client) = self.dolt_client(&repo).await
                         && let Ok(Some(full)) = client.get_bead(bead_id, &repo).await
@@ -620,8 +649,13 @@ impl Reconciler {
                                 format!("{}-{}", bead_id, handle.started_at.timestamp_millis());
                             let dispatch_record = crate::store::DispatchRecord {
                                 id: new_dispatch_id.clone(),
-                                bead_ref: crate::store::BeadRef {
+                                bead_ref: crate::store::WorkRef {
                                     repo: repo.clone(),
+                                    scope: self
+                                        .trackers
+                                        .get(bead_id.as_str())
+                                        .map(|t| t.scope.clone())
+                                        .unwrap_or_default(),
                                     bead_id: bead_id.clone(),
                                 },
                                 agent: next_agent.clone(),
@@ -651,9 +685,26 @@ impl Reconciler {
                             self.active.insert(bead_id.clone(), handle);
                         }
                         Err(e) => {
+                            // Phase was already advanced (write_handoff_and_advance committed
+                            // tracker + pipeline state) but the next agent couldn't spawn.
+                            // This is unrecoverable without human intervention — the bead is
+                            // in an inconsistent state. Block it rather than leave it wedged
+                            // at Dispatched with no running agent.
                             eprintln!(
-                                "[dispatch] failed to re-dispatch {bead_id} for {next_agent}: {e}"
+                                "[dispatch] {bead_id}: spawn failed for {next_agent} after \
+                                 phase advance — deadlettering: {e}"
                             );
+                            self.persist_status(bead_id, &repo, "blocked").await;
+                            self.append_observation(
+                                bead_id,
+                                &repo,
+                                next_agent,
+                                phase,
+                                Verdict::Fail,
+                                &format!("spawn failed after phase advance: {e}"),
+                            )
+                            .await;
+                            self.trackers.remove(bead_id.as_str());
                         }
                     }
                 }

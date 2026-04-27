@@ -77,6 +77,8 @@ async fn severity_floor_blocks_p3_with_min_priority_2() {
         external_ref: None,
         files: Vec::new(),
         test_files: Vec::new(),
+        created_by: None,
+        scope: String::new(),
     };
 
     let config = ReconcilerConfig::default();
@@ -125,6 +127,7 @@ async fn on_pass_clears_state() {
             phase_index: 0,
             issue_type: "task".into(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
 
@@ -171,6 +174,7 @@ async fn on_fail_consecutive_reverts_deadletter() {
             phase_index: 0,
             issue_type: "task".into(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
 
@@ -217,10 +221,12 @@ async fn failed_bead_retries_despite_same_generation() {
             phase_index: 0,
             issue_type: "task".into(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
     // Record backoff (retry is pending)
     r.queue.record_backoff(
+        "test",
         "x",
         1,
         std::time::Instant::now() - std::time::Duration::from_secs(60),
@@ -247,10 +253,12 @@ async fn failed_bead_retries_despite_same_generation() {
         branch: None,
         pr_url: None,
         jj_change_id: None,
+        created_by: None,
+        scope: String::new(),
     };
 
     // The bead should still be triageable despite same generation
-    let retries = r.queue.retries(&bead.id);
+    let retries = r.queue.retries(&bead.repo, &bead.id);
     assert_eq!(retries, 1, "should have 1 retry recorded");
 
     // Check: tracker has same generation, but retries > 0
@@ -294,6 +302,8 @@ fn blocked_bead_filtered_by_triage() {
         external_ref: None,
         files: Vec::new(),
         test_files: Vec::new(),
+        created_by: None,
+        scope: String::new(),
     };
 
     // is_blocked returns true for open beads with deps
@@ -329,6 +339,8 @@ fn self_managed_repo_gets_score_boost() {
         external_ref: None,
         files: Vec::new(),
         test_files: Vec::new(),
+        created_by: None,
+        scope: String::new(),
     };
 
     let base_score = queue::triage_score(&bead, 0, now);
@@ -368,6 +380,7 @@ async fn repo_busy_check_uses_trackers() {
             phase_index: 0,
             issue_type: "task".into(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
     // Mark it as active (need a dummy handle — use the key presence)
@@ -501,7 +514,7 @@ fn mock_agent_verify_decide_compose_to_advance() {
     use crate::dispatch::AgentProvider;
     use crate::dispatch::tests::MockAgentProvider;
     use crate::pipeline::{CompletionAction, PipelineEngine};
-    use crate::verify::{BeadRefCheck, CommitCheck, Verifier};
+    use crate::verify::{CommitCheck, Verifier, WorkRefCheck};
 
     let repo = crate::testutil::TestRepo::new();
     let pipeline = PipelineEngine::new(default_pipelines(), None, 0);
@@ -523,7 +536,7 @@ fn mock_agent_verify_decide_compose_to_advance() {
         .unwrap();
 
     // Verify the commit (what the reconciler does after agent completes)
-    let verifier = Verifier::new(vec![Box::new(CommitCheck), Box::new(BeadRefCheck)]);
+    let verifier = Verifier::new(vec![Box::new(CommitCheck), Box::new(WorkRefCheck)]);
     let summary = verifier.run(repo.path()).unwrap();
     assert!(
         summary.passed(),
@@ -550,13 +563,13 @@ fn mock_agent_verify_decide_compose_to_advance() {
 fn mock_agent_bad_commit_verify_fails_triggers_retry() {
     use crate::config::default_pipelines;
     use crate::pipeline::{CompletionAction, PipelineEngine};
-    use crate::verify::{BeadRefCheck, CommitCheck, Verifier};
+    use crate::verify::{CommitCheck, Verifier, WorkRefCheck};
 
     let repo = crate::testutil::TestRepo::new();
     // Create a commit WITHOUT bead reference
     repo.commit_plain("bad.rs", "fn bad() {}");
 
-    let verifier = Verifier::new(vec![Box::new(CommitCheck), Box::new(BeadRefCheck)]);
+    let verifier = Verifier::new(vec![Box::new(CommitCheck), Box::new(WorkRefCheck)]);
     let summary = verifier.run(repo.path()).unwrap();
     assert!(!summary.passed(), "commit without bead ref should fail");
 
@@ -605,6 +618,7 @@ async fn reconciler_with_bead(
             },
             issue_type: issue_type.to_string(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
     r
@@ -800,6 +814,7 @@ async fn verify_completed_mixed_batch() {
             phase_index: 1,
             issue_type: "task".to_string(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
 
@@ -856,6 +871,7 @@ async fn verify_completed_verifying_state_gated_on_exit_success() {
             phase_index: 1,
             issue_type: "task".to_string(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
 

@@ -624,8 +624,24 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let work = sample_work();
 
-        let h0 = Handoff::new(0, "dev-agent", Some("staging-agent"), "rsry-x", "claude", &work, None);
-        let h1 = Handoff::new(1, "staging-agent", None, "rsry-x", "claude", &work, Some(&h0));
+        let h0 = Handoff::new(
+            0,
+            "dev-agent",
+            Some("staging-agent"),
+            "rsry-x",
+            "claude",
+            &work,
+            None,
+        );
+        let h1 = Handoff::new(
+            1,
+            "staging-agent",
+            None,
+            "rsry-x",
+            "claude",
+            &work,
+            Some(&h0),
+        );
         let h2 = Handoff::new(2, "prod-agent", None, "rsry-x", "claude", &work, Some(&h1));
 
         h0.write_to(tmp.path()).unwrap();

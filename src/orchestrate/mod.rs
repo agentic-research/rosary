@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dispatch::AgentHandle;
 use crate::handoff::Handoff;
-use crate::store::BeadRef;
+use crate::store::WorkRef;
 
 // ── Orchestrator State Machine ──────────────────────────────────
 
@@ -160,7 +160,7 @@ pub enum SessionDecision {
 #[allow(dead_code)]
 pub struct FeatureOrchestrator {
     /// The bead this orchestrator owns.
-    pub bead_ref: BeadRef,
+    pub bead_ref: WorkRef,
     /// Issue type (captured at creation for pipeline lookup).
     pub issue_type: String,
     /// Agent sequence from PipelineEngine.
@@ -249,7 +249,7 @@ pub enum TickOutcome {
 impl FeatureOrchestrator {
     /// Create a new orchestrator for a bead.
     pub fn new(
-        bead_ref: BeadRef,
+        bead_ref: WorkRef,
         issue_type: String,
         pipeline: Vec<String>,
         work_dir: PathBuf,
@@ -475,10 +475,7 @@ impl FeatureOrchestrator {
         // incremented) as the "from" agent. Reading pipeline[current_phase] here
         // returns the NEXT agent (already incremented), which caused every
         // non-retry advancement to match the "same-agent retry" arm.
-        let from_agent = self
-            .last_completed_agent
-            .as_deref()
-            .unwrap_or("");
+        let from_agent = self.last_completed_agent.as_deref().unwrap_or("");
 
         match (from_agent, next_agent) {
             // Verification should always get fresh eyes
@@ -502,7 +499,7 @@ impl FeatureOrchestrator {
 /// Stored in the backend for crash recovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorRecord {
-    pub bead_ref: BeadRef,
+    pub bead_ref: WorkRef,
     pub issue_type: String,
     pub state: OrchestratorState,
     pub current_phase: u32,
