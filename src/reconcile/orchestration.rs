@@ -13,7 +13,7 @@ use crate::dispatch;
 use crate::orchestrate::{
     FeatureOrchestrator, OrchestratorBehavior, OrchestratorState, TickOutcome,
 };
-use crate::store::{WorkRef, DispatchRecord};
+use crate::store::{DispatchRecord, WorkRef};
 
 impl Reconciler {
     /// Returns true if we're in hierarchical orchestration mode.
@@ -316,16 +316,13 @@ impl Reconciler {
         }
 
         for (repo_name, (repo_path, _lang)) in &self.repo_info {
-            // Scan for workspace directories containing orchestrator records.
-            // Workspaces are typically at <repo>/.rsry-ws-<bead_id>/ or similar.
-            let entries: Vec<PathBuf> = match std::fs::read_dir(repo_path) {
+            // Workspaces live at ~/.rsry/worktrees/<repo_name>/<bead_id>/
+            // (see workspace::workspace_dir). workspace_dir(path, "") returns the
+            // per-repo worktrees root — scan that, not the repo root.
+            let ws_root = crate::workspace::workspace_dir(repo_path, "");
+            let entries: Vec<PathBuf> = match std::fs::read_dir(&ws_root) {
                 Ok(dir) => dir
                     .filter_map(|e| e.ok())
-                    .filter(|e| {
-                        e.file_name()
-                            .to_str()
-                            .is_some_and(|n| n.starts_with(".rsry-ws-"))
-                    })
                     .map(|e| e.path().join(".rsry-orchestrator.json"))
                     .filter(|p| p.exists())
                     .collect(),

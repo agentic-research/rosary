@@ -11,6 +11,7 @@ impl DoltClient {
         let rows = query(
             r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                       i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                      i.created_by, i.scope,
                       COALESCE(dep.cnt, 0) as dep_count,
                       COALESCE(deps.cnt, 0) as dependency_count,
                       COALESCE(cmt.cnt, 0) as comment_count
@@ -58,8 +59,8 @@ impl DoltClient {
                     external_ref: row.try_get("external_ref").ok(),
                     files,
                     test_files,
-                    created_by: None,
-                    scope: String::new(),
+                    created_by: row.try_get("created_by").ok(),
+                    scope: row.try_get("scope").unwrap_or_default(),
                 }
             })
             .collect();
@@ -81,6 +82,7 @@ impl DoltClient {
                 let rows = query(
                     r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                               i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                              i.created_by, i.scope,
                               COALESCE(dep.cnt, 0) as dep_count,
                               COALESCE(deps.cnt, 0) as dependency_count,
                               COALESCE(cmt.cnt, 0) as comment_count
@@ -131,8 +133,8 @@ impl DoltClient {
                             external_ref: row.try_get("external_ref").ok(),
                             files,
                             test_files,
-                            created_by: None,
-                            scope: String::new(),
+                            created_by: row.try_get("created_by").ok(),
+                            scope: row.try_get("scope").unwrap_or_default(),
                         }
                     })
                     .collect())
@@ -146,6 +148,7 @@ impl DoltClient {
         let row = query(
             r#"SELECT id, title, description, status, priority, issue_type,
                       assignee, external_ref, notes, created_at, updated_at,
+                      created_by, scope,
                       (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
                       (SELECT COUNT(*) FROM dependencies d
                               JOIN issues dep_i ON dep_i.id = d.depends_on_id
@@ -184,8 +187,8 @@ impl DoltClient {
                 jj_change_id: None,
                 files,
                 test_files,
-                created_by: None,
-                scope: String::new(),
+                created_by: row.try_get("created_by").ok(),
+                scope: row.try_get("scope").unwrap_or_default(),
             }
         }))
     }

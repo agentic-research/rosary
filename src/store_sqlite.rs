@@ -39,6 +39,8 @@ impl SqliteBackend {
 
         // Additive migrations — safe to run on every connect (IF NOT EXISTS / column-exists guard)
         let _ = conn.execute_batch("ALTER TABLE dispatches ADD COLUMN chain_hash TEXT;");
+        let _ = conn
+            .execute_batch("ALTER TABLE thread_members ADD COLUMN scope TEXT NOT NULL DEFAULT '';");
 
         Ok(SqliteBackend {
             conn: Mutex::new(conn),
@@ -73,6 +75,7 @@ CREATE TABLE IF NOT EXISTS thread_members (
     thread_id TEXT NOT NULL,
     repo TEXT NOT NULL,
     bead_id TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (thread_id, repo, bead_id)
 );
 

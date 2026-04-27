@@ -414,9 +414,10 @@ impl VerifyTier for DiffSanityCheck {
 
 /// POST a tools/call to the mache MCP HTTP server and return the text content.
 /// Returns None if mache is unreachable, times out, or the call fails.
+/// Times out after 3s — mache is advisory, not on the critical verification path.
 fn mache_call(tool: &str, args: serde_json::Value) -> Option<String> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(3))
         .build()
         .ok()?;
 
@@ -427,15 +428,26 @@ fn mache_call(tool: &str, args: serde_json::Value) -> Option<String> {
         "params": { "name": tool, "arguments": args }
     });
 
-    let resp = client
+    let resp = match client
         .post("http://localhost:7532/mcp")
         .header("content-type", "application/json")
         .header("accept", "application/json, text/event-stream")
         .json(&body)
         .send()
-        .ok()?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            if e.is_timeout() {
+                eprintln!(
+                    "[mache] {tool}: timed out (3s) — mache may be overloaded or unreachable"
+                );
+            }
+            return None;
+        }
+    };
 
     if !resp.status().is_success() {
+        eprintln!("[mache] {tool}: HTTP {}", resp.status());
         return None;
     }
 
@@ -494,6 +506,7 @@ fn extract_mache_text(result: &serde_json::Value) -> Option<String> {
 /// Extract public/exported symbol names introduced in HEAD (added lines only).
 /// Used by both mache tiers to know which symbols to query.
 fn added_symbols(work_dir: &Path) -> Vec<String> {
+    // nosemgrep: blocking-subprocess-in-async — called from sync VerifyTier::check(), not async context
     let output = match std::process::Command::new("git")
         .args(["diff", "HEAD~1..HEAD"])
         .current_dir(work_dir)

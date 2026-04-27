@@ -66,6 +66,7 @@ impl SandboxBeads {
                 external_ref VARCHAR(128),
                 user_id VARCHAR(128),
                 created_by VARCHAR(255),
+                scope VARCHAR(255) NOT NULL DEFAULT '',
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL
             )",

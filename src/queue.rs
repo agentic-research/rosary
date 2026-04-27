@@ -29,9 +29,13 @@ pub struct QueueEntry {
 
 // BinaryHeap is a max-heap; higher score = dequeued first.
 // Ties broken by earlier enqueue time (older first = fairness).
+//
+// PartialEq is consistent with Ord: two entries are equal iff cmp returns Equal.
+// Deduplication is handled externally by `in_queue: HashSet<(repo, bead_id)>`,
+// so the heap never contains two entries with the same (repo, bead_id) pair.
 impl PartialEq for QueueEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.bead_id == other.bead_id && self.repo == other.repo
+        self.cmp(other) == Ordering::Equal
     }
 }
 

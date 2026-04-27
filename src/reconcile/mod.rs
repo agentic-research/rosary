@@ -29,7 +29,7 @@ use crate::queue::WorkQueue;
 use crate::scanner;
 #[allow(unused_imports)]
 use crate::store::BeadStore;
-use crate::store::{WorkRef, DispatchRecord};
+use crate::store::{DispatchRecord, WorkRef};
 use crate::sync::IssueTracker;
 use crate::xref;
 
@@ -99,6 +99,8 @@ impl Default for ReconcilerConfig {
 #[derive(Debug)]
 struct BeadTracker {
     repo: String,
+    /// Team/folder scope (mirrors WorkRef.scope). Captured at dispatch time.
+    scope: String,
     last_generation: u64,
     retries: u32,
     consecutive_reverts: u32,
@@ -754,6 +756,7 @@ impl Reconciler {
                                 .entry(entry.bead_id.clone())
                                 .or_insert(BeadTracker {
                                     repo: entry.repo.clone(),
+                                    scope: bead.scope.clone(),
                                     last_generation: entry.generation,
                                     retries: entry.retries,
                                     consecutive_reverts: 0,
@@ -765,6 +768,7 @@ impl Reconciler {
                                 });
                         tracker.last_generation = entry.generation;
                         tracker.repo = entry.repo.clone();
+                        tracker.scope = bead.scope.clone();
                         tracker.current_agent = agent_name;
                         tracker.issue_type = bead.issue_type.clone();
                         tracker.dispatch_id = Some(dispatch_id);
@@ -772,7 +776,7 @@ impl Reconciler {
                         // Persist initial pipeline state to backend store
                         let bead_ref = WorkRef {
                             repo: entry.repo.clone(),
-                            scope: String::new(),
+                            scope: bead.scope.clone(),
                             bead_id: entry.bead_id.clone(),
                         };
                         let pipeline_state =

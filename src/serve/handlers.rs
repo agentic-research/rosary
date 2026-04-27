@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::config;
 use crate::pool::RepoPool;
-use crate::store::{BackendStore, WorkRef, BeadStore, DispatchRecord, PipelineState};
+use crate::store::{BackendStore, BeadStore, DispatchRecord, PipelineState, WorkRef};
 
 /// Default result limit for bead search (keeps MCP responses bounded).
 const SEARCH_DEFAULT_LIMIT: u64 = 20;
@@ -1365,7 +1365,7 @@ async fn tool_thread_list(args: &Value, backend: Option<&dyn BackendStore>) -> R
 
 async fn tool_thread_assign(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
     let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
-    use crate::store::{WorkRef, ThreadRecord};
+    use crate::store::{ThreadRecord, WorkRef};
 
     let thread_id = args["thread_id"]
         .as_str()

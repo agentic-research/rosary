@@ -146,6 +146,7 @@ impl Reconciler {
                         bead.id.clone(),
                         super::BeadTracker {
                             repo: bead.repo.clone(),
+                            scope: bead.scope.clone(),
                             last_generation: 0,
                             retries: ps.retries,
                             consecutive_reverts: ps.consecutive_reverts,

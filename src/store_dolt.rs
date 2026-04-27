@@ -162,6 +162,7 @@ impl DoltBackend {
                 thread_id VARCHAR(256) NOT NULL,
                 repo VARCHAR(128) NOT NULL,
                 bead_id VARCHAR(128) NOT NULL,
+                scope VARCHAR(255) NOT NULL DEFAULT '',
                 ordinal INT UNSIGNED NOT NULL DEFAULT 0,
                 PRIMARY KEY (thread_id, repo, bead_id)
             )",
@@ -227,6 +228,39 @@ impl DoltBackend {
                 .execute(&self.pool)
                 .await
                 .with_context(|| format!("creating schema: {}", &sql[..sql.len().min(60)]))?;
+        }
+
+        // Additive migrations — only run if the column doesn't already exist.
+        // Attempting ALTER TABLE on an existing column causes a DDL error that
+        // can corrupt sqlx connection pool state even when silently discarded.
+        let migrations: &[(&str, &str, &str)] = &[
+            (
+                "dispatches",
+                "chain_hash",
+                "ALTER TABLE dispatches ADD COLUMN chain_hash VARCHAR(64)",
+            ),
+            (
+                "thread_members",
+                "scope",
+                "ALTER TABLE thread_members ADD COLUMN scope VARCHAR(255) NOT NULL DEFAULT ''",
+            ),
+        ];
+        for (table, column, sql) in migrations {
+            let exists = query(
+                "SELECT COUNT(*) FROM information_schema.columns \
+                 WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+            )
+            .bind(table)
+            .bind(column)
+            .fetch_one(&self.pool)
+            .await
+            .map(|r| r.try_get::<i64, _>(0).unwrap_or(0) > 0)
+            .unwrap_or(true); // default true = skip, safe fallback
+            if !exists {
+                if let Err(e) = query(sql).execute(&self.pool).await {
+                    eprintln!("[backend] migration warning ({table}.{column}): {e}");
+                }
+            }
         }
 
         Ok(())

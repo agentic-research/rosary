@@ -127,6 +127,7 @@ async fn on_pass_clears_state() {
             phase_index: 0,
             issue_type: "task".into(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
 
@@ -173,6 +174,7 @@ async fn on_fail_consecutive_reverts_deadletter() {
             phase_index: 0,
             issue_type: "task".into(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
 
@@ -219,6 +221,7 @@ async fn failed_bead_retries_despite_same_generation() {
             phase_index: 0,
             issue_type: "task".into(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
     // Record backoff (retry is pending)
@@ -377,6 +380,7 @@ async fn repo_busy_check_uses_trackers() {
             phase_index: 0,
             issue_type: "task".into(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
     // Mark it as active (need a dummy handle — use the key presence)
@@ -510,7 +514,7 @@ fn mock_agent_verify_decide_compose_to_advance() {
     use crate::dispatch::AgentProvider;
     use crate::dispatch::tests::MockAgentProvider;
     use crate::pipeline::{CompletionAction, PipelineEngine};
-    use crate::verify::{WorkRefCheck, CommitCheck, Verifier};
+    use crate::verify::{CommitCheck, Verifier, WorkRefCheck};
 
     let repo = crate::testutil::TestRepo::new();
     let pipeline = PipelineEngine::new(default_pipelines(), None, 0);
@@ -559,7 +563,7 @@ fn mock_agent_verify_decide_compose_to_advance() {
 fn mock_agent_bad_commit_verify_fails_triggers_retry() {
     use crate::config::default_pipelines;
     use crate::pipeline::{CompletionAction, PipelineEngine};
-    use crate::verify::{WorkRefCheck, CommitCheck, Verifier};
+    use crate::verify::{CommitCheck, Verifier, WorkRefCheck};
 
     let repo = crate::testutil::TestRepo::new();
     // Create a commit WITHOUT bead reference
@@ -614,6 +618,7 @@ async fn reconciler_with_bead(
             },
             issue_type: issue_type.to_string(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
     r
@@ -809,6 +814,7 @@ async fn verify_completed_mixed_batch() {
             phase_index: 1,
             issue_type: "task".to_string(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
 
@@ -865,6 +871,7 @@ async fn verify_completed_verifying_state_gated_on_exit_success() {
             phase_index: 1,
             issue_type: "task".to_string(),
             dispatch_id: None,
+            scope: String::new(),
         },
     );
 

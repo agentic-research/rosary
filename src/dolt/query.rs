@@ -44,6 +44,7 @@ impl DoltClient {
         let sql = format!(
             r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                       i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                      i.created_by, i.scope,
                       COALESCE(dep.cnt, 0) as dep_count,
                       COALESCE(deps.cnt, 0) as dependency_count,
                       COALESCE(cmt.cnt, 0) as comment_count
@@ -99,8 +100,8 @@ impl DoltClient {
                     external_ref: row.try_get("external_ref").ok(),
                     files,
                     test_files,
-                    created_by: None,
-                    scope: String::new(),
+                    created_by: row.try_get("created_by").ok(),
+                    scope: row.try_get("scope").unwrap_or_default(),
                 }
             })
             .collect();
@@ -152,7 +153,7 @@ impl DoltClient {
     pub async fn list_closed_linked_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
         let rows = query(
             r#"SELECT id, title, description, status, priority, issue_type,
-                      assignee, external_ref, created_at, updated_at,
+                      assignee, external_ref, created_by, scope, created_at, updated_at,
                       0 as dep_count, 0 as dependency_count, 0 as comment_count
                FROM issues
                WHERE status = 'closed' AND external_ref IS NOT NULL AND external_ref != ''
@@ -187,8 +188,8 @@ impl DoltClient {
                 external_ref: row.try_get("external_ref").ok(),
                 files: Vec::new(),
                 test_files: Vec::new(),
-                created_by: None,
-                scope: String::new(),
+                created_by: row.try_get("created_by").ok(),
+                scope: row.try_get("scope").unwrap_or_default(),
             })
             .collect();
 

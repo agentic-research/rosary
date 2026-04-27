@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::store::{WorkRef, DispatchRecord, DispatchStore, PipelineState};
+use crate::store::{DispatchRecord, DispatchStore, PipelineState, WorkRef};
 
 /// What the reconciler should do after a bead's agent completes.
 #[derive(Debug, Clone, PartialEq)]
