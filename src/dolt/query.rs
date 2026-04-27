@@ -30,13 +30,18 @@ impl DoltClient {
             .map(|w| format!("%{}%", w.to_lowercase()))
             .collect();
 
-        // Build WHERE clause: each word must appear in title OR description
+        // Build WHERE clause: each word must appear in title, description, or id.
+        // ID is included so that passing a bead ID directly (e.g. "rosary-5ad4b0")
+        // surfaces an exact match without requiring a separate lookup path.
         let where_clause = if words.is_empty() {
             "1=1".to_string()
         } else {
             words
                 .iter()
-                .map(|_| "(LOWER(i.title) LIKE ? OR LOWER(i.description) LIKE ?)".to_string())
+                .map(|_| {
+                    "(LOWER(i.title) LIKE ? OR LOWER(i.description) LIKE ? OR i.id LIKE ?)"
+                        .to_string()
+                })
                 .collect::<Vec<_>>()
                 .join(" AND ")
         };
@@ -66,7 +71,7 @@ impl DoltClient {
 
         let mut q = query(&sql);
         for word in &words {
-            q = q.bind(word).bind(word);
+            q = q.bind(word).bind(word).bind(word);
         }
 
         let rows = q

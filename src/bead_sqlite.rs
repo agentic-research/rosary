@@ -542,10 +542,11 @@ impl BeadStore for SqliteBeadStore {
                 .iter()
                 .enumerate()
                 .map(|(i, _)| {
-                    let p = (i * 2) + 1;
+                    let p = (i * 3) + 1;
                     format!(
-                        "(LOWER(i.title) LIKE ?{p} OR LOWER(i.description) LIKE ?{})",
-                        p + 1
+                        "(LOWER(i.title) LIKE ?{p} OR LOWER(i.description) LIKE ?{} OR i.id LIKE ?{})",
+                        p + 1,
+                        p + 2
                     )
                 })
                 .collect::<Vec<_>>()
@@ -575,11 +576,12 @@ impl BeadStore for SqliteBeadStore {
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        // Build params: each word appears twice (title + description)
+        // Build params: each word appears three times (title + description + id)
         let param_values: Vec<Box<dyn rusqlite::types::ToSql>> = words
             .iter()
             .flat_map(|w| {
                 vec![
+                    Box::new(w.clone()) as Box<dyn rusqlite::types::ToSql>,
                     Box::new(w.clone()) as Box<dyn rusqlite::types::ToSql>,
                     Box::new(w.clone()) as Box<dyn rusqlite::types::ToSql>,
                 ]
@@ -805,6 +807,31 @@ mod tests {
         let results = store.search_beads("dispatch", "repo", 10).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "a");
+    }
+
+    #[tokio::test]
+    async fn search_beads_by_id() {
+        let store = test_store();
+        store
+            .create_bead("rosary-abc123", "Fix dispatch bug", "", 1, "bug")
+            .await
+            .unwrap();
+        store
+            .create_bead("rosary-def456", "Add feature X", "", 2, "feature")
+            .await
+            .unwrap();
+
+        // Exact ID match
+        let results = store
+            .search_beads("rosary-abc123", "repo", 10)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "rosary-abc123");
+
+        // Partial ID prefix match
+        let results = store.search_beads("rosary-", "repo", 10).await.unwrap();
+        assert_eq!(results.len(), 2);
     }
 
     #[tokio::test]
