@@ -232,8 +232,8 @@ impl HierarchyStore for SqliteBackend {
     async fn add_bead_to_thread(&self, thread_id: &str, bead: &WorkRef) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR IGNORE INTO thread_members (thread_id, repo, bead_id) VALUES (?1, ?2, ?3)",
-            params![thread_id, bead.repo, bead.bead_id],
+            "INSERT OR IGNORE INTO thread_members (thread_id, repo, scope, bead_id) VALUES (?1, ?2, ?3, ?4)",
+            params![thread_id, bead.repo, bead.scope, bead.bead_id],
         )?;
         Ok(())
     }
@@ -241,13 +241,13 @@ impl HierarchyStore for SqliteBackend {
     async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<WorkRef>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT repo, bead_id FROM thread_members WHERE thread_id = ?1 ORDER BY repo, bead_id",
+            "SELECT repo, scope, bead_id FROM thread_members WHERE thread_id = ?1 ORDER BY repo, bead_id",
         )?;
         let rows = stmt.query_map(params![thread_id], |row| {
             Ok(WorkRef {
                 repo: row.get(0)?,
-                scope: String::new(),
-                bead_id: row.get(1)?,
+                scope: row.get::<_, String>(1).unwrap_or_default(),
+                bead_id: row.get(2)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -257,9 +257,9 @@ impl HierarchyStore for SqliteBackend {
     async fn find_thread_for_bead(&self, bead: &WorkRef) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT thread_id FROM thread_members WHERE repo = ?1 AND bead_id = ?2 LIMIT 1",
+            "SELECT thread_id FROM thread_members WHERE repo = ?1 AND bead_id = ?2 AND scope = ?3 LIMIT 1",
         )?;
-        let mut rows = stmt.query(params![bead.repo, bead.bead_id])?;
+        let mut rows = stmt.query(params![bead.repo, bead.bead_id, bead.scope])?;
         Ok(rows.next()?.map(|row| row.get(0).unwrap()))
     }
 }
@@ -555,15 +555,15 @@ impl BackendExport for SqliteBackend {
     async fn all_thread_members(&self) -> Result<Vec<(String, WorkRef)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT thread_id, repo, bead_id FROM thread_members ORDER BY thread_id, repo, bead_id",
+            "SELECT thread_id, repo, scope, bead_id FROM thread_members ORDER BY thread_id, repo, bead_id",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 WorkRef {
                     repo: row.get(1)?,
-                    scope: String::new(),
-                    bead_id: row.get(2)?,
+                    scope: row.get::<_, String>(2).unwrap_or_default(),
+                    bead_id: row.get(3)?,
                 },
             ))
         })?;

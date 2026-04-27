@@ -370,8 +370,8 @@ impl HierarchyStore for DoltBackend {
     async fn add_bead_to_thread(&self, thread_id: &str, bead: &WorkRef) -> Result<()> {
         // Insert with next ordinal, no-op on duplicate
         query(
-            "INSERT INTO thread_members (thread_id, repo, bead_id, ordinal)
-             VALUES (?, ?, ?, (
+            "INSERT INTO thread_members (thread_id, repo, scope, bead_id, ordinal)
+             VALUES (?, ?, ?, ?, (
                  SELECT COALESCE(MAX(t.ordinal), 0) + 1
                  FROM (SELECT ordinal FROM thread_members WHERE thread_id = ?) t
              ))
@@ -379,6 +379,7 @@ impl HierarchyStore for DoltBackend {
         )
         .bind(thread_id)
         .bind(&bead.repo)
+        .bind(&bead.scope)
         .bind(&bead.bead_id)
         .bind(thread_id)
         .execute(&self.pool)
@@ -388,33 +389,35 @@ impl HierarchyStore for DoltBackend {
     }
 
     async fn list_beads_in_thread(&self, thread_id: &str) -> Result<Vec<WorkRef>> {
-        let rows =
-            query("SELECT repo, bead_id FROM thread_members WHERE thread_id = ? ORDER BY ordinal")
-                .bind(thread_id)
-                .fetch_all(&self.pool)
-                .await
-                .with_context(|| format!("listing beads in thread {thread_id}"))?;
+        let rows = query(
+            "SELECT repo, scope, bead_id FROM thread_members WHERE thread_id = ? ORDER BY ordinal",
+        )
+        .bind(thread_id)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| format!("listing beads in thread {thread_id}"))?;
 
         Ok(rows
             .iter()
             .map(|r| WorkRef {
                 repo: r.get("repo"),
-                scope: String::new(),
+                scope: r.try_get("scope").unwrap_or_default(),
                 bead_id: r.get("bead_id"),
             })
             .collect())
     }
 
     async fn find_thread_for_bead(&self, bead: &WorkRef) -> Result<Option<String>> {
-        let row =
-            query("SELECT thread_id FROM thread_members WHERE repo = ? AND bead_id = ? LIMIT 1")
-                .bind(&bead.repo)
-                .bind(&bead.bead_id)
-                .fetch_optional(&self.pool)
-                .await
-                .with_context(|| {
-                    format!("finding thread for bead {}/{}", bead.repo, bead.bead_id)
-                })?;
+        let row = query(
+            "SELECT thread_id FROM thread_members \
+             WHERE repo = ? AND bead_id = ? AND scope = ? LIMIT 1",
+        )
+        .bind(&bead.repo)
+        .bind(&bead.bead_id)
+        .bind(&bead.scope)
+        .fetch_optional(&self.pool)
+        .await
+        .with_context(|| format!("finding thread for bead {}/{}", bead.repo, bead.bead_id))?;
 
         Ok(row.map(|r| r.get("thread_id")))
     }
@@ -812,7 +815,7 @@ impl BackendExport for DoltBackend {
 
     async fn all_thread_members(&self) -> Result<Vec<(String, WorkRef)>> {
         let rows = query(
-            "SELECT thread_id, repo, bead_id FROM thread_members ORDER BY thread_id, ordinal",
+            "SELECT thread_id, repo, scope, bead_id FROM thread_members ORDER BY thread_id, ordinal",
         )
         .fetch_all(&self.pool)
         .await
@@ -824,7 +827,7 @@ impl BackendExport for DoltBackend {
                     r.get::<String, _>("thread_id"),
                     WorkRef {
                         repo: r.get("repo"),
-                        scope: String::new(),
+                        scope: r.try_get("scope").unwrap_or_default(),
                         bead_id: r.get("bead_id"),
                     },
                 )
