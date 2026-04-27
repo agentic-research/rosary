@@ -97,20 +97,19 @@ fn bead_from_row(row: &rusqlite::Row<'_>, repo_name: &str) -> rusqlite::Result<B
 /// Open a bead store for the given `.beads/` directory.
 ///
 /// Priority order:
-///   1. SQLite (`beads.db`) — default, no server required, supports FTS5 + sqlite-vec
-///   2. Dolt (`dolt/`) — opt-in, used only when `beads.db` is absent and a Dolt
-///      directory is present. Kept for existing repos that haven't migrated yet.
-///      Distribution should go through Litestream/libSQL rather than Dolt long-term.
+///   1. Dolt (`dolt/`) — preferred when a `bd`-initialized repo is present.
+///      `bd` (the upstream beads CLI) uses Dolt as its data layer; rosary reads
+///      from the same `issues` table to stay in sync with the 600+ real beads.
+///   2. SQLite (`beads.db`) — used for repos that were never `bd init`'d, or
+///      when Dolt is unavailable. Also the path for new repos.
+///
+/// Distribution note: Dolt is needed for `bd` interop, not just for distribution.
+/// When we need distribution without `bd`, the migration path is libSQL/Turso.
 pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> {
-    // Prefer SQLite when beads.db already exists (fast, no daemon, FTS5 capable).
     let sqlite_path = beads_dir.join("beads.db");
-    if sqlite_path.exists() {
-        let store = SqliteBeadStore::connect(&sqlite_path)?;
-        return Ok(Box::new(store));
-    }
 
-    // Fall back to Dolt for repos that have a Dolt directory but no beads.db yet.
-    // This path keeps existing Dolt-backed repos working without a migration step.
+    // Prefer Dolt when a bd-initialized directory is present — that's where the
+    // real bead data lives (bd writes there, rosary reads the same issues table).
     let dolt_dir = beads_dir.join("dolt");
     if dolt_dir.exists() {
         match crate::dolt::DoltConfig::from_beads_dir(beads_dir) {
@@ -123,21 +122,22 @@ pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> 
                 }
                 Err(e) => {
                     eprintln!(
-                        "[bead] Dolt connect failed for {}: {e} — creating SQLite store",
+                        "[bead] Dolt connect failed for {}: {e} — falling back to SQLite",
                         beads_dir.display()
                     );
                 }
             },
             Err(e) => {
                 eprintln!(
-                    "[bead] Dolt config error for {}: {e} — creating SQLite store",
+                    "[bead] Dolt config error for {}: {e} — falling back to SQLite",
                     beads_dir.display()
                 );
             }
         }
     }
 
-    // Default: create a new SQLite store (new repo, or Dolt unavailable).
+    // SQLite: new repos (no dolt/ dir) or Dolt unavailable.
+    // Supports FTS5, sqlite-vec — features not available on Dolt.
     let store = SqliteBeadStore::connect(&sqlite_path)?;
     Ok(Box::new(store))
 }
