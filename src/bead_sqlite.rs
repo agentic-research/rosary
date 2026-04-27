@@ -901,4 +901,68 @@ mod tests {
         assert_eq!(bead.title, "Updated");
         assert_eq!(bead.priority, 1);
     }
+
+    #[tokio::test]
+    async fn created_by_and_scope_round_trip() {
+        let store = test_store();
+        store
+            .create_bead_full(
+                "s-1",
+                "Scoped bead",
+                "desc",
+                2,
+                "task",
+                "agent",
+                &[],
+                &[],
+                &[],
+                Some("alice"),
+                "payments",
+            )
+            .await
+            .unwrap();
+
+        let bead = store.get_bead("s-1", "repo").await.unwrap().unwrap();
+        assert_eq!(bead.created_by.as_deref(), Some("alice"));
+        assert_eq!(bead.scope, "payments");
+    }
+
+    #[tokio::test]
+    async fn scope_defaults_to_empty_for_simple_create() {
+        let store = test_store();
+        store
+            .create_bead("plain", "Plain bead", "", 1, "task")
+            .await
+            .unwrap();
+
+        let bead = store.get_bead("plain", "repo").await.unwrap().unwrap();
+        assert_eq!(bead.scope, "");
+        assert_eq!(bead.created_by, None);
+    }
+
+    #[tokio::test]
+    async fn scope_appears_in_list_beads() {
+        let store = test_store();
+        store
+            .create_bead_full(
+                "ls-1",
+                "Listed bead",
+                "",
+                2,
+                "task",
+                "",
+                &[],
+                &[],
+                &[],
+                Some("bob"),
+                "auth",
+            )
+            .await
+            .unwrap();
+
+        let beads = store.list_beads("repo").await.unwrap();
+        assert_eq!(beads.len(), 1);
+        assert_eq!(beads[0].scope, "auth");
+        assert_eq!(beads[0].created_by.as_deref(), Some("bob"));
+    }
 }

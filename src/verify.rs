@@ -1056,4 +1056,97 @@ mod tests {
             .unwrap();
         assert!(output.status.success(), "git {} failed", args.join(" "));
     }
+
+    // -----------------------------------------------------------------------
+    // parse_mache_sse / extract_mache_text
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_mache_sse_extracts_text_from_event_stream() {
+        let body = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hello from mache\"}]}}\n\
+                    data: [DONE]\n";
+        assert_eq!(parse_mache_sse(body), Some("hello from mache".to_string()));
+    }
+
+    #[test]
+    fn parse_mache_sse_skips_done_sentinel() {
+        // [DONE] line must be skipped; only data line with result matters
+        let body = "data: [DONE]\n\
+                    data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"real content\"}]}}\n";
+        assert_eq!(parse_mache_sse(body), Some("real content".to_string()));
+    }
+
+    #[test]
+    fn parse_mache_sse_skips_non_data_lines() {
+        let body = "event: message\n\
+                    : keep-alive\n\
+                    data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"found\"}]}}\n";
+        assert_eq!(parse_mache_sse(body), Some("found".to_string()));
+    }
+
+    #[test]
+    fn parse_mache_sse_returns_none_for_empty_body() {
+        assert_eq!(parse_mache_sse(""), None);
+    }
+
+    #[test]
+    fn parse_mache_sse_returns_none_when_no_result_key() {
+        // data line is valid JSON but lacks "result"
+        let body = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"message\":\"not found\"}}\n";
+        assert_eq!(parse_mache_sse(body), None);
+    }
+
+    #[test]
+    fn parse_mache_sse_joins_multiple_text_items() {
+        let body = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[\
+                    {\"type\":\"text\",\"text\":\"line one\"},\
+                    {\"type\":\"text\",\"text\":\"line two\"}\
+                    ]}}\n";
+        assert_eq!(
+            parse_mache_sse(body),
+            Some("line one\nline two".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_mache_text_returns_text_from_content() {
+        let result = serde_json::json!({
+            "content": [{"type": "text", "text": "overview output"}]
+        });
+        assert_eq!(
+            extract_mache_text(&result),
+            Some("overview output".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_mache_text_skips_non_text_items() {
+        let result = serde_json::json!({
+            "content": [
+                {"type": "image", "data": "base64stuff"},
+                {"type": "text", "text": "only this"}
+            ]
+        });
+        assert_eq!(extract_mache_text(&result), Some("only this".to_string()));
+    }
+
+    #[test]
+    fn extract_mache_text_returns_none_for_empty_content() {
+        let result = serde_json::json!({"content": []});
+        assert_eq!(extract_mache_text(&result), None);
+    }
+
+    #[test]
+    fn extract_mache_text_returns_none_when_content_missing() {
+        let result = serde_json::json!({"something_else": "value"});
+        assert_eq!(extract_mache_text(&result), None);
+    }
+
+    #[test]
+    fn extract_mache_text_returns_none_for_image_only_content() {
+        let result = serde_json::json!({
+            "content": [{"type": "image", "data": "..."}]
+        });
+        assert_eq!(extract_mache_text(&result), None);
+    }
 }
