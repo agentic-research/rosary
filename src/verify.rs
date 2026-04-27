@@ -72,6 +72,18 @@ impl Verifier {
         Verifier { tiers }
     }
 
+    /// Append an additional tier at the end of the chain.
+    ///
+    /// Used by the plugin system to attach external verify hooks after the
+    /// built-in language tiers have been set up:
+    /// ```rust,ignore
+    /// let mut v = Verifier::for_language("rust");
+    /// for tier in registry.verify_tiers(ctx) { v.push(tier); }
+    /// ```
+    pub fn push(&mut self, tier: Box<dyn VerifyTier>) {
+        self.tiers.push(tier);
+    }
+
     /// Build the default verification pipeline for a given language.
     pub fn for_language(lang: &str) -> Self {
         let mut tiers: Vec<Box<dyn VerifyTier>> =

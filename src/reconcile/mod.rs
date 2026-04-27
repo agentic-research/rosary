@@ -69,6 +69,9 @@ pub struct ReconcilerConfig {
     /// When hierarchical, beads are managed by FeatureOrchestrators instead
     /// of raw agent dispatches.
     pub orchestration: OrchestrationConfig,
+    /// Pipeline plugins from [[plugins]] config.
+    /// Each plugin hooks into verify/review/triage stages via subprocess or HTTP.
+    pub plugins: Vec<crate::config::PluginConfig>,
 }
 
 impl Default for ReconcilerConfig {
@@ -91,6 +94,7 @@ impl Default for ReconcilerConfig {
             user_id: None,
             default_branch: "main".to_string(),
             orchestration: OrchestrationConfig::default(),
+            plugins: Vec::new(),
         }
     }
 }
@@ -158,6 +162,8 @@ pub struct Reconciler {
     /// Each orchestrator owns one bead's full lifecycle: research → synthesis →
     /// implementation → verification, with mid-flight messaging and session reuse.
     orchestrators: HashMap<String, FeatureOrchestrator>,
+    /// Plugin hooks wired into verify/review/triage from [[plugins]] config.
+    plugin_registry: crate::plugin::PluginRegistry,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -370,6 +376,14 @@ impl Reconciler {
             }
         }
 
+        let plugin_registry = crate::plugin::PluginRegistry::new(config.plugins.clone());
+        if !plugin_registry.is_empty() {
+            eprintln!(
+                "[reconcile] {} pipeline plugin(s) loaded",
+                config.plugins.len()
+            );
+        }
+
         Reconciler {
             config,
             queue: WorkQueue::new(),
@@ -389,6 +403,7 @@ impl Reconciler {
             pending_remote_urls,
             repo_cache,
             orchestrators: HashMap::new(),
+            plugin_registry,
         }
     }
 
@@ -874,6 +889,7 @@ pub async fn run(
             .map(|g| g.base.clone())
             .unwrap_or_else(|| "main".to_string()),
         orchestration,
+        plugins: cfg.plugins,
         ..Default::default()
     };
 

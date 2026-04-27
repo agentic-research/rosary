@@ -45,6 +45,46 @@ pub struct Config {
     /// feature orchestrators with synthesis, fan-out, and plan gates.
     #[serde(default)]
     pub orchestration: Option<OrchestrationConfig>,
+    /// Pipeline plugins — external tools that hook into verify/review/triage stages.
+    /// Accepts `[[plugins]]` (plural) or `[[plugin]]` (singular) in TOML.
+    #[serde(alias = "plugin", default)]
+    pub plugins: Vec<PluginConfig>,
+}
+
+/// A pipeline plugin: an external process or HTTP endpoint that participates
+/// in the verify/review/triage pipeline as a first-class hook.
+///
+/// ```toml
+/// [[plugins]]
+/// name = "review-tui"
+/// hook = "pipeline.review"
+/// command = ["review-tui", "--rsry-hook"]
+///
+/// [[plugins]]
+/// name = "custom-linter"
+/// hook = "pipeline.verify"
+/// url = "http://localhost:9999/hook"
+/// ```
+///
+/// Hook points:
+///   `pipeline.verify`  — appended to the verify tier chain (runs after built-in tiers)
+///   `pipeline.review`  — replaces/extends ReviewCheck during the review phase
+///   `pipeline.triage`  — called during reconciler triage; can skip a bead
+///   `pipeline.close`   — called when a bead transitions to done
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginConfig {
+    /// Display name (used in logs and verify summary).
+    pub name: String,
+    /// Hook point. See struct docs for valid values.
+    pub hook: String,
+    /// Subprocess command (mutually exclusive with `url`).
+    /// First element is the executable, remaining are arguments.
+    /// Receives JSON context on stdin; must write JSON verdict to stdout.
+    #[serde(default)]
+    pub command: Vec<String>,
+    /// HTTP endpoint URL (mutually exclusive with `command`).
+    /// Receives JSON context via POST body; must return JSON verdict.
+    pub url: Option<String>,
 }
 
 /// Compute provider selection + backend-specific settings.

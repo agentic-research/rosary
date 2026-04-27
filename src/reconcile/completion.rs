@@ -89,7 +89,11 @@ impl Reconciler {
             .map(|(_, l)| l.as_str())
             .unwrap_or("unknown");
 
-        let verifier = Verifier::for_language(lang);
+        let mut verifier = Verifier::for_language(lang);
+        let ctx = crate::plugin::PluginContext::new(bead_id, &repo);
+        for tier in self.plugin_registry.verify_tiers(ctx) {
+            verifier.push(tier);
+        }
         match verifier.run(&work_dir) {
             Ok(summary) => {
                 eprintln!(
