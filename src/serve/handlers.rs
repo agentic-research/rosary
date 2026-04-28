@@ -1039,8 +1039,27 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
 
     let markdown = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
 
-    let parsed = bdr::parse::parse_doc_full(&markdown, path);
-    if parsed.atoms.is_empty() {
+    let model = args
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let (atoms, meta) = if model.is_some() && !bdr::parse::is_adr_shaped(&markdown) {
+        let model_name = model.as_deref().unwrap();
+        let atoms = crate::bdr_enrich::extract_atoms_with_llm(&markdown, model_name).await?;
+        let meta = bdr::parse::DocMeta {
+            provenance: Some(bdr::provenance::ProvenanceRef::Doc {
+                path: path.to_string(),
+            }),
+            ..Default::default()
+        };
+        (atoms, meta)
+    } else {
+        let parsed = bdr::parse::parse_doc_full(&markdown, path);
+        (parsed.atoms, parsed.meta)
+    };
+
+    if atoms.is_empty() {
         return Ok(json!({
             "decade": null,
             "message": "No decomposable atoms found",
@@ -1060,7 +1079,20 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
                 .unwrap_or_else(|| path.to_string())
         });
 
-    let decade = bdr::thread::build_decade_with_meta(path, &title, &parsed.atoms, &parsed.meta);
+    let mut decade = bdr::thread::build_decade_with_meta(path, &title, &atoms, &meta);
+
+    // Stamp inferred_from on every BeadSpec when LLM extraction was used.
+    if let Some(ref model_name) = model {
+        let trace = bdr::provenance::InferenceTrace {
+            model: crate::bdr_enrich::resolve_model_id(model_name).to_string(),
+            rationale: None,
+        };
+        for thread in &mut decade.threads {
+            for spec in &mut thread.beads {
+                spec.inferred_from = Some(trace.clone());
+            }
+        }
+    }
 
     let commit = args
         .get("commit")
@@ -1193,7 +1225,7 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
                 "references": b.references,
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
-        "atom_count": parsed.atoms.len(),
+        "atom_count": atoms.len(),
         "committed": commit,
         "beads_created": created,
         "beads_skipped": skipped,

@@ -2,8 +2,8 @@
 //!
 //! When `rsry decompose --model <haiku|sonnet>` is used and the document is not
 //! ADR-shaped (no ## Status / ## Context / ## Decision headings), this module
-//! calls the Anthropic Messages API to extract atoms from arbitrary structured
-//! docs (design specs, SDDs, roadmaps, README sections).
+//! spawns `claude -p` to extract atoms from arbitrary structured docs (design
+//! specs, SDDs, roadmaps, README sections).
 //!
 //! The heuristic path (`bdr::parse::parse_adr_full`) remains the default and
 //! is always used for ADR-shaped documents regardless of `--model`.
@@ -11,9 +11,6 @@
 use anyhow::{Context, Result};
 use bdr::atom::{Atom, AtomKind};
 use serde::Deserialize;
-
-const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 const SYSTEM_PROMPT: &str = r#"You are a BDR (Bead Decision Record) decomposition engine.
 Extract actionable work items from the provided document and return them as a JSON array.
@@ -43,55 +40,35 @@ Rules:
 - Do NOT include the document title itself as an atom
 - Return ONLY a JSON array, no prose, no markdown fences"#;
 
-/// Call the Anthropic Messages API to extract BDR atoms from a document.
+/// Spawn `claude -p` to extract BDR atoms from a non-ADR document.
 ///
-/// This is the LLM-assisted path, used when the document is not ADR-shaped.
+/// Uses the installed `claude` CLI (same auth path as dispatch/verify).
 /// The returned atoms feed directly into `bdr::decompose::decompose_with_meta`.
-pub async fn extract_atoms_with_llm(
-    markdown: &str,
-    api_key: &str,
-    model: &str,
-) -> Result<Vec<Atom>> {
-    let client = reqwest::Client::new();
-
+pub async fn extract_atoms_with_llm(markdown: &str, model: &str) -> Result<Vec<Atom>> {
     let model_id = resolve_model_id(model);
     eprintln!("[bdr-enrich] extracting atoms via {model_id}...");
 
-    let user_content = format!("Extract BDR atoms from this document:\n\n{markdown}");
+    let prompt = format!("{SYSTEM_PROMPT}\n\nExtract BDR atoms from this document:\n\n{markdown}");
 
-    let body = serde_json::json!({
-        "model": model_id,
-        "max_tokens": 4096,
-        "system": SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": user_content}]
-    });
-
-    let resp = client
-        .post(ANTHROPIC_API_URL)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", ANTHROPIC_VERSION)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
+    let output = tokio::process::Command::new("claude")
+        .args(["-p", &prompt, "--model", model_id, "--allowedTools", ""])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
         .await
-        .context("calling Anthropic API")?;
+        .context("spawning claude subprocess for BDR extraction")?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Anthropic API error {status}: {text}");
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("claude exited non-zero during BDR extraction: {stderr}");
     }
 
-    let resp_json: serde_json::Value = resp.json().await.context("parsing API response")?;
-    let text = resp_json["content"][0]["text"]
-        .as_str()
-        .context("no text content in API response")?;
-
-    parse_llm_atoms(text)
+    let text = String::from_utf8(output.stdout).context("claude output not UTF-8")?;
+    parse_llm_atoms(&text)
 }
 
 /// Map shorthand model names to full Anthropic model IDs.
-fn resolve_model_id(model: &str) -> &str {
+pub fn resolve_model_id(model: &str) -> &str {
     match model {
         "haiku" => "claude-haiku-4-5-20251001",
         "sonnet" => "claude-sonnet-4-6",
