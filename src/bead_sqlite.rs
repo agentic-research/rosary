@@ -40,6 +40,16 @@ pub fn parse_files_from_notes(notes: Option<&str>) -> (Vec<String>, Vec<String>)
     (files, test_files)
 }
 
+/// Parse derived_from provenance chain from the notes JSON column.
+pub fn parse_derived_from_notes(notes: Option<&str>) -> Vec<bdr::provenance::ProvenanceRef> {
+    let parsed: Option<serde_json::Value> = notes.and_then(|s| serde_json::from_str(s).ok());
+    parsed
+        .as_ref()
+        .and_then(|v| v.get("derived_from"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
 /// Parse a datetime string from SQLite into a chrono DateTime<Utc>.
 fn parse_datetime(s: &str) -> chrono::DateTime<Utc> {
     // Try ISO 8601 formats: "2024-01-15 12:34:56" or "2024-01-15T12:34:56"
@@ -53,6 +63,7 @@ fn parse_datetime(s: &str) -> chrono::DateTime<Utc> {
 fn bead_from_row(row: &rusqlite::Row<'_>, repo_name: &str) -> rusqlite::Result<Bead> {
     let notes: Option<String> = row.get("notes")?;
     let (files, test_files) = parse_files_from_notes(notes.as_deref());
+    let derived_from = parse_derived_from_notes(notes.as_deref());
     let created_str: String = row.get("created_at")?;
     let updated_str: String = row.get("updated_at")?;
 
@@ -82,6 +93,7 @@ fn bead_from_row(row: &rusqlite::Row<'_>, repo_name: &str) -> rusqlite::Result<B
         test_files,
         created_by: row.get::<_, Option<String>>("created_by").unwrap_or(None),
         scope: row.get::<_, String>("scope").unwrap_or_default(),
+        derived_from,
     })
 }
 
@@ -349,6 +361,7 @@ impl BeadStore for SqliteBeadStore {
         depends_on: &[String],
         created_by: Option<&str>,
         scope: &str,
+        derived_from: &[bdr::provenance::ProvenanceRef],
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
@@ -364,11 +377,15 @@ impl BeadStore for SqliteBeadStore {
             params![owner, id],
         )?;
 
-        if !files.is_empty() || !test_files.is_empty() {
-            let file_json = serde_json::json!({ "files": files, "test_files": test_files });
+        if !files.is_empty() || !test_files.is_empty() || !derived_from.is_empty() {
+            let notes_json = serde_json::json!({
+                "files": files,
+                "test_files": test_files,
+                "derived_from": derived_from,
+            });
             tx.execute(
                 "UPDATE issues SET notes = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![file_json.to_string(), id],
+                params![notes_json.to_string(), id],
             )?;
         }
 
@@ -882,6 +899,7 @@ mod tests {
                 &["dep-1".into()],
                 Some("test-user"),
                 "",
+                &[],
             )
             .await
             .unwrap();
@@ -1111,6 +1129,7 @@ mod tests {
                 &[],
                 Some("alice"),
                 "payments",
+                &[],
             )
             .await
             .unwrap();
@@ -1149,6 +1168,7 @@ mod tests {
                 &[],
                 Some("bob"),
                 "auth",
+                &[],
             )
             .await
             .unwrap();
@@ -1157,5 +1177,42 @@ mod tests {
         assert_eq!(beads.len(), 1);
         assert_eq!(beads[0].scope, "auth");
         assert_eq!(beads[0].created_by.as_deref(), Some("bob"));
+    }
+
+    #[tokio::test]
+    async fn derived_from_round_trip() {
+        use bdr::provenance::ProvenanceRef;
+
+        let store = test_store();
+        let provenance = vec![
+            ProvenanceRef::Adr {
+                id: "ADR-007".into(),
+            },
+            ProvenanceRef::Doc {
+                path: "docs/spec.md".into(),
+            },
+        ];
+        store
+            .create_bead_full(
+                "prov-1",
+                "Provenance bead",
+                "desc",
+                2,
+                "task",
+                "agent",
+                &[],
+                &[],
+                &[],
+                None,
+                "",
+                &provenance,
+            )
+            .await
+            .unwrap();
+
+        let bead = store.get_bead("prov-1", "repo").await.unwrap().unwrap();
+        assert_eq!(bead.derived_from.len(), 2);
+        assert_eq!(bead.derived_from[0].label(), "adr:ADR-007");
+        assert_eq!(bead.derived_from[1].label(), "doc:docs/spec.md");
     }
 }

@@ -99,6 +99,7 @@ pub async fn import_bead(
             &[],
             None,
             "",
+            &[],
         )
         .await?;
 

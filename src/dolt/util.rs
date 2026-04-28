@@ -32,6 +32,19 @@ impl DoltClient {
         (files, test_files)
     }
 
+    /// Parse derived_from provenance chain from the notes JSON column.
+    pub(crate) fn parse_derived_from_notes(
+        row: &sqlx_mysql::MySqlRow,
+    ) -> Vec<bdr::provenance::ProvenanceRef> {
+        let notes: Option<String> = row.try_get("notes").ok();
+        let parsed: Option<serde_json::Value> = notes.and_then(|s| serde_json::from_str(&s).ok());
+        parsed
+            .as_ref()
+            .and_then(|v| v.get("derived_from"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default()
+    }
+
     /// Enable dolt_transaction_commit at the server level (GLOBAL) so ALL
     /// connections auto-create Dolt commits. This handles multiple rsry
     /// processes sharing the same Dolt server (MCP stdio + HTTP + agent MCP).

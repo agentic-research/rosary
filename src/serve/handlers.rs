@@ -431,6 +431,7 @@ async fn tool_bead_create(
             &depends_on,
             created_by.as_deref(),
             "",
+            &[],
         )
         .await?;
 
@@ -1145,6 +1146,7 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
                         &[],
                         None,
                         "",
+                        &spec.derived_from,
                     )
                     .await?;
 

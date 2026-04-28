@@ -222,6 +222,7 @@ pub trait BeadStore: Send + Sync {
         depends_on: &[String],
         created_by: Option<&str>,
         scope: &str,
+        derived_from: &[bdr::provenance::ProvenanceRef],
     ) -> Result<()>;
 
     // ── Field updates ──
