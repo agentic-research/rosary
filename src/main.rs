@@ -32,6 +32,7 @@ mod manifest;
 mod migrate;
 mod orchestrate;
 mod pipeline;
+mod plugin;
 mod pool;
 mod queue;
 mod reconcile;
