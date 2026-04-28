@@ -60,6 +60,7 @@ impl BeadStore for DoltBeadStore {
         depends_on: &[String],
         created_by: Option<&str>,
         scope: &str,
+        derived_from: &[bdr::provenance::ProvenanceRef],
     ) -> Result<()> {
         self.client
             .create_bead_full(
@@ -74,6 +75,7 @@ impl BeadStore for DoltBeadStore {
                 depends_on,
                 created_by,
                 scope,
+                derived_from,
             )
             .await
     }

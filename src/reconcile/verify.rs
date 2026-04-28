@@ -620,6 +620,7 @@ impl Reconciler {
                         test_files: Vec::new(),
                         created_by: None,
                         scope: String::new(),
+                        derived_from: vec![],
                     };
                     if let Some(client) = self.dolt_client(&repo).await
                         && let Ok(Some(full)) = client.get_bead(bead_id, &repo).await

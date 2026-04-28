@@ -107,6 +107,7 @@ impl DoltClient {
                     test_files,
                     created_by: row.try_get("created_by").ok(),
                     scope: row.try_get("scope").unwrap_or_default(),
+                    derived_from: Self::parse_derived_from_notes(row),
                 }
             })
             .collect();
@@ -195,6 +196,7 @@ impl DoltClient {
                 test_files: Vec::new(),
                 created_by: row.try_get("created_by").ok(),
                 scope: row.try_get("scope").unwrap_or_default(),
+                derived_from: vec![],
             })
             .collect();
 

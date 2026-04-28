@@ -149,6 +149,7 @@ mod tests {
             test_files: Vec::new(),
             created_by: None,
             scope: String::new(),
+            derived_from: vec![],
         }
     }
 

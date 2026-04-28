@@ -238,6 +238,10 @@ pub struct Bead {
     /// Empty string for cross-repo and single-team repos — backward compatible.
     #[serde(default)]
     pub scope: String,
+    /// Ordered provenance chain — primary source first, then secondary.
+    /// Populated from the notes JSON at read time; not included in generation().
+    #[serde(default)]
+    pub derived_from: Vec<bdr::provenance::ProvenanceRef>,
 }
 
 impl Bead {
@@ -346,6 +350,7 @@ impl Bead {
                 .unwrap_or_default(),
             created_by: None,
             scope: String::new(),
+            derived_from: vec![],
         })
     }
 

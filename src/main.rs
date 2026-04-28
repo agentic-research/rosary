@@ -829,6 +829,7 @@ async fn main() -> Result<()> {
                                 &[], // depends_on: ADR-level refs can't map to bead IDs yet
                                 created_by.as_deref(),
                                 "",
+                                &spec.derived_from,
                             )
                             .await?;
 
@@ -900,6 +901,7 @@ async fn main() -> Result<()> {
                             &[], // CLI doesn't support depends_on yet
                             created_by.as_deref(),
                             "",
+                            &[],
                         )
                         .await?;
                     cli::bead_created(&id, &title);

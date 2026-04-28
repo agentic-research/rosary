@@ -61,6 +61,7 @@ impl DoltClient {
                     test_files,
                     created_by: row.try_get("created_by").ok(),
                     scope: row.try_get("scope").unwrap_or_default(),
+                    derived_from: Self::parse_derived_from_notes(row),
                 }
             })
             .collect();
@@ -135,6 +136,7 @@ impl DoltClient {
                             test_files,
                             created_by: row.try_get("created_by").ok(),
                             scope: row.try_get("scope").unwrap_or_default(),
+                            derived_from: Self::parse_derived_from_notes(row),
                         }
                     })
                     .collect())
@@ -189,6 +191,7 @@ impl DoltClient {
                 test_files,
                 created_by: row.try_get("created_by").ok(),
                 scope: row.try_get("scope").unwrap_or_default(),
+                derived_from: Self::parse_derived_from_notes(&row),
             }
         }))
     }
@@ -271,6 +274,7 @@ impl DoltClient {
         depends_on: &[String],
         created_by: Option<&str>,
         scope: &str,
+        derived_from: &[bdr::provenance::ProvenanceRef],
     ) -> Result<()> {
         let mut tx = self
             .pool
@@ -302,14 +306,15 @@ impl DoltClient {
             .await
             .with_context(|| format!("setting assignee for {id}"))?;
 
-        // 3. Set files if provided
-        if !files.is_empty() || !test_files.is_empty() {
-            let file_json = serde_json::json!({
+        // 3. Set files and provenance if provided
+        if !files.is_empty() || !test_files.is_empty() || !derived_from.is_empty() {
+            let notes_json = serde_json::json!({
                 "files": files,
                 "test_files": test_files,
+                "derived_from": derived_from,
             });
             query("UPDATE issues SET notes = ?, updated_at = NOW() WHERE id = ?")
-                .bind(file_json.to_string())
+                .bind(notes_json.to_string())
                 .bind(id)
                 .execute(&mut *tx)
                 .await
