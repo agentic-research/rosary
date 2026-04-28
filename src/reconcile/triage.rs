@@ -164,6 +164,13 @@ impl Reconciler {
                     continue;
                 }
 
+                // Plugin triage hooks: external tools can veto dispatch.
+                let ctx = crate::plugin::PluginContext::new(&bead.id, &bead.repo);
+                if let Some(reason) = self.plugin_registry.call_triage_hooks(&ctx) {
+                    eprintln!("[plugin-triage] skipping {} — {reason}", bead.id);
+                    continue;
+                }
+
                 let enqueued = self.queue.enqueue(QueueEntry {
                     bead_id: bead.id.clone(),
                     repo: bead.repo.clone(),

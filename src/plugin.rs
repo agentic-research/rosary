@@ -247,12 +247,10 @@ impl PluginRegistry {
             .collect()
     }
 
-    #[allow(dead_code)] // API surface — wired into reconciler triage phase in a follow-on bead
     /// Call all `pipeline.triage` hooks for a bead.
     ///
     /// Returns `Some(reason)` if any plugin says to skip the bead, `None` to proceed.
     pub fn call_triage_hooks(&self, context: &PluginContext) -> Option<String> {
-        let work_dir = Path::new("");
         for plugin in self.plugins.iter().filter(|p| p.hook == "pipeline.triage") {
             let input = HookInput {
                 hook: &plugin.hook,
@@ -274,12 +272,10 @@ impl PluginRegistry {
                     eprintln!("[plugin] triage hook '{}' unavailable — {e:#}", plugin.name);
                 }
             }
-            let _ = work_dir; // suppress unused warning; work_dir is "" for triage hooks
         }
         None
     }
 
-    #[allow(dead_code)] // API surface — wired into on_pass/on_close in a follow-on bead
     /// Call all `pipeline.close` hooks when a bead finishes.
     pub fn call_close_hooks(&self, context: &PluginContext) {
         for plugin in self.plugins.iter().filter(|p| p.hook == "pipeline.close") {
