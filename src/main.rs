@@ -316,7 +316,7 @@ pub fn generate_bead_id(prefix: &str) -> String {
 /// Returns None if git is not available or user.name is not set.
 /// Imprecise (self-reported) but Good Enough for team attribution.
 /// Build an enriched bead description from a `BeadSpec`, appending structured
-/// success criteria and cross-references as markdown sections.
+/// success criteria, cross-references, and provenance as markdown sections.
 fn enrich_bead_description(spec: &bdr::decompose::BeadSpec) -> String {
     let mut desc = spec.description.clone();
 
@@ -341,6 +341,24 @@ fn enrich_bead_description(spec: &bdr::decompose::BeadSpec) -> String {
         desc.push_str("\n\n## References\n\n");
         for r in &spec.references {
             desc.push_str(&format!("- {r}\n"));
+        }
+    }
+
+    if !spec.derived_from.is_empty() {
+        desc.push_str("\n\n## Derived From\n\n");
+        for src in &spec.derived_from {
+            desc.push_str(&format!("- {}\n", src.label()));
+        }
+        if let Some(ref trace) = spec.inferred_from {
+            desc.push_str(&format!(
+                "\n_Classification assisted by `{}`{}_\n",
+                trace.model,
+                trace
+                    .rationale
+                    .as_deref()
+                    .map(|r| format!(": {r}"))
+                    .unwrap_or_default()
+            ));
         }
     }
 
@@ -682,7 +700,7 @@ async fn main() -> Result<()> {
                     bdr_enrich::extract_atoms_with_llm(&markdown, &api_key, model_name).await?;
                 (atoms, bdr::parse::AdrMeta::default())
             } else {
-                let parsed = bdr::parse::parse_adr_full(&markdown);
+                let parsed = bdr::parse::parse_doc_full(&markdown, &path);
                 (parsed.atoms, parsed.meta)
             };
 

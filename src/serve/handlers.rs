@@ -1038,7 +1038,7 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
 
     let markdown = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
 
-    let parsed = bdr::parse::parse_adr_full(&markdown);
+    let parsed = bdr::parse::parse_doc_full(&markdown, path);
     if parsed.atoms.is_empty() {
         return Ok(json!({
             "decade": null,
@@ -1219,6 +1219,24 @@ fn enrich_decompose_description(spec: &bdr::decompose::BeadSpec) -> String {
         desc.push_str("\n\n## References\n\n");
         for r in &spec.references {
             desc.push_str(&format!("- {r}\n"));
+        }
+    }
+
+    if !spec.derived_from.is_empty() {
+        desc.push_str("\n\n## Derived From\n\n");
+        for src in &spec.derived_from {
+            desc.push_str(&format!("- {}\n", src.label()));
+        }
+        if let Some(ref trace) = spec.inferred_from {
+            desc.push_str(&format!(
+                "\n_Classification assisted by `{}`{}_\n",
+                trace.model,
+                trace
+                    .rationale
+                    .as_deref()
+                    .map(|r| format!(": {r}"))
+                    .unwrap_or_default()
+            ));
         }
     }
 

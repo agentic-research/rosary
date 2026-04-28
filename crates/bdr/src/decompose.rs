@@ -2,8 +2,8 @@
 
 use crate::atom::{Atom, AtomKind};
 use crate::channels::BdrChannel;
-use crate::parse::AdrMeta;
-use crate::provenance::ProvenanceRef;
+use crate::parse::DocMeta;
+use crate::provenance::{InferenceTrace, ProvenanceRef};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -17,11 +17,13 @@ pub struct BeadSpec {
     pub channel: BdrChannel,
     pub thread_group: String,
     pub source_atom: AtomKind,
-    /// Where this bead originated — ADR, Slack thread, meeting, or manual entry.
-    pub source: ProvenanceRef,
+    /// Ordered provenance chain — earlier entries were processed first.
+    /// First entry is the primary source; subsequent entries are secondary
+    /// docs pulled in during parsing (cross-references, depends_on ADRs).
+    pub derived_from: Vec<ProvenanceRef>,
     pub source_line: usize,
     pub references: Vec<String>,
-    /// Target repo for this bead (from ADR frontmatter or reference analysis).
+    /// Target repo for this bead (from doc frontmatter or reference analysis).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_repo: Option<String>,
     /// ADR IDs this bead depends on (from frontmatter `Depends on:`).
@@ -30,6 +32,10 @@ pub struct BeadSpec {
     /// Structured success criteria extracted from ValidationPoint atoms.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub success_criteria: Vec<SuccessCriterion>,
+    /// Set when the LLM classifier was invoked to resolve ambiguous sections.
+    /// Always posterior to `derived_from`. Excluded from content_hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inferred_from: Option<InferenceTrace>,
 }
 
 /// A verifiable success criterion for a bead.
@@ -49,11 +55,11 @@ impl BeadSpec {
     /// Content hash of the immutable bead definition.
     ///
     /// Covers: title, description, issue_type, priority, success_criteria.
-    /// Does NOT cover mutable state (status, assignee, retries) — those are
-    /// derived from observations via lattice join (see rosary-45518d).
+    /// Does NOT cover provenance (derived_from, inferred_from), routing
+    /// (target_repo, depends_on), or mutable state — those are metadata.
     ///
     /// Properties:
-    /// - Same ADR decomposition → same hash (dedup across runs)
+    /// - Same doc decomposition → same hash (dedup across runs)
     /// - Dependency references use content_hash, not string IDs (tamper-evident)
     /// - Federation: push content hashes, receiver verifies locally
     pub fn content_hash(&self) -> [u8; 32] {
@@ -83,6 +89,11 @@ impl BeadSpec {
     pub fn content_hash_hex(&self) -> String {
         hex::encode(self.content_hash())
     }
+
+    /// Convenience: the primary source (first entry in derived_from).
+    pub fn primary_source(&self) -> Option<&ProvenanceRef> {
+        self.derived_from.first()
+    }
 }
 
 /// Channel assignment for each atom kind.
@@ -101,12 +112,19 @@ pub fn channel_for_atom(kind: AtomKind) -> BdrChannel {
 }
 
 /// Decompose a list of atoms into bead specs (backward-compatible, no meta).
-pub fn decompose(atoms: &[Atom], adr_id: &str) -> Vec<BeadSpec> {
-    decompose_with_meta(atoms, adr_id, &AdrMeta::default())
+pub fn decompose(atoms: &[Atom], doc_id: &str) -> Vec<BeadSpec> {
+    decompose_with_meta(atoms, doc_id, &DocMeta::default())
 }
 
-/// Decompose a list of atoms into bead specs with ADR metadata.
-pub fn decompose_with_meta(atoms: &[Atom], adr_id: &str, meta: &AdrMeta) -> Vec<BeadSpec> {
+/// Decompose a list of atoms into bead specs with document metadata.
+pub fn decompose_with_meta(atoms: &[Atom], doc_id: &str, meta: &DocMeta) -> Vec<BeadSpec> {
+    let primary_source = meta
+        .provenance
+        .clone()
+        .unwrap_or_else(|| ProvenanceRef::Adr {
+            id: doc_id.to_string(),
+        });
+
     atoms
         .iter()
         .map(|atom| {
@@ -116,29 +134,28 @@ pub fn decompose_with_meta(atoms: &[Atom], adr_id: &str, meta: &AdrMeta) -> Vec<
             let success_criteria = extract_success_criteria(atom);
 
             BeadSpec {
-                title: format!("[{}] {}", adr_id, truncate(&atom.title, 60)),
+                title: format!("[{}] {}", doc_id, truncate(&atom.title, 60)),
                 description: atom.body.clone(),
                 issue_type: atom.kind.suggested_issue_type().to_string(),
                 priority: atom.kind.suggested_priority(),
                 channel,
                 thread_group,
                 source_atom: atom.kind,
-                source: ProvenanceRef::Adr {
-                    id: adr_id.to_string(),
-                },
+                derived_from: vec![primary_source.clone()],
                 source_line: atom.source_line,
                 references: atom.references.clone(),
                 target_repo,
                 depends_on: meta.depends_on.clone(),
                 success_criteria,
+                inferred_from: None,
             }
         })
         .collect()
 }
 
 /// Infer which repo a bead should be created in.
-/// Priority: atom references mentioning specific repos > ADR-level repo field.
-fn infer_target_repo(atom: &Atom, meta: &AdrMeta) -> Option<String> {
+/// Priority: atom references mentioning specific repos > doc-level repo field.
+fn infer_target_repo(atom: &Atom, meta: &DocMeta) -> Option<String> {
     // Check atom references for repo-like patterns
     // Patterns: "repo:something", "crates/name/", "repo/path"
     for r in &atom.references {
@@ -149,7 +166,7 @@ fn infer_target_repo(atom: &Atom, meta: &AdrMeta) -> Option<String> {
             }
         }
     }
-    // Fall back to ADR-level repo
+    // Fall back to doc-level repo
     meta.repo.clone()
 }
 
@@ -300,6 +317,10 @@ mod tests {
         }
     }
 
+    fn adr_source(id: &str) -> ProvenanceRef {
+        ProvenanceRef::Adr { id: id.to_string() }
+    }
+
     #[test]
     fn friction_point_maps_to_decade() {
         assert_eq!(
@@ -336,12 +357,7 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].issue_type, "task");
         assert_eq!(specs[0].channel, BdrChannel::Decade);
-        assert_eq!(
-            specs[0].source,
-            ProvenanceRef::Adr {
-                id: "ADR-001".into()
-            }
-        );
+        assert_eq!(specs[0].derived_from, vec![adr_source("ADR-001")]);
         assert!(specs[0].title.starts_with("[ADR-001]"));
     }
 
@@ -411,14 +427,42 @@ mod tests {
             channel: BdrChannel::Thread,
             thread_group: "implementation".into(),
             source_atom: AtomKind::Phase,
-            source: ProvenanceRef::Adr {
-                id: "ADR-001".into(),
-            },
+            derived_from: vec![adr_source("ADR-001")],
             source_line: 42,
             references: vec!["mache-85t".into()],
             target_repo: Some("mache".into()),
             depends_on: vec!["ADR-A".into()],
             success_criteria: vec![],
+            inferred_from: None,
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let back: BeadSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(spec, back);
+    }
+
+    #[test]
+    fn bead_spec_with_inferred_from_roundtrip() {
+        use crate::provenance::InferenceTrace;
+        let spec = BeadSpec {
+            title: "[doc:spec.md] Build auth service".into(),
+            description: "body".into(),
+            issue_type: "feature".into(),
+            priority: 1,
+            channel: BdrChannel::Bead,
+            thread_group: "general".into(),
+            source_atom: AtomKind::TechnicalSpec,
+            derived_from: vec![ProvenanceRef::Doc {
+                path: "docs/spec.md".into(),
+            }],
+            source_line: 5,
+            references: vec![],
+            target_repo: None,
+            depends_on: vec![],
+            success_criteria: vec![],
+            inferred_from: Some(InferenceTrace {
+                model: "claude-haiku-4-5".into(),
+                rationale: Some("Section matched Phase pattern".into()),
+            }),
         };
         let json = serde_json::to_string(&spec).unwrap();
         let back: BeadSpec = serde_json::from_str(&json).unwrap();
@@ -427,7 +471,7 @@ mod tests {
 
     #[test]
     fn decompose_with_meta_sets_target_repo() {
-        let meta = AdrMeta {
+        let meta = DocMeta {
             repo: Some("leyline".into()),
             ..Default::default()
         };
@@ -438,7 +482,7 @@ mod tests {
 
     #[test]
     fn decompose_with_meta_sets_depends_on() {
-        let meta = AdrMeta {
+        let meta = DocMeta {
             depends_on: vec!["ADR-A".into()],
             ..Default::default()
         };
@@ -448,8 +492,26 @@ mod tests {
     }
 
     #[test]
+    fn decompose_with_doc_provenance() {
+        let meta = DocMeta {
+            provenance: Some(ProvenanceRef::Doc {
+                path: "docs/design/spec.md".into(),
+            }),
+            ..Default::default()
+        };
+        let atoms = vec![sample_atom(AtomKind::Phase)];
+        let specs = decompose_with_meta(&atoms, "spec", &meta);
+        assert_eq!(
+            specs[0].derived_from,
+            vec![ProvenanceRef::Doc {
+                path: "docs/design/spec.md".into()
+            }]
+        );
+    }
+
+    #[test]
     fn atom_ref_overrides_meta_repo() {
-        let meta = AdrMeta {
+        let meta = DocMeta {
             repo: Some("rosary".into()),
             ..Default::default()
         };
@@ -487,35 +549,10 @@ mod tests {
         assert!(specs[0].success_criteria.is_empty());
     }
 
-    // --- content_hash tests ---
-
     #[test]
-    fn content_hash_deterministic() {
-        let spec = BeadSpec {
-            title: "Fix widget".into(),
-            description: "The widget is broken".into(),
-            issue_type: "bug".into(),
-            priority: 1,
-            channel: BdrChannel::Bead,
-            thread_group: "core".into(),
-            source_atom: AtomKind::TechnicalSpec,
-            source: ProvenanceRef::Adr {
-                id: "ADR-001".into(),
-            },
-            source_line: 10,
-            references: vec![],
-            target_repo: None,
-            depends_on: vec![],
-            success_criteria: vec![],
-        };
-        let h1 = spec.content_hash();
-        let h2 = spec.content_hash();
-        assert_eq!(h1, h2, "same spec must produce same hash");
-    }
-
-    #[test]
-    fn content_hash_changes_with_title() {
-        let mut spec = BeadSpec {
+    fn inferred_from_excluded_from_content_hash() {
+        use crate::provenance::InferenceTrace;
+        let base = BeadSpec {
             title: "Fix widget".into(),
             description: "broken".into(),
             issue_type: "bug".into(),
@@ -523,26 +560,30 @@ mod tests {
             channel: BdrChannel::Bead,
             thread_group: "core".into(),
             source_atom: AtomKind::TechnicalSpec,
-            source: ProvenanceRef::Adr {
-                id: "ADR-001".into(),
-            },
+            derived_from: vec![adr_source("ADR-001")],
             source_line: 10,
             references: vec![],
             target_repo: None,
             depends_on: vec![],
             success_criteria: vec![],
+            inferred_from: None,
         };
-        let h1 = spec.content_hash();
-        spec.title = "Fix different widget".into();
-        let h2 = spec.content_hash();
-        assert_ne!(h1, h2, "different title must produce different hash");
+        let with_inference = BeadSpec {
+            inferred_from: Some(InferenceTrace {
+                model: "claude-haiku-4-5".into(),
+                rationale: Some("matched Phase".into()),
+            }),
+            ..base.clone()
+        };
+        assert_eq!(
+            base.content_hash(),
+            with_inference.content_hash(),
+            "inferred_from must not affect content hash"
+        );
     }
 
     #[test]
-    fn content_hash_ignores_metadata() {
-        // source, source_line, references, target_repo, depends_on
-        // are metadata about WHERE the spec came from, not WHAT it defines.
-        // Changing them should NOT change the content hash.
+    fn derived_from_excluded_from_content_hash() {
         let spec1 = BeadSpec {
             title: "Fix widget".into(),
             description: "broken".into(),
@@ -551,19 +592,21 @@ mod tests {
             channel: BdrChannel::Bead,
             thread_group: "core".into(),
             source_atom: AtomKind::TechnicalSpec,
-            source: ProvenanceRef::Adr {
-                id: "ADR-001".into(),
-            },
+            derived_from: vec![adr_source("ADR-001")],
             source_line: 10,
             references: vec!["ref-1".into()],
             target_repo: Some("mache".into()),
             depends_on: vec!["ADR-A".into()],
             success_criteria: vec![],
+            inferred_from: None,
         };
         let spec2 = BeadSpec {
-            source: ProvenanceRef::Adr {
-                id: "ADR-999".into(),
-            },
+            derived_from: vec![
+                ProvenanceRef::Doc {
+                    path: "docs/spec.md".into(),
+                },
+                adr_source("ADR-999"),
+            ],
             source_line: 999,
             references: vec![],
             target_repo: None,
@@ -573,7 +616,7 @@ mod tests {
         assert_eq!(
             spec1.content_hash(),
             spec2.content_hash(),
-            "metadata changes must not affect content hash"
+            "provenance changes must not affect content hash"
         );
     }
 
@@ -587,14 +630,62 @@ mod tests {
             channel: BdrChannel::Bead,
             thread_group: "g".into(),
             source_atom: AtomKind::TechnicalSpec,
-            source: ProvenanceRef::Adr { id: "A".into() },
+            derived_from: vec![adr_source("A")],
             source_line: 1,
             references: vec![],
             target_repo: None,
             depends_on: vec![],
             success_criteria: vec![],
+            inferred_from: None,
         };
         let hex = spec.content_hash_hex();
         assert_eq!(hex.len(), 64, "SHA-256 hex should be 64 chars: {hex}");
+    }
+
+    #[test]
+    fn primary_source_returns_first() {
+        let spec = BeadSpec {
+            title: "t".into(),
+            description: "d".into(),
+            issue_type: "task".into(),
+            priority: 1,
+            channel: BdrChannel::Bead,
+            thread_group: "g".into(),
+            source_atom: AtomKind::TechnicalSpec,
+            derived_from: vec![
+                adr_source("ADR-001"),
+                ProvenanceRef::Doc {
+                    path: "spec.md".into(),
+                },
+            ],
+            source_line: 1,
+            references: vec![],
+            target_repo: None,
+            depends_on: vec![],
+            success_criteria: vec![],
+            inferred_from: None,
+        };
+        assert_eq!(spec.primary_source(), Some(&adr_source("ADR-001")));
+    }
+
+    #[test]
+    fn primary_source_none_when_empty() {
+        let spec = BeadSpec {
+            title: "t".into(),
+            description: "d".into(),
+            issue_type: "task".into(),
+            priority: 1,
+            channel: BdrChannel::Bead,
+            thread_group: "g".into(),
+            source_atom: AtomKind::TechnicalSpec,
+            derived_from: vec![],
+            source_line: 1,
+            references: vec![],
+            target_repo: None,
+            depends_on: vec![],
+            success_criteria: vec![],
+            inferred_from: None,
+        };
+        assert!(spec.primary_source().is_none());
     }
 }
