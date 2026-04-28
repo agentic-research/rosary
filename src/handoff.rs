@@ -260,27 +260,27 @@ impl Handoff {
                 Err(_) => break, // No file for this phase — chain is complete
             };
             // Verify the hash link for all phases after the first
-            if phase > 0 {
-                if let Some(prev) = chain.last() {
-                    let expected = prev.chain_hash_hex();
-                    match &h.previous_chain_hash {
-                        Some(actual) if actual == &expected => {} // chain intact
-                        Some(actual) => {
-                            eprintln!(
-                                "[handoff] chain integrity FAIL at phase {phase}: \
-                                 expected previous_chain_hash={expected}, got={actual}. \
-                                 A handoff file may have been tampered with."
-                            );
-                            return chain; // Truncate — don't process past a broken link
-                        }
-                        None => {
-                            eprintln!(
-                                "[handoff] chain integrity WARNING at phase {phase}: \
-                                 previous_chain_hash is missing (expected link to phase {})",
-                                phase - 1
-                            );
-                            // Allow but warn — older handoffs may predate hash chaining
-                        }
+            if phase > 0
+                && let Some(prev) = chain.last()
+            {
+                let expected = prev.chain_hash_hex();
+                match &h.previous_chain_hash {
+                    Some(actual) if actual == &expected => {} // chain intact
+                    Some(actual) => {
+                        eprintln!(
+                            "[handoff] chain integrity FAIL at phase {phase}: \
+                             expected previous_chain_hash={expected}, got={actual}. \
+                             A handoff file may have been tampered with."
+                        );
+                        return chain; // Truncate — don't process past a broken link
+                    }
+                    None => {
+                        eprintln!(
+                            "[handoff] chain integrity WARNING at phase {phase}: \
+                             previous_chain_hash is missing (expected link to phase {})",
+                            phase - 1
+                        );
+                        // Allow but warn — older handoffs may predate hash chaining
                     }
                 }
             }

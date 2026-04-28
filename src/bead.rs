@@ -257,7 +257,7 @@ impl Bead {
         h.update(b"\0");
         h.update(self.description.as_bytes());
         h.update(b"\0");
-        h.update(&[self.priority]);
+        h.update([self.priority]);
         let digest = h.finalize();
         u64::from_le_bytes(digest[..8].try_into().unwrap())
     }
