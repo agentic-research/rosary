@@ -126,6 +126,9 @@ impl Reconciler {
         if let Some(tracker) = self.trackers.get_mut(bead_id) {
             tracker.consecutive_reverts = 0;
         }
+        // Fire pipeline.close hooks — external tools notified of completion.
+        let ctx = crate::plugin::PluginContext::new(bead_id, &repo);
+        self.plugin_registry.call_close_hooks(&ctx);
         // Cleanup happens after checkpoint (called from iterate)
     }
 
