@@ -121,6 +121,27 @@ pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> 
         if let Err(e) = client.migrate().await {
             eprintln!("[bead] migration warning for {}: {e}", beads_dir.display());
         }
+
+        // One-shot migration: if a stale beads.db exists and hasn't been migrated yet,
+        // drain it into Dolt and rename it so we don't run again.
+        let sqlite_path = beads_dir.join("beads.db");
+        let migrated_path = beads_dir.join("beads.db.migrated");
+        if sqlite_path.exists() && !migrated_path.exists() {
+            match migrate_sqlite_to_dolt(&sqlite_path, &client).await {
+                Ok(n) if n > 0 => {
+                    eprintln!("[bead] migrated {n} beads from beads.db → Dolt");
+                    if let Err(e) = std::fs::rename(&sqlite_path, &migrated_path) {
+                        eprintln!("[bead] could not rename beads.db after migration: {e}");
+                    }
+                }
+                Ok(_) => {
+                    // Nothing to migrate — still rename to avoid re-checking every time.
+                    let _ = std::fs::rename(&sqlite_path, &migrated_path);
+                }
+                Err(e) => eprintln!("[bead] SQLite→Dolt migration failed: {e}"),
+            }
+        }
+
         return Ok(Box::new(crate::bead_dolt::DoltBeadStore::new(client)));
     }
 
@@ -128,6 +149,96 @@ pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> 
     let sqlite_path = beads_dir.join("beads.db");
     let store = SqliteBeadStore::connect(&sqlite_path)?;
     Ok(Box::new(store))
+}
+
+/// Drain all beads from a stale SQLite file into the connected Dolt client.
+/// Skips beads whose ID already exists in Dolt (idempotent).
+/// Returns the number of beads actually migrated.
+async fn migrate_sqlite_to_dolt(
+    sqlite_path: &Path,
+    client: &crate::dolt::DoltClient,
+) -> Result<usize> {
+    // rusqlite::Connection is !Send — read all rows synchronously into a Vec
+    // before the first .await, then drop the connection.
+    struct Row {
+        id: String,
+        title: String,
+        description: String,
+        priority: u8,
+        issue_type: String,
+        owner: String,
+        status: String,
+        created_by: Option<String>,
+        scope: String,
+    }
+
+    let rows: Vec<Row> = {
+        let conn = Connection::open(sqlite_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, title, description, priority, issue_type, assignee, notes, status, created_by, scope FROM issues",
+        )?;
+        stmt.query_map([], |r| {
+            Ok(Row {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                description: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                priority: r.get::<_, i64>(3).unwrap_or(2) as u8,
+                issue_type: r
+                    .get::<_, Option<String>>(4)?
+                    .unwrap_or_else(|| "task".to_string()),
+                owner: r
+                    .get::<_, Option<String>>(5)?
+                    .unwrap_or_else(|| "dev-agent".to_string()),
+                status: r
+                    .get::<_, Option<String>>(7)?
+                    .unwrap_or_else(|| "open".to_string()),
+                created_by: r.get(8)?,
+                scope: r.get::<_, Option<String>>(9)?.unwrap_or_default(),
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect()
+        // conn dropped here — no non-Send value crosses any .await below
+    };
+
+    let mut migrated = 0usize;
+    for row in rows {
+        // Skip if already in Dolt (re-run safety).
+        if client.get_bead(&row.id, "").await.unwrap_or(None).is_some() {
+            continue;
+        }
+
+        // Scrub before writing into version-controlled history.
+        let title = crate::secrets::scrub_and_warn(&row.title, &format!("migrating {}", row.id));
+        let description =
+            crate::secrets::scrub_and_warn(&row.description, &format!("migrating {}", row.id));
+
+        client
+            .create_bead_full(
+                &row.id,
+                &title,
+                &description,
+                row.priority,
+                &row.issue_type,
+                &row.owner,
+                &[],
+                &[],
+                &[],
+                row.created_by.as_deref(),
+                &row.scope,
+                &[],
+            )
+            .await?;
+
+        // Preserve status if not open.
+        if row.status != "open" {
+            let _ = client.update_status(&row.id, &row.status).await;
+        }
+
+        migrated += 1;
+    }
+
+    Ok(migrated)
 }
 
 pub struct SqliteBeadStore {

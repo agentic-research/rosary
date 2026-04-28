@@ -38,6 +38,7 @@ mod queue;
 mod reconcile;
 mod repo_cache;
 mod scanner;
+mod secrets;
 mod serve;
 mod session;
 #[allow(dead_code)] // API surface — wired in rsry-e599fb (SpritesProvider)

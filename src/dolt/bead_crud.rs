@@ -276,6 +276,11 @@ impl DoltClient {
         scope: &str,
         derived_from: &[bdr::provenance::ProvenanceRef],
     ) -> Result<()> {
+        // Scrub secrets before writing — Dolt history is append-only and hard to purge.
+        let title = crate::secrets::scrub_and_warn(title, &format!("bead {id} title"));
+        let description =
+            crate::secrets::scrub_and_warn(description, &format!("bead {id} description"));
+
         let mut tx = self
             .pool
             .begin()
@@ -288,8 +293,8 @@ impl DoltClient {
                VALUES (?, ?, ?, '', '', '', 'open', ?, ?, ?, ?, NOW(), NOW())"#,
         )
         .bind(id)
-        .bind(title)
-        .bind(description)
+        .bind(&title)
+        .bind(&description)
         .bind(priority as i32)
         .bind(issue_type)
         .bind(created_by)

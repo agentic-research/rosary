@@ -61,9 +61,10 @@ impl DoltClient {
 
     /// Add a comment to an issue.
     pub async fn add_comment(&self, issue_id: &str, body: &str, author: &str) -> Result<()> {
+        let body = crate::secrets::scrub_and_warn(body, &format!("comment on {issue_id}"));
         query("INSERT INTO comments (issue_id, text, author, created_at) VALUES (?, ?, ?, NOW())")
             .bind(issue_id)
-            .bind(body)
+            .bind(&body)
             .bind(author)
             .execute(&self.pool)
             .await
