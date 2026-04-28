@@ -1061,6 +1061,110 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
 
     let decade = bdr::thread::build_decade_with_meta(path, &title, &parsed.atoms, &parsed.meta);
 
+    let commit = args
+        .get("commit")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let mut created = 0usize;
+    let mut skipped = 0usize;
+
+    if commit {
+        let repo_path = args
+            .get("repo_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("repo_path is required when commit=true"))?;
+
+        let repo_root = std::path::Path::new(repo_path);
+        let beads_dir = repo_root.join(".beads");
+        let client = crate::bead_sqlite::connect_bead_store(&beads_dir).await?;
+        let repo_name = repo_root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| repo_path.to_string());
+
+        // Connect to backend for lattice assignment (best-effort).
+        let backend: Option<Box<dyn BackendStore>> =
+            match config::load_global().ok().and_then(|c| c.backend) {
+                Some(cfg) => cfg.connect().await.ok(),
+                None => None,
+            };
+
+        if let Some(ref b) = backend {
+            let _ = b
+                .upsert_decade(&crate::store::DecadeRecord {
+                    id: decade.id.clone(),
+                    title: decade.title.clone(),
+                    source_path: path.to_string(),
+                    status: "active".to_string(),
+                })
+                .await;
+            for thread in &decade.threads {
+                let prefix = config::load_global()
+                    .ok()
+                    .and_then(|c| c.github)
+                    .map(|g| g.agent_branch_prefix)
+                    .unwrap_or_else(|| "rosary".to_string());
+                let feature_branch = crate::workspace::thread_branch_name(&prefix, &thread.name);
+                let _ = b
+                    .upsert_thread(&crate::store::ThreadRecord {
+                        id: thread.id.clone(),
+                        name: thread.name.clone(),
+                        decade_id: decade.id.clone(),
+                        feature_branch: Some(feature_branch),
+                    })
+                    .await;
+            }
+        }
+
+        for thread in &decade.threads {
+            for spec in &thread.beads {
+                // Dedup: skip exact title matches.
+                let existing = client
+                    .search_beads(&spec.title, &repo_name, 10)
+                    .await
+                    .unwrap_or_default();
+                if existing.iter().any(|b| b.title == spec.title) {
+                    skipped += 1;
+                    continue;
+                }
+
+                let desc = enrich_decompose_description(spec);
+                let id = crate::generate_bead_id(&repo_name);
+                let owner = crate::dispatch::default_agent(&spec.issue_type);
+                client
+                    .create_bead_full(
+                        &id,
+                        &spec.title,
+                        &desc,
+                        spec.priority,
+                        &spec.issue_type,
+                        owner,
+                        &[],
+                        &[],
+                        &[],
+                        None,
+                        "",
+                    )
+                    .await?;
+
+                if let Some(ref b) = backend {
+                    let _ = b
+                        .add_bead_to_thread(
+                            &thread.id,
+                            &WorkRef {
+                                repo: repo_name.clone(),
+                                bead_id: id,
+                                scope: String::new(),
+                            },
+                        )
+                        .await;
+                }
+                created += 1;
+            }
+        }
+    }
+
     Ok(json!({
         "decade": {
             "id": decade.id,
@@ -1084,10 +1188,41 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
                 "target_repo": b.target_repo,
                 "depends_on": b.depends_on,
                 "success_criteria": b.success_criteria,
+                "references": b.references,
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "atom_count": parsed.atoms.len(),
+        "committed": commit,
+        "beads_created": created,
+        "beads_skipped": skipped,
     }))
+}
+
+/// Enrich a `BeadSpec` description with success criteria and references.
+fn enrich_decompose_description(spec: &bdr::decompose::BeadSpec) -> String {
+    let mut desc = spec.description.clone();
+
+    if !spec.success_criteria.is_empty() {
+        desc.push_str("\n\n## Success Criteria\n\n");
+        for sc in &spec.success_criteria {
+            match (&sc.command, &sc.threshold) {
+                (Some(cmd), _) => desc.push_str(&format!("- `{cmd}` — {}\n", sc.description)),
+                (None, Some(t)) => {
+                    desc.push_str(&format!("- {} (threshold: {t})\n", sc.description))
+                }
+                (None, None) => desc.push_str(&format!("- {}\n", sc.description)),
+            }
+        }
+    }
+
+    if !spec.references.is_empty() {
+        desc.push_str("\n\n## References\n\n");
+        for r in &spec.references {
+            desc.push_str(&format!("- {r}\n"));
+        }
+    }
+
+    desc
 }
 
 // ---------------------------------------------------------------------------

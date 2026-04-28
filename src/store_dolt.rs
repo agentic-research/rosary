@@ -256,10 +256,8 @@ impl DoltBackend {
             .await
             .map(|r| r.try_get::<i64, _>(0).unwrap_or(0) > 0)
             .unwrap_or(true); // default true = skip, safe fallback
-            if !exists {
-                if let Err(e) = query(sql).execute(&self.pool).await {
-                    eprintln!("[backend] migration warning ({table}.{column}): {e}");
-                }
+            if !exists && let Err(e) = query(sql).execute(&self.pool).await {
+                eprintln!("[backend] migration warning ({table}.{column}): {e}");
             }
         }
 

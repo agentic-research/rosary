@@ -237,12 +237,14 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_decompose",
-                "description": "Decompose a markdown document (ADR, README, etc.) into a decade of threaded beads. Skips non-actionable sections (consequences, alternatives, references). Returns structure without creating beads — review before committing.",
+                "description": "Decompose a markdown document (ADR, README, etc.) into a decade of threaded beads. With commit=false (default) returns a preview — no beads created. With commit=true and repo_path set, creates beads in the repo, assigns them to threads in the backend lattice, deduplicates against existing beads, and enriches descriptions with success criteria and cross-references.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "Absolute path to the markdown file" },
-                        "title": { "type": "string", "description": "Title for the decade (defaults to first heading)" }
+                        "title": { "type": "string", "description": "Title for the decade (defaults to first heading)" },
+                        "repo_path": { "type": "string", "description": "Absolute path to the repo root (.beads/ directory). Required when commit=true." },
+                        "commit": { "type": "boolean", "description": "When true, create beads in repo_path. When false (default), returns preview only.", "default": false }
                     },
                     "required": ["path"]
                 }

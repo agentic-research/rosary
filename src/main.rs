@@ -315,6 +315,38 @@ pub fn generate_bead_id(prefix: &str) -> String {
 /// Capture git username from `git config user.name` at bead creation time.
 /// Returns None if git is not available or user.name is not set.
 /// Imprecise (self-reported) but Good Enough for team attribution.
+/// Build an enriched bead description from a `BeadSpec`, appending structured
+/// success criteria and cross-references as markdown sections.
+fn enrich_bead_description(spec: &bdr::decompose::BeadSpec) -> String {
+    let mut desc = spec.description.clone();
+
+    if !spec.success_criteria.is_empty() {
+        desc.push_str("\n\n## Success Criteria\n\n");
+        for sc in &spec.success_criteria {
+            match (&sc.command, &sc.threshold) {
+                (Some(cmd), _) => {
+                    desc.push_str(&format!("- `{cmd}` — {}\n", sc.description));
+                }
+                (None, Some(threshold)) => {
+                    desc.push_str(&format!("- {} (threshold: {threshold})\n", sc.description));
+                }
+                (None, None) => {
+                    desc.push_str(&format!("- {}\n", sc.description));
+                }
+            }
+        }
+    }
+
+    if !spec.references.is_empty() {
+        desc.push_str("\n\n## References\n\n");
+        for r in &spec.references {
+            desc.push_str(&format!("- {r}\n"));
+        }
+    }
+
+    desc
+}
+
 fn git_config_user_name(repo_root: &Path) -> Option<String> {
     std::process::Command::new("git")
         .args(["config", "user.name"])
@@ -698,29 +730,109 @@ async fn main() -> Result<()> {
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| repo.clone());
+                let created_by = git_config_user_name(&repo_root);
+
+                // Connect to backend store for thread/decade assignment (best-effort).
+                let backend: Option<Box<dyn store::BackendStore>> =
+                    match config::load_global().ok().and_then(|c| c.backend) {
+                        Some(cfg) => cfg.connect().await.ok(),
+                        None => None,
+                    };
+
+                // Seed decade + threads in the backend so beads land in the lattice.
+                if let Some(ref b) = backend {
+                    let _ = b
+                        .upsert_decade(&store::DecadeRecord {
+                            id: decade.id.clone(),
+                            title: decade.title.clone(),
+                            source_path: path.clone(),
+                            status: "active".to_string(),
+                        })
+                        .await;
+                    for thread in &decade.threads {
+                        let prefix = config::load_global()
+                            .ok()
+                            .and_then(|c| c.github)
+                            .map(|g| g.agent_branch_prefix)
+                            .unwrap_or_else(|| "rosary".to_string());
+                        let feature_branch = workspace::thread_branch_name(&prefix, &thread.name);
+                        let _ = b
+                            .upsert_thread(&store::ThreadRecord {
+                                id: thread.id.clone(),
+                                name: thread.name.clone(),
+                                decade_id: decade.id.clone(),
+                                feature_branch: Some(feature_branch),
+                            })
+                            .await;
+                    }
+                }
 
                 let mut created = 0;
+                let mut skipped = 0;
                 for thread in &decade.threads {
                     for spec in &thread.beads {
+                        // Dedup: skip if a bead with the exact same title already exists.
+                        let existing = client
+                            .search_beads(&spec.title, &decompose_repo_name, 10)
+                            .await
+                            .unwrap_or_default();
+                        if existing.iter().any(|b| b.title == spec.title) {
+                            eprintln!("  [skip] '{}' — already exists", spec.title);
+                            skipped += 1;
+                            continue;
+                        }
+
+                        // Cross-repo routing: warn when target differs from --repo.
+                        if let Some(ref target) = spec.target_repo
+                            && target != &decompose_repo_name
+                        {
+                            eprintln!(
+                                "  [route] '{}' → suggested repo: {target} \
+                                 (creating in {decompose_repo_name})",
+                                spec.title
+                            );
+                        }
+
+                        // Enrich description with success criteria and references.
+                        let desc = enrich_bead_description(spec);
+
                         let id = generate_bead_id(&decompose_repo_name);
                         let owner = dispatch::default_agent(&spec.issue_type);
                         client
                             .create_bead_full(
                                 &id,
                                 &spec.title,
-                                &spec.description,
+                                &desc,
                                 spec.priority,
                                 &spec.issue_type,
                                 owner,
-                                &[], // TODO: populate from BeadSpec.references
+                                &[], // file scopes set by code-reader agent post-dispatch
                                 &[],
-                                &[], // TODO: populate from thread ordering
-                                None,
+                                &[], // depends_on: ADR-level refs can't map to bead IDs yet
+                                created_by.as_deref(),
                                 "",
                             )
                             .await?;
+
+                        // Assign to thread in backend lattice.
+                        if let Some(ref b) = backend {
+                            let _ = b
+                                .add_bead_to_thread(
+                                    &thread.id,
+                                    &store::WorkRef {
+                                        repo: decompose_repo_name.clone(),
+                                        bead_id: id.clone(),
+                                        scope: String::new(),
+                                    },
+                                )
+                                .await;
+                        }
+
                         created += 1;
                     }
+                }
+                if skipped > 0 {
+                    eprintln!("  [dedup] skipped {skipped} already-existing beads");
                 }
                 cli::decompose_summary(created, &repo_root.to_string_lossy());
             } else {
