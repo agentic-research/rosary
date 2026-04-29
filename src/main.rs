@@ -12,6 +12,7 @@ mod bdr_enrich;
 mod bead;
 mod bead_dolt;
 mod bead_sqlite;
+mod capture;
 mod cli;
 mod config;
 mod decompose;
@@ -94,6 +95,21 @@ enum Command {
         /// Run assay.scan plugins and file P3 chore beads for stale refs
         #[arg(long)]
         assay: bool,
+    },
+    /// Capture beads from a session transcript or code provenance
+    Capture {
+        /// Read transcript from this path and extract beads via LLM ("-" for stdin)
+        #[arg(long, value_name = "PATH")]
+        from_session: Option<String>,
+        /// LLM model for atom extraction (haiku, sonnet, or full model ID)
+        #[arg(long, default_value = "haiku")]
+        model: String,
+        /// Repo path to write beads into (with --commit)
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+        /// Write proposed beads to .beads/ instead of printing to stdout
+        #[arg(long)]
+        commit: bool,
     },
     /// Decompose a Linear ticket into repo-scoped beads (top-down planning)
     Plan {
@@ -511,6 +527,60 @@ async fn main() -> Result<()> {
             } else {
                 let beads = scanner::scan_repos(&repos).await?;
                 cli::scan_summary(&beads);
+            }
+        }
+        Command::Capture {
+            from_session,
+            model,
+            repo,
+            commit,
+        } => {
+            let path = from_session
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("specify --from-session <path>"))?;
+
+            let opts = capture::SessionCaptureOpts {
+                transcript_path: path,
+                model: &model,
+            };
+            let specs = capture::capture_from_session(&opts).await?;
+
+            if commit {
+                let repo_root = scanner::resolve_repo_path(Path::new(&repo));
+                let beads_dir = resolve_beads_dir(&repo_root);
+                let client = bead_sqlite::connect_bead_store(&beads_dir).await?;
+                let repo_name = repo_root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| repo.clone());
+                let created_by = git_config_user_name(&repo_root);
+                let mut n = 0u32;
+                for spec in &specs {
+                    let id = generate_bead_id(&repo_name);
+                    let owner = dispatch::default_agent(&spec.issue_type);
+                    let desc = enrich_bead_description(spec);
+                    client
+                        .create_bead_full(
+                            &id,
+                            &spec.title,
+                            &desc,
+                            spec.priority,
+                            &spec.issue_type,
+                            owner,
+                            &[],
+                            &[],
+                            &[],
+                            created_by.as_deref(),
+                            "",
+                            &spec.derived_from,
+                        )
+                        .await?;
+                    eprintln!("[capture] created {id}: {}", spec.title);
+                    n += 1;
+                }
+                eprintln!("[capture] wrote {n} bead(s) to {}", repo_root.display());
+            } else {
+                println!("{}", serde_json::to_string_pretty(&specs)?);
             }
         }
         Command::Plan { ticket } => {
