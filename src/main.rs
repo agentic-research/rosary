@@ -38,6 +38,7 @@ mod pool;
 mod queue;
 mod reconcile;
 mod repo_cache;
+mod scan_assay;
 mod scanner;
 mod secrets;
 mod serve;
@@ -90,6 +91,9 @@ enum Command {
         /// Filter to specific repos (comma-separated)
         #[arg(long)]
         repo: Option<String>,
+        /// Run assay.scan plugins and file P3 chore beads for stale refs
+        #[arg(long)]
+        assay: bool,
     },
     /// Decompose a Linear ticket into repo-scoped beads (top-down planning)
     Plan {
@@ -485,12 +489,29 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Scan { config, repo } => {
+        Command::Scan {
+            config,
+            repo,
+            assay,
+        } => {
             let cfg = config::load_merged(&resolve_config(&config))?;
             let repo_filter = parse_repo_filter(&repo);
             let repos = filter_repos(&cfg.repo, &repo_filter);
-            let beads = scanner::scan_repos(&repos).await?;
-            cli::scan_summary(&beads);
+
+            if assay {
+                let all_plugins: Vec<_> = cfg
+                    .plugins
+                    .iter()
+                    .cloned()
+                    .chain(config::discover_plugins(None))
+                    .collect();
+                let registry = plugin::PluginRegistry::new(all_plugins);
+                let n = scan_assay::run_assay_scan(&repos, &registry).await?;
+                eprintln!("[assay] filed {n} chore bead(s) for stale refs");
+            } else {
+                let beads = scanner::scan_repos(&repos).await?;
+                cli::scan_summary(&beads);
+            }
         }
         Command::Plan { ticket } => {
             linear::plan(&ticket).await?;
