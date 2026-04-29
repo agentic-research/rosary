@@ -369,6 +369,62 @@ impl AgentProvider for PluginDispatchProvider {
     }
 }
 
+// ── Assay scan types ─────────────────────────────────────────────────────────
+
+/// Input JSON for `hook = "assay.scan"` plugins (repo-level, no bead context).
+#[derive(Debug, Serialize)]
+struct AssayScanInput<'a> {
+    hook: &'a str,
+    repo: &'a str,
+    work_dir: &'a str,
+}
+
+/// A stale code reference reported by an assay plugin.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StaleRef {
+    /// Markdown source file containing the stale reference.
+    pub source_file: String,
+    /// The symbol, path, or identifier that no longer exists in code.
+    pub symbol: String,
+    /// Line number in source_file (optional).
+    #[serde(default)]
+    pub line: Option<u32>,
+}
+
+/// Output from `hook = "assay.scan"` plugins.
+///
+/// `verdict = "stale"` with non-empty `stale_refs` triggers chore bead creation.
+#[derive(Debug, Deserialize)]
+pub struct AssayScanOutput {
+    pub verdict: String,
+    #[serde(default)]
+    pub stale_refs: Vec<StaleRef>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+fn call_assay_plugin(plugin: &PluginConfig, input: &AssayScanInput<'_>) -> Result<AssayScanOutput> {
+    let json = serde_json::to_string(input)?;
+
+    let raw = if !plugin.command.is_empty() {
+        call_subprocess(&plugin.command, &json)?
+    } else if let Some(url) = &plugin.url {
+        call_http(url, &json)?
+    } else {
+        anyhow::bail!(
+            "plugin '{}' has neither command nor url configured",
+            plugin.name
+        );
+    };
+
+    serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "plugin '{}' returned invalid assay JSON: {raw}",
+            plugin.name
+        )
+    })
+}
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 /// All configured plugins, indexed at startup.
@@ -467,6 +523,33 @@ impl PluginRegistry {
                 eprintln!("[plugin] close hook '{}' unavailable — {e:#}", plugin.name);
             }
         }
+    }
+
+    /// Call all `hook = "assay.scan"` plugins for a repo and collect stale refs.
+    ///
+    /// Returns all stale refs reported by all configured assay scan plugins.
+    /// Plugins that error or are unreachable are silently skipped.
+    pub fn assay_scan(&self, repo: &str, work_dir: &str) -> Vec<StaleRef> {
+        let mut stale = Vec::new();
+        for plugin in self
+            .plugins
+            .iter()
+            .filter(|p| p.is_hook() && p.hook == "assay.scan")
+        {
+            let input = AssayScanInput {
+                hook: "assay.scan",
+                repo,
+                work_dir,
+            };
+            match call_assay_plugin(plugin, &input) {
+                Ok(out) if out.verdict == "stale" => stale.extend(out.stale_refs),
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("[plugin] assay scan '{}' unavailable — {e:#}", plugin.name);
+                }
+            }
+        }
+        stale
     }
 }
 
