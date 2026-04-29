@@ -114,6 +114,13 @@ impl AgentProvider for MockAgentProvider {
     fn name(&self) -> &str {
         "mock"
     }
+
+    fn with_model(&self, _model: Option<String>) -> Box<dyn providers::AgentProvider> {
+        Box::new(MockAgentProvider {
+            side_effect: None,
+            exit_success: self.exit_success,
+        })
+    }
 }
 
 #[tokio::test]
@@ -127,6 +134,93 @@ async fn dispatch_missing_beads_dir_errors() {
 fn claude_provider_name() {
     let provider = ClaudeProvider::default();
     assert_eq!(provider.name(), "claude");
+}
+
+// -----------------------------------------------------------------------
+// Per-phase model selection (rosary-5413e4)
+// -----------------------------------------------------------------------
+
+#[test]
+fn claude_provider_with_model_in_build_command() {
+    let p = ClaudeProvider {
+        binary: "claude".into(),
+        model: Some("claude-haiku-4-5-20251001".into()),
+    };
+    let (_, args) = p.build_command("prompt", &PermissionProfile::Implement, "sys");
+    let has_model = args
+        .windows(2)
+        .any(|w| w[0] == "--model" && w[1] == "claude-haiku-4-5-20251001");
+    assert!(
+        has_model,
+        "--model flag must appear in build_command args when model is set"
+    );
+}
+
+#[test]
+fn claude_provider_no_model_flag_when_unset() {
+    let p = ClaudeProvider::default();
+    let (_, args) = p.build_command("prompt", &PermissionProfile::Implement, "sys");
+    assert!(
+        !args.iter().any(|a| a == "--model"),
+        "--model must not appear when model is None"
+    );
+}
+
+#[test]
+fn claude_provider_with_model_clones_correctly() {
+    let p = ClaudeProvider {
+        binary: "my-claude".into(),
+        model: None,
+    };
+    let overridden = p.with_model(Some("claude-sonnet-4-6".into()));
+    let (_, args) = overridden.build_command("p", &PermissionProfile::Implement, "s");
+    assert!(
+        args.windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "claude-sonnet-4-6"),
+        "with_model must pass through to build_command"
+    );
+}
+
+#[test]
+fn dispatch_config_pipeline_models_parsed() {
+    let toml = r#"
+[dispatch]
+provider = "claude"
+
+[dispatch.pipeline_models]
+"scoping-agent" = "claude-haiku-4-5-20251001"
+"dev-agent" = "claude-sonnet-4-6"
+"#;
+    let cfg: crate::config::Config = toml::from_str(toml).expect("config parse");
+    let dispatch = cfg.dispatch.expect("dispatch section");
+    assert_eq!(
+        dispatch
+            .pipeline_models
+            .get("scoping-agent")
+            .map(|s| s.as_str()),
+        Some("claude-haiku-4-5-20251001")
+    );
+    assert_eq!(
+        dispatch
+            .pipeline_models
+            .get("dev-agent")
+            .map(|s| s.as_str()),
+        Some("claude-sonnet-4-6")
+    );
+}
+
+#[test]
+fn dispatch_config_pipeline_models_defaults_empty() {
+    let toml = r#"
+[dispatch]
+provider = "claude"
+"#;
+    let cfg: crate::config::Config = toml::from_str(toml).expect("config parse");
+    let dispatch = cfg.dispatch.expect("dispatch section");
+    assert!(
+        dispatch.pipeline_models.is_empty(),
+        "pipeline_models defaults to empty map"
+    );
 }
 
 #[test]
@@ -779,6 +873,7 @@ async fn spawn_with_compute_uses_container() {
         &agent,
         None,
         Some(&compute),
+        None,
     )
     .await
     .unwrap();
@@ -813,9 +908,18 @@ async fn spawn_with_compute_forwards_command() {
     let agent = MockAgentProvider::succeeding();
     let compute = MockProvider::new();
 
-    let _handle = spawn(&bead, repo.path(), false, 0, &agent, None, Some(&compute))
-        .await
-        .unwrap();
+    let _handle = spawn(
+        &bead,
+        repo.path(),
+        false,
+        0,
+        &agent,
+        None,
+        Some(&compute),
+        None,
+    )
+    .await
+    .unwrap();
 
     // Assert the command forwarded to exec() matches build_command() output
     let execs = compute.execs.lock().unwrap();
@@ -848,9 +952,18 @@ async fn spawn_with_compute_exec_failure_still_destroys() {
         stderr: "container error".into(),
     });
 
-    let handle = spawn(&bead, repo.path(), false, 0, &agent, None, Some(&compute))
-        .await
-        .unwrap();
+    let handle = spawn(
+        &bead,
+        repo.path(),
+        false,
+        0,
+        &agent,
+        None,
+        Some(&compute),
+        None,
+    )
+    .await
+    .unwrap();
 
     // Even though exec failed, container should be destroyed
     let destroys = compute.destroys.lock().unwrap();
@@ -881,6 +994,7 @@ async fn spawn_without_compute_uses_local() {
         &agent,
         None,
         None, // no compute = local
+        None,
     )
     .await
     .unwrap();
@@ -1011,6 +1125,10 @@ impl AgentProvider for FailingAgentProvider {
     fn name(&self) -> &str {
         "failing"
     }
+
+    fn with_model(&self, _model: Option<String>) -> Box<dyn providers::AgentProvider> {
+        Box::new(FailingAgentProvider)
+    }
 }
 
 /// Regression: if spawn_agent fails after a git worktree has been created,
@@ -1041,6 +1159,7 @@ async fn spawn_failure_cleans_up_git_worktree() {
         true, // isolate=true forces worktree creation
         0,
         &FailingAgentProvider,
+        None,
         None,
         None,
     )

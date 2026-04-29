@@ -272,6 +272,19 @@ pub struct DispatchConfig {
     ///
     /// Priority: env vars → per-repo `.envrc` → this field.
     pub anthropic_api_key: Option<String>,
+    /// Per-agent model overrides. Maps agent name → model string.
+    ///
+    /// Light prompts (scoping, triage) should use haiku; heavy prompts
+    /// (dev, architect) should use sonnet or opus.
+    ///
+    /// Example:
+    /// ```toml
+    /// [dispatch.pipeline_models]
+    /// "scoping-agent" = "claude-haiku-4-5-20251001"
+    /// "dev-agent" = "claude-sonnet-4-6"
+    /// ```
+    #[serde(default)]
+    pub pipeline_models: HashMap<String, String>,
 }
 
 fn default_dispatch_provider() -> String {

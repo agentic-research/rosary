@@ -43,6 +43,12 @@ pub trait AgentProvider: Send + Sync {
 
     /// Human-readable name of this provider.
     fn name(&self) -> &str;
+
+    /// Clone this provider with a model override for a single dispatch.
+    ///
+    /// Providers that support model selection (Claude) use the model;
+    /// others return a copy of themselves unchanged.
+    fn with_model(&self, model: Option<String>) -> Box<dyn AgentProvider>;
 }
 
 /// Provider that shells out to the Claude Code CLI (`claude -p`).
@@ -52,12 +58,16 @@ pub trait AgentProvider: Send + Sync {
 pub struct ClaudeProvider {
     /// Absolute path to the claude binary. If empty, uses PATH lookup.
     pub binary: String,
+    /// Optional model override (e.g. "claude-haiku-4-5-20251001").
+    /// Passed as `--model` to the Claude CLI.
+    pub model: Option<String>,
 }
 
 impl Default for ClaudeProvider {
     fn default() -> Self {
         Self {
             binary: "claude".to_string(),
+            model: None,
         }
     }
 }
@@ -92,7 +102,7 @@ impl AgentProvider for ClaudeProvider {
         let auth_token = resolve_auth_token(work_dir);
 
         let mut cmd = tokio::process::Command::new(&self.binary);
-        cmd.args([
+        let mut base_args = vec![
             "-p",
             prompt,
             "--allowedTools",
@@ -101,16 +111,20 @@ impl AgentProvider for ClaudeProvider {
             system_prompt,
             "--output-format",
             "json",
-        ])
-        .current_dir(work_dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("CLAUDECODE")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::from(log_file))
-        .stderr(std::process::Stdio::from(err_file));
+        ];
+        if let Some(ref m) = self.model {
+            base_args.extend_from_slice(&["--model", m.as_str()]);
+        }
+        cmd.args(base_args)
+            .current_dir(work_dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::from(log_file))
+            .stderr(std::process::Stdio::from(err_file));
 
         if let Some(ref token) = auth_token {
             cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
@@ -133,25 +147,32 @@ impl AgentProvider for ClaudeProvider {
         permissions: &PermissionProfile,
         system_prompt: &str,
     ) -> (String, Vec<String>) {
-        // build_command returns the -p form for compute providers (containers)
-        // that can't do the streaming protocol
-        (
-            self.binary.clone(),
-            vec![
-                "-p".to_string(),
-                prompt.to_string(),
-                "--allowedTools".to_string(),
-                permissions.claude_allowed_tools().to_string(),
-                "--append-system-prompt".to_string(),
-                system_prompt.to_string(),
-                "--output-format".to_string(),
-                "json".to_string(),
-            ],
-        )
+        let mut args = vec![
+            "-p".to_string(),
+            prompt.to_string(),
+            "--allowedTools".to_string(),
+            permissions.claude_allowed_tools().to_string(),
+            "--append-system-prompt".to_string(),
+            system_prompt.to_string(),
+            "--output-format".to_string(),
+            "json".to_string(),
+        ];
+        if let Some(ref m) = self.model {
+            args.push("--model".to_string());
+            args.push(m.clone());
+        }
+        (self.binary.clone(), args)
     }
 
     fn name(&self) -> &str {
         "claude"
+    }
+
+    fn with_model(&self, model: Option<String>) -> Box<dyn AgentProvider> {
+        Box::new(ClaudeProvider {
+            binary: self.binary.clone(),
+            model,
+        })
     }
 }
 
@@ -218,6 +239,13 @@ impl AgentProvider for GeminiProvider {
     fn name(&self) -> &str {
         "gemini"
     }
+
+    fn with_model(&self, _model: Option<String>) -> Box<dyn AgentProvider> {
+        Box::new(GeminiProvider {
+            binary: self.binary.clone(),
+            extra_args: self.extra_args.clone(),
+        })
+    }
 }
 
 /// Provider that spawns an ACP-compatible agent binary.
@@ -272,6 +300,12 @@ impl AgentProvider for AcpCliProvider {
     fn name(&self) -> &str {
         "acp"
     }
+
+    fn with_model(&self, _model: Option<String>) -> Box<dyn AgentProvider> {
+        Box::new(AcpCliProvider {
+            binary: self.binary.clone(),
+        })
+    }
 }
 
 /// Provider that uses the ACP protocol natively via `ClientSideConnection`.
@@ -316,6 +350,12 @@ impl AgentProvider for AcpNativeProvider {
 
     fn name(&self) -> &str {
         "acp"
+    }
+
+    fn with_model(&self, _model: Option<String>) -> Box<dyn AgentProvider> {
+        Box::new(AcpNativeProvider {
+            binary: self.binary.clone(),
+        })
     }
 }
 
@@ -390,7 +430,10 @@ pub fn provider_by_name(
                 .get("claude")
                 .cloned()
                 .unwrap_or_else(|| "claude".to_string());
-            Ok(Box::new(ClaudeProvider { binary }))
+            Ok(Box::new(ClaudeProvider {
+                binary,
+                model: None,
+            }))
         }
         "gemini" => {
             let binary = binaries

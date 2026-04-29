@@ -164,6 +164,9 @@ pub struct Reconciler {
     orchestrators: HashMap<String, FeatureOrchestrator>,
     /// Plugin hooks wired into verify/review/triage from [[plugins]] config.
     plugin_registry: crate::plugin::PluginRegistry,
+    /// Per-agent model overrides from [dispatch.pipeline_models] config.
+    /// Maps agent name (e.g. "scoping-agent") to model string (e.g. "claude-haiku-4-5-20251001").
+    pipeline_models: HashMap<String, String>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -214,9 +217,13 @@ impl Reconciler {
             repo_info.insert(repo.name.clone(), (path, lang));
         }
 
-        let binaries = crate::config::load_global()
-            .ok()
-            .and_then(|c| c.dispatch.map(|d| d.binaries))
+        let global_dispatch = crate::config::load_global().ok().and_then(|c| c.dispatch);
+        let binaries = global_dispatch
+            .as_ref()
+            .map(|d| d.binaries.clone())
+            .unwrap_or_default();
+        let pipeline_models = global_dispatch
+            .map(|d| d.pipeline_models)
             .unwrap_or_default();
         let provider =
             dispatch::provider_by_name(&config.provider, &binaries).unwrap_or_else(|e| {
@@ -404,6 +411,7 @@ impl Reconciler {
             repo_cache,
             orchestrators: HashMap::new(),
             plugin_registry,
+            pipeline_models,
         }
     }
 
@@ -688,6 +696,9 @@ impl Reconciler {
                     self.provider.as_ref(),
                     self.agents_dir.as_deref(),
                     None, // compute: local subprocess (default)
+                    self.pipeline_models
+                        .get(dispatch_bead.owner.as_deref().unwrap_or(""))
+                        .cloned(),
                 )
                 .await
                 {
