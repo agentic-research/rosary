@@ -4,6 +4,7 @@
 //! - **stdio**: line-delimited JSON-RPC over stdin/stdout (default)
 //! - **http**: MCP Streamable HTTP transport over a single `/mcp` endpoint
 
+mod github_webhook;
 mod handlers;
 mod landing;
 mod tools;
@@ -268,8 +269,10 @@ pub(crate) struct AppState {
     pub pool: Arc<RepoPool>,
     pub config_path: Arc<str>,
     pub sessions: Arc<RwLock<HashSet<String>>>,
-    /// Webhook signing secret (from config or env).
+    /// Linear webhook signing secret (from config or env).
     pub webhook_secret: Option<Arc<str>>,
+    /// GitHub webhook signing secret (from config or env).
+    pub github_webhook_secret: Option<Arc<str>>,
     /// Backend store for cross-repo orchestrator state (pipeline, dispatches, linkage).
     /// None when `[backend]` is not configured — existing functionality is unaffected.
     pub backend: Option<Arc<dyn BackendStore>>,
@@ -490,6 +493,13 @@ async fn run_http(config_path: &str, port: u16) -> Result<()> {
         .or_else(|| std::env::var("LINEAR_WEBHOOK_SECRET").ok())
         .filter(|s| !s.is_empty());
 
+    let github_webhook_secret = cfg
+        .github
+        .as_ref()
+        .and_then(|g| g.webhook_secret.clone())
+        .or_else(|| std::env::var("GITHUB_WEBHOOK_SECRET").ok())
+        .filter(|s| !s.is_empty());
+
     // Connect backend store if [backend] is configured
     let backend = if let Some(ref backend_cfg) = cfg.backend {
         match backend_cfg.connect().await {
@@ -519,6 +529,7 @@ async fn run_http(config_path: &str, port: u16) -> Result<()> {
         config_path: Arc::from(config_path),
         sessions: Arc::new(RwLock::new(HashSet::new())),
         webhook_secret: webhook_secret.map(|s| Arc::from(s.as_str())),
+        github_webhook_secret: github_webhook_secret.map(|s| Arc::from(s.as_str())),
         backend,
         repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
     };
@@ -532,6 +543,10 @@ async fn run_http(config_path: &str, port: u16) -> Result<()> {
                 .delete(handle_mcp_delete),
         )
         .route("/webhook", axum::routing::post(webhook::handle_webhook))
+        .route(
+            "/webhook/github",
+            axum::routing::post(github_webhook::handle_github_webhook),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .with_state(state);
 
@@ -890,6 +905,7 @@ mod tests {
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: None,
+            github_webhook_secret: None,
             backend: None,
             repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
         };
@@ -926,6 +942,7 @@ mod tests {
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: None,
+            github_webhook_secret: None,
             backend: None,
             repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
         };
@@ -959,6 +976,7 @@ mod tests {
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::from(["sess-1".to_string()]))),
             webhook_secret: None,
+            github_webhook_secret: None,
             backend: None,
             repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
         };

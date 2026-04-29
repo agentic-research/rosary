@@ -239,6 +239,9 @@ pub struct GitHubConfig {
     pub client_id: Option<String>,
     /// Path to the PEM private key file for JWT signing.
     pub private_key_path: Option<String>,
+    /// Webhook secret for verifying `X-Hub-Signature-256` on incoming GitHub events.
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
 }
 
 fn default_base_branch() -> String {
