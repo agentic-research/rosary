@@ -33,6 +33,7 @@ mod linear_tracker;
 mod manifest;
 #[allow(dead_code)]
 mod migrate;
+mod notes;
 mod orchestrate;
 mod pipeline;
 mod plugin;
@@ -299,6 +300,33 @@ enum Command {
         /// Write extracted BeadSpecs as beads (default: dry-run to stdout)
         #[arg(long)]
         commit: bool,
+    },
+    /// Manage encrypted notes (age-encrypted, scope-organized)
+    Notes {
+        #[command(subcommand)]
+        action: NotesAction,
+        /// Repo path containing `notes/`
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum NotesAction {
+    /// Re-encrypt all notes in a scope after editing the recipient list
+    Rotate {
+        /// Scope name (becomes `notes/<scope>/`)
+        #[arg(long)]
+        scope: String,
+        /// Recipient(s) to add (repeatable)
+        #[arg(long = "add-recipient", value_name = "RECIPIENT")]
+        add: Vec<String>,
+        /// Recipient(s) to remove (repeatable)
+        #[arg(long = "remove-recipient", value_name = "RECIPIENT")]
+        remove: Vec<String>,
+        /// Identity file for decryption (default: $HOME/.config/age/keys.txt)
+        #[arg(long)]
+        identity: Option<PathBuf>,
     },
 }
 
@@ -1289,6 +1317,32 @@ async fn main() -> Result<()> {
                 eprintln!("Verification: FAILED — counts mismatch!");
                 eprintln!("Backup at: {backup_dir}");
                 std::process::exit(1);
+            }
+        }
+        Command::Notes { action, repo } => {
+            let repo_root = scanner::resolve_repo_path(Path::new(&repo));
+            match action {
+                NotesAction::Rotate {
+                    scope,
+                    add,
+                    remove,
+                    identity,
+                } => {
+                    let opts = notes::RotateOpts {
+                        repo_root: &repo_root,
+                        scope: &scope,
+                        add_recipients: &add,
+                        remove_recipients: &remove,
+                        identity: identity.as_deref(),
+                    };
+                    let result = notes::rotate_scope(&opts).await?;
+                    println!(
+                        "rotated {} file(s) in notes/{} (recipients: {})",
+                        result.files_rotated,
+                        scope,
+                        result.final_recipients.len()
+                    );
+                }
             }
         }
     }
