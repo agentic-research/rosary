@@ -51,22 +51,49 @@ pub struct Config {
     pub plugins: Vec<PluginConfig>,
 }
 
+/// Role of a plugin in the rosary pipeline.
+///
+/// `kind` defaults to `Hook` (backward-compatible) when absent from TOML.
+/// Non-hook kinds are parsed and stored but not yet routed — they will be
+/// wired in follow-on beads (MCP client, dispatch backend, state-sink).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginKind {
+    /// Lifecycle hook (verify / review / triage / close). Default.
+    #[default]
+    Hook,
+    /// Context/tool provider — rosary connects as an outbound MCP client.
+    Mcp,
+    /// Execution backend — dispatches agents (sandboxed runners, chain-YAML, etc.).
+    Dispatch,
+    /// Outbound state mirror — issue trackers, dashboards, webhooks.
+    StateSink,
+}
+
 /// A pipeline plugin: an external process or HTTP endpoint that participates
-/// in the verify/review/triage pipeline as a first-class hook.
+/// in the pipeline as a hook, MCP tool provider, dispatch backend, or state sink.
 ///
 /// ```toml
+/// # Lifecycle hook (default — no `kind` needed)
 /// [[plugins]]
 /// name = "review-tui"
 /// hook = "pipeline.review"
 /// command = ["review-tui", "--rsry-hook"]
 ///
+/// # MCP context provider
 /// [[plugins]]
-/// name = "custom-linter"
-/// hook = "pipeline.verify"
-/// url = "http://localhost:9999/hook"
+/// name = "mache"
+/// kind = "mcp"
+/// url = "http://localhost:8484"
+///
+/// # Execution backend
+/// [[plugins]]
+/// name = "chain-runner"
+/// kind = "dispatch"
+/// command = ["claude-guard", "run"]
 /// ```
 ///
-/// Hook points:
+/// Hook points (only used when `kind = "hook"`):
 ///   `pipeline.verify`  — appended to the verify tier chain (runs after built-in tiers)
 ///   `pipeline.review`  — replaces/extends ReviewCheck during the review phase
 ///   `pipeline.triage`  — called during reconciler triage; can skip a bead
@@ -75,7 +102,11 @@ pub struct Config {
 pub struct PluginConfig {
     /// Display name (used in logs and verify summary).
     pub name: String,
-    /// Hook point. See struct docs for valid values.
+    /// Plugin role. Defaults to `Hook` when absent (backward-compatible).
+    #[serde(default)]
+    pub kind: PluginKind,
+    /// Hook point (only meaningful when `kind = "hook"`). See struct docs.
+    #[serde(default)]
     pub hook: String,
     /// Subprocess command (mutually exclusive with `url`).
     /// First element is the executable, remaining are arguments.
@@ -85,6 +116,14 @@ pub struct PluginConfig {
     /// HTTP endpoint URL (mutually exclusive with `command`).
     /// Receives JSON context via POST body; must return JSON verdict.
     pub url: Option<String>,
+}
+
+impl PluginConfig {
+    /// Returns true if this plugin is a lifecycle hook (the only kind that
+    /// participates in verify/triage/close today).
+    pub fn is_hook(&self) -> bool {
+        self.kind == PluginKind::Hook
+    }
 }
 
 /// Compute provider selection + backend-specific settings.
@@ -1374,5 +1413,74 @@ token = "ghp_test"
         let config: Config = toml::from_str(toml).unwrap();
         let gh = config.github.unwrap();
         assert_eq!(gh.agent_branch_prefix, "rosary");
+    }
+
+    #[test]
+    fn plugin_kind_missing_defaults_to_hook() {
+        let toml = r#"
+[[plugins]]
+name = "my-linter"
+hook = "pipeline.verify"
+command = ["assay", "verify"]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.plugins.len(), 1);
+        assert_eq!(config.plugins[0].kind, PluginKind::Hook);
+        assert!(config.plugins[0].is_hook());
+    }
+
+    #[test]
+    fn plugin_kind_mcp_parses() {
+        let toml = r#"
+[[plugins]]
+name = "mache"
+kind = "mcp"
+url = "http://localhost:8484"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.plugins[0].kind, PluginKind::Mcp);
+        assert!(!config.plugins[0].is_hook());
+    }
+
+    #[test]
+    fn plugin_kind_dispatch_parses() {
+        let toml = r#"
+[[plugins]]
+name = "chain-runner"
+kind = "dispatch"
+command = ["claude-guard", "run"]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.plugins[0].kind, PluginKind::Dispatch);
+        assert!(!config.plugins[0].is_hook());
+    }
+
+    #[test]
+    fn plugin_kind_state_sink_parses() {
+        let toml = r#"
+[[plugins]]
+name = "linear-mirror"
+kind = "state_sink"
+url = "http://localhost:9090/sink"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.plugins[0].kind, PluginKind::StateSink);
+        assert!(!config.plugins[0].is_hook());
+    }
+
+    #[test]
+    fn plugin_kind_all_kinds_roundtrip() {
+        let kinds = [
+            (PluginKind::Hook, "hook"),
+            (PluginKind::Mcp, "mcp"),
+            (PluginKind::Dispatch, "dispatch"),
+            (PluginKind::StateSink, "state_sink"),
+        ];
+        for (kind, expected_str) in &kinds {
+            let json = serde_json::to_string(kind).unwrap();
+            assert_eq!(json, format!("\"{expected_str}\""));
+            let back: PluginKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(&back, kind);
+        }
     }
 }

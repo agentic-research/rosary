@@ -53,7 +53,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 
-use crate::config::PluginConfig;
+use crate::config::{PluginConfig, PluginKind};
 use crate::verify::{VerifyResult, VerifyTier};
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -242,7 +242,7 @@ impl PluginRegistry {
     pub fn verify_tiers(&self, context: PluginContext) -> Vec<Box<dyn VerifyTier>> {
         self.plugins
             .iter()
-            .filter(|p| p.hook == "pipeline.verify" || p.hook == "pipeline.review")
+            .filter(|p| p.is_hook() && (p.hook == "pipeline.verify" || p.hook == "pipeline.review"))
             .map(|p| Box::new(PluginTier::new(p.clone(), context.clone())) as Box<dyn VerifyTier>)
             .collect()
     }
@@ -251,7 +251,11 @@ impl PluginRegistry {
     ///
     /// Returns `Some(reason)` if any plugin says to skip the bead, `None` to proceed.
     pub fn call_triage_hooks(&self, context: &PluginContext) -> Option<String> {
-        for plugin in self.plugins.iter().filter(|p| p.hook == "pipeline.triage") {
+        for plugin in self
+            .plugins
+            .iter()
+            .filter(|p| p.is_hook() && p.hook == "pipeline.triage")
+        {
             let input = HookInput {
                 hook: &plugin.hook,
                 bead_id: &context.bead_id,
@@ -278,7 +282,11 @@ impl PluginRegistry {
 
     /// Call all `pipeline.close` hooks when a bead finishes.
     pub fn call_close_hooks(&self, context: &PluginContext) {
-        for plugin in self.plugins.iter().filter(|p| p.hook == "pipeline.close") {
+        for plugin in self
+            .plugins
+            .iter()
+            .filter(|p| p.is_hook() && p.hook == "pipeline.close")
+        {
             let input = HookInput {
                 hook: &plugin.hook,
                 bead_id: &context.bead_id,
@@ -328,27 +336,22 @@ mod tests {
         assert!(matches!(r, VerifyResult::Partial(_)));
     }
 
+    fn hook_plugin(name: &str, hook: &str) -> PluginConfig {
+        PluginConfig {
+            name: name.into(),
+            kind: PluginKind::Hook,
+            hook: hook.into(),
+            command: vec!["echo".into()],
+            url: None,
+        }
+    }
+
     #[test]
     fn verify_tiers_filters_by_hook() {
         let plugins = vec![
-            PluginConfig {
-                name: "a".into(),
-                hook: "pipeline.verify".into(),
-                command: vec!["echo".into()],
-                url: None,
-            },
-            PluginConfig {
-                name: "b".into(),
-                hook: "pipeline.triage".into(),
-                command: vec!["echo".into()],
-                url: None,
-            },
-            PluginConfig {
-                name: "c".into(),
-                hook: "pipeline.review".into(),
-                command: vec!["echo".into()],
-                url: None,
-            },
+            hook_plugin("a", "pipeline.verify"),
+            hook_plugin("b", "pipeline.triage"),
+            hook_plugin("c", "pipeline.review"),
         ];
         let registry = PluginRegistry::new(plugins);
         let ctx = PluginContext::new("rosary-abc", "rosary");
@@ -360,9 +363,37 @@ mod tests {
     }
 
     #[test]
+    fn verify_tiers_excludes_non_hook_kinds() {
+        let plugins = vec![
+            hook_plugin("hook-verify", "pipeline.verify"),
+            PluginConfig {
+                name: "mcp-provider".into(),
+                kind: PluginKind::Mcp,
+                hook: String::new(),
+                command: vec![],
+                url: Some("http://localhost:8484".into()),
+            },
+            PluginConfig {
+                name: "dispatch-backend".into(),
+                kind: PluginKind::Dispatch,
+                hook: String::new(),
+                command: vec!["runner".into()],
+                url: None,
+            },
+        ];
+        let registry = PluginRegistry::new(plugins);
+        let ctx = PluginContext::new("rosary-abc", "rosary");
+        let tiers = registry.verify_tiers(ctx);
+        // only the hook plugin; mcp and dispatch are excluded
+        assert_eq!(tiers.len(), 1);
+        assert_eq!(tiers[0].name(), "hook-verify");
+    }
+
+    #[test]
     fn plugin_tier_fails_open_on_unavailable_command() {
         let plugin = PluginConfig {
             name: "nonexistent".into(),
+            kind: PluginKind::Hook,
             hook: "pipeline.verify".into(),
             command: vec!["__rsry_no_such_binary_9x__".into()],
             url: None,
