@@ -243,6 +243,7 @@ pub(crate) fn tool_definitions() -> Value {
                     "properties": {
                         "path": { "type": "string", "description": "Absolute path to the markdown file" },
                         "title": { "type": "string", "description": "Title for the decade (defaults to first heading)" },
+                        "model": { "type": "string", "description": "LLM model for gap-filling non-ADR docs (e.g. 'haiku', 'sonnet'). When set, runs claude -p to extract atoms from freeform markdown. Omit for ADR-shaped docs — structured parser handles those without LLM." },
                         "repo_path": { "type": "string", "description": "Absolute path to the repo root (.beads/ directory). Required when commit=true." },
                         "commit": { "type": "boolean", "description": "When true, create beads in repo_path. When false (default), returns preview only.", "default": false }
                     },

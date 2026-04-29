@@ -133,6 +133,7 @@ impl Reconciler {
                             self.provider.as_ref(),
                             self.agents_dir.as_deref(),
                             None,
+                            None, // model: orchestrator uses provider default
                         )
                         .await
                         {

@@ -3,7 +3,7 @@
 //! `AgentSession` decouples from `tokio::process::Child` so we can support
 //! CLI subprocesses, ACP sockets, raw API calls, container-dispatched agents, etc.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 /// Abstract session to a running agent. Decouples from tokio::process::Child
 /// so we can support CLI subprocesses, ACP sockets, raw API calls, etc.
@@ -110,5 +110,46 @@ impl AgentSession for ComputeSession {
         self.rx = None;
         self.result = Some(false);
         Ok(())
+    }
+}
+
+/// Session wrapping a `std::process::Child`. Used by `PluginDispatchProvider`
+/// which needs synchronous stdin writes that `tokio::process::Child` doesn't support.
+///
+/// `wait()` uses `block_in_place` — requires a multi-threaded tokio runtime,
+/// which is the production default. Single-threaded test runtimes must use
+/// `#[tokio::test(flavor = "multi_thread")]`.
+pub(crate) struct StdCliSession {
+    pub(crate) child: std::process::Child,
+}
+
+impl StdCliSession {
+    pub(crate) fn new(child: std::process::Child) -> Self {
+        Self { child }
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentSession for StdCliSession {
+    fn try_wait(&mut self) -> Result<Option<bool>> {
+        match self.child.try_wait()? {
+            Some(status) => Ok(Some(status.success())),
+            None => Ok(None),
+        }
+    }
+
+    async fn wait(&mut self) -> Result<bool> {
+        let status = tokio::task::block_in_place(|| self.child.wait())
+            .context("waiting for dispatch plugin")?;
+        Ok(status.success())
+    }
+
+    fn kill(&mut self) -> Result<()> {
+        self.child.kill()?;
+        Ok(())
+    }
+
+    fn pid(&self) -> Option<u32> {
+        Some(self.child.id())
     }
 }

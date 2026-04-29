@@ -640,6 +640,7 @@ impl Reconciler {
                         self.provider.as_ref(),
                         self.agents_dir.as_deref(),
                         None,
+                        None, // model: verify re-dispatch uses provider default
                     )
                     .await
                     {

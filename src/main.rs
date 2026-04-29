@@ -38,6 +38,7 @@ mod queue;
 mod reconcile;
 mod repo_cache;
 mod scanner;
+mod secrets;
 mod serve;
 mod session;
 #[allow(dead_code)] // API surface — wired in rsry-e599fb (SpritesProvider)
@@ -693,12 +694,13 @@ async fn main() -> Result<()> {
             // Route: ADR-shaped docs use the heuristic parser.
             // Non-ADR docs with --model set use LLM extraction.
             let (atoms, meta) = if model.is_some() && !bdr::parse::is_adr_shaped(&markdown) {
-                let api_key = std::env::var("ANTHROPIC_API_KEY")
-                    .context("ANTHROPIC_API_KEY required for --model flag")?;
                 let model_name = model.as_deref().unwrap();
-                let atoms =
-                    bdr_enrich::extract_atoms_with_llm(&markdown, &api_key, model_name).await?;
-                (atoms, bdr::parse::AdrMeta::default())
+                let atoms = bdr_enrich::extract_atoms_with_llm(&markdown, model_name).await?;
+                let meta = bdr::parse::DocMeta {
+                    provenance: Some(bdr::provenance::ProvenanceRef::Doc { path: path.clone() }),
+                    ..Default::default()
+                };
+                (atoms, meta)
             } else {
                 let parsed = bdr::parse::parse_doc_full(&markdown, &path);
                 (parsed.atoms, parsed.meta)
@@ -717,7 +719,20 @@ async fn main() -> Result<()> {
                     .unwrap_or_else(|| path.clone())
             });
 
-            let decade = bdr::thread::build_decade_with_meta(&path, &adr_title, &atoms, &meta);
+            let mut decade = bdr::thread::build_decade_with_meta(&path, &adr_title, &atoms, &meta);
+
+            // When LLM extraction was used, stamp inferred_from on every BeadSpec.
+            if let Some(ref model_name) = model {
+                let trace = bdr::provenance::InferenceTrace {
+                    model: bdr_enrich::resolve_model_id(model_name).to_string(),
+                    rationale: None,
+                };
+                for thread in &mut decade.threads {
+                    for spec in &mut thread.beads {
+                        spec.inferred_from = Some(trace.clone());
+                    }
+                }
+            }
 
             cli::decompose_decade(
                 &decade.title,

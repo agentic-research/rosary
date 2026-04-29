@@ -234,6 +234,7 @@ pub async fn spawn(
     provider: &dyn AgentProvider,
     agents_dir: Option<&Path>,
     compute: Option<&dyn crate::backend::ComputeProvider>,
+    model: Option<String>,
 ) -> Result<AgentHandle> {
     let path = expand_path(repo_path);
     let repo_name = path
@@ -312,11 +313,21 @@ pub async fn spawn(
         _ => permission_profile(&bead.issue_type),
     };
 
+    // Apply per-phase model override if provided.
+    let model_provider: Option<Box<dyn AgentProvider>>;
+    let effective_provider: &dyn AgentProvider = if model.is_some() {
+        model_provider = Some(provider.with_model(model));
+        model_provider.as_deref().unwrap()
+    } else {
+        model_provider = None;
+        provider
+    };
+
     let agent_label = bead.owner.as_deref().unwrap_or("generic");
     eprintln!(
         "[dispatch] {} -> {} (agent={}, perms={:?})",
         bead.id,
-        provider.name(),
+        effective_provider.name(),
         agent_label,
         permissions
     );
@@ -324,11 +335,11 @@ pub async fn spawn(
     let session: Box<dyn AgentSession> = if let Some(compute) = compute {
         // Container dispatch: build command, provision, exec, destroy.
         // Synchronous -- spawn() blocks for exec duration. Session is already resolved.
-        let (bin, args) = provider.build_command(&prompt, &permissions, &system_prompt);
+        let (bin, args) = effective_provider.build_command(&prompt, &permissions, &system_prompt);
         anyhow::ensure!(
             !bin.is_empty(),
             "{} does not support build_command()",
-            provider.name()
+            effective_provider.name()
         );
 
         let opts = crate::backend::ProvisionOpts::new(&bead.id, &repo_name);
@@ -387,9 +398,9 @@ pub async fn spawn(
     } else {
         // Local dispatch: spawn agent process directly (existing behavior).
         // On failure, clean up the workspace so no orphaned worktrees are left.
-        match provider
+        match effective_provider
             .spawn_agent(&prompt, &work_dir, &permissions, &system_prompt)
-            .with_context(|| format!("spawning {} for {}", provider.name(), bead.id))
+            .with_context(|| format!("spawning {} for {}", effective_provider.name(), bead.id))
         {
             Ok(session) => session,
             Err(e) => {
@@ -458,6 +469,7 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
         &ClaudeProvider::default(),
         agents_dir.as_deref(),
         None, // compute: local subprocess (default)
+        None, // model: use provider default
     )
     .await?;
     let success = handle.wait().await?;

@@ -53,7 +53,9 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 
-use crate::config::PluginConfig;
+use crate::config::{PluginConfig, PluginKind};
+use crate::dispatch::session::StdCliSession;
+use crate::dispatch::{AgentProvider, PermissionProfile};
 use crate::verify::{VerifyResult, VerifyTier};
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -214,6 +216,109 @@ impl VerifyTier for PluginTier {
     }
 }
 
+// ── Dispatch provider ─────────────────────────────────────────────────────────
+
+/// JSON payload sent to `kind = "dispatch"` plugin subprocesses (stdin).
+///
+/// The plugin is responsible for spawning its own execution backend
+/// (claude, container, chain-YAML runner, etc.) and exiting with code 0 on
+/// success or non-zero on failure. Rosary treats the exit code as the
+/// session result.
+#[derive(Debug, Serialize)]
+struct DispatchInput<'a> {
+    /// Always "dispatch".
+    hook: &'a str,
+    bead_id: &'a str,
+    repo: &'a str,
+    work_dir: &'a str,
+    prompt: &'a str,
+    /// Permission profile as a string: "implement", "read_only", or "plan".
+    permissions: &'a str,
+}
+
+/// An `AgentProvider` backed by a `kind = "dispatch"` plugin.
+///
+/// On `spawn_agent`, rosary serialises the bead context to JSON and pipes it
+/// to the plugin subprocess stdin. The subprocess IS the agent: it may shell
+/// out to claude, run a container, or execute a chain-YAML workflow. Rosary
+/// waits for it to exit and interprets the exit code.
+pub struct PluginDispatchProvider {
+    plugin: PluginConfig,
+    bead_id: String,
+    repo: String,
+}
+
+impl PluginDispatchProvider {
+    pub fn new(plugin: PluginConfig, context: PluginContext) -> Self {
+        Self {
+            plugin,
+            bead_id: context.bead_id,
+            repo: context.repo,
+        }
+    }
+}
+
+impl AgentProvider for PluginDispatchProvider {
+    fn spawn_agent(
+        &self,
+        prompt: &str,
+        work_dir: &Path,
+        permissions: &PermissionProfile,
+        _system_prompt: &str,
+    ) -> Result<Box<dyn crate::dispatch::AgentSession>> {
+        let perms_str = match permissions {
+            PermissionProfile::ReadOnly => "read_only",
+            PermissionProfile::Plan => "plan",
+            PermissionProfile::Implement => "implement",
+        };
+        let input = DispatchInput {
+            hook: "dispatch",
+            bead_id: &self.bead_id,
+            repo: &self.repo,
+            work_dir: work_dir.to_str().unwrap_or(""),
+            prompt,
+            permissions: perms_str,
+        };
+        let json = serde_json::to_string(&input)?;
+
+        let (prog, args) = self
+            .plugin
+            .command
+            .split_first()
+            .context("dispatch plugin command is empty")?;
+
+        let mut child = std::process::Command::new(prog)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| format!("spawning dispatch plugin '{}'", self.plugin.name))?;
+
+        // Write payload then close stdin so the plugin sees EOF.
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(json.as_bytes())
+            .with_context(|| format!("writing to dispatch plugin '{}'", self.plugin.name))?;
+
+        Ok(Box::new(StdCliSession::new(child)))
+    }
+
+    fn name(&self) -> &str {
+        &self.plugin.name
+    }
+
+    fn with_model(&self, _model: Option<String>) -> Box<dyn AgentProvider> {
+        Box::new(PluginDispatchProvider {
+            plugin: self.plugin.clone(),
+            bead_id: self.bead_id.clone(),
+            repo: self.repo.clone(),
+        })
+    }
+}
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 /// All configured plugins, indexed at startup.
@@ -242,7 +347,7 @@ impl PluginRegistry {
     pub fn verify_tiers(&self, context: PluginContext) -> Vec<Box<dyn VerifyTier>> {
         self.plugins
             .iter()
-            .filter(|p| p.hook == "pipeline.verify" || p.hook == "pipeline.review")
+            .filter(|p| p.is_hook() && (p.hook == "pipeline.verify" || p.hook == "pipeline.review"))
             .map(|p| Box::new(PluginTier::new(p.clone(), context.clone())) as Box<dyn VerifyTier>)
             .collect()
     }
@@ -251,7 +356,11 @@ impl PluginRegistry {
     ///
     /// Returns `Some(reason)` if any plugin says to skip the bead, `None` to proceed.
     pub fn call_triage_hooks(&self, context: &PluginContext) -> Option<String> {
-        for plugin in self.plugins.iter().filter(|p| p.hook == "pipeline.triage") {
+        for plugin in self
+            .plugins
+            .iter()
+            .filter(|p| p.is_hook() && p.hook == "pipeline.triage")
+        {
             let input = HookInput {
                 hook: &plugin.hook,
                 bead_id: &context.bead_id,
@@ -276,9 +385,28 @@ impl PluginRegistry {
         None
     }
 
+    /// Return `AgentProvider` boxes for all `kind = "dispatch"` plugins.
+    ///
+    /// The first matching provider in config order is used by the dispatch loop.
+    /// Callers can select by name if multiple dispatch plugins are configured.
+    pub fn dispatch_providers(&self, context: PluginContext) -> Vec<Box<dyn AgentProvider>> {
+        self.plugins
+            .iter()
+            .filter(|p| p.kind == PluginKind::Dispatch)
+            .map(|p| {
+                Box::new(PluginDispatchProvider::new(p.clone(), context.clone()))
+                    as Box<dyn AgentProvider>
+            })
+            .collect()
+    }
+
     /// Call all `pipeline.close` hooks when a bead finishes.
     pub fn call_close_hooks(&self, context: &PluginContext) {
-        for plugin in self.plugins.iter().filter(|p| p.hook == "pipeline.close") {
+        for plugin in self
+            .plugins
+            .iter()
+            .filter(|p| p.is_hook() && p.hook == "pipeline.close")
+        {
             let input = HookInput {
                 hook: &plugin.hook,
                 bead_id: &context.bead_id,
@@ -328,27 +456,22 @@ mod tests {
         assert!(matches!(r, VerifyResult::Partial(_)));
     }
 
+    fn hook_plugin(name: &str, hook: &str) -> PluginConfig {
+        PluginConfig {
+            name: name.into(),
+            kind: PluginKind::Hook,
+            hook: hook.into(),
+            command: vec!["echo".into()],
+            url: None,
+        }
+    }
+
     #[test]
     fn verify_tiers_filters_by_hook() {
         let plugins = vec![
-            PluginConfig {
-                name: "a".into(),
-                hook: "pipeline.verify".into(),
-                command: vec!["echo".into()],
-                url: None,
-            },
-            PluginConfig {
-                name: "b".into(),
-                hook: "pipeline.triage".into(),
-                command: vec!["echo".into()],
-                url: None,
-            },
-            PluginConfig {
-                name: "c".into(),
-                hook: "pipeline.review".into(),
-                command: vec!["echo".into()],
-                url: None,
-            },
+            hook_plugin("a", "pipeline.verify"),
+            hook_plugin("b", "pipeline.triage"),
+            hook_plugin("c", "pipeline.review"),
         ];
         let registry = PluginRegistry::new(plugins);
         let ctx = PluginContext::new("rosary-abc", "rosary");
@@ -360,9 +483,37 @@ mod tests {
     }
 
     #[test]
+    fn verify_tiers_excludes_non_hook_kinds() {
+        let plugins = vec![
+            hook_plugin("hook-verify", "pipeline.verify"),
+            PluginConfig {
+                name: "mcp-provider".into(),
+                kind: PluginKind::Mcp,
+                hook: String::new(),
+                command: vec![],
+                url: Some("http://localhost:8484".into()),
+            },
+            PluginConfig {
+                name: "dispatch-backend".into(),
+                kind: PluginKind::Dispatch,
+                hook: String::new(),
+                command: vec!["runner".into()],
+                url: None,
+            },
+        ];
+        let registry = PluginRegistry::new(plugins);
+        let ctx = PluginContext::new("rosary-abc", "rosary");
+        let tiers = registry.verify_tiers(ctx);
+        // only the hook plugin; mcp and dispatch are excluded
+        assert_eq!(tiers.len(), 1);
+        assert_eq!(tiers[0].name(), "hook-verify");
+    }
+
+    #[test]
     fn plugin_tier_fails_open_on_unavailable_command() {
         let plugin = PluginConfig {
             name: "nonexistent".into(),
+            kind: PluginKind::Hook,
             hook: "pipeline.verify".into(),
             command: vec!["__rsry_no_such_binary_9x__".into()],
             url: None,
@@ -371,5 +522,95 @@ mod tests {
         // should not error — should return Pass (fail-open)
         let result = tier.check(Path::new("/tmp")).unwrap();
         assert_eq!(result, VerifyResult::Pass);
+    }
+
+    // ── Dispatch-backend axis tests (rosary-5411bf) ───────────────────────────
+
+    fn dispatch_plugin(name: &str, command: Vec<String>) -> PluginConfig {
+        PluginConfig {
+            name: name.into(),
+            kind: PluginKind::Dispatch,
+            hook: String::new(),
+            command,
+            url: None,
+        }
+    }
+
+    #[test]
+    fn dispatch_providers_filters_by_kind() {
+        let plugins = vec![
+            hook_plugin("hook-verify", "pipeline.verify"),
+            dispatch_plugin("my-runner", vec!["runner".into()]),
+            PluginConfig {
+                name: "mcp-provider".into(),
+                kind: PluginKind::Mcp,
+                hook: String::new(),
+                command: vec![],
+                url: Some("http://localhost:8484".into()),
+            },
+        ];
+        let registry = PluginRegistry::new(plugins);
+        let ctx = PluginContext::new("rosary-abc", "rosary");
+        let providers = registry.dispatch_providers(ctx);
+        assert_eq!(providers.len(), 1, "only dispatch plugins returned");
+        assert_eq!(providers[0].name(), "my-runner");
+    }
+
+    #[test]
+    fn dispatch_providers_empty_when_no_dispatch_plugins() {
+        let plugins = vec![hook_plugin("hook-verify", "pipeline.verify")];
+        let registry = PluginRegistry::new(plugins);
+        let ctx = PluginContext::new("rosary-abc", "rosary");
+        let providers = registry.dispatch_providers(ctx);
+        assert!(providers.is_empty());
+    }
+
+    #[test]
+    fn dispatch_provider_name_matches_plugin_name() {
+        let plugin = dispatch_plugin("my-executor", vec!["true".into()]);
+        let ctx = PluginContext::new("rosary-abc", "rosary");
+        let provider = PluginDispatchProvider::new(plugin, ctx);
+        assert_eq!(provider.name(), "my-executor");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_backend_plugin_routes_and_exits() {
+        // Use `true` (always exits 0) as a minimal dispatch backend.
+        // The JSON payload is written to its stdin; it exits immediately.
+        let plugin = dispatch_plugin("true-runner", vec!["true".into()]);
+        let ctx = PluginContext::new("rosary-abc123", "rosary");
+        let provider = PluginDispatchProvider::new(plugin, ctx);
+
+        let mut session = provider
+            .spawn_agent(
+                "do the thing",
+                Path::new("/tmp"),
+                &PermissionProfile::Implement,
+                "",
+            )
+            .expect("spawn should succeed");
+
+        let success = session.wait().await.expect("wait should not error");
+        assert!(success, "exit-0 dispatch backend must report success");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_backend_plugin_failure_propagates() {
+        // Use `false` (always exits 1) to simulate a failing backend.
+        let plugin = dispatch_plugin("false-runner", vec!["false".into()]);
+        let ctx = PluginContext::new("rosary-fail1", "rosary");
+        let provider = PluginDispatchProvider::new(plugin, ctx);
+
+        let mut session = provider
+            .spawn_agent(
+                "do the thing",
+                Path::new("/tmp"),
+                &PermissionProfile::Implement,
+                "",
+            )
+            .expect("spawn should succeed");
+
+        let success = session.wait().await.expect("wait should not error");
+        assert!(!success, "exit-1 dispatch backend must report failure");
     }
 }

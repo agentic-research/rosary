@@ -50,6 +50,25 @@ pub enum ProvenanceRef {
         /// Free-form note describing the origin of the work item.
         note: String,
     },
+    /// Sourced from a conversation or agent session transcript.
+    Session {
+        /// Path to the transcript file, relative to repo root when possible.
+        transcript_path: String,
+        /// Optional human-readable summary of the session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+    },
+    /// Sourced from an existing code symbol or file — used for round-trip
+    /// design recovery (code → atoms) and assay integration.
+    Code {
+        /// Repository name (short name, e.g. "rosary").
+        repo: String,
+        /// File path relative to repo root, e.g. "src/bead.rs".
+        path: String,
+        /// Optional symbol name within the file, e.g. "BeadSpec::content_hash".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        symbol: Option<String>,
+    },
 }
 
 /// Records that the LLM classifier was invoked because deterministic parsing
@@ -82,6 +101,13 @@ impl ProvenanceRef {
                     format!("manual:{}", truncate(note, 40))
                 }
             }
+            ProvenanceRef::Session {
+                transcript_path, ..
+            } => format!("session:{transcript_path}"),
+            ProvenanceRef::Code { repo, path, symbol } => match symbol {
+                Some(sym) => format!("code:{repo}:{path}::{sym}"),
+                None => format!("code:{repo}:{path}"),
+            },
         }
     }
 
@@ -246,5 +272,107 @@ mod tests {
         assert!(!json.contains("rationale"));
         let back: InferenceTrace = serde_json::from_str(&json).unwrap();
         assert_eq!(t, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_session() {
+        let p = ProvenanceRef::Session {
+            transcript_path: "sessions/2026-04-29.md".into(),
+            summary: Some("architecture handoff discussion".into()),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: ProvenanceRef = serde_json::from_str(&json).unwrap();
+        assert_eq!(p, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_session_no_summary() {
+        let p = ProvenanceRef::Session {
+            transcript_path: "sessions/2026-04-29.md".into(),
+            summary: None,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("summary"));
+        let back: ProvenanceRef = serde_json::from_str(&json).unwrap();
+        assert_eq!(p, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_code() {
+        let p = ProvenanceRef::Code {
+            repo: "rosary".into(),
+            path: "src/bead.rs".into(),
+            symbol: Some("BeadSpec::content_hash".into()),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: ProvenanceRef = serde_json::from_str(&json).unwrap();
+        assert_eq!(p, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_code_no_symbol() {
+        let p = ProvenanceRef::Code {
+            repo: "mache".into(),
+            path: "cmd/server/main.go".into(),
+            symbol: None,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("symbol"));
+        let back: ProvenanceRef = serde_json::from_str(&json).unwrap();
+        assert_eq!(p, back);
+    }
+
+    #[test]
+    fn label_session() {
+        let p = ProvenanceRef::Session {
+            transcript_path: "sessions/2026-04-29.md".into(),
+            summary: None,
+        };
+        assert_eq!(p.label(), "session:sessions/2026-04-29.md");
+    }
+
+    #[test]
+    fn label_code_with_symbol() {
+        let p = ProvenanceRef::Code {
+            repo: "rosary".into(),
+            path: "src/bead.rs".into(),
+            symbol: Some("BeadSpec".into()),
+        };
+        assert_eq!(p.label(), "code:rosary:src/bead.rs::BeadSpec");
+    }
+
+    #[test]
+    fn label_code_no_symbol() {
+        let p = ProvenanceRef::Code {
+            repo: "rosary".into(),
+            path: "src/bead.rs".into(),
+            symbol: None,
+        };
+        assert_eq!(p.label(), "code:rosary:src/bead.rs");
+    }
+
+    #[test]
+    fn tagged_json_session_shape() {
+        let p = ProvenanceRef::Session {
+            transcript_path: "sessions/x.md".into(),
+            summary: None,
+        };
+        let v: serde_json::Value = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["kind"], "session");
+        assert_eq!(v["transcript_path"], "sessions/x.md");
+    }
+
+    #[test]
+    fn tagged_json_code_shape() {
+        let p = ProvenanceRef::Code {
+            repo: "rosary".into(),
+            path: "src/bead.rs".into(),
+            symbol: Some("BeadSpec".into()),
+        };
+        let v: serde_json::Value = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["kind"], "code");
+        assert_eq!(v["repo"], "rosary");
+        assert_eq!(v["path"], "src/bead.rs");
+        assert_eq!(v["symbol"], "BeadSpec");
     }
 }
