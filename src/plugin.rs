@@ -158,7 +158,12 @@ impl From<AssayOutput> for HookOutput {
         let message = a
             .message
             .or_else(|| a.coverage.map(|c| format!("coverage: {:.1}%", c * 100.0)));
-        HookOutput { verdict, message }
+        let coverage = a.coverage;
+        HookOutput {
+            verdict,
+            message,
+            coverage,
+        }
     }
 }
 

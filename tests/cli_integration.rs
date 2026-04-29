@@ -327,10 +327,23 @@ fn bead_close() {
     };
 
     let id = sandbox.create_bead("Close me");
-    let stdout = sandbox.run_ok(&["bead", "close", &id]);
+    let stdout = sandbox.run_ok(&["bead", "close", &id, "--force"]);
     assert!(
         stdout.contains("closed"),
         "close output should confirm: {stdout}"
+    );
+
+    // Without --force, an impl bead with no test command should be refused.
+    let id2 = sandbox.create_bead("Block me");
+    let out = sandbox.run(&["bead", "close", &id2]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "close without --force should fail when description has no test command: stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("verifiable test command"),
+        "expected refusal message, got: {stderr}"
     );
 }
 
@@ -565,7 +578,7 @@ fn full_bead_lifecycle() {
     assert!(stdout.contains("Lifecycle test bead"));
 
     // Close
-    sandbox.run_ok(&["bead", "close", &id]);
+    sandbox.run_ok(&["bead", "close", &id, "--force"]);
 
     // Verify closed — list shows open beads only, so it should be gone
     let stdout = sandbox.run_ok(&["bead", "list"]);
