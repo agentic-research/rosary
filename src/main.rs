@@ -14,6 +14,7 @@ mod bead_dolt;
 mod bead_sqlite;
 mod cli;
 mod config;
+mod decompose;
 mod dispatch;
 mod dolt;
 #[allow(dead_code)] // API surface for PM agent (loom-w8c.4); is_dominated_by used by reconciler
@@ -212,6 +213,12 @@ enum Command {
         /// Requires ANTHROPIC_API_KEY env var.
         #[arg(long)]
         model: Option<String>,
+        /// Emit code stubs into this repo path instead of (or in addition to)
+        /// creating beads. Generates `.rsry-stubs/<decade>.rs` from
+        /// TechnicalSpec and Constraint atoms. Review the stub PR before
+        /// implementing to validate the design.
+        #[arg(long)]
+        stub_output: Option<String>,
     },
     /// Manage beads directly
     Bead {
@@ -687,6 +694,7 @@ async fn main() -> Result<()> {
             repo,
             dry_run,
             model,
+            stub_output,
         } => {
             let markdown =
                 std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
@@ -875,6 +883,20 @@ async fn main() -> Result<()> {
                     "  {}",
                     owo_colors::OwoColorize::dimmed(&"(dry run — no beads created)")
                 );
+            }
+
+            // Stub output: emit code skeletons for design review.
+            if let Some(stub_repo) = stub_output {
+                let target = scanner::resolve_repo_path(Path::new(&stub_repo));
+                match decompose::write_stubs(&target, &decade.title, &atoms)? {
+                    Some(stub_path) => {
+                        println!("  stub output → {}", stub_path.display());
+                        println!("  hint: commit, push, and open a draft PR for design review");
+                    }
+                    None => {
+                        println!("  (no TechnicalSpec or Constraint atoms — nothing to stub)");
+                    }
+                }
             }
         }
         Command::Bead { action, repo } => {
