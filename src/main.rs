@@ -22,6 +22,7 @@ mod dolt;
 mod epic;
 #[allow(dead_code)] // API surface — PR creation from dispatch pipeline
 mod github;
+mod github_mirror;
 #[allow(dead_code)] // API surface — wired into pipeline phase transitions
 mod handoff;
 mod import;
@@ -124,6 +125,9 @@ enum Command {
         /// Filter to specific repos (comma-separated)
         #[arg(long)]
         repo: Option<String>,
+        /// Mirror bead context to linked GitHub PRs/issues as structured comments
+        #[arg(long)]
+        github: bool,
     },
     /// Show aggregated status across all repos
     Status {
@@ -607,8 +611,28 @@ async fn main() -> Result<()> {
         Command::Plan { ticket } => {
             linear::plan(&ticket).await?;
         }
-        Command::Sync { dry_run, repo } => {
+        Command::Sync {
+            dry_run,
+            repo,
+            github,
+        } => {
             let repo_filter = parse_repo_filter(&repo);
+
+            if github {
+                let cfg = config::load_merged(&config::resolve_config_path())?;
+                let repos = filter_repos(&cfg.repo, &repo_filter);
+                let beads = scanner::scan_repos(&repos).await?;
+                let token = cfg
+                    .github
+                    .as_ref()
+                    .and_then(|g| g.token.clone())
+                    .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+                    .context("GITHUB_TOKEN not set and no github.token in config")?;
+                let posted = github_mirror::sync_beads_to_github(&beads, &token).await?;
+                println!("github: posted {posted} bead-context comment(s)");
+                return Ok(());
+            }
+
             // Connect hierarchy store for thread → sub-issue projection
             let sync_cfg = config::load_merged(&config::resolve_config_path())?;
             let hierarchy: Option<Box<dyn store::HierarchyStore>> =
