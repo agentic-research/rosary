@@ -248,6 +248,33 @@ pub struct SqliteBeadStore {
 }
 
 impl SqliteBeadStore {
+    /// Resolve a short or full bead ID to the canonical full ID stored in the DB.
+    ///
+    /// Accepts either an exact match or a suffix match (e.g. "2a3970" → "ley-line-open-2a3970").
+    /// Returns an error if zero or multiple beads match — ambiguous short IDs must be lengthened.
+    fn resolve_id(conn: &Connection, id: &str) -> Result<String> {
+        let exact: Option<String> = conn
+            .query_row("SELECT id FROM issues WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if let Some(full) = exact {
+            return Ok(full);
+        }
+        // Suffix match: "abc123" matches "repo-abc123"
+        let suffix_pattern = format!("%-{id}");
+        let mut stmt = conn.prepare("SELECT id FROM issues WHERE id LIKE ?1")?;
+        let matches: Vec<String> = stmt
+            .query_map(params![suffix_pattern], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        match matches.len() {
+            0 => anyhow::bail!("bead not found: {id}"),
+            1 => Ok(matches.into_iter().next().unwrap()),
+            _ => anyhow::bail!("ambiguous bead ID {id:?} — matches: {}", matches.join(", ")),
+        }
+    }
+
     /// Open or create the bead database at the given path.
     pub fn connect(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -642,9 +669,10 @@ impl BeadStore for SqliteBeadStore {
 
     async fn close_bead(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, id)?;
         conn.execute(
             "UPDATE issues SET status = 'closed', updated_at = datetime('now') WHERE id = ?1",
-            params![id],
+            params![full_id],
         )
         .with_context(|| format!("closing bead {id}"))?;
         Ok(())
@@ -949,6 +977,38 @@ mod tests {
         assert_eq!(bead.title, "Test bead");
         assert_eq!(bead.status, "open");
         assert_eq!(bead.priority, 2);
+    }
+
+    // Regression: short ID (suffix only) must resolve to full prefixed ID.
+    // Before fix: close_bead("2a3970") silently succeeded with 0 rows changed
+    // when the stored ID was "ley-line-open-2a3970".
+    #[tokio::test]
+    async fn close_bead_short_id_resolves() {
+        let store = test_store();
+        store
+            .create_bead("repo-2a3970", "Some bead", "", 2, "task")
+            .await
+            .unwrap();
+
+        // short suffix — must close the right row
+        store.close_bead("2a3970").await.unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM issues WHERE id = 'repo-2a3970'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "closed");
+    }
+
+    #[tokio::test]
+    async fn close_bead_unknown_id_errors() {
+        let store = test_store();
+        let err = store.close_bead("doesnotexist").await.unwrap_err();
+        assert!(err.to_string().contains("not found"), "{err}");
     }
 
     #[tokio::test]
