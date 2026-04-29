@@ -359,6 +359,7 @@ mod tests {
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: Some(Arc::from("test-secret")),
+            github_webhook_secret: None,
             backend: None,
             repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
         };
@@ -389,6 +390,7 @@ mod tests {
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: Some(Arc::from("test-secret")),
+            github_webhook_secret: None,
             backend: None,
             repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
         };
@@ -426,6 +428,7 @@ mod tests {
             config_path: Arc::from("test.toml"),
             sessions: Arc::new(RwLock::new(HashSet::new())),
             webhook_secret: Some(Arc::from(secret)),
+            github_webhook_secret: None,
             backend: None,
             repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
         };
