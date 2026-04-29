@@ -36,6 +36,12 @@ pub struct BeadSpec {
     /// Always posterior to `derived_from`. Excluded from content_hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inferred_from: Option<InferenceTrace>,
+    /// Minimum required doc-coverage fraction (0.0–1.0) for the verify gate.
+    ///
+    /// When set, the assay plugin in the verify pipeline must report
+    /// `coverage >= doc_coverage_min` or the bead's verify tier fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_coverage_min: Option<f32>,
 }
 
 /// A verifiable success criterion for a bead.
@@ -148,6 +154,7 @@ pub fn decompose_with_meta(atoms: &[Atom], doc_id: &str, meta: &DocMeta) -> Vec<
                 depends_on: meta.depends_on.clone(),
                 success_criteria,
                 inferred_from: None,
+                doc_coverage_min: None,
             }
         })
         .collect()
@@ -434,6 +441,7 @@ mod tests {
             depends_on: vec!["ADR-A".into()],
             success_criteria: vec![],
             inferred_from: None,
+            doc_coverage_min: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         let back: BeadSpec = serde_json::from_str(&json).unwrap();
@@ -463,6 +471,7 @@ mod tests {
                 model: "claude-haiku-4-5".into(),
                 rationale: Some("Section matched Phase pattern".into()),
             }),
+            doc_coverage_min: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         let back: BeadSpec = serde_json::from_str(&json).unwrap();
@@ -567,6 +576,7 @@ mod tests {
             depends_on: vec![],
             success_criteria: vec![],
             inferred_from: None,
+            doc_coverage_min: None,
         };
         let with_inference = BeadSpec {
             inferred_from: Some(InferenceTrace {
@@ -599,6 +609,7 @@ mod tests {
             depends_on: vec!["ADR-A".into()],
             success_criteria: vec![],
             inferred_from: None,
+            doc_coverage_min: None,
         };
         let spec2 = BeadSpec {
             derived_from: vec![
@@ -637,6 +648,7 @@ mod tests {
             depends_on: vec![],
             success_criteria: vec![],
             inferred_from: None,
+            doc_coverage_min: None,
         };
         let hex = spec.content_hash_hex();
         assert_eq!(hex.len(), 64, "SHA-256 hex should be 64 chars: {hex}");
@@ -664,6 +676,7 @@ mod tests {
             depends_on: vec![],
             success_criteria: vec![],
             inferred_from: None,
+            doc_coverage_min: None,
         };
         assert_eq!(spec.primary_source(), Some(&adr_source("ADR-001")));
     }
@@ -685,6 +698,7 @@ mod tests {
             depends_on: vec![],
             success_criteria: vec![],
             inferred_from: None,
+            doc_coverage_min: None,
         };
         assert!(spec.primary_source().is_none());
     }

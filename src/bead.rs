@@ -375,6 +375,80 @@ impl Bead {
             "bug" | "feature" | "task" | "chore"
         ) && self.description.trim().len() < MIN_DESCRIPTION_LEN
     }
+
+    /// Returns true when the description contains a verifiable test/build command.
+    /// Used by `rsry bead close` to enforce that implementation beads ship with
+    /// runnable verification before being marked done. Research/epic/design beads
+    /// are exempt — they describe work, they don't claim a behavior was shipped.
+    pub fn has_verifiable_test_command(&self) -> bool {
+        if !matches!(
+            self.issue_type.as_str(),
+            "bug" | "feature" | "task" | "chore"
+        ) {
+            return true; // exempt
+        }
+        verify::looks_like_test_command(&self.description)
+    }
+}
+
+mod verify {
+    /// Heuristic: does this text contain a runnable test/build command?
+    /// Recognised: cargo test/check/build, pytest, npm/pnpm/yarn test,
+    /// go test, make test, task test, just test.
+    pub fn looks_like_test_command(text: &str) -> bool {
+        const PATTERNS: &[&str] = &[
+            "cargo test",
+            "cargo check",
+            "cargo build",
+            "pytest",
+            "npm test",
+            "npm run test",
+            "pnpm test",
+            "yarn test",
+            "go test",
+            "make test",
+            "task test",
+            "just test",
+        ];
+        let lower = text.to_lowercase();
+        PATTERNS.iter().any(|p| lower.contains(p))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::looks_like_test_command;
+
+        #[test]
+        fn detects_cargo_test() {
+            assert!(looks_like_test_command(
+                "Run with `cargo test -p rosary verify`"
+            ));
+        }
+
+        #[test]
+        fn detects_pytest_in_inline_block() {
+            assert!(looks_like_test_command(
+                "Success when: pytest tests/test_x.py passes"
+            ));
+        }
+
+        #[test]
+        fn rejects_plain_prose() {
+            assert!(!looks_like_test_command(
+                "This bead refactors the docs section and adds an example."
+            ));
+        }
+
+        #[test]
+        fn rejects_empty() {
+            assert!(!looks_like_test_command(""));
+        }
+
+        #[test]
+        fn case_insensitive() {
+            assert!(looks_like_test_command("CARGO TEST"));
+        }
+    }
 }
 
 impl fmt::Display for Bead {

@@ -12,6 +12,7 @@ mod bdr_enrich;
 mod bead;
 mod bead_dolt;
 mod bead_sqlite;
+mod capture;
 mod cli;
 mod config;
 mod decompose;
@@ -21,6 +22,7 @@ mod dolt;
 mod epic;
 #[allow(dead_code)] // API surface — PR creation from dispatch pipeline
 mod github;
+mod github_mirror;
 #[allow(dead_code)] // API surface — wired into pipeline phase transitions
 mod handoff;
 mod import;
@@ -31,6 +33,7 @@ mod linear_tracker;
 mod manifest;
 #[allow(dead_code)]
 mod migrate;
+mod notes;
 mod orchestrate;
 mod pipeline;
 mod plugin;
@@ -108,6 +111,9 @@ enum Command {
         /// Filter to specific repos (comma-separated)
         #[arg(long)]
         repo: Option<String>,
+        /// Mirror bead context to linked GitHub PRs/issues as structured comments
+        #[arg(long)]
+        github: bool,
     },
     /// Show aggregated status across all repos
     Status {
@@ -259,6 +265,54 @@ enum Command {
         #[arg(long)]
         skip_verify: bool,
     },
+    /// Capture design atoms from a session transcript or source file
+    Capture {
+        /// Read transcript file (use `-` for stdin)
+        #[arg(long, conflicts_with = "from_code")]
+        from_session: Option<String>,
+        /// Read source file: `<repo> <path>` (e.g. `rosary src/bead.rs`)
+        #[arg(long, num_args = 2, conflicts_with = "from_session")]
+        from_code: Vec<String>,
+        /// Symbol to scope code capture (e.g. `BeadSpec`)
+        #[arg(long)]
+        symbol: Option<String>,
+        /// LLM model: haiku (default), sonnet, or full model ID
+        #[arg(long, default_value = "haiku")]
+        model: String,
+        /// Repo path for --commit (default: current directory)
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+        /// Write extracted BeadSpecs as beads (default: dry-run to stdout)
+        #[arg(long)]
+        commit: bool,
+    },
+    /// Manage encrypted notes (age-encrypted, scope-organized)
+    Notes {
+        #[command(subcommand)]
+        action: NotesAction,
+        /// Repo path containing `notes/`
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum NotesAction {
+    /// Re-encrypt all notes in a scope after editing the recipient list
+    Rotate {
+        /// Scope name (becomes `notes/<scope>/`)
+        #[arg(long)]
+        scope: String,
+        /// Recipient(s) to add (repeatable)
+        #[arg(long = "add-recipient", value_name = "RECIPIENT")]
+        add: Vec<String>,
+        /// Recipient(s) to remove (repeatable)
+        #[arg(long = "remove-recipient", value_name = "RECIPIENT")]
+        remove: Vec<String>,
+        /// Identity file for decryption (default: $HOME/.config/age/keys.txt)
+        #[arg(long)]
+        identity: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -287,6 +341,9 @@ enum BeadAction {
     Close {
         /// Bead ID
         id: String,
+        /// Skip the verifiable-test-command check (for legacy/non-impl beads)
+        #[arg(long)]
+        force: bool,
     },
     /// List open beads
     List,
@@ -516,8 +573,28 @@ async fn main() -> Result<()> {
         Command::Plan { ticket } => {
             linear::plan(&ticket).await?;
         }
-        Command::Sync { dry_run, repo } => {
+        Command::Sync {
+            dry_run,
+            repo,
+            github,
+        } => {
             let repo_filter = parse_repo_filter(&repo);
+
+            if github {
+                let cfg = config::load_merged(&config::resolve_config_path())?;
+                let repos = filter_repos(&cfg.repo, &repo_filter);
+                let beads = scanner::scan_repos(&repos).await?;
+                let token = cfg
+                    .github
+                    .as_ref()
+                    .and_then(|g| g.token.clone())
+                    .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+                    .context("GITHUB_TOKEN not set and no github.token in config")?;
+                let posted = github_mirror::sync_beads_to_github(&beads, &token).await?;
+                println!("github: posted {posted} bead-context comment(s)");
+                return Ok(());
+            }
+
             // Connect hierarchy store for thread → sub-issue projection
             let sync_cfg = config::load_merged(&config::resolve_config_path())?;
             let hierarchy: Option<Box<dyn store::HierarchyStore>> =
@@ -920,6 +997,71 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Command::Capture {
+            from_session,
+            from_code,
+            symbol,
+            model,
+            repo,
+            commit,
+        } => {
+            let specs = if let Some(ref transcript) = from_session {
+                let opts = capture::SessionCaptureOpts {
+                    transcript_path: transcript,
+                    model: &model,
+                };
+                capture::capture_from_session(&opts).await?
+            } else if from_code.len() == 2 {
+                let repo_root = scanner::resolve_repo_path(Path::new(&repo));
+                let opts = capture::CodeCaptureOpts {
+                    repo: &from_code[0],
+                    path: &from_code[1],
+                    symbol: symbol.as_deref(),
+                    model: &model,
+                    repo_root: &repo_root,
+                };
+                capture::capture_from_code(&opts).await?
+            } else {
+                anyhow::bail!("use --from-session <path> or --from-code <repo> <path>");
+            };
+
+            if !commit {
+                println!("{}", serde_json::to_string_pretty(&specs)?);
+            } else {
+                let repo_root = scanner::resolve_repo_path(Path::new(&repo));
+                let beads_dir = resolve_beads_dir(&repo_root);
+                let client = bead_sqlite::connect_bead_store(&beads_dir).await?;
+                let repo_name = repo_root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| repo.clone());
+                let created_by = git_config_user_name(&repo_root);
+                let mut created = 0;
+                for spec in &specs {
+                    let desc = enrich_bead_description(spec);
+                    let id = generate_bead_id(&repo_name);
+                    let owner = dispatch::default_agent(&spec.issue_type);
+                    client
+                        .create_bead_full(
+                            &id,
+                            &spec.title,
+                            &desc,
+                            spec.priority,
+                            &spec.issue_type,
+                            owner,
+                            &[],
+                            &[],
+                            &[],
+                            created_by.as_deref(),
+                            "",
+                            &spec.derived_from,
+                        )
+                        .await?;
+                    created += 1;
+                }
+                cli::decompose_summary(created, &repo_root.to_string_lossy());
+            }
+        }
         Command::Bead { action, repo } => {
             let repo_root = scanner::resolve_repo_path(Path::new(&repo));
             let beads_dir = resolve_beads_dir(&repo_root);
@@ -964,7 +1106,20 @@ async fn main() -> Result<()> {
                         .await?;
                     cli::bead_created(&id, &title);
                 }
-                BeadAction::Close { id } => {
+                BeadAction::Close { id, force } => {
+                    if !force {
+                        let beads = client.list_beads(&repo_name).await?;
+                        if let Some(bead) = beads.iter().find(|b| b.id == id || b.id.ends_with(&id))
+                            && !bead.has_verifiable_test_command()
+                        {
+                            anyhow::bail!(
+                                "bead {} ({}) has no verifiable test command in its description.\n\
+                                 Add e.g. `cargo test -p <crate>` to success criteria, or pass --force to override.",
+                                bead.id,
+                                bead.issue_type
+                            );
+                        }
+                    }
                     client.close_bead(&id).await?;
                     cli::bead_closed(&id);
                 }
@@ -1111,6 +1266,32 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Command::Notes { action, repo } => {
+            let repo_root = scanner::resolve_repo_path(Path::new(&repo));
+            match action {
+                NotesAction::Rotate {
+                    scope,
+                    add,
+                    remove,
+                    identity,
+                } => {
+                    let opts = notes::RotateOpts {
+                        repo_root: &repo_root,
+                        scope: &scope,
+                        add_recipients: &add,
+                        remove_recipients: &remove,
+                        identity: identity.as_deref(),
+                    };
+                    let result = notes::rotate_scope(&opts).await?;
+                    println!(
+                        "rotated {} file(s) in notes/{} (recipients: {})",
+                        result.files_rotated,
+                        scope,
+                        result.final_recipients.len()
+                    );
+                }
+            }
+        }
     }
 
     Ok(())
@@ -1135,6 +1316,7 @@ mod tests {
 
         let close = BeadAction::Close {
             id: "rsry-abc".to_string(),
+            force: false,
         };
         assert!(matches!(close, BeadAction::Close { .. }));
 

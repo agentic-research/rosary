@@ -65,6 +65,10 @@ use crate::verify::{VerifyResult, VerifyTier};
 pub struct PluginContext {
     pub bead_id: String,
     pub repo: String,
+    /// Minimum doc-coverage fraction required to pass the verify gate.
+    /// When `Some`, an assay plugin returning `coverage < doc_coverage_min` fails.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_coverage_min: Option<f32>,
 }
 
 impl PluginContext {
@@ -72,6 +76,7 @@ impl PluginContext {
         Self {
             bead_id: bead_id.into(),
             repo: repo.into(),
+            doc_coverage_min: None,
         }
     }
 }
@@ -84,6 +89,9 @@ struct HookInput<'a> {
     bead_id: &'a str,
     repo: &'a str,
     work_dir: &'a str,
+    /// Forwarded from bead's `doc_coverage_min` so plugins can self-gate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    doc_coverage_min: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +99,10 @@ struct HookOutput {
     verdict: String,
     #[serde(default)]
     message: Option<String>,
+    /// Doc-coverage fraction (0.0–1.0) reported by assay-style plugins.
+    /// Rosary fails the verify gate when this is below `PluginContext::doc_coverage_min`.
+    #[serde(default)]
+    coverage: Option<f64>,
 }
 
 impl HookOutput {
@@ -146,7 +158,12 @@ impl From<AssayOutput> for HookOutput {
         let message = a
             .message
             .or_else(|| a.coverage.map(|c| format!("coverage: {:.1}%", c * 100.0)));
-        HookOutput { verdict, message }
+        let coverage = a.coverage;
+        HookOutput {
+            verdict,
+            message,
+            coverage,
+        }
     }
 }
 
@@ -248,6 +265,7 @@ impl VerifyTier for PluginTier {
             bead_id: &self.context.bead_id,
             repo: &self.context.repo,
             work_dir: work_dir.to_str().unwrap_or(""),
+            doc_coverage_min: self.context.doc_coverage_min,
         };
 
         let output = match call_plugin(&self.plugin, &input) {
@@ -261,6 +279,18 @@ impl VerifyTier for PluginTier {
                 return Ok(VerifyResult::Pass);
             }
         };
+
+        // Coverage gate: fail if reported coverage is below the bead's minimum.
+        if let (Some(coverage), Some(min)) = (output.coverage, self.context.doc_coverage_min) {
+            if coverage < min as f64 {
+                return Ok(VerifyResult::Fail(format!(
+                    "doc coverage {:.0}% below required {:.0}% (plugin '{}')",
+                    coverage * 100.0,
+                    min as f64 * 100.0,
+                    self.plugin.name
+                )));
+            }
+        }
 
         Ok(output.into_verify_result(&self.plugin.name))
     }
@@ -472,6 +502,7 @@ impl PluginRegistry {
                 bead_id: &context.bead_id,
                 repo: &context.repo,
                 work_dir: "",
+                doc_coverage_min: None,
             };
             match call_plugin(plugin, &input) {
                 Ok(out) => match out.verdict.as_str() {
@@ -518,6 +549,7 @@ impl PluginRegistry {
                 bead_id: &context.bead_id,
                 repo: &context.repo,
                 work_dir: "",
+                doc_coverage_min: None,
             };
             if let Err(e) = call_plugin(plugin, &input) {
                 eprintln!("[plugin] close hook '{}' unavailable — {e:#}", plugin.name);
@@ -563,6 +595,7 @@ mod tests {
         HookOutput {
             verdict: verdict.to_string(),
             message: message.map(str::to_string),
+            coverage: None,
         }
     }
 
@@ -872,5 +905,116 @@ mod assay_verdict {
         let tiers = registry.verify_tiers(ctx);
         assert_eq!(tiers.len(), 1);
         assert_eq!(tiers[0].name(), "assay-coverage");
+    }
+}
+
+// ── assay_delta tests (rosary-5415be) ─────────────────────────────────────────
+
+#[cfg(test)]
+mod assay_delta {
+    use super::*;
+    use std::io::Write;
+
+    fn make_assay_plugin(output_json: &str) -> PluginConfig {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("assay.sh");
+        let mut f = std::fs::File::create(&script).unwrap();
+        writeln!(f, "#!/bin/sh\necho '{output_json}'").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // Leak the tempdir so the script survives the test scope.
+        std::mem::forget(dir);
+        PluginConfig {
+            name: "assay".into(),
+            kind: PluginKind::Hook,
+            hook: "pipeline.verify".into(),
+            command: vec![script.to_str().unwrap().to_string()],
+            url: None,
+        }
+    }
+
+    fn ctx_with_min(min: f32) -> PluginContext {
+        PluginContext {
+            bead_id: "rosary-test".into(),
+            repo: "rosary".into(),
+            doc_coverage_min: Some(min),
+        }
+    }
+
+    #[test]
+    fn coverage_below_min_fails_verify() {
+        let plugin = make_assay_plugin(r#"{"verdict":"pass","coverage":0.85}"#);
+        let ctx = ctx_with_min(0.9);
+        let tier = PluginTier::new(plugin, ctx);
+        let result = tier.check(Path::new("/tmp")).unwrap();
+        assert!(
+            matches!(result, VerifyResult::Fail(_)),
+            "85% < 90% required → Fail, got {result:?}"
+        );
+        if let VerifyResult::Fail(msg) = result {
+            assert!(msg.contains("85"), "message should show actual: {msg}");
+            assert!(msg.contains("90"), "message should show required: {msg}");
+        }
+    }
+
+    #[test]
+    fn coverage_above_min_passes_verify() {
+        let plugin = make_assay_plugin(r#"{"verdict":"pass","coverage":0.95}"#);
+        let ctx = ctx_with_min(0.9);
+        let tier = PluginTier::new(plugin, ctx);
+        let result = tier.check(Path::new("/tmp")).unwrap();
+        assert_eq!(result, VerifyResult::Pass, "95% >= 90% → Pass");
+    }
+
+    #[test]
+    fn coverage_exactly_at_min_passes_verify() {
+        let plugin = make_assay_plugin(r#"{"verdict":"pass","coverage":0.9}"#);
+        let ctx = ctx_with_min(0.9);
+        let tier = PluginTier::new(plugin, ctx);
+        let result = tier.check(Path::new("/tmp")).unwrap();
+        assert_eq!(result, VerifyResult::Pass, "exactly 90% → Pass");
+    }
+
+    #[test]
+    fn no_coverage_min_ignores_coverage_field() {
+        let plugin = make_assay_plugin(r#"{"verdict":"pass","coverage":0.5}"#);
+        let ctx = PluginContext::new("rosary-test", "rosary"); // doc_coverage_min: None
+        let tier = PluginTier::new(plugin, ctx);
+        let result = tier.check(Path::new("/tmp")).unwrap();
+        assert_eq!(
+            result,
+            VerifyResult::Pass,
+            "no min set → Pass regardless of coverage"
+        );
+    }
+
+    #[test]
+    fn no_coverage_reported_skips_gate() {
+        let plugin = make_assay_plugin(r#"{"verdict":"pass"}"#);
+        let ctx = ctx_with_min(0.9);
+        let tier = PluginTier::new(plugin, ctx);
+        let result = tier.check(Path::new("/tmp")).unwrap();
+        assert_eq!(
+            result,
+            VerifyResult::Pass,
+            "no coverage in output → gate skipped"
+        );
+    }
+
+    #[test]
+    fn plugin_fail_verdict_still_fails() {
+        // Even if coverage is above min, a hard "fail" verdict must propagate.
+        let plugin =
+            make_assay_plugin(r#"{"verdict":"fail","coverage":0.95,"message":"syntax error"}"#);
+        let ctx = ctx_with_min(0.9);
+        let tier = PluginTier::new(plugin, ctx);
+        let result = tier.check(Path::new("/tmp")).unwrap();
+        assert!(
+            matches!(result, VerifyResult::Fail(_)),
+            "fail verdict must propagate"
+        );
     }
 }
