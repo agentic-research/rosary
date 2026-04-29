@@ -420,6 +420,10 @@ impl BeadStore for SqliteBeadStore {
 
     async fn get_bead(&self, id: &str, repo_name: &str) -> Result<Option<Bead>> {
         let conn = self.conn.lock().unwrap();
+        let full_id = match Self::resolve_id(&conn, id) {
+            Ok(id) => id,
+            Err(_) => return Ok(None),
+        };
         let mut stmt = conn.prepare(
             "SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                     i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
@@ -434,7 +438,7 @@ impl BeadStore for SqliteBeadStore {
              WHERE i.id = ?1",
         )?;
         let bead = stmt
-            .query_row(params![id], |row| bead_from_row(row, repo_name))
+            .query_row(params![full_id], |row| bead_from_row(row, repo_name))
             .optional()?;
         Ok(bead)
     }
@@ -522,6 +526,7 @@ impl BeadStore for SqliteBeadStore {
 
     async fn update_bead_fields(&self, id: &str, update: &BeadUpdate) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, id)?;
         let mut updated_fields = Vec::new();
 
         // Build dynamic SET clauses. We execute each field update separately
@@ -529,35 +534,35 @@ impl BeadStore for SqliteBeadStore {
         if let Some(ref title) = update.title {
             conn.execute(
                 "UPDATE issues SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![title, id],
+                params![title, full_id],
             )?;
             updated_fields.push("title".to_string());
         }
         if let Some(ref description) = update.description {
             conn.execute(
                 "UPDATE issues SET description = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![description, id],
+                params![description, full_id],
             )?;
             updated_fields.push("description".to_string());
         }
         if let Some(priority) = update.priority {
             conn.execute(
                 "UPDATE issues SET priority = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![priority as i32, id],
+                params![priority as i32, full_id],
             )?;
             updated_fields.push("priority".to_string());
         }
         if let Some(ref issue_type) = update.issue_type {
             conn.execute(
                 "UPDATE issues SET issue_type = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![issue_type, id],
+                params![issue_type, full_id],
             )?;
             updated_fields.push("issue_type".to_string());
         }
         if let Some(ref owner) = update.owner {
             conn.execute(
                 "UPDATE issues SET assignee = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![owner, id],
+                params![owner, full_id],
             )?;
             updated_fields.push("owner".to_string());
         }
@@ -566,7 +571,7 @@ impl BeadStore for SqliteBeadStore {
             let existing_notes: serde_json::Value = conn
                 .query_row(
                     "SELECT notes FROM issues WHERE id = ?1",
-                    params![id],
+                    params![full_id],
                     |row| row.get::<_, Option<String>>(0),
                 )
                 .ok()
@@ -597,7 +602,7 @@ impl BeadStore for SqliteBeadStore {
             let notes_json = serde_json::json!({ "files": files, "test_files": test_files_val });
             conn.execute(
                 "UPDATE issues SET notes = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![notes_json.to_string(), id],
+                params![notes_json.to_string(), full_id],
             )?;
             if update.files.is_some() {
                 updated_fields.push("files".to_string());
@@ -612,11 +617,11 @@ impl BeadStore for SqliteBeadStore {
             .iter()
             .any(|f| f == "title" || f == "description")
         {
-            let _ = conn.execute("DELETE FROM bead_fts WHERE id = ?1", params![id]);
+            let _ = conn.execute("DELETE FROM bead_fts WHERE id = ?1", params![full_id]);
             let _ = conn.execute(
                 "INSERT INTO bead_fts(id, title, description) \
                  SELECT id, title, description FROM issues WHERE id = ?1",
-                params![id],
+                params![full_id],
             );
         }
 
@@ -627,12 +632,13 @@ impl BeadStore for SqliteBeadStore {
         use crate::bead::BeadState;
         let next = BeadState::from(status);
         let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, id)?;
         // Validate transition before writing. Read current status under the same lock
         // so the check-then-act is atomic within this process.
         let current_str: Option<String> = conn
             .query_row(
                 "SELECT status FROM issues WHERE id = ?1",
-                params![id],
+                params![full_id],
                 |row| row.get(0),
             )
             .optional()?;
@@ -649,7 +655,7 @@ impl BeadStore for SqliteBeadStore {
         }
         conn.execute(
             "UPDATE issues SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![status, id],
+            params![status, full_id],
         )
         .with_context(|| format!("updating status for {id}"))?;
         Ok(())
@@ -657,10 +663,14 @@ impl BeadStore for SqliteBeadStore {
 
     async fn get_status(&self, id: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
+        let full_id = match Self::resolve_id(&conn, id) {
+            Ok(id) => id,
+            Err(_) => return Ok(None),
+        };
         let status = conn
             .query_row(
                 "SELECT status FROM issues WHERE id = ?1",
-                params![id],
+                params![full_id],
                 |row| row.get(0),
             )
             .optional()?;
@@ -680,18 +690,20 @@ impl BeadStore for SqliteBeadStore {
 
     async fn set_assignee(&self, id: &str, assignee: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, id)?;
         conn.execute(
             "UPDATE issues SET assignee = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![assignee, id],
+            params![assignee, full_id],
         )?;
         Ok(())
     }
 
     async fn set_user_id(&self, id: &str, user_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, id)?;
         conn.execute(
             "UPDATE issues SET user_id = ?1 WHERE id = ?2",
-            params![user_id, id],
+            params![user_id, full_id],
         )?;
         Ok(())
     }
@@ -699,9 +711,10 @@ impl BeadStore for SqliteBeadStore {
     async fn set_files(&self, id: &str, files: &[String], test_files: &[String]) -> Result<()> {
         let file_json = serde_json::json!({ "files": files, "test_files": test_files });
         let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, id)?;
         conn.execute(
             "UPDATE issues SET notes = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![file_json.to_string(), id],
+            params![file_json.to_string(), full_id],
         )?;
         Ok(())
     }
@@ -834,10 +847,14 @@ impl BeadStore for SqliteBeadStore {
 
     async fn get_external_ref(&self, id: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
+        let full_id = match Self::resolve_id(&conn, id) {
+            Ok(id) => id,
+            Err(_) => return Ok(None),
+        };
         let result = conn
             .query_row(
                 "SELECT external_ref FROM issues WHERE id = ?1 AND external_ref IS NOT NULL AND external_ref != ''",
-                params![id],
+                params![full_id],
                 |row| row.get(0),
             )
             .optional()?;
@@ -846,9 +863,10 @@ impl BeadStore for SqliteBeadStore {
 
     async fn set_external_ref(&self, id: &str, external_ref: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, id)?;
         conn.execute(
             "UPDATE issues SET external_ref = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![external_ref, id],
+            params![external_ref, full_id],
         )?;
         Ok(())
     }
@@ -885,28 +903,36 @@ impl BeadStore for SqliteBeadStore {
 
     async fn add_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let full_issue = Self::resolve_id(&conn, issue_id)?;
+        let full_dep = Self::resolve_id(&conn, depends_on_id)?;
         conn.execute(
             "INSERT OR IGNORE INTO dependencies (issue_id, depends_on_id) VALUES (?1, ?2)",
-            params![issue_id, depends_on_id],
+            params![full_issue, full_dep],
         )?;
         Ok(())
     }
 
     async fn remove_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let full_issue = Self::resolve_id(&conn, issue_id)?;
+        let full_dep = Self::resolve_id(&conn, depends_on_id)?;
         conn.execute(
             "DELETE FROM dependencies WHERE issue_id = ?1 AND depends_on_id = ?2",
-            params![issue_id, depends_on_id],
+            params![full_issue, full_dep],
         )?;
         Ok(())
     }
 
     async fn get_dependencies(&self, issue_id: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
+        let full_id = match Self::resolve_id(&conn, issue_id) {
+            Ok(id) => id,
+            Err(_) => return Ok(vec![]),
+        };
         let mut stmt =
             conn.prepare("SELECT depends_on_id FROM dependencies WHERE issue_id = ?1")?;
         let deps = stmt
-            .query_map(params![issue_id], |row| row.get(0))?
+            .query_map(params![full_id], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
         Ok(deps)
@@ -914,10 +940,14 @@ impl BeadStore for SqliteBeadStore {
 
     async fn get_dependents(&self, issue_id: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
+        let full_id = match Self::resolve_id(&conn, issue_id) {
+            Ok(id) => id,
+            Err(_) => return Ok(vec![]),
+        };
         let mut stmt =
             conn.prepare("SELECT issue_id FROM dependencies WHERE depends_on_id = ?1")?;
         let deps = stmt
-            .query_map(params![issue_id], |row| row.get(0))?
+            .query_map(params![full_id], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
         Ok(deps)
@@ -925,18 +955,26 @@ impl BeadStore for SqliteBeadStore {
 
     async fn add_comment(&self, issue_id: &str, body: &str, author: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, issue_id)?;
         conn.execute(
             "INSERT INTO comments (issue_id, text, author, created_at) VALUES (?1, ?2, ?3, datetime('now'))",
-            params![issue_id, body, author],
+            params![full_id, body, author],
         )?;
         Ok(())
     }
 
     async fn log_event(&self, issue_id: &str, event_type: &str, detail: &str) {
         let conn = self.conn.lock().unwrap();
+        let full_id = match Self::resolve_id(&conn, issue_id) {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("warning: failed to resolve bead ID {issue_id} for event log: {e}");
+                return;
+            }
+        };
         let result = conn.execute(
             "INSERT INTO events (issue_id, event_type, actor, comment, created_at) VALUES (?1, ?2, 'rosary', ?3, datetime('now'))",
-            params![issue_id, event_type, detail],
+            params![full_id, event_type, detail],
         );
         if let Err(e) = result {
             eprintln!("warning: failed to log event for {issue_id}: {e}");
@@ -945,10 +983,14 @@ impl BeadStore for SqliteBeadStore {
 
     async fn get_latest_event(&self, issue_id: &str, event_type: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
+        let full_id = match Self::resolve_id(&conn, issue_id) {
+            Ok(id) => id,
+            Err(_) => return Ok(None),
+        };
         let result = conn
             .query_row(
                 "SELECT comment FROM events WHERE issue_id = ?1 AND event_type = ?2 ORDER BY created_at DESC LIMIT 1",
-                params![issue_id, event_type],
+                params![full_id, event_type],
                 |row| row.get(0),
             )
             .optional()?;
