@@ -118,10 +118,14 @@ impl DoltClient {
     /// Get the external_ref for a bead (e.g., "AGE-5").
     /// Used by persist_status to mirror state transitions to Linear.
     pub async fn get_external_ref(&self, id: &str) -> Result<Option<String>> {
+        let full_id = match self.resolve_id(id).await {
+            Ok(id) => id,
+            Err(_) => return Ok(None),
+        };
         let row = query(
             "SELECT external_ref FROM issues WHERE id = ? AND external_ref IS NOT NULL AND external_ref != ''",
         )
-        .bind(id)
+        .bind(&full_id)
         .fetch_optional(&self.pool)
         .await
         .with_context(|| format!("getting external_ref for {id}"))?;
@@ -131,9 +135,10 @@ impl DoltClient {
     #[allow(dead_code)] // API surface — used by sync module
     /// Set the external_ref for a bead (e.g., Linear issue identifier like "AGE-5").
     pub async fn set_external_ref(&self, id: &str, external_ref: &str) -> Result<()> {
+        let full_id = self.resolve_id(id).await?;
         query("UPDATE issues SET external_ref = ?, updated_at = NOW() WHERE id = ?")
             .bind(external_ref)
-            .bind(id)
+            .bind(&full_id)
             .execute(&self.pool)
             .await
             .with_context(|| format!("setting external_ref for {id}"))?;

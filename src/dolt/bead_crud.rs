@@ -6,6 +6,32 @@ use super::DoltClient;
 use crate::bead::Bead;
 
 impl DoltClient {
+    /// Resolve a short or full bead ID to the canonical full ID in the DB.
+    /// Accepts exact match or suffix match ("2a3970" → "ley-line-open-2a3970").
+    /// Errors on zero matches (not found) or multiple matches (ambiguous).
+    pub async fn resolve_id(&self, id: &str) -> Result<String> {
+        let exact = query("SELECT id FROM issues WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if let Some(row) = exact {
+            return Ok(row.get("id"));
+        }
+        let suffix_pattern = format!("%-{id}");
+        let matches = query("SELECT id FROM issues WHERE id LIKE ?")
+            .bind(&suffix_pattern)
+            .fetch_all(&self.pool)
+            .await?;
+        match matches.len() {
+            0 => anyhow::bail!("bead not found: {id}"),
+            1 => Ok(matches[0].get("id")),
+            _ => {
+                let ids: Vec<String> = matches.iter().map(|r| r.get("id")).collect();
+                anyhow::bail!("ambiguous bead ID {id:?} — matches: {}", ids.join(", "))
+            }
+        }
+    }
+
     /// List all open issues as Beads.
     pub async fn list_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
         let rows = query(
@@ -147,6 +173,10 @@ impl DoltClient {
 
     /// Get a single bead by ID.
     pub async fn get_bead(&self, id: &str, repo_name: &str) -> Result<Option<Bead>> {
+        let full_id = match self.resolve_id(id).await {
+            Ok(id) => id,
+            Err(_) => return Ok(None),
+        };
         let row = query(
             r#"SELECT id, title, description, status, priority, issue_type,
                       assignee, external_ref, notes, created_at, updated_at,
@@ -160,7 +190,7 @@ impl DoltClient {
                FROM issues i
                WHERE id = ?"#,
         )
-        .bind(id)
+        .bind(&full_id)
         .fetch_optional(&self.pool)
         .await
         .with_context(|| format!("querying issue {id}"))?;
@@ -198,21 +228,24 @@ impl DoltClient {
 
     /// Update a bead's status.
     pub async fn update_status(&self, id: &str, status: &str) -> Result<()> {
+        let full_id = self.resolve_id(id).await?;
         query("UPDATE issues SET status = ?, updated_at = NOW() WHERE id = ?")
             .bind(status)
-            .bind(id)
+            .bind(&full_id)
             .execute(&self.pool)
             .await
             .with_context(|| format!("updating status for {id}"))?;
-        self.auto_commit(&format!("{id}: status → {status}")).await;
+        self.auto_commit(&format!("{full_id}: status → {status}"))
+            .await;
         Ok(())
     }
 
     /// Set the user_id (owner identity) for multi-tenant scoping.
     pub async fn set_user_id(&self, id: &str, user_id: &str) -> Result<()> {
+        let full_id = self.resolve_id(id).await?;
         query("UPDATE issues SET user_id = ? WHERE id = ?")
             .bind(user_id)
-            .bind(id)
+            .bind(&full_id)
             .execute(&self.pool)
             .await
             .with_context(|| format!("setting user_id for {id}"))?;
@@ -221,9 +254,10 @@ impl DoltClient {
 
     /// Update a bead's assignee (owner).
     pub async fn set_assignee(&self, id: &str, assignee: &str) -> Result<()> {
+        let full_id = self.resolve_id(id).await?;
         query("UPDATE issues SET assignee = ?, updated_at = NOW() WHERE id = ?")
             .bind(assignee)
-            .bind(id)
+            .bind(&full_id)
             .execute(&self.pool)
             .await
             .with_context(|| format!("setting assignee for {id}"))?;
@@ -346,13 +380,14 @@ impl DoltClient {
     /// Set files and test_files on a bead. Stored as JSON in the notes column.
     #[allow(dead_code)] // API surface — used by bead_update and future backfill tools
     pub async fn set_files(&self, id: &str, files: &[String], test_files: &[String]) -> Result<()> {
+        let full_id = self.resolve_id(id).await?;
         let file_json = serde_json::json!({
             "files": files,
             "test_files": test_files,
         });
         query("UPDATE issues SET notes = ?, updated_at = NOW() WHERE id = ?")
             .bind(file_json.to_string())
-            .bind(id)
+            .bind(&full_id)
             .execute(&self.pool)
             .await
             .with_context(|| format!("setting files for {id}"))?;
@@ -366,6 +401,7 @@ impl DoltClient {
         id: &str,
         update: &crate::bead::BeadUpdate,
     ) -> Result<Vec<String>> {
+        let full_id = self.resolve_id(id).await?;
         let mut set_clauses = Vec::new();
         let mut bind_values: Vec<String> = Vec::new();
         let mut updated_fields = Vec::new();
@@ -400,7 +436,7 @@ impl DoltClient {
             // Read existing notes first to preserve fields not being updated.
             let existing_notes: serde_json::Value = {
                 let row = query("SELECT notes FROM issues WHERE id = ?")
-                    .bind(id)
+                    .bind(&full_id)
                     .fetch_optional(&self.pool)
                     .await?;
                 row.and_then(|r| {
@@ -453,32 +489,29 @@ impl DoltClient {
         set_clauses.push("updated_at = NOW()");
         let sql = format!("UPDATE issues SET {} WHERE id = ?", set_clauses.join(", "));
 
-        // Build the query with dynamic binds.
-        // sqlx doesn't support dynamic bind count easily, so we use raw SQL via execute_raw
-        // after safely escaping. However, since all values are strings and we control the SQL,
-        // we build a parameterized query manually.
         let mut q = query(&sql);
         for val in &bind_values {
             q = q.bind(val);
         }
-        q = q.bind(id);
+        q = q.bind(&full_id);
         q.execute(&self.pool)
             .await
             .with_context(|| format!("updating fields for {id}"))?;
 
-        self.auto_commit(&format!("update {id}: {}", updated_fields.join(", ")))
+        self.auto_commit(&format!("update {full_id}: {}", updated_fields.join(", ")))
             .await;
         Ok(updated_fields)
     }
 
     /// Close a bead by setting its status to 'closed'.
     pub async fn close_bead(&self, id: &str) -> Result<()> {
+        let full_id = self.resolve_id(id).await?;
         query("UPDATE issues SET status = 'closed', updated_at = NOW() WHERE id = ?")
-            .bind(id)
+            .bind(&full_id)
             .execute(&self.pool)
             .await
             .with_context(|| format!("closing bead {id}"))?;
-        self.auto_commit(&format!("close {id}")).await;
+        self.auto_commit(&format!("close {full_id}")).await;
         Ok(())
     }
 }

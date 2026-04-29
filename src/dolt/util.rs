@@ -81,10 +81,17 @@ impl DoltClient {
     /// Log an event to the events table for audit trail.
     /// Best-effort: logs warning on failure rather than propagating error.
     pub async fn log_event(&self, issue_id: &str, event_type: &str, detail: &str) {
+        let full_id = match self.resolve_id(issue_id).await {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("warning: failed to resolve bead ID {issue_id} for event log: {e}");
+                return;
+            }
+        };
         let result = query(
             "INSERT INTO events (issue_id, event_type, actor, comment, created_at) VALUES (?, ?, 'rosary', ?, NOW())",
         )
-        .bind(issue_id)
+        .bind(&full_id)
         .bind(event_type)
         .bind(detail)
         .execute(&self.pool)
@@ -102,10 +109,14 @@ impl DoltClient {
         issue_id: &str,
         event_type: &str,
     ) -> Result<Option<String>> {
+        let full_id = match self.resolve_id(issue_id).await {
+            Ok(id) => id,
+            Err(_) => return Ok(None),
+        };
         let row = query(
             "SELECT comment FROM events WHERE issue_id = ? AND event_type = ? ORDER BY created_at DESC LIMIT 1",
         )
-        .bind(issue_id)
+        .bind(&full_id)
         .bind(event_type)
         .fetch_optional(&self.pool)
         .await
