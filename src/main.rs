@@ -12,6 +12,7 @@ mod bdr_enrich;
 mod bead;
 mod bead_dolt;
 mod bead_sqlite;
+mod capture;
 mod cli;
 mod config;
 mod decompose;
@@ -254,6 +255,27 @@ enum Command {
         /// Skip post-migration verification
         #[arg(long)]
         skip_verify: bool,
+    },
+    /// Capture design atoms from a session transcript or source file
+    Capture {
+        /// Read transcript file (use `-` for stdin)
+        #[arg(long, conflicts_with = "from_code")]
+        from_session: Option<String>,
+        /// Read source file: `<repo> <path>` (e.g. `rosary src/bead.rs`)
+        #[arg(long, num_args = 2, conflicts_with = "from_session")]
+        from_code: Vec<String>,
+        /// Symbol to scope code capture (e.g. `BeadSpec`)
+        #[arg(long)]
+        symbol: Option<String>,
+        /// LLM model: haiku (default), sonnet, or full model ID
+        #[arg(long, default_value = "haiku")]
+        model: String,
+        /// Repo path for --commit (default: current directory)
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+        /// Write extracted BeadSpecs as beads (default: dry-run to stdout)
+        #[arg(long)]
+        commit: bool,
     },
 }
 
@@ -897,6 +919,71 @@ async fn main() -> Result<()> {
                         println!("  (no TechnicalSpec or Constraint atoms — nothing to stub)");
                     }
                 }
+            }
+        }
+        Command::Capture {
+            from_session,
+            from_code,
+            symbol,
+            model,
+            repo,
+            commit,
+        } => {
+            let specs = if let Some(ref transcript) = from_session {
+                let opts = capture::SessionCaptureOpts {
+                    transcript_path: transcript,
+                    model: &model,
+                };
+                capture::capture_from_session(&opts).await?
+            } else if from_code.len() == 2 {
+                let repo_root = scanner::resolve_repo_path(Path::new(&repo));
+                let opts = capture::CodeCaptureOpts {
+                    repo: &from_code[0],
+                    path: &from_code[1],
+                    symbol: symbol.as_deref(),
+                    model: &model,
+                    repo_root: &repo_root,
+                };
+                capture::capture_from_code(&opts).await?
+            } else {
+                anyhow::bail!("use --from-session <path> or --from-code <repo> <path>");
+            };
+
+            if !commit {
+                println!("{}", serde_json::to_string_pretty(&specs)?);
+            } else {
+                let repo_root = scanner::resolve_repo_path(Path::new(&repo));
+                let beads_dir = resolve_beads_dir(&repo_root);
+                let client = bead_sqlite::connect_bead_store(&beads_dir).await?;
+                let repo_name = repo_root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| repo.clone());
+                let created_by = git_config_user_name(&repo_root);
+                let mut created = 0;
+                for spec in &specs {
+                    let desc = enrich_bead_description(spec);
+                    let id = generate_bead_id(&repo_name);
+                    let owner = dispatch::default_agent(&spec.issue_type);
+                    client
+                        .create_bead_full(
+                            &id,
+                            &spec.title,
+                            &desc,
+                            spec.priority,
+                            &spec.issue_type,
+                            owner,
+                            &[],
+                            &[],
+                            &[],
+                            created_by.as_deref(),
+                            "",
+                            &spec.derived_from,
+                        )
+                        .await?;
+                    created += 1;
+                }
+                cli::decompose_summary(created, &repo_root.to_string_lossy());
             }
         }
         Command::Bead { action, repo } => {
