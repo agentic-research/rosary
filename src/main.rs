@@ -283,6 +283,9 @@ enum BeadAction {
     Close {
         /// Bead ID
         id: String,
+        /// Skip the verifiable-test-command check (for legacy/non-impl beads)
+        #[arg(long)]
+        force: bool,
     },
     /// List open beads
     List,
@@ -943,7 +946,20 @@ async fn main() -> Result<()> {
                         .await?;
                     cli::bead_created(&id, &title);
                 }
-                BeadAction::Close { id } => {
+                BeadAction::Close { id, force } => {
+                    if !force {
+                        let beads = client.list_beads(&repo_name).await?;
+                        if let Some(bead) = beads.iter().find(|b| b.id == id || b.id.ends_with(&id))
+                            && !bead.has_verifiable_test_command()
+                        {
+                            anyhow::bail!(
+                                "bead {} ({}) has no verifiable test command in its description.\n\
+                                 Add e.g. `cargo test -p <crate>` to success criteria, or pass --force to override.",
+                                bead.id,
+                                bead.issue_type
+                            );
+                        }
+                    }
                     client.close_bead(&id).await?;
                     cli::bead_closed(&id);
                 }
@@ -1114,6 +1130,7 @@ mod tests {
 
         let close = BeadAction::Close {
             id: "rsry-abc".to_string(),
+            force: false,
         };
         assert!(matches!(close, BeadAction::Close { .. }));
 
