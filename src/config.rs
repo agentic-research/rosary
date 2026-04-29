@@ -783,7 +783,68 @@ pub fn load_merged(local_path: &str) -> Result<Config> {
         }
     }
 
+    // Discover plugins from ~/.rsry/plugins/ and <repo>/.rosary/plugins/.
+    // Config-declared plugins win over discovered ones with the same name.
+    let repo_root = Path::new(local_path).parent().map(|p| {
+        if p == Path::new("") {
+            Path::new(".")
+        } else {
+            p
+        }
+    });
+    for plugin in discover_plugins(repo_root) {
+        if !merged.plugins.iter().any(|p| p.name == plugin.name) {
+            merged.plugins.push(plugin);
+        }
+    }
+
     Ok(merged)
+}
+
+/// Discover plugins from the filesystem plugin directories.
+///
+/// Priority (later entries override earlier ones with the same name):
+/// 1. `~/.rsry/plugins/*.toml` — user-global
+/// 2. `<repo_root>/.rosary/plugins/*.toml` — project-local
+///
+/// Each `.toml` file has the same shape as a `[[plugins]]` entry in config.
+/// Non-parseable files are silently skipped (fail-open for discoverability).
+pub fn discover_plugins(repo_root: Option<&Path>) -> Vec<PluginConfig> {
+    let mut discovered: Vec<PluginConfig> = Vec::new();
+
+    if let Some(home) = dirs_next::home_dir() {
+        collect_plugin_dir(&home.join(".rsry").join("plugins"), &mut discovered);
+    }
+
+    if let Some(root) = repo_root {
+        collect_plugin_dir(&root.join(".rosary").join("plugins"), &mut discovered);
+    }
+
+    discovered
+}
+
+fn collect_plugin_dir(dir: &Path, out: &mut Vec<PluginConfig>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("toml"))
+        .collect();
+    paths.sort(); // deterministic order within a directory
+    for path in paths {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(plugin) = toml::from_str::<PluginConfig>(&content) {
+                // project-local overrides user-global with same name
+                if let Some(existing) = out.iter_mut().find(|p| p.name == plugin.name) {
+                    *existing = plugin;
+                } else {
+                    out.push(plugin);
+                }
+            }
+        }
+    }
 }
 
 /// Build a `ComputeProvider` from config.
@@ -1482,5 +1543,111 @@ url = "http://localhost:9090/sink"
             let back: PluginKind = serde_json::from_str(&json).unwrap();
             assert_eq!(&back, kind);
         }
+    }
+
+    #[test]
+    fn plugin_discovery_empty_dir_returns_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = discover_plugins(Some(dir.path()));
+        assert!(plugins.is_empty());
+    }
+
+    #[test]
+    fn plugin_discovery_loads_toml_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins_dir = dir.path().join(".rosary").join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        std::fs::write(
+            plugins_dir.join("assay.toml"),
+            r#"name = "assay-coverage"
+kind = "hook"
+hook = "pipeline.verify"
+command = ["assay", "verify", "--format", "json"]
+"#,
+        )
+        .unwrap();
+
+        let plugins = discover_plugins(Some(dir.path()));
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].name, "assay-coverage");
+        assert_eq!(plugins[0].kind, PluginKind::Hook);
+    }
+
+    #[test]
+    fn plugin_discovery_project_local_overrides_user_global() {
+        // Simulate two dirs: "global" and "local"
+        let global_dir = tempfile::tempdir().unwrap();
+        let local_dir = tempfile::tempdir().unwrap();
+
+        // Same plugin name in both dirs, different commands
+        let global_plugins = global_dir.path().join("plugins");
+        let local_plugins = local_dir.path().join(".rosary").join("plugins");
+        std::fs::create_dir_all(&global_plugins).unwrap();
+        std::fs::create_dir_all(&local_plugins).unwrap();
+
+        std::fs::write(
+            global_plugins.join("myplug.toml"),
+            "name = \"myplug\"\nhook = \"pipeline.verify\"\ncommand = [\"global-bin\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            local_plugins.join("myplug.toml"),
+            "name = \"myplug\"\nhook = \"pipeline.verify\"\ncommand = [\"local-bin\"]\n",
+        )
+        .unwrap();
+
+        // Manually call collect_plugin_dir twice (simulating discover_plugins flow)
+        let mut discovered = Vec::new();
+        collect_plugin_dir(&global_plugins, &mut discovered);
+        collect_plugin_dir(&local_plugins, &mut discovered);
+
+        assert_eq!(discovered.len(), 1, "dedup: only one plugin after override");
+        assert_eq!(discovered[0].command, vec!["local-bin"], "local wins");
+    }
+
+    #[test]
+    fn plugin_discovery_config_declared_wins_over_discovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins_dir = dir.path().join(".rosary").join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        std::fs::write(
+            plugins_dir.join("myplug.toml"),
+            "name = \"myplug\"\nhook = \"pipeline.verify\"\ncommand = [\"discovered-bin\"]\n",
+        )
+        .unwrap();
+
+        let discovered = discover_plugins(Some(dir.path()));
+
+        // config-declared plugin with same name
+        let config_plugins = vec![PluginConfig {
+            name: "myplug".into(),
+            kind: PluginKind::Hook,
+            hook: "pipeline.verify".into(),
+            command: vec!["config-bin".into()],
+            url: None,
+        }];
+
+        // Merge: config-declared wins
+        let mut final_plugins = config_plugins;
+        for p in discovered {
+            if !final_plugins.iter().any(|cp| cp.name == p.name) {
+                final_plugins.push(p);
+            }
+        }
+
+        assert_eq!(final_plugins.len(), 1);
+        assert_eq!(final_plugins[0].command, vec!["config-bin"], "config wins");
+    }
+
+    #[test]
+    fn plugin_discovery_skips_non_toml_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins_dir = dir.path().join(".rosary").join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        std::fs::write(plugins_dir.join("readme.md"), "# not a plugin").unwrap();
+        std::fs::write(plugins_dir.join("plugin.json"), r#"{"name":"x"}"#).unwrap();
+
+        let plugins = discover_plugins(Some(dir.path()));
+        assert!(plugins.is_empty(), "non-toml files are ignored");
     }
 }
