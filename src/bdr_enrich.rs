@@ -78,14 +78,13 @@ pub fn resolve_model_id(model: &str) -> &str {
 }
 
 /// Parse the LLM JSON response into atoms.
+///
+/// Lenient: tolerates code fences and trailing prose. The model frequently
+/// wraps output in ```json blocks, and when it has nothing to extract it
+/// likes to emit `[]` followed by an explanatory paragraph.
 fn parse_llm_atoms(text: &str) -> Result<Vec<Atom>> {
-    // Strip markdown code fences if the model wrapped the output
-    let json_str = text
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
+    let json_str = extract_json_array(text)
+        .with_context(|| format!("could not find JSON array in LLM output:\n{text}"))?;
 
     #[derive(Deserialize)]
     struct LlmAtom {
@@ -97,7 +96,7 @@ fn parse_llm_atoms(text: &str) -> Result<Vec<Atom>> {
         references: Vec<String>,
     }
 
-    let llm_atoms: Vec<LlmAtom> = serde_json::from_str(json_str)
+    let llm_atoms: Vec<LlmAtom> = serde_json::from_str(&json_str)
         .with_context(|| format!("parsing LLM atom JSON:\n{json_str}"))?;
 
     eprintln!("[bdr-enrich] extracted {} atoms", llm_atoms.len());
@@ -114,6 +113,43 @@ fn parse_llm_atoms(text: &str) -> Result<Vec<Atom>> {
             references: a.references,
         })
         .collect())
+}
+
+/// Extract the first balanced top-level JSON array from `text`, tolerating
+/// markdown fences before/after and any trailing prose the model adds.
+///
+/// Tracks string and escape state so brackets inside strings don't confuse
+/// the depth counter. Returns the substring including the outer `[ ... ]`.
+fn extract_json_array(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let start = bytes.iter().position(|&b| b == b'[')?;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        if in_string {
+            if escape {
+                escape = false;
+            } else if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(text[start..=i].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_atom_kind(s: &str) -> AtomKind {
@@ -189,5 +225,51 @@ mod tests {
     fn parse_llm_atoms_invalid_json_returns_error() {
         let result = parse_llm_atoms("not json");
         assert!(result.is_err());
+    }
+
+    // ── lenient parser tests (rosary-bdr-enrich-prose) ────────────────────────
+
+    #[test]
+    fn parse_lenient_pure_empty_array() {
+        let atoms = parse_llm_atoms("[]").unwrap();
+        assert!(atoms.is_empty());
+    }
+
+    #[test]
+    fn parse_lenient_array_with_trailing_prose() {
+        // Real failure mode from `rsry capture --from-code` on a Widget struct:
+        // LLM emits empty array then explains why.
+        let raw = "[]\n\nThis code documents an existing implementation, not a design proposal.";
+        let atoms = parse_llm_atoms(raw).unwrap();
+        assert!(atoms.is_empty());
+    }
+
+    #[test]
+    fn parse_lenient_fenced_with_trailing_prose() {
+        let raw = "```json\n[]\n```\n\nNo actionable atoms found in this snippet.";
+        let atoms = parse_llm_atoms(raw).unwrap();
+        assert!(atoms.is_empty());
+    }
+
+    #[test]
+    fn parse_lenient_array_with_string_containing_brackets() {
+        // The bracket-counter must respect strings.
+        let raw = r#"[{"kind":"Phase","title":"Use [brackets] in title","body":"B","source_section":"S","references":[]}] explanation here"#;
+        let atoms = parse_llm_atoms(raw).unwrap();
+        assert_eq!(atoms.len(), 1);
+        assert!(atoms[0].title.contains("[brackets]"));
+    }
+
+    #[test]
+    fn parse_lenient_no_array_at_all_errors() {
+        let result = parse_llm_atoms("Sorry, I cannot find any atoms here.");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_json_array_handles_escaped_quotes_in_strings() {
+        let raw = r#"[{"k":"has \"quotes\" and ]bracket"}] trailing"#;
+        let extracted = extract_json_array(raw).unwrap();
+        assert_eq!(extracted, r#"[{"k":"has \"quotes\" and ]bracket"}]"#);
     }
 }
