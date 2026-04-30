@@ -139,6 +139,36 @@ passes `CLAUDE_CODE_OAUTH_TOKEN` as the `anthropic_api_key` GHA input.
 **ACP provider:** `ANTHROPIC_API_KEY` (Console API key) or the OAuth token work.
 Both are passed as `CLAUDE_CODE_OAUTH_TOKEN` to the ACP agent subprocess.
 
+### `[[plugin]]` — Pipeline Plugins
+
+Plugins extend rosary along a `kind` axis. Defined in `~/.rsry/plugins/*.toml`,
+`<repo>/.rosary/plugins/*.toml`, or inline in any config file.
+
+```toml
+[[plugin]]
+name = "assay-coverage"
+kind = "hook"                       # hook (default) | mcp | dispatch | state_sink
+hook = "pipeline.verify"            # which pipeline event (hook kind only)
+command = ["assay", "verify", "--threshold", "0.8", "--format", "json"]
+```
+
+`hook` plugin events:
+
+| Hook              | When                           | Use case                                    |
+| ----------------- | ------------------------------ | ------------------------------------------- |
+| `pipeline.triage` | Before dispatch                | Skip / reroute beads                        |
+| `pipeline.verify` | After agent completes          | Verdict pass / fail / partial               |
+| `pipeline.close`  | On bead close                  | Notify, archive, post-mortem                |
+| `assay.scan`      | On `rsry scan --assay`         | Report stale refs → P3 chore beads          |
+
+`pipeline.verify` plugins may include `coverage: <0..1>` in their JSON output.
+When a bead's `success_criteria.doc_coverage_min` is set, rosary fails the gate
+if the plugin reports coverage below the threshold.
+
+`dispatch` plugins implement an alternative `AgentProvider` (e.g. local model
+runner). `mcp` plugins expose an outbound MCP server that rosary connects to as
+a client. `state_sink` plugins mirror bead state to an external system.
+
 ### `[http]` — HTTP Transport
 
 For `rsry serve --transport http`. Exposes MCP over Streamable HTTP + webhook receiver.
@@ -166,16 +196,21 @@ token_env = "CF_API_TOKEN"
 | `LINEAR_TEAM`               | Linear team key                | `[linear] team`                      |
 | `LINEAR_WEBHOOK_SECRET`     | Webhook signing                | `[linear] webhook_secret`            |
 | `SPRITES_TOKEN`             | Sprites compute API token      | `[compute.sprites] token_env`        |
+| `GITHUB_TOKEN`              | Auth for `rsry sync --github`  | `[github] token`                     |
 
 ## File Locations
 
 | File                                  | Purpose                                        |
 | ------------------------------------- | ---------------------------------------------- |
 | `~/.rsry/config.toml`                 | Global config                                  |
+| `~/.rsry/plugins/*.toml`              | Global plugin discovery                        |
 | `~/.rsry/dolt/rosary/`                | Backend state DB (decades, threads, pipelines) |
 | `~/.rsry/worktrees/{repo}/{bead-id}/` | Agent worktree isolation                       |
 | `{repo}/.beads/`                      | Per-repo bead database (Dolt)                  |
 | `{repo}/.beads/dolt-server.port`      | Dolt server port                               |
 | `{repo}/.beads/metadata.json`         | Database name + settings                       |
+| `{repo}/.rosary/plugins/*.toml`       | Per-repo plugin discovery                      |
+| `{repo}/notes/<scope>/.recipients`    | age recipients allowed to decrypt that scope   |
+| `{repo}/notes/<scope>/*.age`          | Encrypted notes (rotated via `rsry notes rotate`) |
 | `./rosary.toml`                       | Project-level config                           |
 | `./rosary-self.toml`                  | Self-management config                         |
