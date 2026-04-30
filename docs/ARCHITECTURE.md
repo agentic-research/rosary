@@ -208,19 +208,30 @@ graph LR
     subgraph "Integration"
         linear["linear.rs<br/>Linear sync"]
         linear_tracker["linear_tracker.rs<br/>IssueTracker"]
+        github_mirror["github_mirror.rs<br/>bead → PR comment"]
         sync["sync.rs<br/>bidi engine"]
         xref["xref.rs<br/>cross-repo refs"]
     end
 
     subgraph "Interface"
         main["main.rs<br/>CLI"]
-        serve["serve.rs<br/>MCP 24 tools"]
+        serve["serve/<br/>MCP 27 tools + webhooks"]
         config["config.rs<br/>TOML config"]
+        plugin["plugin.rs<br/>kind=hook|mcp|dispatch|state_sink"]
+    end
+
+    subgraph "Capture & BDR I/O"
+        capture["capture.rs<br/>session/code → BeadSpecs"]
+        bdr_enrich["bdr_enrich.rs<br/>LLM atom extraction"]
+        decompose["decompose.rs<br/>atoms → Rust stubs"]
+        scan_assay["scan_assay.rs<br/>stale-ref → chore beads"]
+        notes["notes.rs<br/>age recipient rotation"]
     end
 
     subgraph "BDR (crate)"
         bdr_parse["parse.rs<br/>markdown → atoms"]
         bdr_decompose["decompose.rs<br/>atoms → beads"]
+        bdr_provenance["provenance.rs<br/>Doc/Session/Code refs"]
         bdr_harmony["harmony.rs<br/>Harmony tokens"]
         bdr_accrete["accrete.rs<br/>completion → status"]
     end
@@ -279,15 +290,16 @@ graph TB
 
 Connection safety: `dolt_transaction_commit=1` (auto-commit per statement), `max_connections=1` (session variable consistency), bail on known dead port (no silent empty DB).
 
-## MCP Tools (26)
+## MCP Tools (27)
 
 | Category   | Tools                                                                                                                                              |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_comment`, `rsry_bead_close`, `rsry_bead_link`                               |
+| Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_comment`, `rsry_bead_close`, `rsry_bead_link`, `rsry_bead_import`           |
 | Status     | `rsry_status`, `rsry_list_beads`, `rsry_scan`, `rsry_active`                                                                                       |
 | Dispatch   | `rsry_dispatch`, `rsry_run_once`, `rsry_decompose`, `rsry_pipeline_upsert`, `rsry_pipeline_query`, `rsry_dispatch_record`, `rsry_dispatch_history` |
 | Workspaces | `rsry_workspace_create`, `rsry_workspace_checkpoint`, `rsry_workspace_cleanup`, `rsry_workspace_merge`                                             |
 | Hierarchy  | `rsry_decade_list`, `rsry_thread_list`, `rsry_thread_assign`                                                                                       |
+| Repos      | `rsry_repo_register`, `rsry_repo_list`                                                                                                             |
 
 ## Linear Integration
 

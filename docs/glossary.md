@@ -73,3 +73,33 @@ Terms used across rosary, the conductor, agents, and ADRs.
 | **`rosary.toml`** | Per-project config (overrides global for that repo). |
 | **`rosary-self.toml`** | Self-management config — rosary watches its own repo (dogfooding). |
 | **Session registry** | `~/.rsry/sessions.json` — tracks active agent PIDs. Pruned of dead processes on load. |
+
+## Plugins
+
+| Term | What |
+|------|------|
+| **Plugin** | Out-of-process executable that extends rosary along a `kind` axis. Discovered from `~/.rsry/plugins/` and `<repo>/.rosary/plugins/`. |
+| **`kind = "hook"`** | Pipeline hook (default). Runs at `pipeline.triage` / `pipeline.verify` / `pipeline.close`. |
+| **`kind = "mcp"`** | Outbound MCP server — rosary connects to it as a client (planned). |
+| **`kind = "dispatch"`** | Alternative `AgentProvider` (e.g. local model runner, sprites). |
+| **`kind = "state_sink"`** | Mirrors bead state to an external system (planned). |
+| **Coverage gate** | A `pipeline.verify` plugin can return `coverage: 0..1`. When a bead's `doc_coverage_min` is set, rosary fails verify if coverage is below the threshold. |
+| **`assay.scan`** | Scan-time hook. `rsry scan --assay` calls these plugins per repo, files P3 chore beads for each reported stale ref. |
+
+## Provenance & capture
+
+| Term | What |
+|------|------|
+| **`ProvenanceRef`** | Tagged enum tracking where a bead's atom came from. Variants: `Doc { path }`, `Session { transcript_path, summary }`, `Code { repo, path, symbol }`, `Meeting`, `SlackThread`. Stored in `Bead.derived_from`. |
+| **`rsry capture --from-session`** | Reads a transcript file, extracts BDR atoms via LLM, produces BeadSpecs with `Session` provenance. |
+| **`rsry capture --from-code`** | Reads a source file (optionally scoped to a symbol), extracts atoms via LLM, produces BeadSpecs with `Code` provenance. |
+| **`rsry decompose --stub-output`** | Emits Rust skeletons (`.rsry-stubs/<decade>.rs`) from `TechnicalSpec` and `Constraint` atoms — review the stub PR before implementing to validate the design. |
+| **Verifiable test command** | `rsry bead close` requires impl beads (bug/feature/task/chore) to have a recognised test command (`cargo test`, `pytest`, `npm test`, etc.) in their description. Override with `--force`. |
+
+## Encrypted notes
+
+| Term | What |
+|------|------|
+| **Scope** | Subdirectory of `notes/` (e.g. `notes/work/`, `notes/public/`) holding age-encrypted notes for one access tier. |
+| **Recipients file** | `notes/<scope>/.recipients` — newline-separated age recipients allowed to decrypt that scope. |
+| **`rsry notes rotate`** | Re-encrypts every `*.age` file in a scope after applying `--add-recipient` / `--remove-recipient` edits. Refuses to rotate to an empty list. |

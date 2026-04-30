@@ -46,7 +46,21 @@ Beads are organized into **threads** (ordered progressions of related work) and 
 rsry bead create "Fix auth bug" --priority 1 --type bug --files src/auth.rs
 rsry bead list
 rsry bead search "auth"
-rsry bead close rsry-abc123
+rsry bead close rsry-abc123          # requires a verifiable test command in the description
+rsry bead close rsry-abc123 --force  # override (legacy / non-impl beads)
+```
+
+### Capture beads from any provenance
+
+```bash
+# Transcript → BeadSpecs (Session provenance)
+rsry capture --from-session sessions/2026-04-29.md --commit
+
+# Source file → BeadSpecs (Code provenance, optionally scoped to a symbol)
+rsry capture --from-code rosary src/bead.rs --symbol BeadSpec --commit
+
+# Markdown ADR → beads + Rust stubs for design review
+rsry decompose docs/adr/0009-feature.md --stub-output .
 ```
 
 ## Getting started
@@ -76,7 +90,7 @@ rsry run
 
 ## MCP server
 
-Rosary exposes 24 tools as MCP. Any AI agent or human with an MCP client can scan beads, dispatch work, manage threads, and track progress.
+Rosary exposes 27 tools as MCP. Any AI agent or human with an MCP client can scan beads, dispatch work, manage threads, and track progress.
 
 ```bash
 # Add to Claude Code (one-time)
@@ -86,15 +100,16 @@ claude mcp add -s user rsry -- rsry serve --transport stdio
 rsry serve --transport http --port 8383
 ```
 
-**24 tools** across five categories:
+**27 tools** across six categories:
 
 | Category   | Tools                                                                                                                                              |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_comment`, `rsry_bead_close`, `rsry_bead_link`                               |
+| Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_comment`, `rsry_bead_close`, `rsry_bead_link`, `rsry_bead_import`           |
 | Status     | `rsry_status`, `rsry_list_beads`, `rsry_scan`, `rsry_active`                                                                                       |
 | Dispatch   | `rsry_dispatch`, `rsry_run_once`, `rsry_decompose`, `rsry_pipeline_upsert`, `rsry_pipeline_query`, `rsry_dispatch_record`, `rsry_dispatch_history` |
 | Workspaces | `rsry_workspace_create`, `rsry_workspace_checkpoint`, `rsry_workspace_cleanup`, `rsry_workspace_merge`                                             |
 | Hierarchy  | `rsry_decade_list`, `rsry_thread_list`, `rsry_thread_assign`                                                                                       |
+| Repos      | `rsry_repo_register`, `rsry_repo_list`                                                                                                             |
 
 ## Config
 
@@ -140,7 +155,46 @@ rsry sync --dry-run    # preview
 rsry sync              # push + pull + reconcile
 ```
 
-Webhooks for real-time updates: `rsry serve --transport http` exposes `/webhook`.
+Webhooks for real-time updates: `rsry serve --transport http` exposes:
+- `/webhook` — Linear bead status sync
+- `/webhook/github` — GitHub merge events advance the linked bead and unblock dependents
+
+## GitHub integration
+
+```bash
+rsry sync --github     # mirror bead context (id, title, status, file scopes) to PR comments
+```
+
+The merge webhook closes the bead and unblocks its dependents when the linked PR lands.
+
+## Encrypted notes (scoped, per-host)
+
+Notes live under `notes/<scope>/` encrypted with [age](https://age-encryption.org/). Each scope has a `.recipients` file listing the public keys allowed to decrypt. Different machines see different scopes naturally because they hold different unwrap keys.
+
+```bash
+# Re-encrypt every note in `notes/work/` for an updated recipient list
+rsry notes rotate --scope work --add-recipient age1abc...
+```
+
+Refuses to rotate to an empty recipient list (would brick the scope). Atomic writes — partial failures don't corrupt files.
+
+## Plugin system
+
+Plugins extend rosary along a `kind` axis declared in `~/.rsry/plugins/*.toml` or `<repo>/.rosary/plugins/*.toml`:
+
+| Kind         | Purpose                                                                |
+| ------------ | ---------------------------------------------------------------------- |
+| `hook`       | Pipeline hook (default) — runs at `pipeline.triage` / `verify` / `close` |
+| `mcp`        | Outbound MCP server — rosary connects as a client (planned)            |
+| `dispatch`   | Alternative `AgentProvider` (e.g. local model, sprites)                |
+| `state_sink` | Mirrors bead state to an external system (planned)                     |
+
+Verify-tier plugins can return a `coverage: f64`. When a bead has `doc_coverage_min` in its success criteria, rosary fails the gate if the plugin reports coverage below the threshold (e.g. `assay` for doc-coverage delta).
+
+```bash
+# File P3 chore beads for stale markdown→code refs reported by `assay.scan` plugins
+rsry scan --assay
+```
 
 ## Verification
 
