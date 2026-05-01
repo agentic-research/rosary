@@ -97,6 +97,56 @@ pub struct DispatchRecord {
     pub chain_hash: Option<String>,
 }
 
+/// Modal evidence tier for cross-repo dependency edges (ADR-0009).
+///
+/// `Asserted` and `Derived` block dispatch. `Conjectured` annotates only.
+/// A janitor pass demotes `Derived` → `Conjectured` after TTL if mache
+/// doesn't re-confirm the edge, preventing phantom blockers.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EvidenceTier {
+    /// Conjectured: mache heuristic (markdown mention, symbol use). Annotates only.
+    Conjectured,
+    /// Derived: BDR `derived_from`, `depends_on:` frontmatter, ProvenanceRef. Blocks dispatch.
+    Derived,
+    /// Asserted: human via `rsry_bead_link --cross-repo`. Blocks dispatch.
+    #[default]
+    Asserted,
+}
+
+impl EvidenceTier {
+    /// Whether this tier should block dispatch (Asserted or Derived).
+    pub fn blocks_dispatch(&self) -> bool {
+        matches!(self, EvidenceTier::Asserted | EvidenceTier::Derived)
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EvidenceTier::Asserted => "asserted",
+            EvidenceTier::Derived => "derived",
+            EvidenceTier::Conjectured => "conjectured",
+        }
+    }
+}
+
+impl std::fmt::Display for EvidenceTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for EvidenceTier {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "asserted" => Ok(EvidenceTier::Asserted),
+            "derived" => Ok(EvidenceTier::Derived),
+            "conjectured" => Ok(EvidenceTier::Conjectured),
+            other => anyhow::bail!("unknown evidence tier: {other}"),
+        }
+    }
+}
+
 /// Cross-repo dependency between beads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CrossRepoDep {
@@ -104,6 +154,19 @@ pub struct CrossRepoDep {
     pub to: WorkRef,
     /// blocks, relates_to
     pub dep_type: String,
+    /// Modal evidence tier (ADR-0009). Defaults to Asserted for human-written edges.
+    #[serde(default)]
+    pub evidence_tier: EvidenceTier,
+    /// Source of the edge: mache scan id, "human", or agent name.
+    #[serde(default = "default_source")]
+    pub source: String,
+    /// When this edge was last observed/written.
+    #[serde(default = "Utc::now")]
+    pub observed_at: DateTime<Utc>,
+}
+
+fn default_source() -> String {
+    "human".to_string()
 }
 
 /// Mapping between a bead and its Linear representation.
@@ -157,9 +220,18 @@ pub trait DispatchStore: Send + Sync {
 /// Replaces overloaded `external_ref` field and mirror-bead pattern.
 #[async_trait]
 pub trait LinkageStore: Send + Sync {
+    /// Write a cross-repo dependency edge.
+    /// For same-repo edges, rejects if the edge would create a per-repo cycle (ADR-0009).
     async fn add_dependency(&self, dep: &CrossRepoDep) -> Result<()>;
     async fn dependencies_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>>;
     async fn dependents_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>>;
+    /// All dep_type='blocks' edges with evidence tier >= Derived. Used by triage.
+    async fn all_blocking_deps(&self) -> Result<Vec<CrossRepoDep>>;
+    /// Remove a specific cross-repo dep edge.
+    async fn remove_cross_repo_dep(&self, from: &WorkRef, to: &WorkRef) -> Result<()>;
+    /// Demote Derived → Conjectured for edges not re-confirmed within `ttl_days`.
+    /// Returns the number of edges demoted.
+    async fn demote_stale_derived(&self, ttl_days: u32) -> Result<u64>;
 
     async fn upsert_linear_link(&self, link: &LinearLink) -> Result<()>;
     async fn find_by_linear_id(&self, linear_id: &str) -> Result<Option<LinearLink>>;
@@ -303,6 +375,25 @@ pub trait BackendExport: BackendStore {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    /// DFS reachability: can we reach `target` from `start` following dep edges?
+    fn can_reach(deps: &[CrossRepoDep], start: &WorkRef, target: &WorkRef) -> bool {
+        let mut visited = std::collections::HashSet::new();
+        let mut stack = vec![start.clone()];
+        while let Some(node) = stack.pop() {
+            if &node == target {
+                return true;
+            }
+            if visited.contains(&node.bead_id) {
+                continue;
+            }
+            visited.insert(node.bead_id.clone());
+            for dep in deps.iter().filter(|d| &d.from == &node) {
+                stack.push(dep.to.clone());
+            }
+        }
+        false
+    }
 
     /// In-memory implementation of all three store traits for testing.
     struct InMemoryStore {
@@ -475,6 +566,18 @@ mod tests {
     impl LinkageStore for InMemoryStore {
         async fn add_dependency(&self, dep: &CrossRepoDep) -> Result<()> {
             let mut deps = self.deps.lock().unwrap();
+            // Same-repo cycle check: reject if to→from path exists
+            if dep.from.repo == dep.to.repo {
+                if can_reach(&deps, &dep.to, &dep.from) {
+                    anyhow::bail!(
+                        "cycle: adding {}/{} → {}/{} would create a per-repo cycle",
+                        dep.from.repo,
+                        dep.from.bead_id,
+                        dep.to.repo,
+                        dep.to.bead_id
+                    );
+                }
+            }
             if !deps.iter().any(|d| d.from == dep.from && d.to == dep.to) {
                 deps.push(dep.clone());
             }
@@ -489,6 +592,34 @@ mod tests {
         async fn dependents_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
             let deps = self.deps.lock().unwrap();
             Ok(deps.iter().filter(|d| &d.to == bead).cloned().collect())
+        }
+
+        async fn all_blocking_deps(&self) -> Result<Vec<CrossRepoDep>> {
+            let deps = self.deps.lock().unwrap();
+            Ok(deps
+                .iter()
+                .filter(|d| d.dep_type == "blocks" && d.evidence_tier.blocks_dispatch())
+                .cloned()
+                .collect())
+        }
+
+        async fn remove_cross_repo_dep(&self, from: &WorkRef, to: &WorkRef) -> Result<()> {
+            let mut deps = self.deps.lock().unwrap();
+            deps.retain(|d| !(&d.from == from && &d.to == to));
+            Ok(())
+        }
+
+        async fn demote_stale_derived(&self, ttl_days: u32) -> Result<u64> {
+            let cutoff = Utc::now() - chrono::Duration::days(i64::from(ttl_days));
+            let mut deps = self.deps.lock().unwrap();
+            let mut demoted = 0u64;
+            for dep in deps.iter_mut() {
+                if dep.evidence_tier == EvidenceTier::Derived && dep.observed_at < cutoff {
+                    dep.evidence_tier = EvidenceTier::Conjectured;
+                    demoted += 1;
+                }
+            }
+            Ok(demoted)
         }
 
         async fn upsert_linear_link(&self, link: &LinearLink) -> Result<()> {
@@ -808,6 +939,9 @@ mod tests {
             from: from.clone(),
             to: to.clone(),
             dep_type: "blocks".into(),
+            evidence_tier: EvidenceTier::Asserted,
+            source: "human".into(),
+            observed_at: Utc::now(),
         };
         store.add_dependency(&dep).await.unwrap();
         // Idempotent
@@ -849,5 +983,119 @@ mod tests {
         store.upsert_linear_link(&updated).await.unwrap();
         let found = store.find_by_linear_id("AGE-330").await.unwrap().unwrap();
         assert_eq!(found.linear_type, "sub_issue");
+    }
+
+    fn make_dep(from_repo: &str, from_id: &str, to_repo: &str, to_id: &str) -> CrossRepoDep {
+        CrossRepoDep {
+            from: WorkRef {
+                repo: from_repo.into(),
+                scope: String::new(),
+                bead_id: from_id.into(),
+            },
+            to: WorkRef {
+                repo: to_repo.into(),
+                scope: String::new(),
+                bead_id: to_id.into(),
+            },
+            dep_type: "blocks".into(),
+            evidence_tier: EvidenceTier::Asserted,
+            source: "human".into(),
+            observed_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn evidence_tier_blocks_dispatch() {
+        assert!(EvidenceTier::Asserted.blocks_dispatch());
+        assert!(EvidenceTier::Derived.blocks_dispatch());
+        assert!(!EvidenceTier::Conjectured.blocks_dispatch());
+    }
+
+    #[tokio::test]
+    async fn same_repo_cycle_rejected() {
+        let store = InMemoryStore::new();
+        // A → B → C; trying to add C → A should fail
+        store
+            .add_dependency(&make_dep("repo", "a", "repo", "b"))
+            .await
+            .unwrap();
+        store
+            .add_dependency(&make_dep("repo", "b", "repo", "c"))
+            .await
+            .unwrap();
+        let cycle = store
+            .add_dependency(&make_dep("repo", "c", "repo", "a"))
+            .await;
+        assert!(cycle.is_err(), "cycle should be rejected");
+        assert!(cycle.unwrap_err().to_string().contains("cycle"));
+    }
+
+    #[tokio::test]
+    async fn cross_repo_cycle_allowed() {
+        let store = InMemoryStore::new();
+        // A:x → B:y and B:y → A:x is fine (cross-repo SCC = co-dispatch signal)
+        store
+            .add_dependency(&make_dep("repo-a", "x", "repo-b", "y"))
+            .await
+            .unwrap();
+        store
+            .add_dependency(&make_dep("repo-b", "y", "repo-a", "x"))
+            .await
+            .unwrap();
+        let deps = store
+            .dependencies_of(&WorkRef {
+                repo: "repo-b".into(),
+                scope: String::new(),
+                bead_id: "y".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(deps.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn all_blocking_deps_filters_conjectured() {
+        let store = InMemoryStore::new();
+        let asserted = make_dep("r", "a", "r2", "b");
+        let mut conjectured = make_dep("r", "c", "r2", "d");
+        conjectured.evidence_tier = EvidenceTier::Conjectured;
+        store.add_dependency(&asserted).await.unwrap();
+        store.add_dependency(&conjectured).await.unwrap();
+        let blocking = store.all_blocking_deps().await.unwrap();
+        assert_eq!(blocking.len(), 1);
+        assert_eq!(blocking[0].from.bead_id, "a");
+    }
+
+    #[tokio::test]
+    async fn demote_stale_derived_works() {
+        let store = InMemoryStore::new();
+        let mut stale = make_dep("r", "old", "r2", "x");
+        stale.evidence_tier = EvidenceTier::Derived;
+        stale.observed_at = Utc::now() - chrono::Duration::days(10);
+        let mut fresh = make_dep("r", "new", "r2", "y");
+        fresh.evidence_tier = EvidenceTier::Derived;
+        // fresh.observed_at = now (default)
+        store.add_dependency(&stale).await.unwrap();
+        store.add_dependency(&fresh).await.unwrap();
+
+        let demoted = store.demote_stale_derived(7).await.unwrap();
+        assert_eq!(demoted, 1);
+
+        let blocking = store.all_blocking_deps().await.unwrap();
+        assert_eq!(blocking.len(), 1, "only fresh derived should still block");
+        assert_eq!(blocking[0].from.bead_id, "new");
+    }
+
+    #[tokio::test]
+    async fn remove_cross_repo_dep_works() {
+        let store = InMemoryStore::new();
+        let dep = make_dep("repo-a", "bead-1", "repo-b", "bead-2");
+        store.add_dependency(&dep).await.unwrap();
+        assert_eq!(store.all_blocking_deps().await.unwrap().len(), 1);
+        store
+            .remove_cross_repo_dep(&dep.from, &dep.to)
+            .await
+            .unwrap();
+        assert_eq!(store.all_blocking_deps().await.unwrap().len(), 0);
     }
 }

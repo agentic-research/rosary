@@ -380,6 +380,9 @@ mod tests {
                 from: bead.clone(),
                 to: dep_target,
                 dep_type: "blocks".into(),
+                evidence_tier: EvidenceTier::Asserted,
+                source: "human".into(),
+                observed_at: chrono::Utc::now(),
             })
             .await
             .unwrap();
@@ -482,6 +485,9 @@ mod tests {
                     scope: String::new(),
                 },
                 dep_type: "blocks".into(),
+                evidence_tier: EvidenceTier::Asserted,
+                source: "human".into(),
+                observed_at: chrono::Utc::now(),
             })
             .await
             .unwrap();

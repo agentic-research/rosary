@@ -19,6 +19,7 @@ impl Reconciler {
         &mut self,
         beads: &[crate::bead::Bead],
         thread_map: &HashMap<String, String>,
+        cross_repo_blocked: &std::collections::HashSet<String>,
     ) -> usize {
         let target_filter = self.config.target_bead.clone();
         let now = chrono::Utc::now();
@@ -74,6 +75,12 @@ impl Reconciler {
             // Dependency-aware: hard-filter beads with unresolved deps.
             // Targeted dispatch (--bead) bypasses this — explicit override.
             if bead.is_blocked() && target_filter.is_none() {
+                continue;
+            }
+
+            // Cross-repo blocking (ADR-0009): defer if any Asserted/Derived blocking
+            // dep exists whose target bead is not yet closed.
+            if cross_repo_blocked.contains(&bead.id) && target_filter.is_none() {
                 continue;
             }
 
