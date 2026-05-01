@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
   id-token: write   # cosign keyless + SLSA provenance
   actions: read      # SLSA provenance detection
 
