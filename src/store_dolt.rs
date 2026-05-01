@@ -202,6 +202,9 @@ impl DoltBackend {
                 to_repo VARCHAR(128) NOT NULL,
                 to_bead VARCHAR(128) NOT NULL,
                 dep_type VARCHAR(32) NOT NULL DEFAULT 'blocks',
+                evidence_tier ENUM('asserted','derived','conjectured') NOT NULL DEFAULT 'asserted',
+                source TEXT NOT NULL DEFAULT 'human',
+                observed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (from_repo, from_bead, to_repo, to_bead)
             )",
             "CREATE TABLE IF NOT EXISTS linear_links (
@@ -243,6 +246,22 @@ impl DoltBackend {
                 "thread_members",
                 "scope",
                 "ALTER TABLE thread_members ADD COLUMN scope VARCHAR(255) NOT NULL DEFAULT ''",
+            ),
+            // ADR-0009: modal evidence tier columns on cross_repo_deps
+            (
+                "cross_repo_deps",
+                "evidence_tier",
+                "ALTER TABLE cross_repo_deps ADD COLUMN evidence_tier ENUM('asserted','derived','conjectured') NOT NULL DEFAULT 'asserted'",
+            ),
+            (
+                "cross_repo_deps",
+                "source",
+                "ALTER TABLE cross_repo_deps ADD COLUMN source TEXT NOT NULL DEFAULT 'human'",
+            ),
+            (
+                "cross_repo_deps",
+                "observed_at",
+                "ALTER TABLE cross_repo_deps ADD COLUMN observed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
             ),
         ];
         for (table, column, sql) in migrations {
@@ -590,16 +609,47 @@ impl DispatchStore for DoltBackend {
 #[async_trait]
 impl LinkageStore for DoltBackend {
     async fn add_dependency(&self, dep: &CrossRepoDep) -> Result<()> {
+        // Per-repo cycle check (ADR-0009): same-repo subgraphs must be DAGs.
+        if dep.from.repo == dep.to.repo {
+            let existing = query(
+                "SELECT from_bead, to_bead FROM cross_repo_deps
+                 WHERE from_repo = ? AND to_repo = ?",
+            )
+            .bind(&dep.from.repo)
+            .bind(&dep.to.repo)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+            // DFS: can we reach dep.from from dep.to using existing edges?
+            if dfs_can_reach(&existing, &dep.to.bead_id, &dep.from.bead_id) {
+                anyhow::bail!(
+                    "cycle: adding {}/{} → {}/{} would create a per-repo cycle",
+                    dep.from.repo,
+                    dep.from.bead_id,
+                    dep.to.repo,
+                    dep.to.bead_id
+                );
+            }
+        }
+
         query(
-            "INSERT INTO cross_repo_deps (from_repo, from_bead, to_repo, to_bead, dep_type)
-             VALUES (?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE dep_type = VALUES(dep_type)",
+            "INSERT INTO cross_repo_deps
+               (from_repo, from_bead, to_repo, to_bead, dep_type, evidence_tier, source, observed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+               dep_type = VALUES(dep_type),
+               evidence_tier = VALUES(evidence_tier),
+               source = VALUES(source),
+               observed_at = VALUES(observed_at)",
         )
         .bind(&dep.from.repo)
         .bind(&dep.from.bead_id)
         .bind(&dep.to.repo)
         .bind(&dep.to.bead_id)
         .bind(&dep.dep_type)
+        .bind(dep.evidence_tier.as_str())
+        .bind(&dep.source)
+        .bind(dep.observed_at)
         .execute(&self.pool)
         .await
         .with_context(|| {
@@ -613,7 +663,8 @@ impl LinkageStore for DoltBackend {
 
     async fn dependencies_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
         let rows = query(
-            "SELECT from_repo, from_bead, to_repo, to_bead, dep_type
+            "SELECT from_repo, from_bead, to_repo, to_bead, dep_type,
+                    evidence_tier, source, observed_at
              FROM cross_repo_deps WHERE from_repo = ? AND from_bead = ?",
         )
         .bind(&bead.repo)
@@ -627,7 +678,8 @@ impl LinkageStore for DoltBackend {
 
     async fn dependents_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
         let rows = query(
-            "SELECT from_repo, from_bead, to_repo, to_bead, dep_type
+            "SELECT from_repo, from_bead, to_repo, to_bead, dep_type,
+                    evidence_tier, source, observed_at
              FROM cross_repo_deps WHERE to_repo = ? AND to_bead = ?",
         )
         .bind(&bead.repo)
@@ -637,6 +689,51 @@ impl LinkageStore for DoltBackend {
         .with_context(|| format!("dependents of {}/{}", bead.repo, bead.bead_id))?;
 
         Ok(rows.iter().map(row_to_cross_repo_dep).collect())
+    }
+
+    async fn all_blocking_deps(&self) -> Result<Vec<CrossRepoDep>> {
+        let rows = query(
+            "SELECT from_repo, from_bead, to_repo, to_bead, dep_type,
+                    evidence_tier, source, observed_at
+             FROM cross_repo_deps
+             WHERE dep_type = 'blocks'
+               AND evidence_tier IN ('asserted', 'derived')",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("loading all blocking deps")?;
+
+        Ok(rows.iter().map(row_to_cross_repo_dep).collect())
+    }
+
+    async fn remove_cross_repo_dep(&self, from: &WorkRef, to: &WorkRef) -> Result<()> {
+        query(
+            "DELETE FROM cross_repo_deps
+             WHERE from_repo = ? AND from_bead = ? AND to_repo = ? AND to_bead = ?",
+        )
+        .bind(&from.repo)
+        .bind(&from.bead_id)
+        .bind(&to.repo)
+        .bind(&to.bead_id)
+        .execute(&self.pool)
+        .await
+        .context("removing cross-repo dep")?;
+        Ok(())
+    }
+
+    async fn demote_stale_derived(&self, ttl_days: u32) -> Result<u64> {
+        let result = query(
+            "UPDATE cross_repo_deps
+             SET evidence_tier = 'conjectured'
+             WHERE evidence_tier = 'derived'
+               AND observed_at < DATE_SUB(NOW(), INTERVAL ? DAY)",
+        )
+        .bind(i64::from(ttl_days))
+        .execute(&self.pool)
+        .await
+        .context("demoting stale derived deps")?;
+
+        Ok(result.rows_affected())
     }
 
     async fn upsert_linear_link(&self, link: &LinearLink) -> Result<()> {
@@ -776,6 +873,8 @@ fn row_to_dispatch_record(r: &sqlx_mysql::MySqlRow) -> DispatchRecord {
 }
 
 fn row_to_cross_repo_dep(r: &sqlx_mysql::MySqlRow) -> CrossRepoDep {
+    let tier_str: String = r.try_get("evidence_tier").unwrap_or_default();
+    let observed_naive: Option<chrono::NaiveDateTime> = r.try_get("observed_at").ok();
     CrossRepoDep {
         from: WorkRef {
             repo: r.get("from_repo"),
@@ -788,7 +887,38 @@ fn row_to_cross_repo_dep(r: &sqlx_mysql::MySqlRow) -> CrossRepoDep {
             bead_id: r.get("to_bead"),
         },
         dep_type: r.get("dep_type"),
+        evidence_tier: tier_str
+            .parse()
+            .unwrap_or(crate::store::EvidenceTier::Asserted),
+        source: r.try_get("source").unwrap_or_else(|_| "human".into()),
+        observed_at: observed_naive
+            .map(|n| chrono::DateTime::from_naive_utc_and_offset(n, chrono::Utc))
+            .unwrap_or_else(chrono::Utc::now),
     }
+}
+
+/// DFS: can we reach `target_bead` starting from `start_bead` using the given
+/// (from_bead, to_bead) pair rows from the same-repo subgraph?
+fn dfs_can_reach(edges: &[sqlx_mysql::MySqlRow], start_bead: &str, target_bead: &str) -> bool {
+    use std::collections::HashSet;
+    let mut visited = HashSet::new();
+    let mut stack = vec![start_bead.to_string()];
+    while let Some(node) = stack.pop() {
+        if node == target_bead {
+            return true;
+        }
+        if !visited.insert(node.clone()) {
+            continue;
+        }
+        for r in edges {
+            let from: String = r.try_get("from_bead").unwrap_or_default();
+            if from == node {
+                let to: String = r.try_get("to_bead").unwrap_or_default();
+                stack.push(to);
+            }
+        }
+    }
+    false
 }
 
 // ── BackendExport ──────────────────────────────────────
@@ -846,11 +976,13 @@ impl BackendExport for DoltBackend {
     }
 
     async fn all_dependencies(&self) -> Result<Vec<CrossRepoDep>> {
-        let rows =
-            query("SELECT from_repo, from_bead, to_repo, to_bead, dep_type FROM cross_repo_deps")
-                .fetch_all(&self.pool)
-                .await
-                .context("listing all dependencies")?;
+        let rows = query(
+            "SELECT from_repo, from_bead, to_repo, to_bead, dep_type,
+                    evidence_tier, source, observed_at FROM cross_repo_deps",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("listing all dependencies")?;
         Ok(rows.iter().map(row_to_cross_repo_dep).collect())
     }
 
@@ -1050,6 +1182,9 @@ mod tests {
             from: from.clone(),
             to: to.clone(),
             dep_type: "blocks".into(),
+            evidence_tier: crate::store::EvidenceTier::Asserted,
+            source: "human".into(),
+            observed_at: chrono::Utc::now(),
         };
         backend.add_dependency(&dep).await.unwrap();
 

@@ -148,6 +148,8 @@ pub struct Reconciler {
     /// When set, enables thread-aware dedup and phase context.
     #[allow(dead_code)] // Wired in next phase: thread-aware triage
     hierarchy: Option<Box<dyn crate::store::HierarchyStore>>,
+    /// Cross-repo linkage store. When set, triage consults blocking deps (ADR-0009).
+    linkage: Option<Box<dyn crate::store::LinkageStore>>,
     /// Schema-driven pipeline engine. Replaces hardcoded agent_pipeline() match.
     /// Uses DispatchStore for persistent pipeline state (survives crashes).
     pipeline: PipelineEngine,
@@ -267,9 +269,10 @@ impl Reconciler {
         // Reconciler owns HierarchyStore, PipelineEngine owns DispatchStore.
         // TODO: refactor to Arc<dyn BackendStore> to share a single connection.
         #[allow(clippy::type_complexity)]
-        let (hierarchy, dispatch_store): (
+        let (hierarchy, dispatch_store, linkage): (
             Option<Box<dyn crate::store::HierarchyStore>>,
             Option<Box<dyn crate::store::DispatchStore>>,
+            Option<Box<dyn crate::store::LinkageStore>>,
         ) = if let Some(ref backend_cfg) = config.backend {
             let hierarchy = match backend_cfg.connect().await {
                 Ok(backend) => {
@@ -300,10 +303,19 @@ impl Reconciler {
                     None
                 }
             };
-            (hierarchy, dispatch)
+            let linkage = match backend_cfg.connect().await {
+                Ok(backend) => Some(backend as Box<dyn crate::store::LinkageStore>),
+                Err(e) => {
+                    eprintln!(
+                        "[reconcile] linkage store unavailable ({e}), cross-repo blocking disabled"
+                    );
+                    None
+                }
+            };
+            (hierarchy, dispatch, linkage)
         } else {
             eprintln!("[reconcile] no [backend] config, backend stores disabled");
-            (None, None)
+            (None, None, None)
         };
 
         // Build pipeline engine from config + backend store.
@@ -405,6 +417,7 @@ impl Reconciler {
             compute,
             agents_dir,
             hierarchy,
+            linkage,
             pipeline,
             remote_repos,
             pending_remote_urls,
@@ -523,6 +536,50 @@ impl Reconciler {
         Ok(cumulative)
     }
 
+    /// Query the linkage store for beads blocked by cross-repo deps (ADR-0009).
+    ///
+    /// Returns a set of bead IDs that should be deferred by triage.
+    /// Uses the already-scanned `beads` slice to resolve target status — no extra DB round-trips.
+    /// Fails closed: if the linkage store is unavailable, returns empty (no extra blocking).
+    async fn compute_cross_repo_blocked(
+        &self,
+        beads: &[crate::bead::Bead],
+    ) -> std::collections::HashSet<String> {
+        let Some(ref linkage) = self.linkage else {
+            return Default::default();
+        };
+        let all_blocking = match linkage.all_blocking_deps().await {
+            Ok(deps) => deps,
+            Err(e) => {
+                eprintln!("[triage] cross-repo dep query failed: {e}");
+                return Default::default();
+            }
+        };
+        if all_blocking.is_empty() {
+            return Default::default();
+        }
+        // Build a status map from scanned beads for fast lookup.
+        let status_map: std::collections::HashMap<(&str, &str), &str> = beads
+            .iter()
+            .map(|b| ((b.repo.as_str(), b.id.as_str()), b.status.as_str()))
+            .collect();
+        let mut blocked = std::collections::HashSet::new();
+        for dep in &all_blocking {
+            let target_status = status_map
+                .get(&(dep.to.repo.as_str(), dep.to.bead_id.as_str()))
+                .copied()
+                .unwrap_or("open"); // unknown repo = assume open (fail closed)
+            if target_status != "done" && target_status != "closed" {
+                blocked.insert(dep.from.bead_id.clone());
+                eprintln!(
+                    "[triage] cross-repo block: {}/{} ← {}/{} ({target_status}, tier={})",
+                    dep.from.repo, dep.from.bead_id, dep.to.repo, dep.to.bead_id, dep.evidence_tier
+                );
+            }
+        }
+        blocked
+    }
+
     /// Execute one full iteration of the reconciliation loop.
     pub async fn iterate(&mut self) -> Result<IterationSummary> {
         let mut summary = IterationSummary::default();
@@ -618,8 +675,11 @@ impl Reconciler {
         self.auto_thread(&beads).await;
         let thread_map = self.build_thread_map(&beads).await;
 
+        // Phase 2.9: CROSS-REPO BLOCKING — query linkage store for blocking deps
+        let cross_repo_blocked = self.compute_cross_repo_blocked(&beads).await;
+
         // Phase 3: TRIAGE — score open beads, enqueue above threshold
-        summary.triaged = self.triage(&beads, &thread_map);
+        summary.triaged = self.triage(&beads, &thread_map, &cross_repo_blocked);
 
         // Phase 4: DISPATCH — fill free slots before verification
         // Dispatch runs BEFORE verify so new agents start working while the

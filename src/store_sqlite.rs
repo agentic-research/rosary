@@ -41,6 +41,16 @@ impl SqliteBackend {
         let _ = conn.execute_batch("ALTER TABLE dispatches ADD COLUMN chain_hash TEXT;");
         let _ = conn
             .execute_batch("ALTER TABLE thread_members ADD COLUMN scope TEXT NOT NULL DEFAULT '';");
+        // ADR-0009: modal evidence tier on cross-repo deps
+        let _ = conn.execute_batch(
+            "ALTER TABLE dependencies ADD COLUMN evidence_tier TEXT NOT NULL DEFAULT 'asserted';",
+        );
+        let _ = conn.execute_batch(
+            "ALTER TABLE dependencies ADD COLUMN source TEXT NOT NULL DEFAULT 'human';",
+        );
+        let _ = conn.execute_batch(
+            "ALTER TABLE dependencies ADD COLUMN observed_at TEXT NOT NULL DEFAULT (datetime('now'));",
+        );
 
         Ok(SqliteBackend {
             conn: Mutex::new(conn),
@@ -114,6 +124,9 @@ CREATE TABLE IF NOT EXISTS dependencies (
     to_repo TEXT NOT NULL,
     to_bead TEXT NOT NULL,
     dep_type TEXT NOT NULL DEFAULT 'blocks',
+    evidence_tier TEXT NOT NULL DEFAULT 'asserted',
+    source TEXT NOT NULL DEFAULT 'human',
+    observed_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (from_repo, from_bead, to_repo, to_bead)
 );
 
@@ -405,15 +418,37 @@ impl DispatchStore for SqliteBackend {
 impl LinkageStore for SqliteBackend {
     async fn add_dependency(&self, dep: &CrossRepoDep) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        // Per-repo cycle check (ADR-0009)
+        if dep.from.repo == dep.to.repo {
+            let mut stmt = conn.prepare(
+                "SELECT from_bead, to_bead FROM dependencies WHERE from_repo = ?1 AND to_repo = ?1",
+            )?;
+            let edges: Vec<(String, String)> = stmt
+                .query_map(params![dep.from.repo], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            if sqlite_dfs_can_reach(&edges, &dep.to.bead_id, &dep.from.bead_id) {
+                anyhow::bail!(
+                    "cycle: adding {}/{} → {}/{} would create a per-repo cycle",
+                    dep.from.repo,
+                    dep.from.bead_id,
+                    dep.to.repo,
+                    dep.to.bead_id
+                );
+            }
+        }
         conn.execute(
-            "INSERT OR IGNORE INTO dependencies (from_repo, from_bead, to_repo, to_bead, dep_type)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR REPLACE INTO dependencies
+               (from_repo, from_bead, to_repo, to_bead, dep_type, evidence_tier, source, observed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
             params![
                 dep.from.repo,
                 dep.from.bead_id,
                 dep.to.repo,
                 dep.to.bead_id,
-                dep.dep_type
+                dep.dep_type,
+                dep.evidence_tier.as_str(),
+                dep.source
             ],
         )?;
         Ok(())
@@ -422,23 +457,10 @@ impl LinkageStore for SqliteBackend {
     async fn dependencies_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT from_repo, from_bead, to_repo, to_bead, dep_type FROM dependencies WHERE from_repo = ?1 AND from_bead = ?2",
+            "SELECT from_repo, from_bead, to_repo, to_bead, dep_type, evidence_tier, source, observed_at
+             FROM dependencies WHERE from_repo = ?1 AND from_bead = ?2",
         )?;
-        let rows = stmt.query_map(params![bead.repo, bead.bead_id], |row| {
-            Ok(CrossRepoDep {
-                from: WorkRef {
-                    repo: row.get(0)?,
-                    scope: String::new(),
-                    bead_id: row.get(1)?,
-                },
-                to: WorkRef {
-                    repo: row.get(2)?,
-                    scope: String::new(),
-                    bead_id: row.get(3)?,
-                },
-                dep_type: row.get(4)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![bead.repo, bead.bead_id], sqlite_row_to_dep)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -446,25 +468,43 @@ impl LinkageStore for SqliteBackend {
     async fn dependents_of(&self, bead: &WorkRef) -> Result<Vec<CrossRepoDep>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT from_repo, from_bead, to_repo, to_bead, dep_type FROM dependencies WHERE to_repo = ?1 AND to_bead = ?2",
+            "SELECT from_repo, from_bead, to_repo, to_bead, dep_type, evidence_tier, source, observed_at
+             FROM dependencies WHERE to_repo = ?1 AND to_bead = ?2",
         )?;
-        let rows = stmt.query_map(params![bead.repo, bead.bead_id], |row| {
-            Ok(CrossRepoDep {
-                from: WorkRef {
-                    repo: row.get(0)?,
-                    scope: String::new(),
-                    bead_id: row.get(1)?,
-                },
-                to: WorkRef {
-                    repo: row.get(2)?,
-                    scope: String::new(),
-                    bead_id: row.get(3)?,
-                },
-                dep_type: row.get(4)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![bead.repo, bead.bead_id], sqlite_row_to_dep)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
+    }
+
+    async fn all_blocking_deps(&self) -> Result<Vec<CrossRepoDep>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT from_repo, from_bead, to_repo, to_bead, dep_type, evidence_tier, source, observed_at
+             FROM dependencies WHERE dep_type = 'blocks' AND evidence_tier IN ('asserted', 'derived')",
+        )?;
+        let rows = stmt.query_map([], sqlite_row_to_dep)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    async fn remove_cross_repo_dep(&self, from: &WorkRef, to: &WorkRef) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM dependencies WHERE from_repo = ?1 AND from_bead = ?2 AND to_repo = ?3 AND to_bead = ?4",
+            params![from.repo, from.bead_id, to.repo, to.bead_id],
+        )?;
+        Ok(())
+    }
+
+    async fn demote_stale_derived(&self, ttl_days: u32) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "UPDATE dependencies SET evidence_tier = 'conjectured'
+             WHERE evidence_tier = 'derived'
+               AND observed_at < datetime('now', ?1)",
+            params![format!("-{ttl_days} days")],
+        )?;
+        Ok(n as u64)
     }
 
     async fn upsert_linear_link(&self, link: &LinearLink) -> Result<()> {
@@ -584,23 +624,10 @@ impl BackendExport for SqliteBackend {
 
     async fn all_dependencies(&self) -> Result<Vec<CrossRepoDep>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT from_repo, from_bead, to_repo, to_bead, dep_type FROM dependencies")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(CrossRepoDep {
-                from: WorkRef {
-                    repo: row.get(0)?,
-                    scope: String::new(),
-                    bead_id: row.get(1)?,
-                },
-                to: WorkRef {
-                    repo: row.get(2)?,
-                    scope: String::new(),
-                    bead_id: row.get(3)?,
-                },
-                dep_type: row.get(4)?,
-            })
-        })?;
+        let mut stmt = conn.prepare(
+            "SELECT from_repo, from_bead, to_repo, to_bead, dep_type, evidence_tier, source, observed_at FROM dependencies",
+        )?;
+        let rows = stmt.query_map([], sqlite_row_to_dep)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -642,6 +669,50 @@ impl BackendExport for SqliteBackend {
 }
 
 // ── Row helpers ─────────────────────────────────────────
+
+fn sqlite_row_to_dep(row: &rusqlite::Row) -> rusqlite::Result<CrossRepoDep> {
+    let tier_str: String = row.get(5).unwrap_or_else(|_| "asserted".into());
+    let observed_str: String = row.get(7).unwrap_or_else(|_| "1970-01-01T00:00:00".into());
+    let observed_at = chrono::DateTime::parse_from_rfc3339(&observed_str)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now());
+    Ok(CrossRepoDep {
+        from: WorkRef {
+            repo: row.get(0)?,
+            scope: String::new(),
+            bead_id: row.get(1)?,
+        },
+        to: WorkRef {
+            repo: row.get(2)?,
+            scope: String::new(),
+            bead_id: row.get(3)?,
+        },
+        dep_type: row.get(4)?,
+        evidence_tier: tier_str.parse().unwrap_or(EvidenceTier::Asserted),
+        source: row.get(6).unwrap_or_else(|_| "human".into()),
+        observed_at,
+    })
+}
+
+fn sqlite_dfs_can_reach(edges: &[(String, String)], start: &str, target: &str) -> bool {
+    use std::collections::HashSet;
+    let mut visited = HashSet::new();
+    let mut stack = vec![start.to_string()];
+    while let Some(node) = stack.pop() {
+        if node == target {
+            return true;
+        }
+        if !visited.insert(node.clone()) {
+            continue;
+        }
+        for (from, to) in edges {
+            if from == &node {
+                stack.push(to.clone());
+            }
+        }
+    }
+    false
+}
 
 fn row_to_pipeline(row: &rusqlite::Row) -> rusqlite::Result<PipelineState> {
     let backoff_str: Option<String> = row.get(9)?;
@@ -826,6 +897,9 @@ mod tests {
                 from: from.clone(),
                 to: to.clone(),
                 dep_type: "blocks".into(),
+                evidence_tier: EvidenceTier::Asserted,
+                source: "human".into(),
+                observed_at: chrono::Utc::now(),
             })
             .await
             .unwrap();

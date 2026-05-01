@@ -5,7 +5,10 @@ use serde_json::{Value, json};
 
 use crate::config;
 use crate::pool::RepoPool;
-use crate::store::{BackendStore, BeadStore, DispatchRecord, PipelineState, WorkRef};
+use crate::store::{
+    BackendStore, BeadStore, CrossRepoDep, DispatchRecord, EvidenceTier, LinkageStore,
+    PipelineState, WorkRef,
+};
 
 /// Default result limit for bead search (keeps MCP responses bounded).
 const SEARCH_DEFAULT_LIMIT: u64 = 20;
@@ -127,7 +130,7 @@ pub(crate) async fn call_tool(
         "rsry_bead_update" => tool_bead_update(args, pool, user_scope).await,
         "rsry_bead_close" => tool_bead_close(args, pool, user_scope).await,
         "rsry_bead_comment" => tool_bead_comment(args, pool, user_scope).await,
-        "rsry_bead_link" => tool_bead_link(args, pool).await,
+        "rsry_bead_link" => tool_bead_link(args, pool, backend).await,
         "rsry_bead_search" => tool_bead_search(args, pool, user_scope).await,
         "rsry_dispatch" => tool_dispatch(args, config_path).await,
         "rsry_active" => tool_active().await,
@@ -616,7 +619,11 @@ async fn tool_bead_comment(
     Ok(json!({ "id": id, "comment_added": true }))
 }
 
-async fn tool_bead_link(args: &Value, pool: &RepoPool) -> Result<Value> {
+async fn tool_bead_link(
+    args: &Value,
+    pool: &RepoPool,
+    backend: Option<&dyn BackendStore>,
+) -> Result<Value> {
     let repo_path = args["repo_path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
@@ -630,20 +637,60 @@ async fn tool_bead_link(args: &Value, pool: &RepoPool) -> Result<Value> {
         .get("remove")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    // cross_repo: "other-repo/bead-id" — writes to backend LinkageStore instead of per-repo Dolt
+    let cross_repo_target = args.get("cross_repo").and_then(|v| v.as_str());
 
     if id == depends_on {
         anyhow::bail!("a bead cannot depend on itself ({id})");
     }
 
-    let client_ref = get_client(repo_path, pool).await?;
-    let client = client_ref.as_store();
-
-    if remove {
-        client.remove_dependency(id, depends_on).await?;
-        Ok(json!({ "id": id, "depends_on": depends_on, "action": "removed" }))
+    if let Some(target) = cross_repo_target {
+        // Cross-repo dep: parse "repo/bead-id" and write to backend LinkageStore.
+        let (to_repo, to_bead) = target
+            .split_once('/')
+            .ok_or_else(|| anyhow::anyhow!("cross_repo must be 'repo-name/bead-id'"))?;
+        let from_repo = repo_name_from_path(repo_path);
+        let dep = CrossRepoDep {
+            from: WorkRef {
+                repo: from_repo.clone(),
+                scope: String::new(),
+                bead_id: id.to_string(),
+            },
+            to: WorkRef {
+                repo: to_repo.to_string(),
+                scope: String::new(),
+                bead_id: to_bead.to_string(),
+            },
+            dep_type: "blocks".to_string(),
+            evidence_tier: EvidenceTier::Asserted,
+            source: "human".to_string(),
+            observed_at: chrono::Utc::now(),
+        };
+        let linkage = backend
+            .ok_or_else(|| anyhow::anyhow!("backend store required for cross-repo links"))?;
+        if remove {
+            linkage.remove_cross_repo_dep(&dep.from, &dep.to).await?;
+            Ok(json!({ "id": id, "cross_repo": target, "action": "removed" }))
+        } else {
+            linkage.add_dependency(&dep).await?;
+            Ok(json!({
+                "id": id,
+                "cross_repo": target,
+                "action": "added",
+                "evidence_tier": "asserted"
+            }))
+        }
     } else {
-        client.add_dependency(id, depends_on).await?;
-        Ok(json!({ "id": id, "depends_on": depends_on, "action": "added" }))
+        // Same-repo dep: write to per-repo Dolt via BeadStore.
+        let client_ref = get_client(repo_path, pool).await?;
+        let client = client_ref.as_store();
+        if remove {
+            client.remove_dependency(id, depends_on).await?;
+            Ok(json!({ "id": id, "depends_on": depends_on, "action": "removed" }))
+        } else {
+            client.add_dependency(id, depends_on).await?;
+            Ok(json!({ "id": id, "depends_on": depends_on, "action": "added" }))
+        }
     }
 }
 
@@ -2031,7 +2078,9 @@ mod input_validation_tests {
     #[tokio::test]
     async fn link_rejects_self_dependency() {
         let args = json!({ "repo_path": FAKE_REPO, "id": "x-1", "depends_on": "x-1" });
-        let err = tool_bead_link(&args, &empty_pool()).await.unwrap_err();
+        let err = tool_bead_link(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("cannot depend on itself"), "{err}");
     }
 }
