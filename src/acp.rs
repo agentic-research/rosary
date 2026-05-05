@@ -723,24 +723,35 @@ mod tests {
 
     #[tokio::test]
     async fn take_tools_used_drains_log() {
+        use crate::dispatch::session::AgentSession;
+
+        // Populate the shared log via RosaryClient, then drain through the
+        // real AcpSession::take_tools_used() — not by poking the mutex directly.
         let log = Arc::new(Mutex::new(Vec::new()));
         let client = RosaryClient {
             permissions: PermissionProfile::Implement,
             log_path: PathBuf::from("/dev/null"),
             tool_log: Arc::clone(&log),
         };
-        // Approve two tools
         let (req1, _, _) = make_permission_request("Edit");
         let (req2, _, _) = make_permission_request("Read");
         client.request_permission(req1).await.unwrap();
         client.request_permission(req2).await.unwrap();
 
-        // Simulate take_tools_used by draining the shared log (same logic as AcpSession impl)
-        let first_drain: Vec<_> = log.lock().unwrap().drain(..).collect();
-        let second_drain: Vec<_> = log.lock().unwrap().drain(..).collect();
+        // Build an AcpSession sharing the same log Arc (mimics spawn_acp_session wiring)
+        let mut session = AcpSession {
+            join_handle: None,
+            finished: Arc::new(AtomicBool::new(true)),
+            result: Some(true),
+            child_pid: None,
+            tools_used: Arc::clone(&log),
+        };
 
-        assert_eq!(first_drain.len(), 2, "should drain both records");
-        assert!(second_drain.is_empty(), "second drain must be empty");
+        let first = session.take_tools_used();
+        let second = session.take_tools_used();
+
+        assert_eq!(first.len(), 2, "take_tools_used must drain both records");
+        assert!(second.is_empty(), "second take_tools_used must be empty");
     }
 
     #[tokio::test]

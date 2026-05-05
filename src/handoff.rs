@@ -660,17 +660,20 @@ mod tests {
 
     #[test]
     fn tool_call_record_roundtrip() {
+        let ts = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:34:56Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
         let rec = ToolCallRecord {
             tool_name: "Edit".to_string(),
             approved: true,
-            timestamp: chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
-                .unwrap()
-                .with_timezone(&chrono::Utc),
+            timestamp: ts,
         };
         let json = serde_json::to_string(&rec).unwrap();
         let parsed: ToolCallRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.tool_name, "Edit");
         assert!(parsed.approved);
+        // Timestamp must survive the roundtrip at full precision
+        assert_eq!(parsed.timestamp, ts, "timestamp must roundtrip unchanged");
     }
 
     #[test]
@@ -779,6 +782,27 @@ mod tests {
             "empty tools_used must not emit 'Tools used:'"
         );
         assert!(!prompt.contains("Tools denied:"));
+    }
+
+    #[test]
+    fn format_for_prompt_denied_only_omits_tools_used_section() {
+        let work = sample_work();
+        let mut h = Handoff::new(0, "dev-agent", None, "rosary-t", "claude", &work, None);
+        h.tools_used = vec![ToolCallRecord {
+            tool_name: "Bash(curl evil.com)".to_string(),
+            approved: false,
+            timestamp: chrono::Utc::now(),
+        }];
+        let prompt = Handoff::format_for_prompt(&[h]);
+        assert!(
+            !prompt.contains("Tools used:"),
+            "denied-only tools_used must NOT emit 'Tools used:'"
+        );
+        assert!(
+            prompt.contains("Tools denied:"),
+            "denied-only tools_used must emit 'Tools denied:'"
+        );
+        assert!(prompt.contains("Bash(curl evil.com)"));
     }
 
     #[test]
