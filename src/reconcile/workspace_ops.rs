@@ -120,8 +120,15 @@ impl Reconciler {
             if !pending_tools.is_empty() {
                 handoff.tools_used = pending_tools;
             }
-            if let Err(e) = handoff.write_to(work_dir) {
-                eprintln!("[handoff] {bead_id}: failed to write: {e}");
+            // Only emit a DSSE envelope when the handoff itself was successfully
+            // written — otherwise the envelope would attest to a non-existent file.
+            match handoff.write_to(work_dir) {
+                Ok(handoff_path) => {
+                    self.write_handoff_envelope(bead_id, &handoff_path, phase, &handoff);
+                }
+                Err(e) => {
+                    eprintln!("[handoff] {bead_id}: failed to write: {e}");
+                }
             }
 
             // Write manifest
@@ -248,6 +255,76 @@ impl Reconciler {
             // cleaned up from "." was unsafe: it could delete worktrees
             // belonging to other reconcilers or from previous runs.
             eprintln!("[cleanup] {bead_id}: no workspace tracked, skipping");
+        }
+    }
+
+    /// APAS L2: write a DSSE envelope alongside the just-written handoff file.
+    /// Signs with the configured Ed25519 key when `[attestation]` is set;
+    /// otherwise writes an unsigned envelope (still useful as in-toto Statement).
+    ///
+    /// The in-toto subject digest is computed from the **on-disk** handoff bytes
+    /// so external observers can verify by hashing the file directly.
+    ///
+    /// All errors are logged and swallowed — envelope failure must not block
+    /// the pipeline since the handoff itself is already on disk.
+    pub(super) fn write_handoff_envelope(
+        &self,
+        bead_id: &str,
+        handoff_path: &std::path::Path,
+        phase: u32,
+        handoff: &crate::handoff::Handoff,
+    ) {
+        let handoff_predicate = match serde_json::to_value(handoff) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[dsse] {bead_id}: serialize handoff: {e}");
+                return;
+            }
+        };
+
+        let signing_key = self.load_attestation_key(bead_id);
+
+        let envelope = match crate::dsse::wrap_handoff_from_file(
+            handoff_path,
+            &handoff_predicate,
+            signing_key.as_ref(),
+        ) {
+            Ok(env) => env,
+            Err(e) => {
+                eprintln!("[dsse] {bead_id}: wrap handoff: {e}");
+                return;
+            }
+        };
+
+        let work_dir = handoff_path.parent().unwrap_or(handoff_path);
+        if let Err(e) = crate::dsse::write_envelope(work_dir, phase, &envelope) {
+            eprintln!("[dsse] {bead_id}: write envelope: {e}");
+        } else {
+            let signed = if envelope.signatures.is_empty() {
+                "unsigned"
+            } else {
+                "signed"
+            };
+            eprintln!("[dsse] {bead_id}: phase {phase} envelope written ({signed})");
+        }
+    }
+
+    /// Resolve and load the attestation signing key, expanding `~` in the path.
+    /// Returns None if attestation is not configured or the key cannot be loaded.
+    pub(super) fn load_attestation_key(&self, bead_id: &str) -> Option<ed25519_dalek::SigningKey> {
+        let key_path = self
+            .config
+            .attestation
+            .as_ref()?
+            .signing_key_path
+            .as_ref()?;
+        let expanded = shellexpand::tilde(&key_path.display().to_string()).into_owned();
+        match crate::dsse::load_signing_key(std::path::Path::new(&expanded)) {
+            Ok(k) => Some(k),
+            Err(e) => {
+                eprintln!("[dsse] {bead_id}: load signing key: {e}");
+                None
+            }
         }
     }
 }

@@ -72,6 +72,9 @@ pub struct ReconcilerConfig {
     /// Pipeline plugins from [[plugins]] config.
     /// Each plugin hooks into verify/review/triage stages via subprocess or HTTP.
     pub plugins: Vec<crate::config::PluginConfig>,
+    /// APAS L2: optional Ed25519 signing key for handoff envelopes.
+    /// When set, every handoff write produces a sibling DSSE envelope.
+    pub attestation: Option<crate::config::AttestationConfig>,
 }
 
 impl Default for ReconcilerConfig {
@@ -95,6 +98,7 @@ impl Default for ReconcilerConfig {
             default_branch: "main".to_string(),
             orchestration: OrchestrationConfig::default(),
             plugins: Vec::new(),
+            attestation: None,
         }
     }
 }
@@ -965,6 +969,7 @@ pub async fn run(
             .unwrap_or_else(|| "main".to_string()),
         orchestration,
         plugins: cfg.plugins,
+        attestation: cfg.attestation,
         ..Default::default()
     };
 

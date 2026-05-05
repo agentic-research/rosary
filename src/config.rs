@@ -49,6 +49,28 @@ pub struct Config {
     /// Accepts `[[plugins]]` (plural) or `[[plugin]]` (singular) in TOML.
     #[serde(alias = "plugin", default)]
     pub plugins: Vec<PluginConfig>,
+    /// APAS L2 attestation config — Ed25519 signing of handoff envelopes.
+    /// When absent, handoffs are written but not signed.
+    #[serde(default)]
+    pub attestation: Option<AttestationConfig>,
+}
+
+/// APAS L2 attestation config (DSSE + in-toto).
+///
+/// ```toml
+/// [attestation]
+/// signing_key_path = "~/.rsry/keys/orchestrator.key"
+/// ```
+///
+/// `signing_key_path` points to a 32-byte raw Ed25519 seed file.
+/// When set, every handoff written by the orchestrator gets a sibling
+/// `.rsry-handoff-N.dsse.json` envelope signed with this key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttestationConfig {
+    /// Path to a raw 32-byte Ed25519 signing key file.
+    /// Tilde (`~`) is expanded each time the key is read for signing,
+    /// not at config-load time.
+    pub signing_key_path: Option<PathBuf>,
 }
 
 /// Role of a plugin in the rosary pipeline.
@@ -1665,5 +1687,51 @@ command = ["assay", "verify", "--format", "json"]
 
         let plugins = discover_plugins(Some(dir.path()));
         assert!(plugins.is_empty(), "non-toml files are ignored");
+    }
+
+    // --- AttestationConfig (APAS L2) ---
+
+    #[test]
+    fn attestation_config_absent_by_default() {
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.attestation.is_none());
+    }
+
+    #[test]
+    fn attestation_config_parses_signing_key_path() {
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[attestation]
+signing_key_path = "~/.rsry/keys/orchestrator.key"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let att = config.attestation.expect("attestation block must parse");
+        assert_eq!(
+            att.signing_key_path.as_ref().unwrap().to_str().unwrap(),
+            "~/.rsry/keys/orchestrator.key"
+        );
+    }
+
+    #[test]
+    fn attestation_config_optional_signing_key() {
+        // Empty [attestation] block is valid — keeps the option to add fields later.
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[attestation]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let att = config.attestation.unwrap();
+        assert!(att.signing_key_path.is_none());
     }
 }
