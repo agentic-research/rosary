@@ -26,7 +26,8 @@ pub trait AgentSession: Send + Sync {
 
     /// Drain and return tool call records accumulated during this session.
     /// Only ACP sessions produce non-empty results; all others return empty.
-    fn take_tools_used(&self) -> Vec<crate::handoff::ToolCallRecord> {
+    /// `&mut self` makes the draining/consuming semantics explicit at call sites.
+    fn take_tools_used(&mut self) -> Vec<crate::handoff::ToolCallRecord> {
         Vec::new()
     }
 }

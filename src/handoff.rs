@@ -33,7 +33,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// A single tool invocation recorded during a pipeline phase.
+/// A single tool permission request recorded during a pipeline phase.
+/// Includes both approved and rejected requests — a rejected entry means
+/// the agent attempted the tool but the permission profile denied it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRecord {
     pub tool_name: String,
@@ -334,8 +336,17 @@ impl Handoff {
                     .filter(|t| t.approved)
                     .map(|t| t.tool_name.as_str())
                     .collect();
+                let rejected: Vec<&str> = h
+                    .tools_used
+                    .iter()
+                    .filter(|t| !t.approved)
+                    .map(|t| t.tool_name.as_str())
+                    .collect();
                 if !approved.is_empty() {
                     out.push_str(&format!("Tools used: {}\n", approved.join(", ")));
+                }
+                if !rejected.is_empty() {
+                    out.push_str(&format!("Tools denied: {}\n", rejected.join(", ")));
                 }
             }
             if let Some(ref v) = h.verdict {

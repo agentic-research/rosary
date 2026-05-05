@@ -18,10 +18,12 @@ impl Reconciler {
             let mut done = false;
             let mut success = false;
 
+            let mut capture_tools = false;
             match handle.try_wait() {
                 Ok(Some(ok)) => {
                     done = true;
                     success = ok;
+                    capture_tools = true; // session fully joined — safe to drain
                 }
                 Ok(None) => {
                     let elapsed = handle.elapsed();
@@ -36,11 +38,13 @@ impl Reconciler {
                         eprintln!("[timeout] killing agent for {bead_id} (4h hard limit)");
                         let _ = handle.kill();
                         done = true;
+                        // Don't capture tools: session killed, may still be writing
                     }
                 }
                 Err(e) => {
                     eprintln!("[error] polling agent for {bead_id}: {e}");
                     done = true;
+                    // Don't capture tools: session state unknown
                 }
             }
 
@@ -51,10 +55,12 @@ impl Reconciler {
                     .get(&bead_id)
                     .map(|t| t.repo.clone())
                     .unwrap_or_default();
-                // Capture tool call records before dropping the session handle.
-                let tools = handle.session.take_tools_used();
-                if !tools.is_empty() {
-                    self.pending_tools_used.insert(bead_id.clone(), tools);
+                // Only drain tool records on confirmed clean exit (not kill/error paths).
+                if capture_tools {
+                    let tools = handle.session.take_tools_used();
+                    if !tools.is_empty() {
+                        self.pending_tools_used.insert(bead_id.clone(), tools);
+                    }
                 }
                 // Stash workspace for checkpoint + teardown
                 if let Some(ws) = handle.workspace.take() {

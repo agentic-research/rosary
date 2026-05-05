@@ -127,7 +127,9 @@ impl crate::dispatch::session::AgentSession for AcpSession {
         self.child_pid
     }
 
-    fn take_tools_used(&self) -> Vec<crate::handoff::ToolCallRecord> {
+    fn take_tools_used(&mut self) -> Vec<crate::handoff::ToolCallRecord> {
+        // std::sync::Mutex is safe here: the ACP thread has finished (join_handle taken)
+        // before the reconciler calls take_tools_used, so the lock is never contended.
         self.tools_used
             .lock()
             .map(|mut g| g.drain(..).collect())
@@ -367,6 +369,8 @@ impl Client for RosaryClient {
                 )
             });
 
+        // std::sync::Mutex held for a single push — no await point, no I/O stall risk.
+        // The only other accessor (take_tools_used) runs after the ACP thread exits.
         if let Ok(mut log) = self.tool_log.lock() {
             log.push(crate::handoff::ToolCallRecord {
                 tool_name: tool_name.to_string(),
