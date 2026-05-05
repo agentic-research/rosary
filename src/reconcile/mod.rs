@@ -169,6 +169,9 @@ pub struct Reconciler {
     /// Per-agent model overrides from [dispatch.pipeline_models] config.
     /// Maps agent name (e.g. "scoping-agent") to model string (e.g. "claude-haiku-4-5-20251001").
     pipeline_models: HashMap<String, String>,
+    /// Tool call records captured from ACP sessions, keyed by bead_id.
+    /// Populated when an agent completes; consumed by checkpoint_and_cleanup.
+    pending_tools_used: HashMap<String, Vec<crate::handoff::ToolCallRecord>>,
 }
 
 /// Summary of a single reconciliation iteration.
@@ -425,6 +428,7 @@ impl Reconciler {
             orchestrators: HashMap::new(),
             plugin_registry,
             pipeline_models,
+            pending_tools_used: HashMap::new(),
         }
     }
 

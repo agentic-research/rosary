@@ -58,6 +58,10 @@ impl Reconciler {
             .get(bead_id)
             .map(|t| t.repo.clone())
             .unwrap_or_default();
+        // Drain pending tool records now so they're consumed on all exit paths below
+        // (including the early-return on chain integrity failure).
+        let pending_tools = self.pending_tools_used.remove(bead_id).unwrap_or_default();
+
         if let Some(ws) = self.completed_workspaces.get(bead_id) {
             let work_dir = &ws.work_dir;
 
@@ -112,6 +116,9 @@ impl Reconciler {
                 if let Ok(Some(tid)) = hierarchy.find_thread_for_bead(&bead_ref).await {
                     handoff.thread_id = Some(tid);
                 }
+            }
+            if !pending_tools.is_empty() {
+                handoff.tools_used = pending_tools;
             }
             if let Err(e) = handoff.write_to(work_dir) {
                 eprintln!("[handoff] {bead_id}: failed to write: {e}");
