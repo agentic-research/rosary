@@ -51,6 +51,11 @@ impl Reconciler {
                     .get(&bead_id)
                     .map(|t| t.repo.clone())
                     .unwrap_or_default();
+                // Capture tool call records before dropping the session handle.
+                let tools = handle.session.take_tools_used();
+                if !tools.is_empty() {
+                    self.pending_tools_used.insert(bead_id.clone(), tools);
+                }
                 // Stash workspace for checkpoint + teardown
                 if let Some(ws) = handle.workspace.take() {
                     self.completed_workspaces.insert(bead_id.clone(), ws);

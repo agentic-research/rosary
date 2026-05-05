@@ -113,6 +113,10 @@ impl Reconciler {
                     handoff.thread_id = Some(tid);
                 }
             }
+            // Attach ACP tool call records captured during the agent session.
+            if let Some(tools) = self.pending_tools_used.remove(bead_id) {
+                handoff.tools_used = tools;
+            }
             if let Err(e) = handoff.write_to(work_dir) {
                 eprintln!("[handoff] {bead_id}: failed to write: {e}");
             }

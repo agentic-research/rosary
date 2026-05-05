@@ -36,8 +36,8 @@ use agent_client_protocol::{
 };
 use anyhow::{Context as _, Result};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // AcpSession — Send+Sync wrapper around !Send ACP connection thread
@@ -50,6 +50,9 @@ pub struct AcpSession {
     finished: Arc<AtomicBool>,
     result: Option<bool>,
     child_pid: Option<u32>,
+    /// Accumulated tool call records from this session. Populated by RosaryClient
+    /// as each permission request resolves; readable after the session ends.
+    tools_used: Arc<Mutex<Vec<crate::handoff::ToolCallRecord>>>,
 }
 
 #[async_trait::async_trait]
@@ -123,6 +126,13 @@ impl crate::dispatch::session::AgentSession for AcpSession {
     fn pid(&self) -> Option<u32> {
         self.child_pid
     }
+
+    fn take_tools_used(&self) -> Vec<crate::handoff::ToolCallRecord> {
+        self.tools_used
+            .lock()
+            .map(|mut g| g.drain(..).collect())
+            .unwrap_or_default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +166,9 @@ pub fn spawn_acp_session(
     let err_path = work_dir.join(".rsry-stderr.log");
     let finished = Arc::new(AtomicBool::new(false));
     let finished_clone = finished.clone();
+    let tool_log: Arc<Mutex<Vec<crate::handoff::ToolCallRecord>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let tool_log_thread = tool_log.clone();
 
     // Spawn child with same env hygiene as other providers
     let err_file = std::fs::File::create(&err_path)
@@ -200,6 +213,7 @@ pub fn spawn_acp_session(
                         &work_dir,
                         permissions,
                         &log_path,
+                        tool_log_thread,
                     ))
                     .await
             });
@@ -232,6 +246,7 @@ pub fn spawn_acp_session(
         finished,
         result: None,
         child_pid: Some(child_pid),
+        tools_used: tool_log,
     })
 }
 
@@ -242,6 +257,7 @@ async fn run_acp_lifecycle(
     work_dir: &Path,
     permissions: PermissionProfile,
     log_path: &Path,
+    tool_log: Arc<Mutex<Vec<crate::handoff::ToolCallRecord>>>,
 ) -> Result<bool> {
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -265,6 +281,7 @@ async fn run_acp_lifecycle(
     let client = RosaryClient {
         permissions,
         log_path: log_path.to_path_buf(),
+        tool_log,
     };
 
     let (conn, handle_io) = acp::ClientSideConnection::new(client, outgoing, incoming, |fut| {
@@ -330,6 +347,7 @@ async fn run_acp_lifecycle(
 pub struct RosaryClient {
     pub permissions: PermissionProfile,
     pub log_path: PathBuf,
+    pub tool_log: Arc<Mutex<Vec<crate::handoff::ToolCallRecord>>>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -341,7 +359,23 @@ impl Client for RosaryClient {
         let tool_name = args.tool_call.fields.title.as_deref().unwrap_or("");
         eprintln!("[acp] permission request: {tool_name}");
 
-        if should_approve(tool_name, &self.permissions)
+        let approved = should_approve(tool_name, &self.permissions)
+            && args.options.iter().any(|o| {
+                matches!(
+                    o.kind,
+                    PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
+                )
+            });
+
+        if let Ok(mut log) = self.tool_log.lock() {
+            log.push(crate::handoff::ToolCallRecord {
+                tool_name: tool_name.to_string(),
+                approved,
+                timestamp: chrono::Utc::now(),
+            });
+        }
+
+        if approved
             && let Some(allow_opt) = args
                 .options
                 .iter()
@@ -551,6 +585,7 @@ mod tests {
         let client = RosaryClient {
             permissions: PermissionProfile::Implement,
             log_path: PathBuf::from("/dev/null"),
+            tool_log: Arc::new(Mutex::new(Vec::new())),
         };
         let (req, allow_id, _) = make_permission_request("Edit");
         let resp = client.request_permission(req).await.unwrap();
@@ -567,6 +602,7 @@ mod tests {
         let client = RosaryClient {
             permissions: PermissionProfile::ReadOnly,
             log_path: PathBuf::from("/dev/null"),
+            tool_log: Arc::new(Mutex::new(Vec::new())),
         };
         let (req, _, reject_id) = make_permission_request("Edit");
         let resp = client.request_permission(req).await.unwrap();
@@ -583,6 +619,7 @@ mod tests {
         let client = RosaryClient {
             permissions: PermissionProfile::Plan,
             log_path: PathBuf::from("/dev/null"),
+            tool_log: Arc::new(Mutex::new(Vec::new())),
         };
         let (req, allow_id, _) = make_permission_request("mcp__rsry__bead_create");
         let resp = client.request_permission(req).await.unwrap();

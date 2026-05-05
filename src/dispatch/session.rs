@@ -23,6 +23,12 @@ pub trait AgentSession: Send + Sync {
     fn pid(&self) -> Option<u32> {
         None
     }
+
+    /// Drain and return tool call records accumulated during this session.
+    /// Only ACP sessions produce non-empty results; all others return empty.
+    fn take_tools_used(&self) -> Vec<crate::handoff::ToolCallRecord> {
+        Vec::new()
+    }
 }
 
 /// CLI subprocess session — wraps tokio::process::Child.

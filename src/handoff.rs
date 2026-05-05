@@ -33,6 +33,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// A single tool invocation recorded during a pipeline phase.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallRecord {
+    pub tool_name: String,
+    pub approved: bool,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
 /// A structured handoff between pipeline phases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Handoff {
@@ -62,6 +70,10 @@ pub struct Handoff {
 
     /// Review verdict (filled by staging/prod agents, null for dev).
     pub verdict: Option<Verdict>,
+
+    /// Tool calls made by the agent during this phase (approved and rejected).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools_used: Vec<ToolCallRecord>,
 
     /// Content hash of the previous phase's handoff (hex-encoded SHA-256).
     /// Links the chain by CONTENT, not file path — an attacker cannot replace
@@ -221,6 +233,7 @@ impl Handoff {
                     None
                 },
             },
+            tools_used: Vec::new(),
             verdict: None,
             previous_chain_hash: previous.map(|p| p.chain_hash_hex()),
             commit_shas: work.commits.iter().map(|c| c.sha.clone()).collect(),
@@ -312,6 +325,17 @@ impl Handoff {
                 out.push_str("Review hints:\n");
                 for hint in &h.review_hints {
                     out.push_str(&format!("- {hint}\n"));
+                }
+            }
+            if !h.tools_used.is_empty() {
+                let approved: Vec<&str> = h
+                    .tools_used
+                    .iter()
+                    .filter(|t| t.approved)
+                    .map(|t| t.tool_name.as_str())
+                    .collect();
+                if !approved.is_empty() {
+                    out.push_str(&format!("Tools used: {}\n", approved.join(", ")));
                 }
             }
             if let Some(ref v) = h.verdict {
