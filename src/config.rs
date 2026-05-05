@@ -68,7 +68,8 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationConfig {
     /// Path to a raw 32-byte Ed25519 signing key file.
-    /// Tilde expansion is applied at load time.
+    /// Tilde (`~`) is expanded each time the key is read for signing,
+    /// not at config-load time.
     pub signing_key_path: Option<PathBuf>,
 }
 

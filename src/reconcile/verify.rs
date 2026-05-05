@@ -262,8 +262,14 @@ impl Reconciler {
             );
             // Always set thread_id (was missing in wait_and_verify before this refactor)
             handoff.thread_id = thread_map.get(bead_id).cloned();
-            if let Err(e) = handoff.write_to(&ws.work_dir) {
-                eprintln!("[handoff] {bead_id}: failed to write phase handoff: {e}");
+            // APAS L2: emit DSSE envelope only after a successful handoff write.
+            match handoff.write_to(&ws.work_dir) {
+                Ok(handoff_path) => {
+                    self.write_handoff_envelope(bead_id, &handoff_path, phase, &handoff);
+                }
+                Err(e) => {
+                    eprintln!("[handoff] {bead_id}: failed to write phase handoff: {e}");
+                }
             }
         }
 
