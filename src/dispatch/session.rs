@@ -160,3 +160,115 @@ impl AgentSession for StdCliSession {
         Some(self.child.id())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- ComputeSession state machine ---
+
+    #[tokio::test]
+    async fn compute_session_pending_returns_none() {
+        let (_tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        let mut s = ComputeSession {
+            rx: Some(rx),
+            result: None,
+        };
+        assert!(s.try_wait().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn compute_session_resolves_success() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        let mut s = ComputeSession {
+            rx: Some(rx),
+            result: None,
+        };
+        tx.send(true).unwrap();
+        // Give the channel a tick to deliver
+        tokio::task::yield_now().await;
+        assert_eq!(s.try_wait().unwrap(), Some(true));
+        // Second call returns cached result
+        assert_eq!(s.try_wait().unwrap(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn compute_session_resolves_failure() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        let mut s = ComputeSession {
+            rx: Some(rx),
+            result: None,
+        };
+        tx.send(false).unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(s.try_wait().unwrap(), Some(false));
+    }
+
+    #[tokio::test]
+    async fn compute_session_sender_dropped_yields_false() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        drop(tx); // sender dropped without sending
+        let mut s = ComputeSession {
+            rx: Some(rx),
+            result: None,
+        };
+        assert_eq!(s.try_wait().unwrap(), Some(false));
+    }
+
+    #[tokio::test]
+    async fn compute_session_kill_sets_false() {
+        let (_tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        let mut s = ComputeSession {
+            rx: Some(rx),
+            result: None,
+        };
+        s.kill().unwrap();
+        assert_eq!(s.try_wait().unwrap(), Some(false));
+    }
+
+    #[tokio::test]
+    async fn compute_session_wait_resolves() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        let mut s = ComputeSession {
+            rx: Some(rx),
+            result: None,
+        };
+        tx.send(true).unwrap();
+        assert!(s.wait().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn compute_session_already_resolved_skips_rx() {
+        let mut s = ComputeSession {
+            rx: None,
+            result: Some(true),
+        };
+        assert_eq!(s.try_wait().unwrap(), Some(true));
+        assert!(s.wait().await.unwrap());
+    }
+
+    // --- AgentSession default: take_tools_used ---
+
+    struct MinimalSession;
+
+    #[async_trait::async_trait]
+    impl AgentSession for MinimalSession {
+        fn try_wait(&mut self) -> anyhow::Result<Option<bool>> {
+            Ok(Some(true))
+        }
+        async fn wait(&mut self) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+        fn kill(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn default_take_tools_used_is_empty() {
+        let mut s = MinimalSession;
+        assert!(s.take_tools_used().is_empty());
+        // Idempotent — second call also empty
+        assert!(s.take_tools_used().is_empty());
+    }
+}

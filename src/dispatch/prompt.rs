@@ -198,3 +198,180 @@ pub fn build_system_prompt(agent_name: Option<&str>, agents_dir: Option<&Path>) 
 
     parts.join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bead::Bead;
+
+    fn stub_bead(id: &str, title: &str) -> Bead {
+        Bead {
+            id: id.to_string(),
+            title: title.to_string(),
+            description: "Fix the thing.".to_string(),
+            repo: "rosary".to_string(),
+            status: "open".to_string(),
+            issue_type: "bug".to_string(),
+            priority: 1,
+            owner: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            dependency_count: 0,
+            dependent_count: 0,
+            comment_count: 0,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
+            external_ref: None,
+            files: vec![],
+            test_files: vec![],
+            created_by: None,
+            scope: String::new(),
+            derived_from: vec![],
+        }
+    }
+
+    // --- task_framing ---
+
+    #[test]
+    fn task_framing_dev_agent_default() {
+        assert!(task_framing(None).contains("Fix this issue"));
+        assert!(task_framing(Some("dev-agent")).contains("Fix this issue"));
+    }
+
+    #[test]
+    fn task_framing_known_agents() {
+        assert!(task_framing(Some("staging-agent")).contains("Review"));
+        assert!(task_framing(Some("prod-agent")).contains("production readiness"));
+        assert!(task_framing(Some("feature-agent")).contains("coherence"));
+        assert!(task_framing(Some("architect-agent")).contains("ADR"));
+        assert!(task_framing(Some("pm-agent")).contains("strategic"));
+    }
+
+    #[test]
+    fn task_framing_unknown_falls_back_to_default() {
+        assert!(task_framing(Some("mystery-agent")).contains("Fix this issue"));
+    }
+
+    // --- strip_frontmatter ---
+
+    #[test]
+    fn strip_frontmatter_removes_yaml_block() {
+        let input = "---\nstatus: draft\nauthor: james\n---\n\n# Heading\n\nBody text.";
+        let out = strip_frontmatter(input);
+        assert!(!out.contains("status:"));
+        assert!(out.contains("# Heading"));
+        assert!(out.contains("Body text."));
+    }
+
+    #[test]
+    fn strip_frontmatter_no_frontmatter_passthrough() {
+        let input = "# Just a heading\n\nSome text.";
+        assert_eq!(strip_frontmatter(input), input);
+    }
+
+    #[test]
+    fn strip_frontmatter_unclosed_returns_original() {
+        // No closing `---` — return content unchanged rather than eating it all
+        let input = "---\nstatus: draft\n\n# Heading";
+        assert_eq!(strip_frontmatter(input), input);
+    }
+
+    // --- build_prompt ---
+
+    #[test]
+    fn build_prompt_contains_bead_id() {
+        let bead = stub_bead("rosary-abc123", "Fix the thing");
+        let prompt = build_prompt(&bead, "/repo/rosary", None, None);
+        assert!(prompt.contains("rosary-abc123"));
+    }
+
+    #[test]
+    fn build_prompt_contains_title_and_description() {
+        let bead = stub_bead("rosary-abc123", "Fix the thing");
+        let prompt = build_prompt(&bead, "/repo/rosary", None, None);
+        assert!(prompt.contains("Fix the thing"));
+        assert!(prompt.contains("Fix the thing."));
+    }
+
+    #[test]
+    fn build_prompt_commit_format_instruction() {
+        let bead = stub_bead("rosary-xyz", "A task");
+        let prompt = build_prompt(&bead, "/repo/rosary", None, None);
+        // Must include [bead-id] prefix convention
+        assert!(
+            prompt.contains("[rosary-xyz]"),
+            "prompt must include bead-id commit prefix"
+        );
+    }
+
+    #[test]
+    fn build_prompt_no_handoff_section_without_workspace() {
+        let bead = stub_bead("rosary-abc", "A task");
+        let prompt = build_prompt(&bead, "/repo/rosary", None, None);
+        assert!(
+            !prompt.contains("<handoff>"),
+            "no workspace = no handoff section"
+        );
+    }
+
+    #[test]
+    fn build_prompt_uses_workspace_path_for_repo_line() {
+        let bead = stub_bead("rosary-abc", "A task");
+        let ws = std::path::Path::new("/tmp/worktree/rosary-abc");
+        let prompt = build_prompt(&bead, "/repo/rosary", Some(ws), None);
+        // Repo: line should use workspace path, not repo_path
+        assert!(prompt.contains("/tmp/worktree/rosary-abc"));
+    }
+
+    #[test]
+    fn build_prompt_framing_varies_by_agent() {
+        let bead = stub_bead("rosary-abc", "A task");
+        let dev = build_prompt(&bead, "/r", None, Some("dev-agent"));
+        let staging = build_prompt(&bead, "/r", None, Some("staging-agent"));
+        assert!(dev.contains("Fix this issue"));
+        assert!(staging.contains("Review"));
+        assert_ne!(dev, staging);
+    }
+
+    // --- build_system_prompt ---
+
+    #[test]
+    fn build_system_prompt_includes_base_without_agents_dir() {
+        let prompt = build_system_prompt(None, None);
+        assert!(prompt.contains(PROMPT_VERSION));
+        assert!(prompt.contains("rsry MCP"));
+        assert!(prompt.contains("mache MCP"));
+    }
+
+    #[test]
+    fn build_system_prompt_with_missing_agents_dir_still_returns_base() {
+        let dir = std::path::Path::new("/nonexistent/agents");
+        let prompt = build_system_prompt(Some("dev-agent"), Some(dir));
+        assert!(prompt.contains(PROMPT_VERSION));
+    }
+
+    #[test]
+    fn load_agent_prompt_returns_none_for_missing_file() {
+        let dir = std::path::Path::new("/nonexistent");
+        assert!(load_agent_prompt(dir, "ghost-agent").is_none());
+    }
+
+    #[test]
+    fn load_agent_prompt_strips_frontmatter() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let content = "---\nowner: dev\n---\n\n# Dev Agent\n\nDo stuff.";
+        std::fs::write(tmp.path().join("dev-agent.md"), content).unwrap();
+        let loaded = load_agent_prompt(tmp.path(), "dev-agent").unwrap();
+        assert!(!loaded.contains("owner:"));
+        assert!(loaded.contains("# Dev Agent"));
+    }
+
+    #[test]
+    fn load_agent_prompt_accepts_md_extension() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("test-agent.md"), "# Test").unwrap();
+        assert!(load_agent_prompt(tmp.path(), "test-agent.md").is_some());
+        assert!(load_agent_prompt(tmp.path(), "test-agent").is_some());
+    }
+}
