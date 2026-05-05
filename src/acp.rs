@@ -685,6 +685,84 @@ mod tests {
         }
     }
 
+    // -- tool_log recording tests (APAS L1) --
+
+    #[tokio::test]
+    async fn request_permission_records_approved_tool() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let client = RosaryClient {
+            permissions: PermissionProfile::Implement,
+            log_path: PathBuf::from("/dev/null"),
+            tool_log: Arc::clone(&log),
+        };
+        let (req, _, _) = make_permission_request("Edit");
+        client.request_permission(req).await.unwrap();
+
+        let records = log.lock().unwrap();
+        assert_eq!(records.len(), 1, "one tool call should be recorded");
+        assert_eq!(records[0].tool_name, "Edit");
+        assert!(records[0].approved, "Edit must be approved under Implement");
+    }
+
+    #[tokio::test]
+    async fn request_permission_records_denied_tool() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let client = RosaryClient {
+            permissions: PermissionProfile::ReadOnly,
+            log_path: PathBuf::from("/dev/null"),
+            tool_log: Arc::clone(&log),
+        };
+        let (req, _, _) = make_permission_request("Edit");
+        client.request_permission(req).await.unwrap();
+
+        let records = log.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tool_name, "Edit");
+        assert!(!records[0].approved, "Edit must be denied under ReadOnly");
+    }
+
+    #[tokio::test]
+    async fn take_tools_used_drains_log() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let client = RosaryClient {
+            permissions: PermissionProfile::Implement,
+            log_path: PathBuf::from("/dev/null"),
+            tool_log: Arc::clone(&log),
+        };
+        // Approve two tools
+        let (req1, _, _) = make_permission_request("Edit");
+        let (req2, _, _) = make_permission_request("Read");
+        client.request_permission(req1).await.unwrap();
+        client.request_permission(req2).await.unwrap();
+
+        // Simulate take_tools_used by draining the shared log (same logic as AcpSession impl)
+        let first_drain: Vec<_> = log.lock().unwrap().drain(..).collect();
+        let second_drain: Vec<_> = log.lock().unwrap().drain(..).collect();
+
+        assert_eq!(first_drain.len(), 2, "should drain both records");
+        assert!(second_drain.is_empty(), "second drain must be empty");
+    }
+
+    #[tokio::test]
+    async fn tool_log_records_multiple_tools_in_order() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let client = RosaryClient {
+            permissions: PermissionProfile::Implement,
+            log_path: PathBuf::from("/dev/null"),
+            tool_log: Arc::clone(&log),
+        };
+        for tool in &["Read", "Edit", "Bash(cargo test)"] {
+            let (req, _, _) = make_permission_request(tool);
+            client.request_permission(req).await.unwrap();
+        }
+        let records = log.lock().unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].tool_name, "Read");
+        assert_eq!(records[1].tool_name, "Edit");
+        assert_eq!(records[2].tool_name, "Bash(cargo test)");
+        assert!(records.iter().all(|r| r.approved));
+    }
+
     // -- is_safe_bash tests --
 
     #[test]

