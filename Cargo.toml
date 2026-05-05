@@ -39,6 +39,8 @@ uuid = { version = "1", features = ["v4"] }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+base64 = "0.22"
 owo-colors = "4.3.0"
 jsonwebtoken = "9"
 socket2 = "0.5"
@@ -53,3 +55,4 @@ tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
 tower = { version = "0.5", features = ["util"] }
+rand = "0.8"

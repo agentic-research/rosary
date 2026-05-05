@@ -123,6 +123,9 @@ impl Reconciler {
             if let Err(e) = handoff.write_to(work_dir) {
                 eprintln!("[handoff] {bead_id}: failed to write: {e}");
             }
+            // APAS L2: write a DSSE envelope alongside the handoff.
+            // Unsigned by default — only signed if [attestation] is configured.
+            self.write_handoff_envelope(bead_id, work_dir, phase, &handoff);
 
             // Write manifest
             let vcs_kind = match ws.vcs {
@@ -248,6 +251,65 @@ impl Reconciler {
             // cleaned up from "." was unsafe: it could delete worktrees
             // belonging to other reconcilers or from previous runs.
             eprintln!("[cleanup] {bead_id}: no workspace tracked, skipping");
+        }
+    }
+
+    /// APAS L2: write a DSSE envelope alongside the handoff file.
+    /// Signs with the configured Ed25519 key when `[attestation]` is set;
+    /// otherwise writes an unsigned envelope (still useful as in-toto Statement).
+    /// All errors are logged and swallowed — envelope failure must not block
+    /// the pipeline since the handoff itself is already on disk.
+    pub(super) fn write_handoff_envelope(
+        &self,
+        bead_id: &str,
+        work_dir: &std::path::Path,
+        phase: u32,
+        handoff: &crate::handoff::Handoff,
+    ) {
+        let handoff_filename = format!(".rsry-handoff-{phase}.json");
+        let handoff_json = match serde_json::to_value(handoff) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[dsse] {bead_id}: serialize handoff: {e}");
+                return;
+            }
+        };
+
+        let signing_key = self
+            .config
+            .attestation
+            .as_ref()
+            .and_then(|a| a.signing_key_path.as_ref())
+            .and_then(|path| {
+                let expanded = shellexpand::tilde(&path.display().to_string()).into_owned();
+                match crate::dsse::load_signing_key(std::path::Path::new(&expanded)) {
+                    Ok(k) => Some(k),
+                    Err(e) => {
+                        eprintln!("[dsse] {bead_id}: load signing key: {e}");
+                        None
+                    }
+                }
+            });
+
+        let envelope =
+            match crate::dsse::wrap_handoff(&handoff_json, &handoff_filename, signing_key.as_ref())
+            {
+                Ok(env) => env,
+                Err(e) => {
+                    eprintln!("[dsse] {bead_id}: wrap handoff: {e}");
+                    return;
+                }
+            };
+
+        if let Err(e) = crate::dsse::write_envelope(work_dir, phase, &envelope) {
+            eprintln!("[dsse] {bead_id}: write envelope: {e}");
+        } else {
+            let signed = if envelope.signatures.is_empty() {
+                "unsigned"
+            } else {
+                "signed"
+            };
+            eprintln!("[dsse] {bead_id}: phase {phase} envelope written ({signed})");
         }
     }
 }
