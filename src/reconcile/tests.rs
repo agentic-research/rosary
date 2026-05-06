@@ -1320,3 +1320,92 @@ async fn triage_skips_deadlettered_bead() {
     );
     assert_eq!(triaged, 0, "deadlettered bead must not be triaged");
 }
+
+// ---------------------------------------------------------------------------
+// build_thread_map() tests — direct coverage of src/reconcile/threading.rs
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn build_thread_map_no_hierarchy_returns_empty() {
+    // When the reconciler has no hierarchy store wired, build_thread_map
+    // returns an empty map regardless of how many beads are passed in.
+    let r = Reconciler::new(ReconcilerConfig::default()).await;
+    assert!(r.hierarchy.is_none());
+
+    let beads = vec![make_test_bead("b-1"), make_test_bead("b-2")];
+    let map = r.build_thread_map(&beads).await;
+    assert!(map.is_empty(), "no hierarchy → empty thread map");
+}
+
+#[tokio::test]
+async fn build_thread_map_with_hierarchy_returns_membership() {
+    use crate::store::{DecadeRecord, HierarchyStore, ThreadRecord, WorkRef};
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let backend = crate::store_sqlite::SqliteBackend::connect(&dir.path().join("test.db")).unwrap();
+
+    // Set up a decade + thread with two members.
+    backend
+        .upsert_decade(&DecadeRecord {
+            id: "test-decade".into(),
+            title: "Test decade".into(),
+            source_path: String::new(),
+            status: "active".into(),
+        })
+        .await
+        .unwrap();
+    backend
+        .upsert_thread(&ThreadRecord {
+            id: "test-decade/threadA".into(),
+            name: "Thread A".into(),
+            decade_id: "test-decade".into(),
+            feature_branch: None,
+        })
+        .await
+        .unwrap();
+    for bid in ["b-1", "b-2"] {
+        backend
+            .add_bead_to_thread(
+                "test-decade/threadA",
+                &WorkRef {
+                    repo: "test-repo".into(),
+                    scope: String::new(),
+                    bead_id: bid.into(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+    r.hierarchy = Some(Box::new(backend));
+
+    // b-1 and b-2 are in the thread; b-3 is not.
+    let beads = vec![
+        make_test_bead("b-1"),
+        make_test_bead("b-2"),
+        make_test_bead("b-3"),
+    ];
+    let map = r.build_thread_map(&beads).await;
+
+    assert_eq!(map.len(), 2, "only beads in a thread should appear");
+    assert_eq!(
+        map.get("b-1").map(String::as_str),
+        Some("test-decade/threadA")
+    );
+    assert_eq!(
+        map.get("b-2").map(String::as_str),
+        Some("test-decade/threadA")
+    );
+    assert!(
+        !map.contains_key("b-3"),
+        "non-member bead must not be in map"
+    );
+}
+
+#[tokio::test]
+async fn build_thread_map_empty_input_returns_empty() {
+    let r = Reconciler::new(ReconcilerConfig::default()).await;
+    let map = r.build_thread_map(&[]).await;
+    assert!(map.is_empty(), "no input beads → empty thread map");
+}
