@@ -1409,3 +1409,108 @@ async fn build_thread_map_empty_input_returns_empty() {
     let map = r.build_thread_map(&[]).await;
     assert!(map.is_empty(), "no input beads → empty thread map");
 }
+
+// ---------------------------------------------------------------------------
+// verify_agent() — staging-agent readonly path
+// (verify_agent_readonly_vs_readwrite already covers scoping-agent + work_dir paths)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn verify_agent_skips_staging_agent_readonly() {
+    // The pre-existing test exercises scoping-agent; this locks in that
+    // staging-agent is also treated as ReadOnly (same `matches!` arm).
+    let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+    r.trackers.insert(
+        "ro-2".into(),
+        BeadTracker {
+            repo: "test-repo".into(),
+            last_generation: 0,
+            retries: 0,
+            consecutive_reverts: 0,
+            highest_tier: None,
+            current_agent: Some("staging-agent".into()),
+            phase_index: 0,
+            issue_type: "task".into(),
+            dispatch_id: None,
+            scope: String::new(),
+        },
+    );
+    let result = r.verify_agent("ro-2");
+    assert!(
+        result.is_none(),
+        "staging-agent is read-only — verify must skip"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// on_fail() tests — additional cases for src/reconcile/completion.rs
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn on_fail_consecutive_reverts_reset_on_improvement() {
+    // After a regression bumps consecutive_reverts, an improvement (higher
+    // tier than previous) must reset the counter to 0.
+    let mut r = Reconciler::new(ReconcilerConfig {
+        max_retries: 100,
+        once: true,
+        repo: Vec::new(),
+        ..Default::default()
+    })
+    .await;
+
+    r.trackers.insert(
+        "imp-1".into(),
+        BeadTracker {
+            repo: "test".into(),
+            last_generation: 1,
+            retries: 0,
+            consecutive_reverts: 0,
+            highest_tier: Some(3),
+            current_agent: None,
+            phase_index: 0,
+            issue_type: "task".into(),
+            dispatch_id: None,
+            scope: String::new(),
+        },
+    );
+
+    let summary = |highest: Option<usize>| crate::verify::VerifySummary {
+        results: vec![(
+            "test".into(),
+            crate::verify::VerifyResult::Fail("fail".into()),
+        )],
+        highest_passing_tier: highest,
+    };
+
+    // Regression: 3 → 1 (consecutive_reverts becomes 1)
+    assert!(!r.on_fail("imp-1", &summary(Some(1))));
+    assert_eq!(r.trackers["imp-1"].consecutive_reverts, 1);
+
+    // Improvement: 1 → 2 (consecutive_reverts resets to 0)
+    assert!(!r.on_fail("imp-1", &summary(Some(2))));
+    assert_eq!(
+        r.trackers["imp-1"].consecutive_reverts, 0,
+        "improvement must reset consecutive_reverts"
+    );
+}
+
+#[tokio::test]
+async fn on_fail_creates_tracker_for_unknown_bead() {
+    // on_fail uses entry().or_insert() — must work even if the bead has
+    // no prior tracker (e.g. orchestrator beads not yet promoted).
+    let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+    let summary = crate::verify::VerifySummary {
+        results: vec![(
+            "compile".into(),
+            crate::verify::VerifyResult::Fail("fail".into()),
+        )],
+        highest_passing_tier: None,
+    };
+    assert!(!r.trackers.contains_key("new-bead"));
+    let _ = r.on_fail("new-bead", &summary);
+    assert!(
+        r.trackers.contains_key("new-bead"),
+        "on_fail must create tracker for unknown bead"
+    );
+    assert_eq!(r.trackers["new-bead"].retries, 1);
+}
