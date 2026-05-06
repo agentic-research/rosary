@@ -1111,3 +1111,212 @@ fn no_println_in_reconcile() {
         violations.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// triage() function tests — direct coverage of src/reconcile/triage.rs
+// ---------------------------------------------------------------------------
+
+/// Standard test bead: P1 task, open, no deps, repo "test-repo".
+fn make_test_bead(id: &str) -> crate::bead::Bead {
+    crate::bead::Bead {
+        id: id.into(),
+        title: format!("test bead {id}"),
+        // Description must be long enough to pass the refinement gate
+        // (Golden Rule 12: short descriptions are deferred for 5-whys).
+        description: "This is a sufficiently descriptive task body that explains \
+                      what needs to happen, why it matters, and how to verify \
+                      completion. It exists to bypass the refinement filter."
+            .into(),
+        status: "open".into(),
+        priority: 1,
+        issue_type: "task".into(),
+        owner: None,
+        repo: "test-repo".into(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        dependency_count: 0,
+        dependent_count: 0,
+        comment_count: 0,
+        branch: None,
+        pr_url: None,
+        jj_change_id: None,
+        external_ref: None,
+        files: Vec::new(),
+        test_files: Vec::new(),
+        created_by: None,
+        scope: String::new(),
+        derived_from: vec![],
+    }
+}
+
+#[tokio::test]
+async fn triage_skips_epic_without_target_filter() {
+    // Epics are planning beads, not actionable work — must not be triaged
+    // unless explicitly targeted by --bead.
+    let mut bead = make_test_bead("epic-1");
+    bead.issue_type = "epic".into();
+
+    let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+    let triaged = r.triage(
+        &[bead],
+        &std::collections::HashMap::new(),
+        &std::collections::HashSet::new(),
+    );
+    assert_eq!(triaged, 0, "epic must not be triaged without --bead");
+}
+
+#[tokio::test]
+async fn triage_target_filter_overrides_epic_skip() {
+    // Targeted dispatch (--bead) bypasses the epic skip — explicit user intent
+    // overrides the heuristic.
+    let mut bead = make_test_bead("epic-1");
+    bead.issue_type = "epic".into();
+
+    let mut r = Reconciler::new(ReconcilerConfig {
+        target_bead: Some("epic-1".into()),
+        triage_threshold: 0.0,
+        ..Default::default()
+    })
+    .await;
+    let triaged = r.triage(
+        &[bead],
+        &std::collections::HashMap::new(),
+        &std::collections::HashSet::new(),
+    );
+    assert_eq!(triaged, 1, "--bead must override the epic skip");
+}
+
+#[tokio::test]
+async fn triage_skips_blocked_bead_with_unresolved_deps() {
+    let mut bead = make_test_bead("blocked-1");
+    bead.dependency_count = 2;
+
+    let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+    let triaged = r.triage(
+        &[bead],
+        &std::collections::HashMap::new(),
+        &std::collections::HashSet::new(),
+    );
+    assert_eq!(triaged, 0, "bead with dependencies must not be triaged");
+}
+
+#[tokio::test]
+async fn triage_skips_cross_repo_blocked_bead() {
+    let bead = make_test_bead("cross-1");
+    let mut blocked = std::collections::HashSet::new();
+    blocked.insert("cross-1".to_string());
+
+    let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+    let triaged = r.triage(&[bead], &std::collections::HashMap::new(), &blocked);
+    assert_eq!(
+        triaged, 0,
+        "bead in cross_repo_blocked set must not be triaged"
+    );
+}
+
+#[tokio::test]
+async fn triage_skips_unrefined_bead_short_description() {
+    // Golden Rule 12: bead with short description must be deferred for 5-whys.
+    let mut bead = make_test_bead("short-1");
+    bead.description = "fix it".into();
+    bead.issue_type = "task".into();
+
+    let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+    let triaged = r.triage(
+        &[bead],
+        &std::collections::HashMap::new(),
+        &std::collections::HashSet::new(),
+    );
+    assert_eq!(triaged, 0, "unrefined bead must be deferred for refinement");
+}
+
+#[tokio::test]
+async fn triage_target_filter_bypasses_refinement_gate() {
+    let mut bead = make_test_bead("short-1");
+    bead.description = "fix it".into();
+    bead.issue_type = "task".into();
+
+    let mut r = Reconciler::new(ReconcilerConfig {
+        target_bead: Some("short-1".into()),
+        triage_threshold: 0.0,
+        ..Default::default()
+    })
+    .await;
+    let triaged = r.triage(
+        &[bead],
+        &std::collections::HashMap::new(),
+        &std::collections::HashSet::new(),
+    );
+    assert_eq!(triaged, 1, "--bead must override the refinement gate");
+}
+
+#[tokio::test]
+async fn triage_enqueues_eligible_bead() {
+    // Happy path: a normal P1 task with no blockers should be enqueued.
+    let bead = make_test_bead("happy-1");
+
+    let mut r = Reconciler::new(ReconcilerConfig {
+        triage_threshold: 0.0, // ensure score passes
+        ..Default::default()
+    })
+    .await;
+    let triaged = r.triage(
+        &[bead],
+        &std::collections::HashMap::new(),
+        &std::collections::HashSet::new(),
+    );
+    assert_eq!(triaged, 1, "eligible bead must be enqueued");
+}
+
+#[tokio::test]
+async fn triage_skips_non_open_bead_without_target() {
+    let mut bead = make_test_bead("done-1");
+    bead.status = "closed".into();
+
+    let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+    let triaged = r.triage(
+        &[bead],
+        &std::collections::HashMap::new(),
+        &std::collections::HashSet::new(),
+    );
+    assert_eq!(triaged, 0, "non-open bead must not be triaged");
+}
+
+#[tokio::test]
+async fn triage_target_filter_overrides_non_open_state() {
+    let mut bead = make_test_bead("done-1");
+    bead.status = "closed".into();
+
+    let mut r = Reconciler::new(ReconcilerConfig {
+        target_bead: Some("done-1".into()),
+        triage_threshold: 0.0,
+        ..Default::default()
+    })
+    .await;
+    let triaged = r.triage(
+        &[bead],
+        &std::collections::HashMap::new(),
+        &std::collections::HashSet::new(),
+    );
+    assert_eq!(triaged, 1, "--bead must override non-open state filter");
+}
+
+#[tokio::test]
+async fn triage_skips_deadlettered_bead() {
+    let bead = make_test_bead("dl-1");
+
+    let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+    // Drive the bead past MAX_RETRIES (5) so is_deadlettered() returns true.
+    for retries in 1..=5 {
+        r.queue
+            .record_backoff("test-repo", "dl-1", retries, std::time::Instant::now());
+    }
+    assert!(r.queue.is_deadlettered("test-repo", "dl-1"));
+
+    let triaged = r.triage(
+        &[bead],
+        &std::collections::HashMap::new(),
+        &std::collections::HashSet::new(),
+    );
+    assert_eq!(triaged, 0, "deadlettered bead must not be triaged");
+}
