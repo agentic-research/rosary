@@ -145,8 +145,9 @@ APAS uses the in-toto attestation framework with a custom predicate type.
     }
   ],
   "predicateType": "https://rosary.bot/provenance/dispatch/v1",
-  // NOTE: rosary.bot is registered (Porkbun) and served via CF Workers.
-  // This URI will resolve to the predicate schema documentation.
+  // NOTE: rosary.bot is a namespace identifier for the predicate type, not a
+  // hosted service URL. The URI does not need to resolve — DSSE/in-toto
+  // verifiers treat predicateType as an opaque type tag, not a fetchable doc.
   "predicate": { ... }
 }
 ```
