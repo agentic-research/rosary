@@ -965,11 +965,18 @@ impl BeadStore for SqliteBeadStore {
 
     async fn log_event(&self, issue_id: &str, event_type: &str, detail: &str) {
         let conn = self.conn.lock().unwrap();
-        let full_id = match Self::resolve_id(&conn, issue_id) {
-            Ok(id) => id,
-            Err(e) => {
-                eprintln!("warning: failed to resolve bead ID {issue_id} for event log: {e}");
-                return;
+        // IDs starting with `_` are synthetic (e.g. `_schema` for migration
+        // records) and skip the issues-table resolution step. Without this,
+        // every migration logged a noisy "bead not found" warning.
+        let full_id = if issue_id.starts_with('_') {
+            issue_id.to_string()
+        } else {
+            match Self::resolve_id(&conn, issue_id) {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("warning: failed to resolve bead ID {issue_id} for event log: {e}");
+                    return;
+                }
             }
         };
         let result = conn.execute(
@@ -1244,6 +1251,29 @@ mod tests {
 
         let event = store.get_latest_event("c", "dispatched").await.unwrap();
         assert_eq!(event.as_deref(), Some("agent started"));
+    }
+
+    #[tokio::test]
+    async fn log_event_synthetic_id_skips_resolution() {
+        // IDs starting with `_` are synthetic (e.g. `_schema` for migration
+        // records). They must not be resolved against the issues table —
+        // before the fix, every migration logged "bead not found: _schema"
+        // and the audit row was silently dropped.
+        let store = test_store();
+        // No bead created — synthetic ID has no real bead behind it.
+        store.log_event("_schema", "migration", "001_initial").await;
+
+        // The event should still be visible via direct query (resolve_id
+        // would fail on a synthetic ID, but the row was written).
+        let conn = store.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE issue_id = '_schema'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "synthetic _schema event must be persisted");
     }
 
     #[tokio::test]

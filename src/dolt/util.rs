@@ -80,12 +80,21 @@ impl DoltClient {
 
     /// Log an event to the events table for audit trail.
     /// Best-effort: logs warning on failure rather than propagating error.
+    ///
+    /// IDs starting with `_` are treated as synthetic (e.g. `_schema` for
+    /// migration records) and skip the issues-table resolution step.
+    /// Without this, every migration logged a noisy "bead not found:
+    /// _schema" warning and the audit row was silently dropped.
     pub async fn log_event(&self, issue_id: &str, event_type: &str, detail: &str) {
-        let full_id = match self.resolve_id(issue_id).await {
-            Ok(id) => id,
-            Err(e) => {
-                eprintln!("warning: failed to resolve bead ID {issue_id} for event log: {e}");
-                return;
+        let full_id = if issue_id.starts_with('_') {
+            issue_id.to_string()
+        } else {
+            match self.resolve_id(issue_id).await {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("warning: failed to resolve bead ID {issue_id} for event log: {e}");
+                    return;
+                }
             }
         };
         let result = query(
