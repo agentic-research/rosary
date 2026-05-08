@@ -1,7 +1,7 @@
 # Warp OSS — Learnings for Rosary
 
 **Date**: 2026-05-08
-**Source**: [github.com/warpdotdev/warp](https://github.com/warpdotdev/warp) (clone at `~/github/warpdotdev/warp`, ~698 MB, 63 crates, 159 spec dirs)
+**Source**: [github.com/warpdotdev/warp](https://github.com/warpdotdev/warp) — ~698 MB, 63 crates, 159 spec dirs at the snapshot time
 **Status**: Snapshot research. Numbers and code refs valid as of May 2026.
 
 ## TL;DR
@@ -19,7 +19,7 @@ Rosary is doing the same shape of thing — agent orchestration over multi-repo 
 
 | Warp crate | Rough rosary analogue | Note |
 |---|---|---|
-| `ai/agent/orchestration_config.rs` | `src/dispatch/`, `src/config.rs` | Warp models `RunAgentsRequest` with `harness_type` + `execution_mode: Local \| Remote{environment_id, worker_host}` per-run, not per-config |
+| `ai/agent/orchestration_config.rs` | `src/dispatch/`, `src/config.rs` | Warp models `RunAgentsRequest` with `harness_type` + `execution_mode: Local | Remote{environment_id, worker_host}` per-run, not per-config |
 | `ai/skills/` (skill_provider, parser) | `agents/*.md` | Warp parses skill files at runtime; rosary loads agent .md statically |
 | `computer_use` | `src/dispatch/session.rs` ACP path | Tool-use abstraction layer |
 | `isolation_platform` | `src/workspace/` worktrees | Warp's sandbox; rosary uses git/jj worktree isolation |
@@ -146,8 +146,10 @@ Warp has issues. That's it. No higher-level grouping primitive. Rosary's BDR (de
 
 ## References
 
+All paths below are pinned to commit `ef00af00bf033a4d355aca5b145841e107fd2b7c` so they remain stable as upstream evolves.
+
 - [github.com/warpdotdev/warp](https://github.com/warpdotdev/warp) — main repo
 - [warp.dev/blog/warp-is-now-open-source](https://www.warp.dev/blog/warp-is-now-open-source) — announcement
-- `~/github/warpdotdev/warp/CONTRIBUTING.md` — contribution flow
-- `~/github/warpdotdev/warp/specs/APP-1915/{PRODUCT,TECH}.md` — sample spec pair
-- `~/github/warpdotdev/warp/crates/ai/src/agent/orchestration_config.rs` — approval state machine
+- [CONTRIBUTING.md](https://github.com/warpdotdev/warp/blob/ef00af00bf033a4d355aca5b145841e107fd2b7c/CONTRIBUTING.md) — contribution flow
+- [specs/APP-1915/PRODUCT.md](https://github.com/warpdotdev/warp/blob/ef00af00bf033a4d355aca5b145841e107fd2b7c/specs/APP-1915/PRODUCT.md) and [TECH.md](https://github.com/warpdotdev/warp/blob/ef00af00bf033a4d355aca5b145841e107fd2b7c/specs/APP-1915/TECH.md) — sample spec pair
+- [crates/ai/src/agent/orchestration_config.rs](https://github.com/warpdotdev/warp/blob/ef00af00bf033a4d355aca5b145841e107fd2b7c/crates/ai/src/agent/orchestration_config.rs) — approval state machine
