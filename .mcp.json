@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "rsry": {
-      "type": "http",
-      "url": "http://localhost:8383/mcp"
-    }
-  }
-}
