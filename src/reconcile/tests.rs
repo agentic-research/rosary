@@ -1642,6 +1642,35 @@ async fn triage_target_filter_bypasses_approval_gate() {
     assert_eq!(triaged, 1, "--bead must override approval gate");
 }
 
+#[tokio::test]
+async fn triage_approval_gate_sees_remote_repos_too() {
+    // Beads can come from runtime-registered remote_repos, not just
+    // statically configured config.repo. The gate must check both.
+    let bead = make_test_bead("remote-1");
+    let mut r = Reconciler::new(ReconcilerConfig {
+        require_approval: true,
+        triage_threshold: 0.0,
+        repo: Vec::new(), // no static repos
+        ..Default::default()
+    })
+    .await;
+    // Inject the remote repo with Approved status (matching what the
+    // reconciler does after a successful clone).
+    r.remote_repos.push(approval_repo(
+        "test-repo",
+        crate::config::DispatchApproval::Approved,
+    ));
+    let triaged = r.triage(
+        &[bead],
+        &std::collections::HashMap::new(),
+        &std::collections::HashSet::new(),
+    );
+    assert_eq!(
+        triaged, 1,
+        "approved remote_repo bead must dispatch; gate must check both repo + remote_repos"
+    );
+}
+
 #[test]
 fn dispatch_approval_default_is_approved() {
     // Crucial for backward compat: existing configs without an `approval`

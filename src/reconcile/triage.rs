@@ -86,11 +86,17 @@ impl Reconciler {
 
             // Dispatch approval gate (Warp-style): when require_approval is on,
             // beads from non-Approved repos are held. --bead bypasses.
+            //
+            // We must check BOTH config.repo (statically registered) and
+            // remote_repos (cloned via backend at runtime) — the reconciler
+            // scans both, and remote_repos entries are created with
+            // approval: Approved so they should pass when the gate is on.
             if self.config.require_approval && target_filter.is_none() {
                 let admits = self
                     .config
                     .repo
                     .iter()
+                    .chain(self.remote_repos.iter())
                     .find(|r| r.name == bead.repo)
                     .is_some_and(|r| r.approval.admits());
                 if !admits {
