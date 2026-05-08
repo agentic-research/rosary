@@ -84,6 +84,24 @@ impl Reconciler {
                 continue;
             }
 
+            // Dispatch approval gate (Warp-style): when require_approval is on,
+            // beads from non-Approved repos are held. --bead bypasses.
+            if self.config.require_approval && target_filter.is_none() {
+                let admits = self
+                    .config
+                    .repo
+                    .iter()
+                    .find(|r| r.name == bead.repo)
+                    .is_some_and(|r| r.approval.admits());
+                if !admits {
+                    eprintln!(
+                        "[approval] {} held — repo '{}' is not approved for dispatch",
+                        bead.id, bead.repo
+                    );
+                    continue;
+                }
+            }
+
             // Per-repo coordination: don't dispatch to a repo that
             // already has an active agent.
             let repo_busy = self.active.keys().any(|active_id| {

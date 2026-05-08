@@ -205,6 +205,17 @@ enum Command {
         /// Repo name or path to remove
         name_or_path: String,
     },
+    /// Approve a repo for agent auto-dispatch (sets approval = approved).
+    /// Only consulted when [dispatch] require_approval = true.
+    Approve {
+        /// Repo name to approve
+        name: String,
+    },
+    /// Reject a repo for agent auto-dispatch (sets approval = rejected).
+    Reject {
+        /// Repo name to reject
+        name: String,
+    },
     /// Decompose a markdown document (ADR, README, etc.) into beads
     Decompose {
         /// Path to the markdown file
@@ -787,6 +798,20 @@ async fn main() -> Result<()> {
             Some(name) => cli::repo_disabled(&name),
             None => println!("Not found: {name_or_path}"),
         },
+        Command::Approve { name } => {
+            match config::set_repo_approval(&name, crate::config::DispatchApproval::Approved)? {
+                Some(_) => println!("approved {name} for dispatch"),
+                None => println!("Not found: {name}"),
+            }
+        }
+        Command::Reject { name } => {
+            match config::set_repo_approval(&name, crate::config::DispatchApproval::Rejected)? {
+                Some(_) => {
+                    println!("rejected {name} — beads from this repo will not auto-dispatch")
+                }
+                None => println!("Not found: {name}"),
+            }
+        }
         Command::Decompose {
             path,
             title,

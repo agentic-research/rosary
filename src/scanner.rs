@@ -172,6 +172,7 @@ mod tests {
             path: std::path::PathBuf::from("/tmp/no-such-repo"),
             lang: None,
             self_managed: false,
+            approval: crate::config::DispatchApproval::Approved,
         }];
         let beads = scan_repos(&repos).await.unwrap();
         assert!(beads.is_empty());
@@ -199,6 +200,7 @@ mod tests {
             path: repo_path.to_path_buf(),
             lang: None,
             self_managed: false,
+            approval: crate::config::DispatchApproval::Approved,
         }];
 
         let beads = scan_repos(&repos).await.unwrap();

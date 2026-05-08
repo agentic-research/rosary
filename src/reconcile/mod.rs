@@ -75,6 +75,9 @@ pub struct ReconcilerConfig {
     /// APAS L2: optional Ed25519 signing key for handoff envelopes.
     /// When set, every handoff write produces a sibling DSSE envelope.
     pub attestation: Option<crate::config::AttestationConfig>,
+    /// When true, dispatch is gated by `RepoConfig.approval`. Beads from
+    /// repos lacking `Approved` status are held by triage. `--bead` overrides.
+    pub require_approval: bool,
 }
 
 impl Default for ReconcilerConfig {
@@ -99,6 +102,7 @@ impl Default for ReconcilerConfig {
             orchestration: OrchestrationConfig::default(),
             plugins: Vec::new(),
             attestation: None,
+            require_approval: false,
         }
     }
 }
@@ -378,6 +382,7 @@ impl Reconciler {
                                             path: local_path,
                                             lang: Some(lang),
                                             self_managed: false,
+                                            approval: crate::config::DispatchApproval::Approved,
                                         });
                                     }
                                     Err(e) => {
@@ -614,6 +619,7 @@ impl Reconciler {
                             path: local_path,
                             lang: Some(lang),
                             self_managed: false,
+                            approval: crate::config::DispatchApproval::Approved,
                         });
                     }
                     Err(_) => still_pending.push(url),
@@ -970,6 +976,7 @@ pub async fn run(
         orchestration,
         plugins: cfg.plugins,
         attestation: cfg.attestation,
+        require_approval: cfg.dispatch.as_ref().is_some_and(|d| d.require_approval),
         ..Default::default()
     };
 
