@@ -71,7 +71,11 @@ claude
 
 If rsry is configured as an MCP server in your Claude Code settings, you now have 24+ tools for managing beads, dispatching agents, and creating workspaces — all available inside your Claude session.
 
-To add rsry as an MCP server, add to your Claude Code MCP config (`~/.claude/.mcp.json` or project-level `.mcp.json`):
+To add rsry as an MCP server, add to your global Claude Code MCP config at `~/.claude/.mcp.json`:
+
+> ⚠️  Use the **global** path. Avoid project-level `.mcp.json` for trusted infrastructure
+> like rsry — project-level entries override global ones, so a hostile project shipping
+> a `.mcp.json` with a hijacked `rsry` name can redirect a name you trust.
 
 ```json
 {
