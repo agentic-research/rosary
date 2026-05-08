@@ -193,6 +193,35 @@ fn default_true() -> bool {
     true
 }
 
+/// User approval state for agent dispatch on a repo.
+///
+/// Inspired by Warp's `OrchestrationConfigStatus`. The reconciler only
+/// auto-launches agents when this is `Approved`; otherwise beads are
+/// queued but held. Targeted dispatch (`--bead`) overrides the gate.
+///
+/// The check itself is opt-in via `[dispatch] require_approval = true`.
+/// When that flag is unset (default), `approval` is ignored — preserving
+/// existing behavior for users who don't want a confirmation step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchApproval {
+    /// No decision yet. Beads are held until the user runs `rsry approve <repo>`.
+    None,
+    /// User has approved dispatch. Default for backward compatibility and
+    /// for `self_managed = true` repos (rosary dogfooding itself).
+    #[default]
+    Approved,
+    /// User has rejected dispatch. Reconciler skips beads from this repo.
+    Rejected,
+}
+
+impl DispatchApproval {
+    /// True when the gate (if active) admits this repo's beads.
+    pub fn admits(self) -> bool {
+        matches!(self, Self::Approved)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
     /// Display name for the repo
@@ -204,6 +233,11 @@ pub struct RepoConfig {
     /// Whether this repo IS rosary itself (dogfooding flag).
     #[serde(default, rename = "self")]
     pub self_managed: bool,
+    /// User approval state for agent dispatch on this repo. Only consulted
+    /// when `[dispatch] require_approval = true`. Defaults to `Approved`
+    /// so existing configs continue to dispatch without a migration step.
+    #[serde(default)]
+    pub approval: DispatchApproval,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,6 +344,13 @@ pub struct DispatchConfig {
     /// ```
     #[serde(default)]
     pub pipeline_models: HashMap<String, String>,
+    /// When true, dispatch is gated by `RepoConfig.approval` — only beads from
+    /// repos with `approval = "approved"` are auto-launched. `--bead` overrides.
+    /// Default false: backward-compatible, no gate.
+    ///
+    /// Toggle with `rsry approve <repo>` / `rsry reject <repo>`.
+    #[serde(default)]
+    pub require_approval: bool,
 }
 
 fn default_dispatch_provider() -> String {
@@ -695,6 +736,9 @@ pub fn enable_repo(repo_path: &Path) -> Result<RepoConfig> {
         path: abs,
         lang: None,
         self_managed: false,
+        // New entries default to Approved (matches the field default), so
+        // existing dispatch behavior is preserved when require_approval is off.
+        approval: DispatchApproval::Approved,
     };
 
     let mut config = load_global()?;
@@ -802,6 +846,19 @@ pub fn disable_repo(name_or_path: &str) -> Result<Option<String>> {
 
     save_global(&config)?;
     Ok(Some(name_or_path.to_string()))
+}
+
+/// Update a repo's dispatch approval state in the global registry.
+/// Returns `Some(name)` on success, `None` if the repo wasn't found.
+pub fn set_repo_approval(name: &str, approval: DispatchApproval) -> Result<Option<String>> {
+    let mut config = load_global()?;
+    let entry = config.repo.iter_mut().find(|r| r.name == name);
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
+    entry.approval = approval;
+    save_global(&config)?;
+    Ok(Some(name.to_string()))
 }
 
 /// Merge global registry with a local config file.
@@ -1029,6 +1086,7 @@ path = "~/remotes/art/mache"
             path: repo_dir.clone(),
             lang: None,
             self_managed: false,
+            approval: DispatchApproval::Approved,
         };
         let config = Config {
             repo: vec![entry],
@@ -1126,6 +1184,7 @@ path = "~/remotes/art/mache"
                 path: PathBuf::from("/tmp/test"),
                 lang: Some("rust".into()),
                 self_managed: false,
+                approval: DispatchApproval::Approved,
             }],
             linear: None,
             compute: None,

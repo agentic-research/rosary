@@ -181,6 +181,7 @@ mod scan_assay_stale {
             path: repo_dir.path().to_path_buf(),
             lang: None,
             self_managed: false,
+            approval: crate::config::DispatchApproval::Approved,
         };
 
         let count = run_assay_scan(&[repo], &registry).await.unwrap();
@@ -238,6 +239,7 @@ mod scan_assay_stale {
             path: repo_dir.path().to_path_buf(),
             lang: None,
             self_managed: false,
+            approval: crate::config::DispatchApproval::Approved,
         };
 
         let count = run_assay_scan(&[repo], &registry).await.unwrap();
@@ -256,6 +258,7 @@ mod scan_assay_stale {
             path: repo_dir.path().to_path_buf(),
             lang: None,
             self_managed: false,
+            approval: crate::config::DispatchApproval::Approved,
         };
         let count = run_assay_scan(&[repo], &registry).await.unwrap();
         assert_eq!(count, 0);
