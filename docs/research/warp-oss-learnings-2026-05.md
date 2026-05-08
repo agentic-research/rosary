@@ -1,8 +1,45 @@
 # Warp OSS — Learnings for Rosary
 
-**Date**: 2026-05-08
-**Source**: [github.com/warpdotdev/warp](https://github.com/warpdotdev/warp) — ~698 MB, 63 crates, 159 spec dirs at the snapshot time
-**Status**: Snapshot research. Numbers and code refs valid as of May 2026.
+**Date**: 2026-05-08 (initial pass), revised 2026-05-08 after a deeper sweep.
+**Source**: [github.com/warpdotdev/warp](https://github.com/warpdotdev/warp) — pinned at commit `ef00af00bf033a4d355aca5b145841e107fd2b7c`. ~698 MB, **63 crates + a 945k-line `app/` tree (1.3M LOC total)**, 159 spec dirs at the snapshot time.
+**Status**: Snapshot research. The original draft of this doc skimmed ~1-2k of 343k crate-LOC. The corrections below are from a second pass.
+
+## Corrections to the original draft
+
+The first version of this doc made three claims I later found wrong or shallow:
+
+1. **`isolation_platform` is NOT sandboxing.** It's workload identity (OIDC-style tokens for cloud workload, `WorkloadToken { token, expires_at }`, with platform detection for Fly/AWS/GCP). Different concept. There's no equivalent in rosary because rosary isn't multi-tenant in that way. Removed from the "isolation" comparison; what rosary actually competes with is `crates/computer_use` (Anthropic's computer-use spec, real desktop automation) — which has no rosary analogue.
+2. **The "63-crate" framing missed the real bulk.** Crates is 343k LOC. The actual **app/** directory is **945k LOC** as a single large tree. Total Warp client ≈ 1.3M Rust LOC. So "they split aggressively" overstates it — they split the *libraries*, the app itself is monolithic.
+3. **`harness_type` is concrete, not abstract.** It's an enum: `{ Oz, ClaudeCode, OpenCode, Gemini, Codex }` (see `crates/ai/src/agent/orchestration_config.rs:184-214`). It's literally rosary's `provider` field with two more harnesses (Codex + OpenCode) and a self-harness (Oz). 1:1 alignment.
+
+## The headline I missed: the skills crate
+
+`crates/ai/src/skills/` is **1,482 LOC across 10 files** and is the most directly portable thing in the entire Warp codebase. It's a structured, parsed, multi-provider skill system:
+
+```rust
+pub struct ParsedSkill {
+    pub path: PathBuf,
+    pub name: String,
+    pub description: String,
+    pub content: String,                  // full file contents incl. front matter
+    pub line_range: Option<Range<usize>>, // markdown body, 1-indexed
+    pub provider: SkillProvider,
+    pub scope: SkillScope,
+}
+
+pub enum SkillProvider { Claude, Codex, Gemini, Droid, OpenCode, Warp }
+pub enum SkillScope    { Bundled, Home, Project }   // bundled = ships with Warp
+```
+
+Rosary's equivalent is `agents/*.md` — a flat directory loaded at runtime by `load_agent_prompt()` in `src/dispatch/prompt.rs` (`std::fs::read_to_string` per file). What's missing isn't runtime loading; it's the *structure*: no parsed metadata, no provider tagging, no project-vs-home-vs-bundled scope, no front-matter/body separation.
+
+Code reuse is constrained by Warp's licensing — the skills crate is AGPL-3.0 (only `warpui_core` / `warpui` carry the MIT carve-out). Lifting the *pattern* into a fresh rosary implementation is fine; copying source verbatim would pull rosary into AGPL contagion if we aren't already AGPL there. Either way, the design is portable. This would let us:
+
+- Mix Claude+Codex+Gemini agent definitions in a single registry without per-provider branching
+- Distinguish "ships with rosary" agents (dev/staging/prod) from project-overrides at `<repo>/.rsry/agents/`
+- Reuse Warp's parser (front-matter + content + line-range tracking) instead of inventing one
+
+This is more impactful than any of the six items I originally listed.
 
 ## TL;DR
 
@@ -19,15 +56,17 @@ Rosary is doing the same shape of thing — agent orchestration over multi-repo 
 
 | Warp crate | Rough rosary analogue | Note |
 |---|---|---|
-| `ai/agent/orchestration_config.rs` | `src/dispatch/`, `src/config.rs` | Warp models `RunAgentsRequest` with `harness_type` + `execution_mode: Local | Remote{environment_id, worker_host}` per-run, not per-config |
-| `ai/skills/` (skill_provider, parser) | `agents/*.md` | Warp parses skill files at runtime; rosary loads agent .md statically |
-| `computer_use` | `src/dispatch/session.rs` ACP path | Tool-use abstraction layer |
-| `isolation_platform` | `src/workspace/` worktrees | Warp's sandbox; rosary uses git/jj worktree isolation |
+| `ai/agent/orchestration_config.rs` | `src/dispatch/`, `src/config.rs` | Warp models `RunAgentsRequest` with `harness_type` (enum: Oz/ClaudeCode/OpenCode/Gemini/Codex) + `execution_mode: Local | Remote{environment_id, worker_host}` per-run, not per-config |
+| `ai/skills/` (parsed_skill, skill_provider, parser, scope) | `agents/*.md` (flat) | **The big find** — see "headline" section above. 1,482 LOC of structured skill parsing across 6 providers and 3 scope levels. |
+| `computer_use` | (no analogue) | Anthropic's computer-use desktop automation — Action / Key / MouseButton / Screenshot. They implement the actor side. Distinct from rosary's Bash/Edit/Write tool model. |
+| `isolation_platform` | (no analogue) | **NOT sandboxing.** Workload identity (OIDC tokens for Fly/AWS/GCP). Multi-tenant auth glue rosary doesn't need yet. |
 | `ipc`, `jsonrpc` | `src/serve/mod.rs` | Wire-protocol layer |
-| `persistence` | `src/store_*.rs` | Their state store |
-| `command-signatures-v2` | (none — closest is `crates/bdr/`) | Excluded from `cargo nextest --workspace`. A separate codegen surface that doesn't run with normal CI. Lesson: rosary could quarantine generated/derived code the same way |
+| `persistence` | `src/store_*.rs` | Their state store (didn't read deeply yet) |
+| `command-signatures-v2` | (none) | Just a `rust-embed` static asset bundle (7 LOC of `lib.rs`, the rest is `build.rs` + assets). Excluded from CI because it's compiled embedded data, not behaviors. |
+| `firebase` | (no analogue) | Google sign-in backend (`GetAccountInfo`, `FetchAccessToken`). Hosted-product auth glue. |
+| `app/` (945k LOC, single tree) | `src/` (~50k LOC) | Where the actual app lives. They split *libraries*; the *app* is monolithic. |
 
-63 crates total. They split aggressively — `field_mask`, `fuzzy_match`, `string-offset`, `markdown_parser`, `natural_language_detection`, etc. are each their own crate.
+**Real scale**: 63 crates + 945k-LOC `app/` = ~**1.3M Rust LOC** total. The crate count is right-sized for their library surface; the app itself is one big tree.
 
 ### Spec PR flow
 
@@ -121,22 +160,36 @@ Warp's `persistence` crate is conventional state. Rosary's per-repo `.beads/` is
 
 Warp has issues. That's it. No higher-level grouping primitive. Rosary's BDR (decompose ADR markdown into atoms → beads grouped into threads under decades) is structurally richer for org-wide planning across many small units of work.
 
-## Specific things to copy
+## Specific things to copy (revised priority order)
 
-| Item | Effort | Where |
-|---|---|---|
-| Add `specs/<bead-id>/{PRODUCT,TECH}.md` convention to rosary self-managed repo | small | `docs/specs/` directory + bead.spec_path field |
-| Add `OrchestrationApproval { None, Approved, Rejected }` field on dispatch config | small | `src/config.rs` `[dispatch]` block, opt-in default Approved for self-managed |
-| Add per-run `execution_mode` override to `DispatchRecord` | small | `src/store.rs` `pub struct DispatchRecord` already exists; add field |
-| Extract a `presubmit` task from Taskfile that wraps `task fmt && task lint && task test` | trivial | `Taskfile.yml` |
-| `rsry feedback` command that auto-attaches `~/.rsry/rsry-serve.log` tail to a new bead | small | `src/main.rs` + `src/cli.rs` |
-| Add `ready-to-spec` / `ready-to-implement` Linear-label-equivalent to bead status | medium | `src/bead.rs` BeadState — possibly via a new `phase` enum separate from the lifecycle state |
+| Item | Effort | Where | Status |
+|---|---|---|---|
+| **Lift the skills-crate pattern**: `ParsedSkill { path, name, description, content, line_range, provider, scope }` + `SkillProvider` enum + `SkillScope { Bundled, Home, Project }` | medium | new `src/skills.rs` or `crates/skills/`; replace static `agents/*.md` loading | — |
+| Add `DispatchApproval { None, Approved, Rejected }` field on `RepoConfig.approval`, gated by `[dispatch].require_approval` | small | `src/config.rs` | ✅ shipped in PR #180 |
+| Add `specs/<bead-id>/{PRODUCT,TECH}.md` convention to rosary self-managed repo | small | `docs/specs/` directory + `bead.spec_path` field | — |
+| Add per-run `execution_mode` override to `DispatchRecord` | small | `src/store.rs` `pub struct DispatchRecord` already exists; add field | — |
+| Extract a `presubmit` task from Taskfile that wraps `task fmt && task lint && task test` | trivial | `Taskfile.yml` | — |
+| `rsry feedback` command that auto-attaches `~/.rsry/rsry-serve.log` tail to a new bead | small | `src/main.rs` + `src/cli.rs` | — |
+| Add `ready-to-spec` / `ready-to-implement` Linear-label-equivalent to bead status | medium | `src/bead.rs` BeadState — possibly via a new `phase` enum separate from the lifecycle state | — |
 
 ## Specific things to NOT copy
 
-- Their crate explosion (63 crates) is appropriate for their UI/terminal complexity, not for rosary's CLI/server scope. Don't aspire to it.
+- **63-crate split** is right for their library surface but their **app is a 945k-line single tree**. Don't aspire to either extreme — keep rosary's current structure.
 - Their slack-only contributor channel. Rosary should keep bead comments + GitHub PRs as the canonical record; Slack is a private side-channel.
 - Their dependency on a hosted Oz product. Rosary's "all roles in one binary, all open source" positioning is already a clearer story.
+- `crates/firebase` (Google sign-in) and `crates/isolation_platform` (cloud workload identity) — both are hosted-product infra rosary doesn't need.
+
+## Still un-surveyed (for a future pass)
+
+I haven't read these in any depth — flagging so the next sweep can pick them up:
+
+- `app/src/ai_assistant/` — where the agent UI actually lives
+- `app/src/billing/` — they actively bill in-app
+- `crates/persistence` — their state model (didn't read schema)
+- `crates/onboarding` — first-run flow worth studying for `rsry enable` UX
+- `crates/managed_secrets` + `_wasm` — secret management with WASM-targeted variant
+- `crates/jsonrpc` — their MCP/JSON-RPC layer specifics
+- The `script/deploy_remote_server` operations side
 
 ## Open questions
 
