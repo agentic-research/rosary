@@ -31,7 +31,9 @@ pub enum SkillProvider { Claude, Codex, Gemini, Droid, OpenCode, Warp }
 pub enum SkillScope    { Bundled, Home, Project }   // bundled = ships with Warp
 ```
 
-Rosary's equivalent is `agents/*.md` — a flat directory of agent definitions loaded statically with no parsed structure, no provider tagging, no project-vs-home scope distinction, and no notion of bundled-vs-user-editable. Lifting their pattern (or porting the actual crate, since it's MIT-compatible — wait, it's AGPL) would let us:
+Rosary's equivalent is `agents/*.md` — a flat directory loaded at runtime by `load_agent_prompt()` in `src/dispatch/prompt.rs` (`std::fs::read_to_string` per file). What's missing isn't runtime loading; it's the *structure*: no parsed metadata, no provider tagging, no project-vs-home-vs-bundled scope, no front-matter/body separation.
+
+Code reuse is constrained by Warp's licensing — the skills crate is AGPL-3.0 (only `warpui_core` / `warpui` carry the MIT carve-out). Lifting the *pattern* into a fresh rosary implementation is fine; copying source verbatim would pull rosary into AGPL contagion if we aren't already AGPL there. Either way, the design is portable. This would let us:
 
 - Mix Claude+Codex+Gemini agent definitions in a single registry without per-provider branching
 - Distinguish "ships with rosary" agents (dev/staging/prod) from project-overrides at `<repo>/.rsry/agents/`
@@ -163,7 +165,7 @@ Warp has issues. That's it. No higher-level grouping primitive. Rosary's BDR (de
 | Item | Effort | Where | Status |
 |---|---|---|---|
 | **Lift the skills-crate pattern**: `ParsedSkill { path, name, description, content, line_range, provider, scope }` + `SkillProvider` enum + `SkillScope { Bundled, Home, Project }` | medium | new `src/skills.rs` or `crates/skills/`; replace static `agents/*.md` loading | — |
-| Add `OrchestrationApproval { None, Approved, Rejected }` field on dispatch config | small | `src/config.rs` `[dispatch]` block | ✅ shipped in PR #180 |
+| Add `DispatchApproval { None, Approved, Rejected }` field on `RepoConfig.approval`, gated by `[dispatch].require_approval` | small | `src/config.rs` | ✅ shipped in PR #180 |
 | Add `specs/<bead-id>/{PRODUCT,TECH}.md` convention to rosary self-managed repo | small | `docs/specs/` directory + `bead.spec_path` field | — |
 | Add per-run `execution_mode` override to `DispatchRecord` | small | `src/store.rs` `pub struct DispatchRecord` already exists; add field | — |
 | Extract a `presubmit` task from Taskfile that wraps `task fmt && task lint && task test` | trivial | `Taskfile.yml` | — |
