@@ -70,7 +70,7 @@ Each field declares its algebra; the fold dispatches accordingly.
 
 | Field | Algebra | Conflict semantics |
 |-------|---------|-------------------|
-| `status` | **Flat lattice** with explicit `⊤ = Conflict` | Any two distinct values join to `⊤`; same value is idempotent |
+| `pipeline_phase` | **Chain-max** on `Dispatched < Verifying < Pass < PrOpen < Done` | Monotone agent progress; max wins; back-step is not a transition |
 | `assignee` | LWW-register, tiebreak `(observed_at, source_id)` | Latest valid observation wins |
 | `pr_url` | LWW-register, tiebreak `(observed_at, source_id)` | Latest wins; nulled out only by explicit "unset" obs |
 | `merge_sha` | LWW-register | Latest wins; immutable in practice once set |
@@ -79,12 +79,27 @@ Each field declares its algebra; the fold dispatches accordingly.
 | `comments` | OR-set with unique tags `(source, source_event_id)` | Add/remove are commutative; no LWW needed |
 | `labels` | OR-set | Same as comments |
 
-**Status uses a flat lattice, not the chain narrated in rosary-45518d.** The
-chain (`backlog < open < queued < ...`) is a workflow ordering, not a
-mathematical partial order; back-edges in `valid_transitions()` make it not a
-poset at all. The substrate's job is to detect "two observers disagree" — that
-is `⊤ = Conflict`. The workflow ordering is enforced separately (see LTS
-monotonicity below) and is **not** part of the lattice.
+**`pipeline_phase` legitimately has a chain ordering** because agent runs
+within a bead are monotone — no agent ever steps a bead from `Pass` back to
+`Dispatched`. The existing `src/dolt/observations.rs` already implements this
+field by hand; under this ADR it becomes one registered field in the substrate,
+not a separate mechanism.
+
+**User-facing `status`** is **not a primitive field**. It is a *derivation*
+over (`pipeline_phase`, `deadletter`, `pr_url`, `merge_sha`, sink-reported
+status) computed at read time per source. The substrate's job for status is
+**conflict detection across sources** — when Linear's derived status disagrees
+with GitHub's derived status for the same `WorkRef`, the cross-source
+combination is the flat lattice with `⊤ = Conflict`. There is no single
+field whose algebra is `flat lattice over status strings`; the flat lattice
+applies to the *result of derivation, joined across sources*.
+
+This separation is the load-bearing one: the chain (`backlog < open < ...`)
+narrated in rosary-45518d is a workflow ordering, not a mathematical partial
+order — back-edges in `valid_transitions()` make it not a poset, and the
+"chain" framing only applies to the genuinely-monotone slice (`pipeline_phase`).
+Workflow validity is enforced separately (see LTS monotonicity below) and is
+**not** part of the fold.
 
 ### LTS monotonicity is enforced at write-time, not at fold-time
 
@@ -117,6 +132,26 @@ no non-trivial restriction map — invoking "sheaf" would be decorative. Parent
 state is computed by a deterministic bottom-up fold over child states (e.g.,
 "thread is `done` iff all member beads are at terminal states"). This is a
 catamorphism over the tree, not a CRDT operation.
+
+### Relationship to existing pipeline observations
+
+`src/dolt/observations.rs` (rosary-45518d) is **already an instance of this
+substrate** — append-only observations of agent verdicts within a bead,
+folded by chain-max — but only for one field (`pipeline_phase`) and only
+from one source (the in-process reconciler). It is not a separate
+mechanism; under this ADR it becomes the canonical implementation of one
+registered field.
+
+This means the migration plan does **not** require rewriting that file.
+Phase 1 lifts the algebra surface (field/algebra registry, fold dispatch,
+quarantine path) into a generic substrate; phase 2+ adds new fields
+(`assignee`, `pr_url`, etc.) and new sources (Linear, GitHub) that plug in
+without touching the pipeline-phase code path.
+
+The conceptual pivot is recognizing that the existing module was a special
+case all along. The wrong claim in rosary-45518d wasn't "observations form
+a lattice" — it was "the user-facing status string is the field that's
+laticed." User-facing status is a *derivation*, not a primitive.
 
 ## Architecture
 
@@ -168,18 +203,18 @@ a question raised in math review.
 
 | # | Invariant | What it tests |
 |---|-----------|---------------|
-| 1 | `flat_lattice_idempotent` | `join(status=Open, status=Open) = Open` |
-| 2 | `flat_lattice_distinct_is_top` | `join(status=Open, status=Done) = ⊤(Conflict)` with witnesses |
-| 3 | `flat_lattice_top_absorbs` | `join(⊤, _) = ⊤` |
+| 1 | `chain_max_idempotent` | `pipeline_phase=Pass ⊕ pipeline_phase=Pass = Pass` |
+| 2 | `chain_max_monotone` | `pipeline_phase=Dispatched ⊕ pipeline_phase=Pass = Pass` (max wins) |
+| 3 | `chain_max_unranked_ignored` | `Fail` and `Deadletter` don't advance the chain |
 | 4 | `lww_tiebreak_total` | LWW with equal `observed_at` resolved by `source_id` lex |
 | 5 | `lww_unset_explicit` | `pr_url=None` requires explicit observation; never inferred |
 | 6 | `or_set_add_remove_commute` | Comment add(c, t1) + remove(c, t1) in any order = absent |
 | 7 | `or_set_unique_tags` | Same comment from two sources is two distinct entries |
 | 8 | `dedup_before_fold` | Replaying a webhook with same `(source, event_id, payload_hash)` is a no-op |
 | 9 | `reorder_invariance` | `fold(perm(O)) = fold(O)` for any permutation, all field types |
-| 10 | `quarantine_does_not_join` | An invalid-cert observation never appears in the derived view |
-| 11 | `quarantine_is_queryable` | Quarantined obs are surfaced via dedicated path, not silently dropped |
-| 12 | `lts_check_at_write_time` | Writing `Done → Open` to a sink fails at the LTS gate, not at fold |
+| 10 | `cross_source_status_conflict_is_top` | When two sources' derived status disagree, cross-source result is `⊤(Conflict)` with witnesses |
+| 11 | `quarantine_does_not_join` | An invalid-cert observation never appears in the derived view |
+| 12 | `quarantine_is_queryable` | Quarantined obs are surfaced via dedicated path, not silently dropped |
 | 13 | `tree_fold_deterministic` | Decade/Thread/Bead rollup is a pure function of child states |
 | 14 | `convergence_under_partition` | `fold(O₁ ∪ O₂) = fold(fold(O₁), fold(O₂))` for arbitrary partition |
 
@@ -201,24 +236,32 @@ that breaks them is a substrate bug, not a fold-rule bug.
 
 ## Migration path
 
-Existing one-off paths port into `Observer` instances:
+Existing one-off paths port into `Observer` instances. Crucially,
+`src/dolt/observations.rs` already implements the `pipeline_phase` field's
+algebra correctly — it does not need rewriting, only adapting to the
+substrate's registry interface.
 
-1. **Phase 1** (this ADR): land observer trait, observation table, fold,
-   quarantine path, the 14 tests. No behavior change yet — observers are
-   not wired.
-2. **Phase 2**: port `linear_tracker` push/pull into `LinearObserver`. Run
-   in shadow mode (logs both old + new derived view; alerts on disagreement)
-   for one week.
-3. **Phase 3**: port `github_webhook` + `vcs::poll_pr_status` into
+1. **Phase 1** (this ADR's implementation PR): land observer trait, generic
+   `Observation` type, field/algebra registry, fold, quarantine path, the
+   14 tests. Pipeline-phase observations stay where they are; the substrate
+   provides the surface that future fields and sources plug into. No
+   behavior change.
+2. **Phase 2**: register `pipeline_phase` in the new substrate; have
+   `dolt/observations.rs` write through it. Logically a no-op but proves
+   the registry handles the existing field.
+3. **Phase 3**: port `linear_tracker` push/pull into `LinearObserver`
+   (writes `assignee`, `pr_url`, `labels`, `comments`). Run in shadow mode
+   one week.
+4. **Phase 4**: port `github_webhook` + `vcs::poll_pr_status` into
    `GithubObserver`. Same shadow mode.
-4. **Phase 4**: cut `rsry status` over to read from the derived view.
-   Decommission the one-off paths.
-5. **Phase 5**: drop the third observer (`BeadObserver`) into place so
-   bead-internal status writes also flow through the substrate. At this
-   point Dolt is no longer the SoR for status — the observation log is.
+5. **Phase 5**: cut `rsry status` over to read from the derived view —
+   user-facing status is now a *derivation* over the field set, with
+   cross-source conflict detection surfaced as `⊤`. Decommission the
+   one-off paths.
 
-Phase 5 is the point at which Linear, GitHub, and Dolt are equal peers; the
-preceding phases preserve current behavior while the substrate proves out.
+The "Linear / GitHub / Dolt are equal peers" property emerges at Phase 5;
+the preceding phases preserve current behavior while the substrate proves
+out.
 
 ## Consequences
 
