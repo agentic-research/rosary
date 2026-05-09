@@ -10,6 +10,7 @@
 pub mod prompt;
 pub mod providers;
 pub mod session;
+pub mod sweep;
 
 #[cfg(test)]
 pub(crate) mod tests;

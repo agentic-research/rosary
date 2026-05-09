@@ -171,6 +171,26 @@ async fn tool_scan(config_path: &str) -> Result<Value> {
 
 async fn tool_status(config_path: &str) -> Result<Value> {
     let cfg = config::load(config_path)?;
+
+    // Self-heal stale dispatch state in every repo before counting
+    // (rosary-67c43d). The statusline polls this — running the sweep
+    // here means a stuck `in_progress` count fixes itself within one
+    // statusline refresh, no manual intervention required.
+    for repo in &cfg.repo {
+        let root = crate::scanner::resolve_repo_path(&repo.path);
+        let beads_dir = crate::resolve_beads_dir(&root);
+        if let Ok(client) = crate::bead_sqlite::connect_bead_store(&beads_dir).await {
+            let repo_name = repo
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            let _ =
+                crate::dispatch::sweep::sweep_orphan_dispatches(client.as_ref(), &root, repo_name)
+                    .await;
+        }
+    }
+
     let beads = crate::scanner::scan_repos(&cfg.repo).await?;
 
     let open = beads.iter().filter(|b| b.status == "open").count();
@@ -869,6 +889,14 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     let beads_dir = crate::resolve_beads_dir(&root);
     let client = crate::bead_sqlite::connect_bead_store(&beads_dir).await?;
     let repo_name = repo_name_from_path(repo_path);
+
+    // Self-heal stale state before staging a new dispatch (rosary-67c43d).
+    // Reverts any prior `Dispatched` bead in this repo that has no live
+    // session and no worktree on disk — typically caused by an MCP caller
+    // that never spawned the agent process. Conservative: never touches
+    // beads with live sessions or existing worktrees.
+    let _ =
+        crate::dispatch::sweep::sweep_orphan_dispatches(client.as_ref(), &root, &repo_name).await;
 
     let mut bead = client
         .get_bead(bead_id, &repo_name)
