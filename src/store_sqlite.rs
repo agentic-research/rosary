@@ -879,6 +879,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reparent_thread_moves_decade() {
+        // End-to-end test for store::reparent_thread() using the SQLite backend.
+        // Catches the regression where Dolt upsert_thread silently dropped
+        // decade_id updates (Copilot review on PR #183).
+        let (store, _dir) = temp_backend();
+
+        // Two decades, one thread parked under the first.
+        for id in ["ungrouped", "agentic-provenance"] {
+            store
+                .upsert_decade(&DecadeRecord {
+                    id: id.into(),
+                    title: id.into(),
+                    source_path: String::new(),
+                    status: "active".into(),
+                })
+                .await
+                .unwrap();
+        }
+        store
+            .upsert_thread(&ThreadRecord {
+                id: "agentic-provenance/agent-identity".into(),
+                name: "Agent identity thread".into(),
+                decade_id: "ungrouped".into(),
+                feature_branch: Some("rosary/agentic-provenance-agent-identity".into()),
+            })
+            .await
+            .unwrap();
+
+        // Re-parent into agentic-provenance.
+        crate::store::reparent_thread(
+            &store,
+            "agentic-provenance/agent-identity",
+            "agentic-provenance",
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Old decade no longer lists the thread; new decade does.
+        assert!(
+            store
+                .list_threads("ungrouped")
+                .await
+                .unwrap()
+                .iter()
+                .all(|t| t.id != "agentic-provenance/agent-identity"),
+            "ungrouped must no longer contain the moved thread"
+        );
+        let new = store.list_threads("agentic-provenance").await.unwrap();
+        assert!(
+            new.iter()
+                .any(|t| t.id == "agentic-provenance/agent-identity"),
+            "agentic-provenance must contain the moved thread"
+        );
+
+        // Optional rename: provide new_name.
+        crate::store::reparent_thread(
+            &store,
+            "agentic-provenance/agent-identity",
+            "agentic-provenance",
+            Some("Renamed thread"),
+        )
+        .await
+        .unwrap();
+        let renamed = store.list_threads("agentic-provenance").await.unwrap();
+        let t = renamed
+            .iter()
+            .find(|t| t.id == "agentic-provenance/agent-identity")
+            .unwrap();
+        assert_eq!(t.name, "Renamed thread");
+    }
+
+    #[tokio::test]
+    async fn reparent_thread_auto_creates_target_decade() {
+        let (store, _dir) = temp_backend();
+        store
+            .upsert_decade(&DecadeRecord {
+                id: "src".into(),
+                title: "src".into(),
+                source_path: String::new(),
+                status: "active".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .upsert_thread(&ThreadRecord {
+                id: "x".into(),
+                name: "X".into(),
+                decade_id: "src".into(),
+                feature_branch: None,
+            })
+            .await
+            .unwrap();
+
+        // Target decade doesn't exist yet — helper should create it.
+        crate::store::reparent_thread(&store, "x", "freshly-created", None)
+            .await
+            .unwrap();
+        assert!(
+            store.get_decade("freshly-created").await.unwrap().is_some(),
+            "missing target decade must be auto-created"
+        );
+    }
+
+    #[tokio::test]
+    async fn reparent_thread_errors_on_missing_thread() {
+        let (store, _dir) = temp_backend();
+        let err = crate::store::reparent_thread(&store, "nonexistent", "wherever", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("thread not found"));
+    }
+
+    #[tokio::test]
     async fn linkage_crud() {
         let (store, _dir) = temp_backend();
         let from = WorkRef {

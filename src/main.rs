@@ -829,7 +829,6 @@ async fn main() -> Result<()> {
             decade_id,
             name,
         } => {
-            use crate::store::{DecadeRecord, ThreadRecord};
             let backend_cfg = config::load_global()
                 .ok()
                 .and_then(|c| c.backend)
@@ -838,41 +837,7 @@ async fn main() -> Result<()> {
                 .connect()
                 .await
                 .context("opening orchestrator backend")?;
-            // Look up the existing thread by id (it may live under any decade).
-            let mut found: Option<ThreadRecord> = None;
-            for d in backend.list_decades(None).await? {
-                for t in backend.list_threads(&d.id).await? {
-                    if t.id == thread_id {
-                        found = Some(t);
-                        break;
-                    }
-                }
-                if found.is_some() {
-                    break;
-                }
-            }
-            let Some(existing) = found else {
-                anyhow::bail!("thread not found: {thread_id}");
-            };
-            // Auto-create the target decade if missing (matches rsry_thread_assign).
-            if backend.get_decade(&decade_id).await?.is_none() {
-                backend
-                    .upsert_decade(&DecadeRecord {
-                        id: decade_id.clone(),
-                        title: decade_id.clone(),
-                        source_path: String::new(),
-                        status: "active".to_string(),
-                    })
-                    .await?;
-            }
-            backend
-                .upsert_thread(&ThreadRecord {
-                    id: existing.id.clone(),
-                    name: name.unwrap_or(existing.name),
-                    decade_id: decade_id.clone(),
-                    feature_branch: existing.feature_branch,
-                })
-                .await?;
+            store::reparent_thread(&*backend, &thread_id, &decade_id, name.as_deref()).await?;
             println!("reparented {thread_id} → {decade_id}");
         }
         Command::Decompose {

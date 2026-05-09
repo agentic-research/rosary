@@ -1754,7 +1754,6 @@ async fn tool_bead_import(
 /// with the new `decade_id`. Auto-creates the target decade if missing.
 async fn tool_thread_reparent(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
     let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
-    use crate::store::{DecadeRecord, ThreadRecord};
 
     let thread_id = args["thread_id"]
         .as_str()
@@ -1764,43 +1763,7 @@ async fn tool_thread_reparent(args: &Value, backend: Option<&dyn BackendStore>) 
         .ok_or_else(|| anyhow::anyhow!("decade_id required"))?;
     let new_name = args.get("name").and_then(|v| v.as_str());
 
-    // Find the existing thread by id (it may live under any decade).
-    let mut found: Option<ThreadRecord> = None;
-    for d in backend.list_decades(None).await? {
-        for t in backend.list_threads(&d.id).await? {
-            if t.id == thread_id {
-                found = Some(t);
-                break;
-            }
-        }
-        if found.is_some() {
-            break;
-        }
-    }
-    let Some(existing) = found else {
-        anyhow::bail!("thread not found: {thread_id}");
-    };
-
-    // Auto-create the target decade if missing (matches rsry_thread_assign).
-    if backend.get_decade(decade_id).await?.is_none() {
-        backend
-            .upsert_decade(&DecadeRecord {
-                id: decade_id.to_string(),
-                title: decade_id.to_string(),
-                source_path: String::new(),
-                status: "active".to_string(),
-            })
-            .await?;
-    }
-
-    backend
-        .upsert_thread(&ThreadRecord {
-            id: existing.id.clone(),
-            name: new_name.map(String::from).unwrap_or(existing.name),
-            decade_id: decade_id.to_string(),
-            feature_branch: existing.feature_branch,
-        })
-        .await?;
+    crate::store::reparent_thread(backend, thread_id, decade_id, new_name).await?;
 
     Ok(serde_json::json!({
         "thread_id": thread_id,
