@@ -345,6 +345,38 @@ pub trait BeadStore: Send + Sync {
 
     // ── Comments & events ──
     async fn add_comment(&self, issue_id: &str, body: &str, author: &str) -> Result<()>;
+    /// List comments for a bead. `include_deleted = false` filters out
+    /// soft-deleted entries (the default for end-user surfaces).
+    /// Returns oldest-first.
+    async fn list_comments(
+        &self,
+        issue_id: &str,
+        include_deleted: bool,
+    ) -> Result<Vec<crate::bead::Comment>>;
+    /// Update an existing comment's body. Sets `edited_at` to now,
+    /// `edit_reason` to the supplied reason (if any), and on the **first**
+    /// edit captures the prior body in `original_text` (immutable
+    /// thereafter — subsequent edits do not rewrite it). Returns the
+    /// updated comment.
+    ///
+    /// Returns `Err` if the comment does not exist or has been hard-deleted.
+    /// Soft-deleted comments are still editable (un-deleting is out of scope
+    /// for v1; if you need it, file a separate bead).
+    async fn update_comment(
+        &self,
+        comment_id: &str,
+        body: &str,
+        reason: Option<&str>,
+    ) -> Result<crate::bead::Comment>;
+    /// Soft-delete a comment by setting `deleted_at = NOW()`. Audit trail
+    /// (`original_text`, `edit_reason`) is preserved. Returns `Err` if the
+    /// comment does not exist. Idempotent: deleting an already-deleted
+    /// comment refreshes `deleted_at` but does not error.
+    async fn delete_comment(&self, comment_id: &str, reason: Option<&str>) -> Result<()>;
+    /// Hard-delete a comment — physically removes the row. Audit trail is
+    /// destroyed. CLI-only with explicit confirmation; **never** exposed
+    /// through MCP. Returns `Err` if the comment does not exist.
+    async fn hard_delete_comment(&self, comment_id: &str) -> Result<()>;
     /// Best-effort audit log. Implementations should warn on failure, not error.
     async fn log_event(&self, issue_id: &str, event_type: &str, detail: &str);
     /// Most recent event detail for a bead + event type.

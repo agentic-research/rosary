@@ -288,6 +288,18 @@ impl SqliteBeadStore {
         // Fail silently if the column already exists.
         let _ = conn.execute_batch("ALTER TABLE issues ADD COLUMN created_by TEXT");
         let _ = conn.execute_batch("ALTER TABLE issues ADD COLUMN scope TEXT NOT NULL DEFAULT ''");
+        // rosary-a96b06: comment audit-trail columns. Idempotent on existing DBs.
+        let _ = conn.execute_batch("ALTER TABLE comments ADD COLUMN edited_at TEXT");
+        let _ = conn.execute_batch("ALTER TABLE comments ADD COLUMN edit_reason TEXT");
+        let _ = conn.execute_batch("ALTER TABLE comments ADD COLUMN original_text TEXT");
+        let _ = conn.execute_batch("ALTER TABLE comments ADD COLUMN deleted_at TEXT");
+        let _ = conn.execute_batch("ALTER TABLE comments ADD COLUMN delete_reason TEXT");
+        let _ = conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_comments_issue_id ON comments(issue_id)",
+        );
+        let _ = conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_comments_deleted_at ON comments(deleted_at)",
+        );
         // FTS5 index for full-text search with porter stemmer.
         // Separate from issues table — manually kept in sync on create/update.
         let _ = conn.execute_batch(
@@ -334,8 +346,15 @@ CREATE TABLE IF NOT EXISTS comments (
     issue_id TEXT NOT NULL,
     text TEXT NOT NULL,
     author TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    edited_at TEXT,
+    edit_reason TEXT,
+    original_text TEXT,
+    deleted_at TEXT,
+    delete_reason TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_comments_issue_id ON comments(issue_id);
+CREATE INDEX IF NOT EXISTS idx_comments_deleted_at ON comments(deleted_at);
 
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -963,6 +982,140 @@ impl BeadStore for SqliteBeadStore {
         Ok(())
     }
 
+    async fn list_comments(
+        &self,
+        issue_id: &str,
+        include_deleted: bool,
+    ) -> Result<Vec<crate::bead::Comment>> {
+        let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, issue_id)?;
+        let sql = if include_deleted {
+            "SELECT id, issue_id, text, author, created_at, edited_at, edit_reason,
+                    original_text, deleted_at, delete_reason
+             FROM comments WHERE issue_id = ?1 ORDER BY created_at ASC, id ASC"
+        } else {
+            "SELECT id, issue_id, text, author, created_at, edited_at, edit_reason,
+                    original_text, deleted_at, delete_reason
+             FROM comments WHERE issue_id = ?1 AND deleted_at IS NULL
+             ORDER BY created_at ASC, id ASC"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt
+            .query_map(params![full_id], |row| {
+                let created_str: String = row.get("created_at")?;
+                let edited_str: Option<String> = row.get("edited_at")?;
+                let deleted_str: Option<String> = row.get("deleted_at")?;
+                Ok(crate::bead::Comment {
+                    id: row.get::<_, i64>("id")?.to_string(),
+                    issue_id: row.get("issue_id")?,
+                    text: row.get("text")?,
+                    author: row.get("author")?,
+                    created_at: parse_datetime(&created_str),
+                    edited_at: edited_str.map(|s| parse_datetime(&s)),
+                    edit_reason: row.get("edit_reason")?,
+                    original_text: row.get("original_text")?,
+                    deleted_at: deleted_str.map(|s| parse_datetime(&s)),
+                    delete_reason: row.get("delete_reason")?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    async fn update_comment(
+        &self,
+        comment_id: &str,
+        body: &str,
+        reason: Option<&str>,
+    ) -> Result<crate::bead::Comment> {
+        let conn = self.conn.lock().unwrap();
+        // Read current state to decide whether to capture original_text.
+        let (prior_text, has_original): (String, bool) = conn
+            .query_row(
+                "SELECT text, original_text IS NOT NULL FROM comments WHERE id = ?1",
+                params![comment_id],
+                |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow::anyhow!("comment {comment_id} not found"))?;
+
+        // First-edit captures original_text; subsequent edits don't rewrite it.
+        if has_original {
+            conn.execute(
+                "UPDATE comments
+                 SET text = ?1, edited_at = datetime('now'), edit_reason = ?2
+                 WHERE id = ?3",
+                params![body, reason, comment_id],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE comments
+                 SET text = ?1, edited_at = datetime('now'),
+                     edit_reason = ?2, original_text = ?3
+                 WHERE id = ?4",
+                params![body, reason, prior_text, comment_id],
+            )?;
+        }
+
+        // Re-fetch to return the canonical post-update row.
+        let mut stmt = conn.prepare(
+            "SELECT id, issue_id, text, author, created_at, edited_at, edit_reason,
+                    original_text, deleted_at, delete_reason
+             FROM comments WHERE id = ?1",
+        )?;
+        let comment = stmt.query_row(params![comment_id], |row| {
+            let created_str: String = row.get("created_at")?;
+            let edited_str: Option<String> = row.get("edited_at")?;
+            let deleted_str: Option<String> = row.get("deleted_at")?;
+            Ok(crate::bead::Comment {
+                id: row.get::<_, i64>("id")?.to_string(),
+                issue_id: row.get("issue_id")?,
+                text: row.get("text")?,
+                author: row.get("author")?,
+                created_at: parse_datetime(&created_str),
+                edited_at: edited_str.map(|s| parse_datetime(&s)),
+                edit_reason: row.get("edit_reason")?,
+                original_text: row.get("original_text")?,
+                deleted_at: deleted_str.map(|s| parse_datetime(&s)),
+                delete_reason: row.get("delete_reason")?,
+            })
+        })?;
+        Ok(comment)
+    }
+
+    async fn delete_comment(&self, comment_id: &str, reason: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM comments WHERE id = ?1",
+            params![comment_id],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            anyhow::bail!("comment {comment_id} not found");
+        }
+        // The deletion reason lands in `delete_reason` — its own column —
+        // so it survives even when the comment was previously edited (which
+        // would have set `edit_reason`). Soft-delete is idempotent: a
+        // re-delete refreshes both timestamp and reason.
+        conn.execute(
+            "UPDATE comments
+             SET deleted_at = datetime('now'), delete_reason = ?1
+             WHERE id = ?2",
+            params![reason, comment_id],
+        )?;
+        Ok(())
+    }
+
+    async fn hard_delete_comment(&self, comment_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute("DELETE FROM comments WHERE id = ?1", params![comment_id])?;
+        if n == 0 {
+            anyhow::bail!("comment {comment_id} not found");
+        }
+        Ok(())
+    }
+
     async fn log_event(&self, issue_id: &str, event_type: &str, detail: &str) {
         let conn = self.conn.lock().unwrap();
         // IDs starting with `_` are synthetic (e.g. `_schema` for migration
@@ -1251,6 +1404,171 @@ mod tests {
 
         let event = store.get_latest_event("c", "dispatched").await.unwrap();
         assert_eq!(event.as_deref(), Some("agent started"));
+    }
+
+    /// rosary-a96b06: list returns audit-trail-aware comments.
+    #[tokio::test]
+    async fn list_comments_oldest_first_excludes_deleted_by_default() {
+        let store = test_store();
+        store.create_bead("c", "T", "", 1, "task").await.unwrap();
+        store.add_comment("c", "first", "alice").await.unwrap();
+        store.add_comment("c", "second", "bob").await.unwrap();
+        store.add_comment("c", "third", "carol").await.unwrap();
+
+        let listed = store.list_comments("c", false).await.unwrap();
+        assert_eq!(listed.len(), 3);
+        assert_eq!(listed[0].text, "first");
+        assert_eq!(listed[2].text, "third");
+
+        // Soft-delete the middle one.
+        let mid_id = listed[1].id.clone();
+        store.delete_comment(&mid_id, None).await.unwrap();
+
+        let visible = store.list_comments("c", false).await.unwrap();
+        assert_eq!(visible.len(), 2);
+        assert!(visible.iter().all(|c| !c.is_deleted()));
+
+        let all = store.list_comments("c", true).await.unwrap();
+        assert_eq!(all.len(), 3);
+        let deleted: Vec<_> = all.iter().filter(|c| c.is_deleted()).collect();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].id, mid_id);
+    }
+
+    /// rosary-a96b06: first edit captures original_text; subsequent edits do not.
+    #[tokio::test]
+    async fn update_comment_first_edit_captures_original_text() {
+        let store = test_store();
+        store.create_bead("c", "T", "", 1, "task").await.unwrap();
+        store
+            .add_comment("c", "the original body", "u")
+            .await
+            .unwrap();
+        let listed = store.list_comments("c", false).await.unwrap();
+        let cid = listed[0].id.clone();
+
+        let edited1 = store
+            .update_comment(&cid, "first revision", Some("typo fix"))
+            .await
+            .unwrap();
+        assert_eq!(edited1.text, "first revision");
+        assert_eq!(
+            edited1.original_text.as_deref(),
+            Some("the original body"),
+            "first edit must capture the prior body in original_text",
+        );
+        assert_eq!(edited1.edit_reason.as_deref(), Some("typo fix"));
+        assert!(edited1.is_edited());
+
+        // Second edit must NOT overwrite original_text.
+        let edited2 = store
+            .update_comment(&cid, "second revision", Some("clarify"))
+            .await
+            .unwrap();
+        assert_eq!(edited2.text, "second revision");
+        assert_eq!(
+            edited2.original_text.as_deref(),
+            Some("the original body"),
+            "subsequent edits must NOT rewrite original_text — audit-trail invariant",
+        );
+        assert_eq!(edited2.edit_reason.as_deref(), Some("clarify"));
+    }
+
+    /// rosary-a96b06: update on non-existent id errors cleanly.
+    #[tokio::test]
+    async fn update_comment_nonexistent_errors() {
+        let store = test_store();
+        let r = store.update_comment("99999", "body", None).await;
+        assert!(r.is_err());
+        let msg = r.unwrap_err().to_string();
+        assert!(msg.contains("99999") && msg.contains("not found"));
+    }
+
+    /// rosary-a96b06 regression (Copilot review on PR #188): the deletion
+    /// reason must land in its own column so it survives even when the
+    /// comment was previously edited. The first cut overloaded
+    /// `edit_reason` via `COALESCE(edit_reason, ?)`, which silently dropped
+    /// the deletion reason whenever an edit had already populated it.
+    #[tokio::test]
+    async fn delete_reason_survives_prior_edit() {
+        let store = test_store();
+        store.create_bead("c", "T", "", 1, "task").await.unwrap();
+        store.add_comment("c", "v1", "u").await.unwrap();
+        let cid = store.list_comments("c", false).await.unwrap()[0].id.clone();
+
+        // Edit first, with an edit reason.
+        let edited = store
+            .update_comment(&cid, "v2", Some("typo fix"))
+            .await
+            .unwrap();
+        assert_eq!(edited.edit_reason.as_deref(), Some("typo fix"));
+        assert!(edited.delete_reason.is_none());
+
+        // Now soft-delete with a deletion reason. This is the case the
+        // first implementation got wrong.
+        store
+            .delete_comment(&cid, Some("no longer relevant"))
+            .await
+            .unwrap();
+
+        let after = store.list_comments("c", true).await.unwrap();
+        assert_eq!(after.len(), 1);
+        let c = &after[0];
+        assert!(c.is_deleted());
+        assert_eq!(
+            c.edit_reason.as_deref(),
+            Some("typo fix"),
+            "edit_reason must be preserved verbatim from the prior edit",
+        );
+        assert_eq!(
+            c.delete_reason.as_deref(),
+            Some("no longer relevant"),
+            "delete_reason must be recorded in its dedicated column, not lost",
+        );
+    }
+
+    /// rosary-a96b06: soft-delete preserves the row + audit trail; hard-delete removes it.
+    #[tokio::test]
+    async fn soft_delete_preserves_audit_trail_hard_delete_removes_row() {
+        let store = test_store();
+        store.create_bead("c", "T", "", 1, "task").await.unwrap();
+        store
+            .add_comment("c", "/Users/alice/leak", "u")
+            .await
+            .unwrap();
+        let cid = store.list_comments("c", false).await.unwrap()[0].id.clone();
+
+        // Soft-delete with a reason.
+        store
+            .delete_comment(&cid, Some("contains absolute path"))
+            .await
+            .unwrap();
+        let after_soft = store.list_comments("c", true).await.unwrap();
+        assert_eq!(after_soft.len(), 1);
+        assert!(after_soft[0].is_deleted());
+        // Reason lands in delete_reason (the dedicated column), NOT
+        // edit_reason. This preserves it across previously-edited comments
+        // — see delete_reason_survives_prior_edit for the regression case.
+        assert_eq!(
+            after_soft[0].delete_reason.as_deref(),
+            Some("contains absolute path"),
+        );
+        assert!(
+            after_soft[0].edit_reason.is_none(),
+            "edit_reason must not be touched by delete",
+        );
+
+        // Soft-delete is idempotent.
+        store.delete_comment(&cid, None).await.unwrap();
+
+        // Hard-delete actually removes the row.
+        store.hard_delete_comment(&cid).await.unwrap();
+        let after_hard = store.list_comments("c", true).await.unwrap();
+        assert!(after_hard.is_empty());
+
+        // Hard-delete on a missing id errors cleanly.
+        let r = store.hard_delete_comment(&cid).await;
+        assert!(r.is_err());
     }
 
     #[tokio::test]

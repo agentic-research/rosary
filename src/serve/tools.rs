@@ -134,6 +134,46 @@ pub(crate) fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "rsry_bead_comment_list",
+                "description": "List comments on a bead with their stable comment_ids. Soft-deleted comments are hidden by default; pass include_deleted=true to see them. Use this to find a comment_id before calling rsry_bead_comment_update or rsry_bead_comment_delete.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "id": { "type": "string", "description": "Bead ID" },
+                        "include_deleted": { "type": "boolean", "description": "If true, include soft-deleted comments", "default": false }
+                    },
+                    "required": ["repo_path", "id"]
+                }
+            },
+            {
+                "name": "rsry_bead_comment_update",
+                "description": "Edit the body of an existing comment. Records edit_reason in the audit trail and captures the prior body in original_text on the FIRST edit (immutable thereafter — subsequent edits do not rewrite original_text). Returns the updated comment. Use rsry_bead_comment_list to find comment_ids.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "comment_id": { "type": "string", "description": "Stable comment id (from rsry_bead_comment_list). Opaque string — Dolt produces UUIDs, SQLite produces stringified integers." },
+                        "body": { "type": "string", "description": "New comment text" },
+                        "reason": { "type": "string", "description": "Optional reason for the edit (recorded in edit_reason)" }
+                    },
+                    "required": ["repo_path", "comment_id", "body"]
+                }
+            },
+            {
+                "name": "rsry_bead_comment_delete",
+                "description": "Soft-delete a comment by setting deleted_at and optionally delete_reason. Audit trail (original_text, edit_reason, delete_reason) is preserved. Hard-delete is CLI-only — `rsry bead comment delete --hard` — never exposed via MCP. Idempotent: re-deleting refreshes both timestamp and reason without erroring.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "comment_id": { "type": "string", "description": "Stable comment id (from rsry_bead_comment_list). Opaque string — Dolt produces UUIDs, SQLite produces stringified integers." },
+                        "reason": { "type": "string", "description": "Optional reason for the deletion. Persisted in the dedicated `delete_reason` column (independent of `edit_reason`) so it is preserved even when the comment was previously edited." }
+                    },
+                    "required": ["repo_path", "comment_id"]
+                }
+            },
+            {
                 "name": "rsry_bead_link",
                 "description": "Add or remove a dependency between beads. Use to express 'A depends on B' (A is blocked until B completes).",
                 "inputSchema": {

@@ -130,6 +130,9 @@ pub(crate) async fn call_tool(
         "rsry_bead_update" => tool_bead_update(args, pool, user_scope).await,
         "rsry_bead_close" => tool_bead_close(args, pool, user_scope).await,
         "rsry_bead_comment" => tool_bead_comment(args, pool, user_scope).await,
+        "rsry_bead_comment_list" => tool_bead_comment_list(args, pool, user_scope).await,
+        "rsry_bead_comment_update" => tool_bead_comment_update(args, pool, user_scope).await,
+        "rsry_bead_comment_delete" => tool_bead_comment_delete(args, pool, user_scope).await,
         "rsry_bead_link" => tool_bead_link(args, pool, backend).await,
         "rsry_bead_search" => tool_bead_search(args, pool, user_scope).await,
         "rsry_dispatch" => tool_dispatch(args, config_path).await,
@@ -618,6 +621,105 @@ async fn tool_bead_comment(
     }
 
     Ok(json!({ "id": id, "comment_added": true }))
+}
+
+async fn tool_bead_comment_list(
+    args: &Value,
+    pool: &RepoPool,
+    _user_scope: Option<&str>,
+) -> Result<Value> {
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    let id = args["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("id required"))?;
+    let include_deleted = args
+        .get("include_deleted")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let client_ref = get_client(repo_path, pool).await?;
+    let client = client_ref.as_store();
+    let comments = client.list_comments(id, include_deleted).await?;
+
+    Ok(json!({
+        "id": id,
+        "comments": comments,
+        "count": comments.len(),
+    }))
+}
+
+async fn tool_bead_comment_update(
+    args: &Value,
+    pool: &RepoPool,
+    _user_scope: Option<&str>,
+) -> Result<Value> {
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    // comment_id is an opaque string — Dolt produces UUIDs (char(36)),
+    // SQLite produces stringified integers. Accept both via JSON string;
+    // also accept JSON numbers for backward compatibility.
+    let comment_id_owned: String = match args.get("comment_id") {
+        Some(v) if v.is_string() => v.as_str().unwrap().to_string(),
+        Some(v) if v.is_i64() => v.as_i64().unwrap().to_string(),
+        Some(v) if v.is_u64() => v.as_u64().unwrap().to_string(),
+        _ => anyhow::bail!("comment_id required (string)"),
+    };
+    let comment_id = comment_id_owned.as_str();
+    let body = args["body"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("body required"))?;
+    if body.trim().is_empty() {
+        anyhow::bail!("body must not be blank");
+    }
+    if body.len() > BODY_MAX_LEN {
+        anyhow::bail!("body exceeds {BODY_MAX_LEN} bytes (got {})", body.len());
+    }
+    let reason = args.get("reason").and_then(|v| v.as_str());
+
+    let client_ref = get_client(repo_path, pool).await?;
+    let client = client_ref.as_store();
+    let updated = client.update_comment(comment_id, body, reason).await?;
+
+    Ok(json!({
+        "comment_id": comment_id,
+        "updated": true,
+        "comment": updated,
+    }))
+}
+
+async fn tool_bead_comment_delete(
+    args: &Value,
+    pool: &RepoPool,
+    _user_scope: Option<&str>,
+) -> Result<Value> {
+    let repo_path = args["repo_path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    // comment_id is an opaque string — Dolt produces UUIDs (char(36)),
+    // SQLite produces stringified integers. Accept both via JSON string;
+    // also accept JSON numbers for backward compatibility.
+    let comment_id_owned: String = match args.get("comment_id") {
+        Some(v) if v.is_string() => v.as_str().unwrap().to_string(),
+        Some(v) if v.is_i64() => v.as_i64().unwrap().to_string(),
+        Some(v) if v.is_u64() => v.as_u64().unwrap().to_string(),
+        _ => anyhow::bail!("comment_id required (string)"),
+    };
+    let comment_id = comment_id_owned.as_str();
+    let reason = args.get("reason").and_then(|v| v.as_str());
+
+    // MCP path is soft-delete only — never hard. Hard-delete is CLI-only by
+    // design (see rosary-a96b06: audit-trail preservation).
+    let client_ref = get_client(repo_path, pool).await?;
+    let client = client_ref.as_store();
+    client.delete_comment(comment_id, reason).await?;
+
+    Ok(json!({
+        "comment_id": comment_id,
+        "soft_deleted": true,
+    }))
 }
 
 async fn tool_bead_link(

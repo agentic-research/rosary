@@ -182,11 +182,19 @@ const BEADS_SCHEMA: &[&str] = &[
         created_at DATETIME NOT NULL,
         updated_at DATETIME NOT NULL
     )",
+    // `id` is the stable comment_id used by update/delete (rosary-a96b06).
+    // Char(36) UUID with default uuid() — Dolt-native function.
     "CREATE TABLE IF NOT EXISTS comments (
+        id CHAR(36) NOT NULL DEFAULT (uuid()) PRIMARY KEY,
         issue_id VARCHAR(128) NOT NULL,
         text TEXT NOT NULL,
         author VARCHAR(128) NOT NULL,
-        created_at DATETIME NOT NULL
+        created_at DATETIME NOT NULL,
+        edited_at DATETIME NULL,
+        edit_reason TEXT NULL,
+        original_text TEXT NULL,
+        deleted_at DATETIME NULL,
+        delete_reason TEXT NULL
     )",
     "CREATE TABLE IF NOT EXISTS dependencies (
         issue_id VARCHAR(128) NOT NULL,

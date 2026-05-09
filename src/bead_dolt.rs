@@ -148,6 +148,31 @@ impl BeadStore for DoltBeadStore {
         self.client.add_comment(issue_id, body, author).await
     }
 
+    async fn list_comments(
+        &self,
+        issue_id: &str,
+        include_deleted: bool,
+    ) -> Result<Vec<crate::bead::Comment>> {
+        self.client.list_comments(issue_id, include_deleted).await
+    }
+
+    async fn update_comment(
+        &self,
+        comment_id: &str,
+        body: &str,
+        reason: Option<&str>,
+    ) -> Result<crate::bead::Comment> {
+        self.client.update_comment(comment_id, body, reason).await
+    }
+
+    async fn delete_comment(&self, comment_id: &str, reason: Option<&str>) -> Result<()> {
+        self.client.delete_comment(comment_id, reason).await
+    }
+
+    async fn hard_delete_comment(&self, comment_id: &str) -> Result<()> {
+        self.client.hard_delete_comment(comment_id).await
+    }
+
     async fn log_event(&self, issue_id: &str, event_type: &str, detail: &str) {
         self.client.log_event(issue_id, event_type, detail).await
     }
