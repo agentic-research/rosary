@@ -133,7 +133,15 @@ impl Reconciler {
             Err(_) => return,
         };
         for bead in &beads {
-            if bead.status == "dispatched" {
+            // Use BeadState::from(&str) so the recovery path catches BOTH
+            // "dispatched" (the canonical status rsry_dispatch writes) AND
+            // "in_progress" (Linear's vocabulary, written back by the
+            // Linear→Dolt sync path — bead.rs:147 maps it to
+            // BeadState::Dispatched as a legacy alias). Before this fix,
+            // string-equality on "dispatched" missed every bead that had
+            // been touched by a Linear sync round-trip after dispatch,
+            // leaving them stuck forever (rosary-67c43d).
+            if bead.state() == crate::bead::BeadState::Dispatched {
                 // Restore tracker from persistent pipeline state if available.
                 // This preserves phase progress across crashes — without it,
                 // a bead at phase 2 (staging) would restart at phase 0 (scoping).
