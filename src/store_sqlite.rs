@@ -52,6 +52,32 @@ impl SqliteBackend {
             "ALTER TABLE dependencies ADD COLUMN observed_at TEXT NOT NULL DEFAULT (datetime('now'));",
         );
 
+        // Rename auto/auto-discovered decade → backlog (rosary-455f07).
+        // Only fires when a legacy decade actually exists, so a fresh DB
+        // stays empty. Order matters: threads.decade_id has a FK to
+        // decades.id, so we (1) ensure the new `backlog` decade exists,
+        // (2) re-parent threads off the legacy decades, (3) drop the legacy
+        // decade rows.
+        let has_legacy: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decades WHERE id IN ('auto', 'auto-discovered')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if has_legacy > 0 {
+            let _ = conn.execute_batch(
+                "INSERT OR IGNORE INTO decades (id, title, source_path, status) \
+                 VALUES ('backlog', 'Backlog: auto-clustered beads awaiting triage', '', 'active');",
+            );
+            let _ = conn.execute_batch(
+                "UPDATE threads SET decade_id = 'backlog' \
+                 WHERE decade_id IN ('auto', 'auto-discovered');",
+            );
+            let _ =
+                conn.execute_batch("DELETE FROM decades WHERE id IN ('auto', 'auto-discovered');");
+        }
+
         Ok(SqliteBackend {
             conn: Mutex::new(conn),
             path: path.to_path_buf(),
@@ -990,6 +1016,60 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("thread not found"));
+    }
+
+    #[tokio::test]
+    async fn auto_discovered_decade_renamed_to_backlog_on_connect() {
+        // Migration test for rosary-455f07: legacy `auto-discovered` decade
+        // and its threads are renamed to `backlog` when SqliteBackend::connect
+        // runs. Idempotent (re-connecting is a no-op).
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Create the legacy state by connecting once and seeding `auto-discovered`.
+        {
+            let backend = SqliteBackend::connect(&db_path).unwrap();
+            backend
+                .upsert_decade(&DecadeRecord {
+                    id: "auto-discovered".into(),
+                    title: "auto-discovered".into(),
+                    source_path: String::new(),
+                    status: "active".into(),
+                })
+                .await
+                .unwrap();
+            backend
+                .upsert_thread(&ThreadRecord {
+                    id: "auto/x-y".into(),
+                    name: "SharedScope cluster".into(),
+                    decade_id: "auto-discovered".into(),
+                    feature_branch: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        // Re-connect — migration runs and renames decade.
+        let backend2 = SqliteBackend::connect(&db_path).unwrap();
+        assert!(
+            backend2
+                .get_decade("auto-discovered")
+                .await
+                .unwrap()
+                .is_none(),
+            "legacy auto-discovered decade must not survive reconnect"
+        );
+        let backlog = backend2
+            .get_decade("backlog")
+            .await
+            .unwrap()
+            .expect("backlog decade must be created by the migration");
+        assert!(backlog.title.starts_with("Backlog"));
+        let threads = backend2.list_threads("backlog").await.unwrap();
+        assert!(
+            threads.iter().any(|t| t.id == "auto/x-y"),
+            "thread should now belong to backlog decade"
+        );
     }
 
     #[tokio::test]
