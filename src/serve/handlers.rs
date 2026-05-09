@@ -146,6 +146,7 @@ pub(crate) async fn call_tool(
         "rsry_decade_list" => tool_decade_list(args, backend).await,
         "rsry_thread_list" => tool_thread_list(args, backend).await,
         "rsry_thread_assign" => tool_thread_assign(args, backend).await,
+        "rsry_thread_reparent" => tool_thread_reparent(args, backend).await,
         "rsry_repo_register" => tool_repo_register(args, backend, user_scope).await,
         "rsry_repo_list" => tool_repo_list(backend, user_scope).await,
         "rsry_bead_import" => tool_bead_import(args, config_path, pool, user_scope).await,
@@ -1744,6 +1745,68 @@ async fn tool_bead_import(
         result["errors"] = json!(errors);
     }
     Ok(result)
+}
+
+/// Re-parent an existing thread under a different decade.
+///
+/// Used to clean up the bead lattice when threads land in `ungrouped` or
+/// `auto-discovered` and should belong to a real decade. Calls `upsert_thread`
+/// with the new `decade_id`. Auto-creates the target decade if missing.
+async fn tool_thread_reparent(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+    use crate::store::{DecadeRecord, ThreadRecord};
+
+    let thread_id = args["thread_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("thread_id required"))?;
+    let decade_id = args["decade_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("decade_id required"))?;
+    let new_name = args.get("name").and_then(|v| v.as_str());
+
+    // Find the existing thread by id (it may live under any decade).
+    let mut found: Option<ThreadRecord> = None;
+    for d in backend.list_decades(None).await? {
+        for t in backend.list_threads(&d.id).await? {
+            if t.id == thread_id {
+                found = Some(t);
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    let Some(existing) = found else {
+        anyhow::bail!("thread not found: {thread_id}");
+    };
+
+    // Auto-create the target decade if missing (matches rsry_thread_assign).
+    if backend.get_decade(decade_id).await?.is_none() {
+        backend
+            .upsert_decade(&DecadeRecord {
+                id: decade_id.to_string(),
+                title: decade_id.to_string(),
+                source_path: String::new(),
+                status: "active".to_string(),
+            })
+            .await?;
+    }
+
+    backend
+        .upsert_thread(&ThreadRecord {
+            id: existing.id.clone(),
+            name: new_name.map(String::from).unwrap_or(existing.name),
+            decade_id: decade_id.to_string(),
+            feature_branch: existing.feature_branch,
+        })
+        .await?;
+
+    Ok(serde_json::json!({
+        "thread_id": thread_id,
+        "decade_id": decade_id,
+        "reparented": true,
+    }))
 }
 
 // ---------------------------------------------------------------------------
