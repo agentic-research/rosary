@@ -113,17 +113,50 @@ function of the observation set and must converge on whatever set it sees.
 Stale or invalid observations from an observer are **quarantined** with a
 diagnostic, not silently dropped. Quarantine state is queryable.
 
-### Cert validation is a filter, not a lattice element
+### Two trust boundaries: HMAC-at-the-door for inbound, signet cert for outbound
 
-Signet ephemeral certs authenticate **rosary-originated** observations
-(rosary writing back to a sink, manual user observations, agent dispatch
-events). Inbound webhooks from Linear/GitHub do not carry signet certs —
-they're authenticated by HMAC at the receiver and tagged with `source` and
-`source_event_id`.
+The substrate has two distinct authentication concerns that must not be
+conflated. Both produce observations that land in the same log, but they
+prove different things.
 
-A cert that fails validation produces a quarantined observation. Quarantined
-observations are **not joined into the derived view**. There is no "valid
-cert" lattice element; cert state is metadata that gates ingest.
+**Inbound from external sources (HMAC at the receiver).** When GitHub or
+Linear fires a webhook to rosary, the receiver verifies the source's HMAC
+signature against the configured webhook secret (`[github].webhook_secret`,
+`[linear].webhook_secret`). That proves "this observation really came from
+the source we registered." The observation lands in the log with
+`cert: None` and `source` set to the verifying source. The user's signet
+key is *not involved* here — GitHub does not sign with the user's key.
+
+**Outbound from this rosary (signet ephemeral cert on user-authored obs).**
+When the user (or an agent dispatching on the user's behalf) authors an
+observation — manual bead closure, agent verdict, mirrored write to Linear —
+the observation carries `cert: Some(SignetCert)`. The cert is an
+*attestation of authorship*, not encryption. Anyone with the user's public
+key can verify the signature and confirm "this came from the holder of the
+matching private key"; only the private-key holder can produce one. This is
+what enables federation (the "wasteland rig" model): another rosary instance
+can mirror your observation log read-only and cryptographically verify
+*which observations were authored by you* without trusting your hardware.
+
+This split also clarifies what "GitHub as a source for the user's rsry DB"
+means in practice: GitHub fires HMAC-signed webhooks; rosary verifies the
+source-side signature, lands the observation tagged `source=github`,
+`cert=None`. The user's key is not involved on the inbound path. Only when
+the user (or their agent) writes back — to Linear, to GitHub, to Dolt — does
+the signet cert attach.
+
+A cert that fails validation produces a quarantined observation
+(`QuarantineReason::InvalidCert`). Inbound webhook observations with
+`cert: None` are **not** quarantined — that is the expected state for them.
+What ingest checks: if `cert` is `Some(_)`, it must verify; if it is `None`,
+the observation must come from a source whose HMAC verification already
+passed at the receiver. There is no "valid cert" lattice element; cert state
+is metadata that gates ingest, not a value the fold consults.
+
+Encryption of observation content is orthogonal and out of scope for this
+ADR — the existing ley-line / age-encrypted scoped-notes layer composes on
+top for private observations a user does not want to share even with their
+own federated mirrors.
 
 ### BDR parent-child is a tree fold, not a sheaf
 
