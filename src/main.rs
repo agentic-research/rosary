@@ -216,6 +216,18 @@ enum Command {
         /// Repo name to reject
         name: String,
     },
+    /// Re-parent a thread under a different decade. Useful for cleanup when
+    /// threads end up in `ungrouped` or `auto-discovered` and should be
+    /// grouped under a real decade.
+    ThreadReparent {
+        /// Thread ID (e.g. agentic-provenance/agent-identity)
+        thread_id: String,
+        /// New decade ID (e.g. agentic-provenance)
+        decade_id: String,
+        /// Optional new thread name (keeps existing if omitted)
+        #[arg(short, long)]
+        name: Option<String>,
+    },
     /// Decompose a markdown document (ADR, README, etc.) into beads
     Decompose {
         /// Path to the markdown file
@@ -811,6 +823,22 @@ async fn main() -> Result<()> {
                 }
                 None => println!("Not found: {name}"),
             }
+        }
+        Command::ThreadReparent {
+            thread_id,
+            decade_id,
+            name,
+        } => {
+            let backend_cfg = config::load_global()
+                .ok()
+                .and_then(|c| c.backend)
+                .ok_or_else(|| anyhow::anyhow!("[backend] section missing from config"))?;
+            let backend = backend_cfg
+                .connect()
+                .await
+                .context("opening orchestrator backend")?;
+            store::reparent_thread(&*backend, &thread_id, &decade_id, name.as_deref()).await?;
+            println!("reparented {thread_id} → {decade_id}");
         }
         Command::Decompose {
             path,

@@ -146,6 +146,7 @@ pub(crate) async fn call_tool(
         "rsry_decade_list" => tool_decade_list(args, backend).await,
         "rsry_thread_list" => tool_thread_list(args, backend).await,
         "rsry_thread_assign" => tool_thread_assign(args, backend).await,
+        "rsry_thread_reparent" => tool_thread_reparent(args, backend).await,
         "rsry_repo_register" => tool_repo_register(args, backend, user_scope).await,
         "rsry_repo_list" => tool_repo_list(backend, user_scope).await,
         "rsry_bead_import" => tool_bead_import(args, config_path, pool, user_scope).await,
@@ -1744,6 +1745,31 @@ async fn tool_bead_import(
         result["errors"] = json!(errors);
     }
     Ok(result)
+}
+
+/// Re-parent an existing thread under a different decade.
+///
+/// Used to clean up the bead lattice when threads land in `ungrouped` or
+/// `auto-discovered` and should belong to a real decade. Calls `upsert_thread`
+/// with the new `decade_id`. Auto-creates the target decade if missing.
+async fn tool_thread_reparent(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+
+    let thread_id = args["thread_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("thread_id required"))?;
+    let decade_id = args["decade_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("decade_id required"))?;
+    let new_name = args.get("name").and_then(|v| v.as_str());
+
+    crate::store::reparent_thread(backend, thread_id, decade_id, new_name).await?;
+
+    Ok(serde_json::json!({
+        "thread_id": thread_id,
+        "decade_id": decade_id,
+        "reparented": true,
+    }))
 }
 
 // ---------------------------------------------------------------------------

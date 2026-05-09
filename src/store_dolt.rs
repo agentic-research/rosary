@@ -352,7 +352,9 @@ impl HierarchyStore for DoltBackend {
             "INSERT INTO threads (id, name, decade_id, feature_branch, created_at)
              VALUES (?, ?, ?, ?, NOW())
              ON DUPLICATE KEY UPDATE
-               name = VALUES(name), feature_branch = VALUES(feature_branch)",
+               name = VALUES(name),
+               decade_id = VALUES(decade_id),
+               feature_branch = VALUES(feature_branch)",
         )
         .bind(&thread.id)
         .bind(&thread.name)

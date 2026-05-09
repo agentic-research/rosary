@@ -359,6 +359,55 @@ pub trait BackendStore: HierarchyStore + DispatchStore + LinkageStore + UserRepo
 /// Blanket impl: anything implementing all four traits is a BackendStore.
 impl<T: HierarchyStore + DispatchStore + LinkageStore + UserRepoStore> BackendStore for T {}
 
+/// Re-parent an existing thread under a different decade.
+///
+/// Walks all decades to find the thread by id (caller doesn't need to know
+/// the current parent). Auto-creates the target decade if missing. Preserves
+/// the existing `feature_branch`. Optional `new_name` renames in the same call.
+///
+/// Shared by `rsry thread-reparent` (CLI) and `rsry_thread_reparent` (MCP).
+pub async fn reparent_thread(
+    backend: &dyn BackendStore,
+    thread_id: &str,
+    decade_id: &str,
+    new_name: Option<&str>,
+) -> anyhow::Result<()> {
+    let mut found: Option<ThreadRecord> = None;
+    for d in backend.list_decades(None).await? {
+        for t in backend.list_threads(&d.id).await? {
+            if t.id == thread_id {
+                found = Some(t);
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    let Some(existing) = found else {
+        anyhow::bail!("thread not found: {thread_id}");
+    };
+    if backend.get_decade(decade_id).await?.is_none() {
+        backend
+            .upsert_decade(&DecadeRecord {
+                id: decade_id.to_string(),
+                title: decade_id.to_string(),
+                source_path: String::new(),
+                status: "active".to_string(),
+            })
+            .await?;
+    }
+    backend
+        .upsert_thread(&ThreadRecord {
+            id: existing.id.clone(),
+            name: new_name.map(String::from).unwrap_or(existing.name),
+            decade_id: decade_id.to_string(),
+            feature_branch: existing.feature_branch,
+        })
+        .await?;
+    Ok(())
+}
+
 /// Bulk export — used by migration and backup.
 /// Separate from the main store traits to keep them focused.
 #[async_trait]

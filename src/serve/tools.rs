@@ -350,6 +350,19 @@ pub(crate) fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "rsry_thread_reparent",
+                "description": "Move an existing thread under a different decade. Useful when threads land in 'ungrouped' or 'auto-discovered' and should belong to a real decade. Auto-creates the target decade if missing.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "thread_id": { "type": "string", "description": "Thread ID to re-parent (e.g. 'agentic-provenance/agent-identity')" },
+                        "decade_id": { "type": "string", "description": "New decade ID (e.g. 'agentic-provenance')" },
+                        "name": { "type": "string", "description": "Optional new thread name (keeps existing if omitted)" }
+                    },
+                    "required": ["thread_id", "decade_id"]
+                }
+            },
+            {
                 "name": "rsry_repo_register",
                 "description": "Register a repo for the current user. Stores the repo URL so rsry can clone and dispatch agents to it. Requires backend store.",
                 "inputSchema": {
@@ -455,6 +468,25 @@ mod tests {
             );
             assert_eq!(tool["inputSchema"]["type"], "object");
         }
+    }
+
+    #[test]
+    fn thread_reparent_tool_present() {
+        let defs = tool_definitions();
+        let tools = defs["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(
+            names.contains(&"rsry_thread_reparent"),
+            "rsry_thread_reparent must be in tool definitions"
+        );
+        let reparent = tools
+            .iter()
+            .find(|t| t["name"] == "rsry_thread_reparent")
+            .unwrap();
+        let required = reparent["inputSchema"]["required"].as_array().unwrap();
+        let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+        assert!(required_names.contains(&"thread_id"));
+        assert!(required_names.contains(&"decade_id"));
     }
 
     #[test]
