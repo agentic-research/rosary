@@ -52,31 +52,11 @@ impl SqliteBackend {
             "ALTER TABLE dependencies ADD COLUMN observed_at TEXT NOT NULL DEFAULT (datetime('now'));",
         );
 
-        // Rename auto/auto-discovered decade → backlog (rosary-455f07).
-        // Only fires when a legacy decade actually exists, so a fresh DB
-        // stays empty. Order matters: threads.decade_id has a FK to
-        // decades.id, so we (1) ensure the new `backlog` decade exists,
-        // (2) re-parent threads off the legacy decades, (3) drop the legacy
-        // decade rows.
-        let has_legacy: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM decades WHERE id IN ('auto', 'auto-discovered')",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        if has_legacy > 0 {
-            let _ = conn.execute_batch(
-                "INSERT OR IGNORE INTO decades (id, title, source_path, status) \
-                 VALUES ('backlog', 'Backlog: auto-clustered beads awaiting triage', '', 'active');",
-            );
-            let _ = conn.execute_batch(
-                "UPDATE threads SET decade_id = 'backlog' \
-                 WHERE decade_id IN ('auto', 'auto-discovered');",
-            );
-            let _ =
-                conn.execute_batch("DELETE FROM decades WHERE id IN ('auto', 'auto-discovered');");
-        }
+        // Rename auto/auto-discovered decade + auto/ thread prefix → backlog
+        // (rosary-455f07). Only fires when legacy data exists, so a fresh DB
+        // stays empty. Wrapped in a transaction so partial failure leaves the
+        // DB unchanged (Copilot review on PR #184).
+        Self::migrate_auto_to_backlog(&conn).context("auto→backlog migration")?;
 
         Ok(SqliteBackend {
             conn: Mutex::new(conn),
@@ -88,6 +68,66 @@ impl SqliteBackend {
     #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// One-shot migration for rosary-455f07: rename `auto`/`auto-discovered`
+    /// decade + `auto/X-Y` thread IDs to `backlog`. Idempotent — no-op when
+    /// no legacy data exists. Wrapped in a transaction; on any error the
+    /// whole migration rolls back so the DB never sits in a partial state.
+    ///
+    /// Steps (order matters because of FK constraints):
+    /// 1. Detect legacy data — bail early if none
+    /// 2. INSERT OR IGNORE the new `backlog` decade
+    /// 3. Re-parent legacy-decade threads → `backlog`
+    /// 4. Rename `auto/X-Y` thread IDs to `backlog/X-Y` (also updates
+    ///    `thread_members.thread_id` so downstream code that splits the
+    ///    prefix finds them under the right decade)
+    /// 5. DELETE the legacy decade rows
+    fn migrate_auto_to_backlog(conn: &Connection) -> Result<()> {
+        let has_legacy: i64 = conn.query_row(
+            "SELECT \
+                (SELECT COUNT(*) FROM decades WHERE id IN ('auto', 'auto-discovered')) \
+              + (SELECT COUNT(*) FROM threads WHERE id LIKE 'auto/%')",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_legacy == 0 {
+            return Ok(());
+        }
+
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT OR IGNORE INTO decades (id, title, source_path, status) \
+             VALUES ('backlog', 'Backlog: auto-clustered beads awaiting triage', '', 'active')",
+            [],
+        )?;
+        tx.execute(
+            "UPDATE threads SET decade_id = 'backlog' \
+             WHERE decade_id IN ('auto', 'auto-discovered')",
+            [],
+        )?;
+        // Rename thread IDs `auto/X-Y` → `backlog/X-Y`. Cascades to
+        // thread_members.thread_id (FK), but SQLite enforces FKs on UPDATE
+        // only when the constraint specifies ON UPDATE — ours doesn't, so
+        // members would orphan. Update both tables explicitly.
+        tx.execute(
+            "UPDATE threads \
+             SET id = 'backlog/' || SUBSTR(id, 6) \
+             WHERE id LIKE 'auto/%'",
+            [],
+        )?;
+        tx.execute(
+            "UPDATE thread_members \
+             SET thread_id = 'backlog/' || SUBSTR(thread_id, 6) \
+             WHERE thread_id LIKE 'auto/%'",
+            [],
+        )?;
+        tx.execute(
+            "DELETE FROM decades WHERE id IN ('auto', 'auto-discovered')",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 }
 
@@ -1020,13 +1060,15 @@ mod tests {
 
     #[tokio::test]
     async fn auto_discovered_decade_renamed_to_backlog_on_connect() {
-        // Migration test for rosary-455f07: legacy `auto-discovered` decade
-        // and its threads are renamed to `backlog` when SqliteBackend::connect
-        // runs. Idempotent (re-connecting is a no-op).
+        // Migration test for rosary-455f07: legacy `auto-discovered` decade,
+        // its threads, AND `auto/X-Y` thread IDs all get renamed to `backlog`
+        // when SqliteBackend::connect runs. Idempotent (re-connecting is a
+        // no-op). Atomic — partial failure rolls the whole thing back.
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
 
-        // Create the legacy state by connecting once and seeding `auto-discovered`.
+        // Create the legacy state: a decade and a thread with old `auto/`
+        // prefix, plus a thread member to verify FK-following rename.
         {
             let backend = SqliteBackend::connect(&db_path).unwrap();
             backend
@@ -1047,10 +1089,23 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            backend
+                .add_bead_to_thread(
+                    "auto/x-y",
+                    &WorkRef {
+                        repo: "rosary".into(),
+                        bead_id: "x".into(),
+                        scope: String::new(),
+                    },
+                )
+                .await
+                .unwrap();
         }
 
-        // Re-connect — migration runs and renames decade.
+        // Re-connect — migration runs.
         let backend2 = SqliteBackend::connect(&db_path).unwrap();
+
+        // Decade renamed
         assert!(
             backend2
                 .get_decade("auto-discovered")
@@ -1065,11 +1120,37 @@ mod tests {
             .unwrap()
             .expect("backlog decade must be created by the migration");
         assert!(backlog.title.starts_with("Backlog"));
+
+        // Thread re-parented AND renamed (auto/x-y → backlog/x-y)
         let threads = backend2.list_threads("backlog").await.unwrap();
         assert!(
-            threads.iter().any(|t| t.id == "auto/x-y"),
-            "thread should now belong to backlog decade"
+            threads.iter().any(|t| t.id == "backlog/x-y"),
+            "thread id must be renamed from auto/X-Y to backlog/X-Y; got: {:?}",
+            threads.iter().map(|t| &t.id).collect::<Vec<_>>()
         );
+        assert!(
+            !threads.iter().any(|t| t.id == "auto/x-y"),
+            "old auto/x-y id must not survive the rename"
+        );
+
+        // thread_members.thread_id was also updated (otherwise the bead would
+        // be orphaned under a non-existent thread)
+        let bead = WorkRef {
+            repo: "rosary".into(),
+            bead_id: "x".into(),
+            scope: String::new(),
+        };
+        assert_eq!(
+            backend2.find_thread_for_bead(&bead).await.unwrap(),
+            Some("backlog/x-y".into()),
+            "bead's thread membership must follow the id rename"
+        );
+
+        // Idempotency: re-connecting is a no-op
+        let backend3 = SqliteBackend::connect(&db_path).unwrap();
+        let still_backlog = backend3.list_threads("backlog").await.unwrap();
+        assert_eq!(still_backlog.len(), 1);
+        assert_eq!(still_backlog[0].id, "backlog/x-y");
     }
 
     #[tokio::test]

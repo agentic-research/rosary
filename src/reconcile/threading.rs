@@ -40,7 +40,7 @@ impl Reconciler {
             // The "backlog" name signals these are auto-clustered beads
             // awaiting triage (by a triage-agent or a human), rather than
             // ignore-me dead-letters.
-            let auto_decade_id = "backlog";
+            let backlog_decade_id = "backlog";
 
             // Check if any bead in the cluster already has a thread
             let mut already_threaded = false;
@@ -70,7 +70,7 @@ impl Reconciler {
             // Ensure the "backlog" decade exists (FK constraint in SQLite backend).
             let _ = hierarchy
                 .upsert_decade(&crate::store::DecadeRecord {
-                    id: auto_decade_id.to_string(),
+                    id: backlog_decade_id.to_string(),
                     title: "Backlog: auto-clustered beads awaiting triage".to_string(),
                     source_path: String::new(),
                     status: "active".to_string(),
@@ -98,7 +98,7 @@ impl Reconciler {
             let thread = crate::store::ThreadRecord {
                 id: thread_id.clone(),
                 name: thread_name,
-                decade_id: auto_decade_id.to_string(),
+                decade_id: backlog_decade_id.to_string(),
                 feature_branch: Some(feature_branch),
             };
             if let Err(e) = hierarchy.upsert_thread(&thread).await {
