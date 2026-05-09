@@ -6,8 +6,7 @@ use serde_json::{Value, json};
 use crate::config;
 use crate::pool::RepoPool;
 use crate::store::{
-    BackendStore, BeadStore, CrossRepoDep, DispatchRecord, EvidenceTier, LinkageStore,
-    PipelineState, WorkRef,
+    BackendStore, BeadStore, CrossRepoDep, DispatchRecord, EvidenceTier, PipelineState, WorkRef,
 };
 
 /// Default result limit for bead search (keeps MCP responses bounded).

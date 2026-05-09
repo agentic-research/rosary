@@ -63,10 +63,10 @@ pub(crate) fn extract_bead_id(text: &str) -> Option<String> {
 
     // Pattern 2: bead: 5414da or bead-id: rosary-5414da
     for prefix in &["bead-id:", "bead:"] {
-        if let Some(after) = find_after(text, prefix) {
-            if let Some(id) = parse_bead_token(after) {
-                return Some(id);
-            }
+        if let Some(after) = find_after(text, prefix)
+            && let Some(id) = parse_bead_token(after)
+        {
+            return Some(id);
         }
     }
 

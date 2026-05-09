@@ -929,14 +929,14 @@ fn collect_plugin_dir(dir: &Path, out: &mut Vec<PluginConfig>) {
         .collect();
     paths.sort(); // deterministic order within a directory
     for path in paths {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(plugin) = toml::from_str::<PluginConfig>(&content) {
-                // project-local overrides user-global with same name
-                if let Some(existing) = out.iter_mut().find(|p| p.name == plugin.name) {
-                    *existing = plugin;
-                } else {
-                    out.push(plugin);
-                }
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && let Ok(plugin) = toml::from_str::<PluginConfig>(&content)
+        {
+            // project-local overrides user-global with same name
+            if let Some(existing) = out.iter_mut().find(|p| p.name == plugin.name) {
+                *existing = plugin;
+            } else {
+                out.push(plugin);
             }
         }
     }

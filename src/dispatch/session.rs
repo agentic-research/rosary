@@ -131,6 +131,7 @@ pub(crate) struct StdCliSession {
 }
 
 impl StdCliSession {
+    #[allow(dead_code)] // Constructor for the std-process session backend.
     pub(crate) fn new(child: std::process::Child) -> Self {
         Self { child }
     }

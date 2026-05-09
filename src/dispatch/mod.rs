@@ -227,6 +227,7 @@ pub fn resolve_agents_dir() -> Option<PathBuf> {
 ///
 /// Isolation uses `Workspace` which tries jj first, git worktree second,
 /// then falls back to in-place if neither is available.
+#[allow(clippy::too_many_arguments)] // Reconciler-driven entry point; each arg is load-bearing.
 pub async fn spawn(
     bead: &Bead,
     repo_path: &Path,
@@ -314,15 +315,15 @@ pub async fn spawn(
         _ => permission_profile(&bead.issue_type),
     };
 
-    // Apply per-phase model override if provided.
-    let model_provider: Option<Box<dyn AgentProvider>>;
-    let effective_provider: &dyn AgentProvider = if model.is_some() {
-        model_provider = Some(provider.with_model(model));
-        model_provider.as_deref().unwrap()
+    // Apply per-phase model override if provided. The Box must outlive
+    // the borrow we hand to `effective_provider`, so it lives at the
+    // outer scope.
+    let model_provider: Option<Box<dyn AgentProvider>> = if model.is_some() {
+        Some(provider.with_model(model))
     } else {
-        model_provider = None;
-        provider
+        None
     };
+    let effective_provider: &dyn AgentProvider = model_provider.as_deref().unwrap_or(provider);
 
     let agent_label = bead.owner.as_deref().unwrap_or("generic");
     eprintln!(

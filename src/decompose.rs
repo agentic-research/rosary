@@ -136,7 +136,7 @@ fn wrap_doc(text: &str) -> Vec<String> {
         lines.push(String::new()); // paragraph break
     }
     // Remove trailing blank line
-    while lines.last().map_or(false, |l| l.is_empty()) {
+    while lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
     }
     lines

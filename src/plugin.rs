@@ -281,15 +281,15 @@ impl VerifyTier for PluginTier {
         };
 
         // Coverage gate: fail if reported coverage is below the bead's minimum.
-        if let (Some(coverage), Some(min)) = (output.coverage, self.context.doc_coverage_min) {
-            if coverage < min as f64 {
-                return Ok(VerifyResult::Fail(format!(
-                    "doc coverage {:.0}% below required {:.0}% (plugin '{}')",
-                    coverage * 100.0,
-                    min as f64 * 100.0,
-                    self.plugin.name
-                )));
-            }
+        if let (Some(coverage), Some(min)) = (output.coverage, self.context.doc_coverage_min)
+            && coverage < min as f64
+        {
+            return Ok(VerifyResult::Fail(format!(
+                "doc coverage {:.0}% below required {:.0}% (plugin '{}')",
+                coverage * 100.0,
+                min as f64 * 100.0,
+                self.plugin.name
+            )));
         }
 
         Ok(output.into_verify_result(&self.plugin.name))
@@ -304,6 +304,7 @@ impl VerifyTier for PluginTier {
 /// (claude, container, chain-YAML runner, etc.) and exiting with code 0 on
 /// success or non-zero on failure. Rosary treats the exit code as the
 /// session result.
+#[allow(dead_code)] // Wire format for `kind = "dispatch"` plugins — consumed by spawn_agent.
 #[derive(Debug, Serialize)]
 struct DispatchInput<'a> {
     /// Always "dispatch".
@@ -322,6 +323,7 @@ struct DispatchInput<'a> {
 /// to the plugin subprocess stdin. The subprocess IS the agent: it may shell
 /// out to claude, run a container, or execute a chain-YAML workflow. Rosary
 /// waits for it to exit and interprets the exit code.
+#[allow(dead_code)] // Surface for `kind = "dispatch"` plugins — registered via PluginRegistry.
 pub struct PluginDispatchProvider {
     plugin: PluginConfig,
     bead_id: String,
@@ -329,6 +331,7 @@ pub struct PluginDispatchProvider {
 }
 
 impl PluginDispatchProvider {
+    #[allow(dead_code)] // Constructed by PluginRegistry::dispatch_providers.
     pub fn new(plugin: PluginConfig, context: PluginContext) -> Self {
         Self {
             plugin,
@@ -429,7 +432,10 @@ pub struct AssayScanOutput {
     pub verdict: String,
     #[serde(default)]
     pub stale_refs: Vec<StaleRef>,
+    /// Plugin-supplied diagnostic. Surfaced by future `rsry assay --json`
+    /// reporters (Phase 2); not displayed in the current scan path.
     #[serde(default)]
+    #[allow(dead_code)]
     pub message: Option<String>,
 }
 
@@ -526,6 +532,7 @@ impl PluginRegistry {
     ///
     /// The first matching provider in config order is used by the dispatch loop.
     /// Callers can select by name if multiple dispatch plugins are configured.
+    #[allow(dead_code)] // Wired into dispatch loop in rsry-e608bb (ExecutionBackend integration).
     pub fn dispatch_providers(&self, context: PluginContext) -> Vec<Box<dyn AgentProvider>> {
         self.plugins
             .iter()

@@ -83,6 +83,7 @@ pub struct InTotoSubject {
 // Verification result
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)] // Verification surface — wired by Phase 2 observation cert path.
 #[derive(Debug, PartialEq, Eq)]
 pub enum VerifyResult {
     /// Signatures present and all valid.
@@ -94,6 +95,7 @@ pub enum VerifyResult {
 }
 
 impl VerifyResult {
+    #[allow(dead_code)] // Consumed by ADR-0010 cert validation in Phase 2.
     pub fn is_trusted(&self) -> bool {
         matches!(self, Self::Valid)
     }
@@ -206,6 +208,7 @@ pub fn wrap_handoff_from_file(
 /// - Empty signatures → `NotSigned` (unsigned envelope, no key needed).
 /// - Non-empty signatures + verifying_key → must all pass.
 /// - Non-empty signatures + no key → `Invalid` (can't verify, treat as untrusted).
+#[allow(dead_code)] // Verification surface — wired by Phase 2 observation cert path.
 pub fn verify_envelope(
     envelope: &DsseEnvelope,
     verifying_key: Option<&ed25519_dalek::VerifyingKey>,
@@ -289,6 +292,7 @@ pub fn write_envelope(work_dir: &Path, phase: u32, envelope: &DsseEnvelope) -> R
 }
 
 /// Read a DSSE envelope from disk.
+#[allow(dead_code)] // Consumed by Phase 2 observation cert verification path.
 pub fn read_envelope(work_dir: &Path, phase: u32) -> Result<DsseEnvelope> {
     let path = work_dir.join(format!(".rsry-handoff-{phase}.dsse.json"));
     let json = std::fs::read_to_string(&path)
