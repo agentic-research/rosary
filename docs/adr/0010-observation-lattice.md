@@ -48,7 +48,7 @@ chosen below; it does not require a global semilattice over the whole record.
 
 ```
 Observation = {
-    work_item: WorkRef,           // (repo, bead_id) identity, see ADR-0009
+    work_item: WorkRef,           // (repo, scope, bead_id) identity, see ADR-0009 + src/store.rs
     source: SourceId,             // "linear", "github", "git", "user", ...
     source_event_id: String,      // the webhook id / poll cursor / manual ack
     field: FieldName,             // "status" | "assignee" | "pr_url" | ...
@@ -70,7 +70,7 @@ Each field declares its algebra; the fold dispatches accordingly.
 
 | Field | Algebra | Conflict semantics |
 |-------|---------|-------------------|
-| `pipeline_phase` | **Chain-max** on `Dispatched < Verifying < Pass < PrOpen < Done` | Monotone agent progress; max wins; back-step is not a transition |
+| `pipeline_verdict` | **Chain-max** on `Dispatched < Verifying < Pass < PrOpen < Done` (the `Verdict` enum in `src/dolt/observations.rs`) | Monotone agent progress; max wins; back-step is not a transition |
 | `assignee` | LWW-register, tiebreak `(observed_at, source_id)` | Latest valid observation wins |
 | `pr_url` | LWW-register, tiebreak `(observed_at, source_id)` | Latest wins; nulled out only by explicit "unset" obs |
 | `merge_sha` | LWW-register | Latest wins; immutable in practice once set |
@@ -79,14 +79,18 @@ Each field declares its algebra; the fold dispatches accordingly.
 | `comments` | OR-set with unique tags `(source, source_event_id)` | Add/remove are commutative; no LWW needed |
 | `labels` | OR-set | Same as comments |
 
-**`pipeline_phase` legitimately has a chain ordering** because agent runs
+**`pipeline_verdict` legitimately has a chain ordering** because agent runs
 within a bead are monotone — no agent ever steps a bead from `Pass` back to
-`Dispatched`. The existing `src/dolt/observations.rs` already implements this
-field by hand; under this ADR it becomes one registered field in the substrate,
-not a separate mechanism.
+`Dispatched`. The existing `src/dolt/observations.rs::Verdict` already
+implements this chain by hand; under this ADR it becomes one registered field
+in the substrate, not a separate mechanism. Note this is **distinct** from
+`PipelineState::pipeline_phase` in `src/store.rs`, which is a `u8` index into
+the agent sequence (dev=0, staging=1, prod=2, feature=3) — a different
+quantity entirely. The ADR uses `pipeline_verdict` to avoid the name
+collision.
 
 **User-facing `status`** is **not a primitive field**. It is a *derivation*
-over (`pipeline_phase`, `deadletter`, `pr_url`, `merge_sha`, sink-reported
+over (`pipeline_verdict`, `deadletter`, `pr_url`, `merge_sha`, sink-reported
 status) computed at read time per source. The substrate's job for status is
 **conflict detection across sources** — when Linear's derived status disagrees
 with GitHub's derived status for the same `WorkRef`, the cross-source
@@ -97,7 +101,7 @@ applies to the *result of derivation, joined across sources*.
 This separation is the load-bearing one: the chain (`backlog < open < ...`)
 narrated in rosary-45518d is a workflow ordering, not a mathematical partial
 order — back-edges in `valid_transitions()` make it not a poset, and the
-"chain" framing only applies to the genuinely-monotone slice (`pipeline_phase`).
+"chain" framing only applies to the genuinely-monotone slice (`pipeline_verdict`).
 Workflow validity is enforced separately (see LTS monotonicity below) and is
 **not** part of the fold.
 
@@ -170,7 +174,7 @@ catamorphism over the tree, not a CRDT operation.
 
 `src/dolt/observations.rs` (rosary-45518d) is **already an instance of this
 substrate** — append-only observations of agent verdicts within a bead,
-folded by chain-max — but only for one field (`pipeline_phase`) and only
+folded by chain-max — but only for one field (`pipeline_verdict`) and only
 from one source (the in-process reconciler). It is not a separate
 mechanism; under this ADR it becomes the canonical implementation of one
 registered field.
@@ -216,8 +220,11 @@ changes to the fold.
 
 Observations append into an `observations` table (orchestrator SQLite, mirrors
 to Dolt for cross-repo). The derived view is materialized on read and cached
-per `WorkRef`. Cache key: `(WorkRef, max_observed_at_seen)` — invalidated on
-new ingest.
+per `WorkRef`. Cache invalidation is keyed on a **monotonic ingest cursor**
+(per-`WorkRef` max row id, not `observed_at`), so any new ingest invalidates
+— including late/out-of-order observations whose `observed_at` is older than
+what the cache already saw. Using ingest order rather than wall-clock prevents
+stale derived views when retried/delayed webhooks land.
 
 Quarantined observations append to a sibling `observations_quarantine` table
 with a `reason` column. `rsry status --quarantine` surfaces them.
@@ -236,20 +243,20 @@ a question raised in math review.
 
 | # | Invariant | What it tests |
 |---|-----------|---------------|
-| 1 | `chain_max_idempotent` | `pipeline_phase=Pass ⊕ pipeline_phase=Pass = Pass` |
-| 2 | `chain_max_monotone` | `pipeline_phase=Dispatched ⊕ pipeline_phase=Pass = Pass` (max wins) |
+| 1 | `chain_max_idempotent` | `pipeline_verdict=Pass ⊕ pipeline_verdict=Pass = Pass` |
+| 2 | `chain_max_monotone` | `pipeline_verdict=Dispatched ⊕ pipeline_verdict=Pass = Pass` (max wins) |
 | 3 | `chain_max_unranked_ignored` | `Fail` and `Deadletter` don't advance the chain |
 | 4 | `lww_tiebreak_total` | LWW with equal `observed_at` resolved by `source_id` lex |
 | 5 | `lww_unset_explicit` | `pr_url=None` requires explicit observation; never inferred |
 | 6 | `or_set_add_remove_commute` | Comment add(c, t1) + remove(c, t1) in any order = absent |
 | 7 | `or_set_unique_tags` | Same comment from two sources is two distinct entries |
-| 8 | `dedup_before_fold` | Replaying a webhook with same `(source, event_id, payload_hash)` is a no-op |
+| 8 | `dedup_before_fold` | Replaying a webhook with same `(source, source_event_id, payload_hash)` is a no-op |
 | 9 | `reorder_invariance` | `fold(perm(O)) = fold(O)` for any permutation, all field types |
 | 10 | `cross_source_status_conflict_is_top` | When two sources' derived status disagree, cross-source result is `⊤(Conflict)` with witnesses |
 | 11 | `quarantine_does_not_join` | An invalid-cert observation never appears in the derived view |
 | 12 | `quarantine_is_queryable` | Quarantined obs are surfaced via dedicated path, not silently dropped |
 | 13 | `tree_fold_deterministic` | Decade/Thread/Bead rollup is a pure function of child states |
-| 14 | `convergence_under_partition` | `fold(O₁ ∪ O₂) = fold(fold(O₁), fold(O₂))` for arbitrary partition |
+| 14 | `convergence_under_partition` | `fold(O₁ ∪ O₂) = merge(fold(O₁), fold(O₂))` for arbitrary partition, where `merge` is the pointwise per-field join (chain-max for chain fields, LWW tiebreak for LWW registers, set-union for OR-sets) lifted to derived views |
 
 A `tests/observation_lattice.rs` integration test owns these 14. Anything
 that breaks them is a substrate bug, not a fold-rule bug.
@@ -279,7 +286,7 @@ substrate's registry interface.
    14 tests. Pipeline-phase observations stay where they are; the substrate
    provides the surface that future fields and sources plug into. No
    behavior change.
-2. **Phase 2**: register `pipeline_phase` in the new substrate; have
+2. **Phase 2**: register `pipeline_verdict` in the new substrate; have
    `dolt/observations.rs` write through it. Logically a no-op but proves
    the registry handles the existing field.
 3. **Phase 3**: port `linear_tracker` push/pull into `LinearObserver`
@@ -309,7 +316,9 @@ out.
 
 **Costs:**
 - Storage growth for the observation log (mitigated by per-source retention
-  and cold-archive after N days).
+  and cold-archive — default 90 days hot, then move to a compressed archive
+  table; configurable per source via `[observations.retention.<source>]` in
+  `~/.rsry/config.toml`).
 - Read path is fold-on-read with cache; stale cache means stale UI for ~one
   reconciler tick.
 - Observers must declare their algebra correctly. A mis-declared field type
