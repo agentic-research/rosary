@@ -699,33 +699,42 @@ async fn main() -> Result<()> {
             let repos = filter_repos(&cfg.repo, &repo_filter);
             let beads = scanner::scan_repos(&repos).await?;
             if json {
-                let count = |status: &[&str]| {
-                    beads
-                        .iter()
-                        .filter(|b| status.contains(&b.status.as_str()))
-                        .count()
-                };
-                let open = count(&["open"]);
-                let in_progress = count(&["dispatched", "in_progress"]);
-                let blocked = count(&["blocked"]);
-                let done = count(&["done", "closed"]);
+                // Use the canonical predicates from `Bead` so this path
+                // agrees with the CLI text output AND the `rsry_status`
+                // MCP tool. Before this fix, the JSON path used naive
+                // status-string equality, which under-counted `blocked`
+                // wildly: a bead with `status="open"` but unresolved
+                // dependencies is conceptually blocked (the rendering
+                // and MCP paths both treated it that way), but the JSON
+                // path missed it. Statusline integrations consuming this
+                // JSON saw nonsense numbers — the CLI showed "51 blocked"
+                // and the JSON showed "1".
+                let open = beads.iter().filter(|b| b.status == "open").count();
+                let in_progress = beads
+                    .iter()
+                    .filter(|b| b.status == "in_progress" || b.status == "dispatched")
+                    .count();
+                let blocked = beads.iter().filter(|b| b.is_blocked()).count();
+                let ready = beads.iter().filter(|b| b.is_ready()).count();
+                let done = beads
+                    .iter()
+                    .filter(|b| b.status == "done" || b.status == "closed")
+                    .count();
 
-                // Per-repo breakdown
+                // Per-repo breakdown — same predicates per repo, same
+                // semantics as the global counts above.
                 let mut per_repo = std::collections::BTreeMap::new();
                 for bead in &beads {
                     let entry = per_repo.entry(bead.repo.clone()).or_insert_with(
                         || serde_json::json!({"open": 0, "in_progress": 0, "blocked": 0}),
                     );
-                    match bead.status.as_str() {
-                        "open" => entry["open"] = json!(entry["open"].as_u64().unwrap_or(0) + 1),
-                        "dispatched" | "in_progress" => {
-                            entry["in_progress"] =
-                                json!(entry["in_progress"].as_u64().unwrap_or(0) + 1)
-                        }
-                        "blocked" => {
-                            entry["blocked"] = json!(entry["blocked"].as_u64().unwrap_or(0) + 1)
-                        }
-                        _ => {}
+                    if bead.is_blocked() {
+                        entry["blocked"] = json!(entry["blocked"].as_u64().unwrap_or(0) + 1);
+                    } else if bead.status == "in_progress" || bead.status == "dispatched" {
+                        entry["in_progress"] =
+                            json!(entry["in_progress"].as_u64().unwrap_or(0) + 1);
+                    } else if bead.status == "open" {
+                        entry["open"] = json!(entry["open"].as_u64().unwrap_or(0) + 1);
                     }
                 }
 
@@ -734,6 +743,7 @@ async fn main() -> Result<()> {
                     serde_json::json!({
                         "total": beads.len(),
                         "open": open,
+                        "ready": ready,
                         "in_progress": in_progress,
                         "blocked": blocked,
                         "done": done,

@@ -193,8 +193,18 @@ async fn tool_status(config_path: &str) -> Result<Value> {
 
     let beads = crate::scanner::scan_repos(&cfg.repo).await?;
 
+    // Predicates must match `cli.rs::print_status_summary` and the
+    // `rsry status --json` path in main.rs, otherwise the same numbers
+    // disagree across the three render surfaces (statusline, terminal,
+    // MCP). Before alignment, JSON's `blocked` was status-string equality
+    // and missed beads with status="open" + dependency_count > 0 — the
+    // canonical `is_blocked()` definition is "status=blocked OR
+    // (status=open AND deps unresolved)".
     let open = beads.iter().filter(|b| b.status == "open").count();
-    let in_progress = beads.iter().filter(|b| b.status == "in_progress").count();
+    let in_progress = beads
+        .iter()
+        .filter(|b| b.status == "in_progress" || b.status == "dispatched")
+        .count();
     let blocked = beads.iter().filter(|b| b.is_blocked()).count();
     let ready = beads.iter().filter(|b| b.is_ready()).count();
     let total = beads.len();
