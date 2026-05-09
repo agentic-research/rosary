@@ -4,12 +4,17 @@
 //! emit authenticated [`Observation`]s about the same underlying work item.
 //! A deterministic per-field fold produces the derived view.
 //!
-//! Phase 1 lands the type surface, the [`Observer`]/[`FieldAlgebra`] traits,
-//! and the 14-invariant test contract. Per-field algebras (chain-max, LWW,
-//! OR-set, flat-lattice), the in-memory observation log, the quarantine
-//! path, and the registry+fold all ship in their own beads against
-//! parallel-safe non-overlapping file scopes — see the bead breakdown in
-//! `.claude/plans/`.
+//! Phase 1 (this PR) lands the type surface and the [`Observer`] /
+//! [`FieldAlgebra`] traits, plus inline unit tests for the substrate types
+//! (serde round-trip, [`PipelineVerdictValue::rank`] ordering). The
+//! 14-invariant integration contract referenced by ADR-0010 lives in
+//! `tests/observation_lattice.rs` and lands incrementally with the
+//! follow-up beads — each algebra/log/quarantine/registry/fold bead adds
+//! the invariants it can prove against its own implementation. Per-field
+//! algebras (chain-max, LWW, OR-set, flat-lattice), the in-memory
+//! observation log, the quarantine path, and the registry+fold all ship in
+//! their own beads against parallel-safe non-overlapping file scopes — see
+//! the bead breakdown in `.claude/plans/`.
 //!
 //! # Trust model
 //!
@@ -50,14 +55,30 @@ pub mod tree_fold;
 /// Identifier of the source emitting an observation.
 ///
 /// Wrapped string rather than a closed enum so plugins can register new
-/// sources without an enum bump. Convention: lowercase, no whitespace
-/// (e.g. `"linear"`, `"github"`, `"git"`, `"bead"`, `"user"`).
+/// sources without an enum bump. Canonical form is **lowercase, trimmed,
+/// internal-whitespace replaced with `_`** (e.g. `"linear"`, `"github"`,
+/// `"git"`, `"bead"`, `"user"`). [`Source::new`] and the `From<&str>` impl
+/// enforce this so that `(Source, source_event_id, payload_hash)` is a
+/// stable dedup key regardless of how a caller spelled the source name —
+/// `"GitHub"`, `" github "`, and `"github"` all canonicalize to one
+/// equivalence class. Without normalization the dedup set would split on
+/// case (ADR-0010 invariant 8 would fail under reasonable caller mistakes).
+///
+/// The `pub String` field is preserved for ergonomic destructuring; if you
+/// reach in directly, you are responsible for canonicalizing — prefer
+/// [`Source::new`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Source(pub String);
 
 impl Source {
+    /// Construct a [`Source`] in canonical form.
+    ///
+    /// Trims surrounding whitespace, lowercases, and replaces any internal
+    /// whitespace runs with a single `_`. Empty input is preserved as-is —
+    /// callers should treat empty `Source` as a programming error, but the
+    /// constructor does not panic.
     pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+        Self(canonicalize_source(&s.into()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -67,8 +88,31 @@ impl Source {
 
 impl From<&str> for Source {
     fn from(s: &str) -> Self {
-        Source(s.to_string())
+        Source::new(s)
     }
+}
+
+fn canonicalize_source(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lowered = trimmed.to_lowercase();
+    // Collapse any internal whitespace run to a single `_`.
+    let mut out = String::with_capacity(lowered.len());
+    let mut last_was_ws = false;
+    for ch in lowered.chars() {
+        if ch.is_whitespace() {
+            if !last_was_ws {
+                out.push('_');
+            }
+            last_was_ws = true;
+        } else {
+            out.push(ch);
+            last_was_ws = false;
+        }
+    }
+    out
 }
 
 // ── Field identity and value ────────────────────────────────────────────
@@ -81,9 +125,13 @@ impl From<&str> for Source {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldName {
-    /// Agent-pipeline progress within a bead. Chain-max algebra.
+    /// Agent-pipeline verdict within a bead. Chain-max algebra.
     /// (Mirrors `src/dolt/observations.rs::Verdict` in the substrate.)
-    PipelinePhase,
+    /// Renamed from `PipelinePhase` per ADR-0010 review to avoid name
+    /// collision with `crate::store::PipelineState::pipeline_phase`
+    /// (which is a `u8` index into the agent sequence — a different
+    /// quantity entirely).
+    PipelineVerdict,
     /// Single-valued, identity. LWW-register.
     Assignee,
     /// Single-valued, may change. LWW-register; `None` requires explicit unset.
@@ -126,12 +174,12 @@ pub enum FieldValue {
     /// Wall-clock time.
     Timestamp(DateTime<Utc>),
     /// Pipeline-phase value (chain ordering).
-    PipelinePhase(PipelinePhaseValue),
+    PipelineVerdict(PipelineVerdictValue),
     /// Plugin-defined fields use raw JSON; typed algebras must downcast.
     Json(serde_json::Value),
 }
 
-/// Chain-ordered value space for [`FieldName::PipelinePhase`].
+/// Chain-ordered value space for [`FieldName::PipelineVerdict`].
 ///
 /// Distinct from `crate::dolt::observations::Verdict` so the substrate does
 /// not depend on `dolt::*`. The chain is a real partial order: agent runs
@@ -141,7 +189,7 @@ pub enum FieldValue {
 /// advance the chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PipelinePhaseValue {
+pub enum PipelineVerdictValue {
     Dispatched,
     Verifying,
     Pass,
@@ -151,16 +199,16 @@ pub enum PipelinePhaseValue {
     Deadletter,
 }
 
-impl PipelinePhaseValue {
+impl PipelineVerdictValue {
     /// Lattice rank for chain-max. `None` = does not advance.
     pub fn rank(self) -> Option<u8> {
         match self {
-            PipelinePhaseValue::Dispatched => Some(1),
-            PipelinePhaseValue::Verifying => Some(2),
-            PipelinePhaseValue::Pass => Some(3),
-            PipelinePhaseValue::PrOpen => Some(4),
-            PipelinePhaseValue::Done => Some(5),
-            PipelinePhaseValue::Fail | PipelinePhaseValue::Deadletter => None,
+            PipelineVerdictValue::Dispatched => Some(1),
+            PipelineVerdictValue::Verifying => Some(2),
+            PipelineVerdictValue::Pass => Some(3),
+            PipelineVerdictValue::PrOpen => Some(4),
+            PipelineVerdictValue::Done => Some(5),
+            PipelineVerdictValue::Fail | PipelineVerdictValue::Deadletter => None,
         }
     }
 }
@@ -267,9 +315,15 @@ pub trait Observer: Send + Sync {
 
     fn cadence(&self) -> Cadence;
 
-    /// Produce zero or more observations from a wake event. Returning an
-    /// empty `Vec` is normal (the wake produced no new information).
-    async fn observe(&self, ctx: &ObserveCtx) -> Vec<Observation>;
+    /// Produce zero or more observations from a wake event.
+    ///
+    /// Returning `Ok(vec![])` is normal — the wake produced no new
+    /// information. Network errors, auth failures, and parse errors return
+    /// `Err`; the substrate's caller (`reconcile::observation_loop` in a
+    /// future bead) is responsible for back-pressure / rate-budget decay
+    /// on `Err` so a flapping source doesn't burn the budget. An `Err`
+    /// from one observer never aborts other observers in the same wake.
+    async fn observe(&self, ctx: &ObserveCtx) -> anyhow::Result<Vec<Observation>>;
 }
 
 // ── Per-field algebra ───────────────────────────────────────────────────
@@ -287,7 +341,9 @@ pub trait Observer: Send + Sync {
 /// - **Associativity**: `join(join(a, b), c) == join(a, join(b, c))`.
 ///
 /// These are tested empirically by the integration contract in
-/// `tests/observation_lattice.rs` (ADR-0010 invariants 1, 6, 9, 14).
+/// `tests/observation_lattice.rs` (ADR-0010 invariants 1, 6, 9, 14). That
+/// test file is added incrementally by the follow-up algebra beads
+/// (`obs-algebra-chain` and friends); it is not part of Phase 1's surface.
 pub trait FieldAlgebra: Send + Sync {
     /// Field this algebra handles. Used by the registry for routing.
     fn field_name(&self) -> FieldName;
@@ -365,9 +421,9 @@ mod tests {
 
     #[test]
     fn field_name_serde_snake_case() {
-        let name = FieldName::PipelinePhase;
+        let name = FieldName::PipelineVerdict;
         let json = serde_json::to_string(&name).unwrap();
-        assert_eq!(json, "\"pipeline_phase\"");
+        assert_eq!(json, "\"pipeline_verdict\"");
         let back: FieldName = serde_json::from_str(&json).unwrap();
         assert_eq!(name, back);
     }
@@ -392,7 +448,7 @@ mod tests {
                     .unwrap()
                     .with_timezone(&Utc),
             ),
-            FieldValue::PipelinePhase(PipelinePhaseValue::Pass),
+            FieldValue::PipelineVerdict(PipelineVerdictValue::Pass),
             FieldValue::Json(serde_json::json!({ "extra": 1 })),
         ];
         for v in cases {
@@ -405,16 +461,16 @@ mod tests {
     #[test]
     fn pipeline_phase_chain_rank() {
         // Chain ranks are strictly increasing for the in-chain variants.
-        assert!(PipelinePhaseValue::Dispatched.rank() < PipelinePhaseValue::Verifying.rank());
-        assert!(PipelinePhaseValue::Verifying.rank() < PipelinePhaseValue::Pass.rank());
-        assert!(PipelinePhaseValue::Pass.rank() < PipelinePhaseValue::PrOpen.rank());
-        assert!(PipelinePhaseValue::PrOpen.rank() < PipelinePhaseValue::Done.rank());
+        assert!(PipelineVerdictValue::Dispatched.rank() < PipelineVerdictValue::Verifying.rank());
+        assert!(PipelineVerdictValue::Verifying.rank() < PipelineVerdictValue::Pass.rank());
+        assert!(PipelineVerdictValue::Pass.rank() < PipelineVerdictValue::PrOpen.rank());
+        assert!(PipelineVerdictValue::PrOpen.rank() < PipelineVerdictValue::Done.rank());
     }
 
     #[test]
     fn pipeline_phase_unranked_variants_have_no_rank() {
-        assert!(PipelinePhaseValue::Fail.rank().is_none());
-        assert!(PipelinePhaseValue::Deadletter.rank().is_none());
+        assert!(PipelineVerdictValue::Fail.rank().is_none());
+        assert!(PipelineVerdictValue::Deadletter.rank().is_none());
     }
 
     #[test]
@@ -422,6 +478,29 @@ mod tests {
         let s = Source::new("linear");
         assert_eq!(s.as_str(), "linear");
         assert_eq!(s, Source::from("linear"));
+    }
+
+    #[test]
+    fn source_canonicalizes_case_and_whitespace() {
+        // Canonical form: lowercase, trimmed, internal whitespace → `_`.
+        // Without this, `(Source, source_event_id, payload_hash)` would
+        // split the dedup set on case (ADR-0010 invariant 8).
+        assert_eq!(Source::new("GitHub").as_str(), "github");
+        assert_eq!(Source::new(" github ").as_str(), "github");
+        assert_eq!(Source::new("Slack Channel").as_str(), "slack_channel");
+        assert_eq!(Source::new("  linear   poller ").as_str(), "linear_poller");
+        // From<&str> goes through the same path.
+        assert_eq!(Source::from("GITHUB"), Source::new("github"));
+    }
+
+    #[test]
+    fn source_dedup_key_invariant_under_caller_mistakes() {
+        // Two callers writing the same source name with different casing
+        // must produce the same dedup key.
+        let a = sample_observation();
+        let mut b = sample_observation();
+        b.source = Source::new("GitHub"); // same logical source, ugly spelling
+        assert_eq!(a.dedup_key(), b.dedup_key());
     }
 
     #[test]
