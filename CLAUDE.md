@@ -48,16 +48,25 @@ task all            # fmt + check + lint + test
 | File                        | Purpose                                                                     |
 | --------------------------- | --------------------------------------------------------------------------- |
 | src/serve/mod.rs            | MCP server (stdio + HTTP) + Linear/GitHub webhook handlers                  |
-| src/serve/handlers.rs       | MCP tool implementations (27 tools)                                         |
+| src/serve/handlers.rs       | MCP tool implementations (31 tools)                                         |
 | src/serve/github_webhook.rs | GitHub merge webhook → advance bead + unblock dependents                    |
 | src/reconcile/mod.rs        | Reconciliation loop: scan → triage → dispatch → verify                      |
-| src/bead.rs                 | Bead model, BeadState enum, Linear type mapping, close-time test-cmd guard  |
+| src/bead.rs                 | Bead model, BeadState enum, Comment struct (audit-trail), Linear type mapping |
 | src/dispatch/mod.rs         | Agent dispatch, pipeline mapping, execution                                 |
 | src/dispatch/providers.rs   | AgentProvider trait — claude / gemini / plugin-kind="dispatch" backends     |
+| src/dispatch/sweep.rs       | Orphan-dispatch detection — self-heals stuck `Dispatched` beads (rosary-67c43d) |
 | src/epic.rs                 | Semantic clustering, dedup, file overlap detection                          |
 | src/dolt.rs                 | Dolt database client (per-repo beads)                                       |
 | src/store_dolt.rs           | Dolt backend for orchestrator state (pipeline, dispatches, cross-repo deps) |
 | src/store.rs                | Backend-agnostic store traits (HierarchyStore, DispatchStore, LinkageStore) |
+| src/observation/mod.rs      | ADR-0010 substrate: Observation, FieldName, FieldAlgebra, Observer trait    |
+| src/observation/algebra_*.rs| Per-field algebras: chain-max, LWW-register, OR-set, flat-lattice            |
+| src/observation/log.rs      | In-memory G-set (used by tests + integration_tests)                          |
+| src/observation/log_sqlite.rs| Persistent G-set + quarantine via orchestrator SQLite                       |
+| src/observation/registry.rs | Field/algebra dispatch via OnceLock singleton                                |
+| src/observation/fold.rs     | Per-field per-source fold + cross-source flat-lattice for Status             |
+| src/observation/tree_fold.rs| BDR Decade ⊃ Thread ⊃ Bead catamorphism (rollup status)                     |
+| src/observation/quarantine.rs| Cert-validity filter + queryable quarantine surface                          |
 | src/handoff.rs              | Structured context transfer between pipeline phases                         |
 | src/workspace.rs            | Git/jj worktree creation and isolation                                      |
 | src/linear.rs               | Linear sync CLI (`rsry sync`)                                               |
@@ -103,9 +112,10 @@ Pipeline mapping: issue_type → agent sequence (dispatch.rs `agent_pipeline()`)
 Beads are the distributed work tracking system. Each repo has `.beads/` with a Dolt database.
 
 ```bash
-# MCP tools (via rsry serve) — 27 tools
+# MCP tools (via rsry serve) — 31 tools
 # Beads
-rsry_bead_create / rsry_bead_update / rsry_bead_search / rsry_bead_comment / rsry_bead_close
+rsry_bead_create / rsry_bead_update / rsry_bead_search / rsry_bead_close
+rsry_bead_comment / rsry_bead_comment_list / rsry_bead_comment_update / rsry_bead_comment_delete
 rsry_bead_link / rsry_bead_import / rsry_status / rsry_list_beads / rsry_scan / rsry_active
 # Dispatch + pipeline
 rsry_dispatch / rsry_run_once / rsry_decompose
@@ -113,7 +123,7 @@ rsry_pipeline_upsert / rsry_pipeline_query / rsry_dispatch_record / rsry_dispatc
 # Workspaces
 rsry_workspace_create / rsry_workspace_checkpoint / rsry_workspace_cleanup / rsry_workspace_merge
 # Hierarchy (BDR lattice)
-rsry_decade_list / rsry_thread_list / rsry_thread_assign
+rsry_decade_list / rsry_thread_list / rsry_thread_assign / rsry_thread_reparent
 # Repo registry
 rsry_repo_register / rsry_repo_list
 
@@ -122,8 +132,14 @@ rsry sync --dry-run                          # bidirectional Linear sync
 rsry sync --github                           # mirror bead context to PR comments
 rsry scan                                    # scan all repos for beads
 rsry scan --assay                            # run assay.scan plugins → P3 chore beads for stale refs
-rsry status                                  # aggregated counts
-rsry bead create/list/search/close/comment   # `close` requires a test command in description (or --force)
+rsry status [--json]                         # aggregated counts; CLI text + JSON outputs agree (#192)
+rsry bead create / list / search / close / reopen   # `close` requires a test command in description (or --force)
+rsry bead comment add <id> <body>            # append a comment (rosary-a96b06)
+rsry bead comment list <id> [--include-deleted]
+rsry bead comment update <id> <comment_id> --body <text> [--reason <why>]
+rsry bead comment delete <id> <comment_id> [--reason <why>] [--hard]   # --hard CLI-only; soft preserves audit trail
+rsry close-merged                            # catch-up sweep: close beads whose PRs already merged
+rsry thread-reparent <thread_id> <decade_id> [--name <new>]  # re-parent threads under a different decade
 rsry capture --from-session <path>           # transcript → BeadSpecs via LLM (Session provenance)
 rsry capture --from-code <repo> <path>       # source file → BeadSpecs via LLM (Code provenance)
 rsry decompose <path> --stub-output <repo>   # also emit Rust stubs for design review
@@ -155,6 +171,8 @@ File overlap is also re-checked in Phase 4 (dispatch loop) to catch beads queued
 | 0006 | Proposed | Declarative tool registry (unified MCP/CLI/pipeline from single source) |
 | 0007 | Proposed | BDR enrichment pipeline (mache + haiku + sqlite-vec dedup)              |
 | 0008 | Proposed | Agent hierarchy dispatch model (dev/feature/orchestrator tiers)         |
+| 0009 | Accepted | Cross-repo linkage — stratified acyclicity + modal evidence             |
+| 0010 | Accepted | Observation lattice — G-set + per-field fold (substrate)                |
 
 ## BDR Hierarchy (Decade → Thread → Bead)
 
@@ -193,7 +211,7 @@ if the plugin reports coverage below the threshold.
 
 ## MCP Integration
 
-Rosary exposes 27 MCP tools via `rsry serve`. Accessible from:
+Rosary exposes 31 MCP tools via `rsry serve`. Accessible from:
 
 - Claude Code (stdio transport, configured in MCP settings)
 - Claude web (HTTP transport via tunnel)
