@@ -273,6 +273,23 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Close beads whose PRs have already merged.
+    ///
+    /// Walks every open bead with a recorded `pr_url` event, runs
+    /// `gh pr view --json state,mergeCommit`, and closes the bead if the PR
+    /// is MERGED. Useful for catching up after periods when the reconciler
+    /// loop wasn't running and `poll_pr_status` missed merges (the
+    /// `scan_vcs` path only looks at the last 50 commits).
+    ///
+    /// Idempotent. Safe to run any time. Doesn't dispatch agents.
+    CloseMerged {
+        /// Repo name to limit the sweep to (omit to scan all registered repos)
+        #[arg(long)]
+        repo: Option<String>,
+        /// Preview what would close without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Export orchestrator backend state to JSON backup
     Backup {
         /// Output directory (default: ~/.rsry/backups/<timestamp>)
@@ -1379,6 +1396,22 @@ async fn main() -> Result<()> {
                 );
             }
         }
+        Command::CloseMerged { repo, dry_run } => {
+            let summary = run_close_merged(repo.as_deref(), dry_run).await?;
+            let verb = if dry_run { "would close" } else { "closed" };
+            println!(
+                "close-merged: {} {} (checked={}, no_pr_url={}, not_merged={}, gh_errors={})",
+                summary.merged_closed,
+                verb,
+                summary.checked,
+                summary.no_pr_url,
+                summary.not_merged,
+                summary.gh_errors,
+            );
+            for id in &summary.bead_ids_closed {
+                println!("  {id}");
+            }
+        }
         Command::Backup { output } => {
             let cfg = config::load_merged(&config::resolve_config_path())?;
             let backend_cfg = cfg
@@ -1506,9 +1539,212 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// `rsry close-merged` — catch-up sweep for stalled merged-PR beads
+// ---------------------------------------------------------------------------
+
+/// Result of a close-merged sweep across one or all registered repos.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CloseMergedSummary {
+    /// Open beads inspected
+    pub checked: usize,
+    /// Beads with no `pr_url` event recorded — skipped
+    pub no_pr_url: usize,
+    /// Beads whose PR is still open or closed-without-merge — left alone
+    pub not_merged: usize,
+    /// `gh pr view` failed (auth, network, deleted PR, etc.) — left alone
+    pub gh_errors: usize,
+    /// Beads we closed (or would close, in dry-run)
+    pub merged_closed: usize,
+    /// IDs of beads closed (in order processed)
+    pub bead_ids_closed: Vec<String>,
+}
+
+/// Walks every open bead in the given repo (or all registered repos),
+/// looks up the PR URL from the `pr_url` event log, runs `gh pr view` to
+/// check merge state, and closes the bead when the PR is MERGED.
+///
+/// Idempotent. `dry_run = true` reports counts but doesn't write.
+pub async fn run_close_merged(
+    repo_filter: Option<&str>,
+    dry_run: bool,
+) -> Result<CloseMergedSummary> {
+    let cfg = config::load_merged(&config::resolve_config_path())?;
+    run_close_merged_with_config(&cfg, repo_filter, dry_run).await
+}
+
+/// Inner form taking an explicit Config — exists so unit tests can
+/// pass a hand-built empty `Config` and exercise the no-repos /
+/// no-match paths without inheriting whatever's in `~/.rsry/config.toml`
+/// (which `load_merged` ALWAYS pulls in, defeating any env-based
+/// override).
+pub async fn run_close_merged_with_config(
+    cfg: &config::Config,
+    repo_filter: Option<&str>,
+    dry_run: bool,
+) -> Result<CloseMergedSummary> {
+    let mut summary = CloseMergedSummary::default();
+
+    let repos: Vec<&config::RepoConfig> = cfg
+        .repo
+        .iter()
+        .filter(|r| repo_filter.is_none_or(|name| r.name == name))
+        .collect();
+
+    if repos.is_empty() {
+        if let Some(name) = repo_filter {
+            eprintln!("close-merged: no repo named '{name}' is registered");
+        } else {
+            eprintln!("close-merged: no repos registered");
+        }
+        return Ok(summary);
+    }
+
+    for repo in repos {
+        let resolved = scanner::resolve_repo_path(&repo.path);
+        // Use the canonical resolver — handles git/jj worktrees where
+        // .beads/ lives in the main worktree, not the worktree root.
+        // The naive `resolved.join(".beads")` would silently skip those.
+        let beads_dir = resolve_beads_dir(&resolved);
+        if !beads_dir.exists() {
+            continue;
+        }
+        // Connect to this repo's bead store via the canonical helper.
+        let store = match bead_sqlite::connect_bead_store(&beads_dir).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("close-merged: skipping {}: {e}", repo.name);
+                continue;
+            }
+        };
+
+        let beads = match store.list_beads(&repo.name).await {
+            Ok(b) => b,
+            Err(e) => {
+                // Surface store errors instead of silently treating them as
+                // "no beads" — masking these produced misleading all-zero
+                // summaries before.
+                eprintln!("close-merged: list_beads({}) failed: {e}", repo.name);
+                summary.gh_errors += 1;
+                continue;
+            }
+        };
+        // Sweep ALL non-terminal beads — anything that could legitimately
+        // have a PR URL set. The original filter on `Open` only missed
+        // the exact stuck-needs-merge cases this command was built for
+        // (Dispatched, Verifying, PrOpen).
+        let candidate_beads: Vec<&bead::Bead> = beads
+            .iter()
+            .filter(|b| {
+                // Done is the only "fully done" terminal in the enum
+                // ("closed" status string maps to Done via From<&str>).
+                // Rejected is also terminal — skip those too.
+                !matches!(b.state(), bead::BeadState::Done | bead::BeadState::Rejected)
+            })
+            .collect();
+
+        for b in candidate_beads {
+            summary.checked += 1;
+            // PR URL can be in two places. Prefer the bead's own pr_url
+            // column (set at PR creation in workspace_ops), then fall back
+            // to the events log. Either is fine — first one wins.
+            let pr_url = b.pr_url.clone().filter(|s| !s.trim().is_empty()).or(
+                match store.get_latest_event(&b.id, "pr_url").await {
+                    Ok(opt) => opt.filter(|s| !s.trim().is_empty()),
+                    Err(_) => None,
+                },
+            );
+            let Some(pr_url) = pr_url else {
+                summary.no_pr_url += 1;
+                continue;
+            };
+            let pr_url = pr_url.trim().to_string();
+
+            // Ask gh for the merge state. Single call, JSON-shaped.
+            let output = tokio::process::Command::new("gh")
+                .args(["pr", "view", &pr_url, "--json", "state,mergeCommit"])
+                .output()
+                .await;
+            let Ok(out) = output else {
+                summary.gh_errors += 1;
+                continue;
+            };
+            if !out.status.success() {
+                summary.gh_errors += 1;
+                continue;
+            }
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let parsed: serde_json::Value = match serde_json::from_str(&stdout) {
+                Ok(v) => v,
+                Err(_) => {
+                    summary.gh_errors += 1;
+                    continue;
+                }
+            };
+            let state = parsed["state"].as_str().unwrap_or("");
+            if state != "MERGED" {
+                summary.not_merged += 1;
+                continue;
+            }
+            let merge_sha = parsed["mergeCommit"]["oid"].as_str().unwrap_or("");
+
+            summary.merged_closed += 1;
+            summary.bead_ids_closed.push(b.id.clone());
+            if dry_run {
+                continue;
+            }
+            // Record the merge SHA + close the bead. Best-effort logging.
+            if !merge_sha.is_empty() {
+                store.log_event(&b.id, "merge_sha", merge_sha).await;
+            }
+            // Format the audit comment so an empty merge_sha doesn't render
+            // as `PR merged ()` — that's confusing to read in scrollback.
+            let audit_msg = if merge_sha.is_empty() {
+                "Auto-closed by rsry close-merged: PR merged".to_string()
+            } else {
+                format!("Auto-closed by rsry close-merged: PR merged ({merge_sha})")
+            };
+            store.add_comment(&b.id, &audit_msg, "rosary").await.ok();
+            store.close_bead(&b.id).await.ok();
+        }
+    }
+
+    Ok(summary)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn close_merged_summary_default_is_zero() {
+        // Sanity: the summary type's Default is all-zero so reporting a
+        // no-op sweep is meaningful (no false positives in the count).
+        let s = CloseMergedSummary::default();
+        assert_eq!(s.checked, 0);
+        assert_eq!(s.merged_closed, 0);
+        assert!(s.bead_ids_closed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn close_merged_no_repos_returns_empty_summary() {
+        // Regression guard: when the config has no repos (or none match the
+        // filter), run_close_merged_with_config returns Ok with a zero
+        // summary — not an error. This keeps the command safe to schedule
+        // periodically. Uses an explicit empty Config so the test doesn't
+        // pull in the user's real ~/.rsry/config.toml via load_merged.
+        let cfg = config::Config::default();
+        let summary_no_filter = run_close_merged_with_config(&cfg, None, true)
+            .await
+            .unwrap();
+        let summary_filtered = run_close_merged_with_config(&cfg, Some("nonexistent"), true)
+            .await
+            .unwrap();
+
+        // Both paths return the all-zero default — no work, no errors.
+        assert_eq!(summary_no_filter, CloseMergedSummary::default());
+        assert_eq!(summary_filtered, CloseMergedSummary::default());
+    }
 
     #[test]
     fn bead_action_variants_construct() {
