@@ -244,6 +244,63 @@ pub struct Bead {
     pub derived_from: Vec<bdr::provenance::ProvenanceRef>,
 }
 
+/// One comment on a bead, with audit-trail fields. Returned by
+/// [`crate::store::BeadStore::list_comments`] and the MCP/CLI surfaces.
+///
+/// Audit-trail invariants (rosary-a96b06):
+/// - `id` is a stable surrogate key. Update/delete address this id.
+/// - `original_text` is set on the **first** edit and immutable thereafter
+///   — preserves a clean "what did this say originally" record without
+///   storing a full revision history.
+/// - `edited_at` is `None` on a never-edited comment and the latest edit
+///   timestamp once edited.
+/// - `deleted_at` is `None` for live comments and a timestamp for
+///   soft-deleted ones. Hard-delete removes the row entirely.
+/// - `text` always reflects the current displayable body (the post-edit
+///   content for edited comments; the original for never-edited).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Comment {
+    /// Stable unique id. Dolt produces a UUID (char(36)); SQLite produces a
+    /// stringified integer. Both are opaque from the public API's
+    /// perspective — callers pass strings and pattern-match on `id` exactly.
+    pub id: String,
+    pub issue_id: String,
+    pub text: String,
+    pub author: String,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_reason: Option<String>,
+    /// Original body, captured on first edit. `None` if the comment has
+    /// never been edited (in which case `text` IS the original).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_text: Option<String>,
+    /// Soft-delete marker. Live comments have `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+impl Comment {
+    /// True iff this comment has ever been edited (i.e. `edited_at` is set).
+    pub fn is_edited(&self) -> bool {
+        self.edited_at.is_some()
+    }
+
+    /// True iff this comment is soft-deleted.
+    pub fn is_deleted(&self) -> bool {
+        self.deleted_at.is_some()
+    }
+
+    /// The body that was originally written. For never-edited comments,
+    /// this is just `text`. For edited comments, this is `original_text`
+    /// (which is required to be `Some` post-edit by the audit invariant).
+    #[allow(dead_code)] // Public surface; consumed by future audit/scrub tooling.
+    pub fn body_as_originally_written(&self) -> &str {
+        self.original_text.as_deref().unwrap_or(&self.text)
+    }
+}
+
 impl Bead {
     /// Content-based generation hash. Changes when semantic content changes,
     /// but not when status/timestamps change. Used for idempotency —

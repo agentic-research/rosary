@@ -54,6 +54,22 @@ const MIGRATIONS: &[Migration] = &[
         sql: "ALTER TABLE issues ADD COLUMN scope VARCHAR(255) NOT NULL DEFAULT ''",
         description: "Team/folder scope for monorepo multi-team contexts",
     },
+    Migration {
+        version: "005_comments_audit_columns",
+        // Adds `id` (UUID) as PK for stable addressability + audit-trail
+        // columns. Idempotent on existing DBs that already have `id` (e.g.
+        // from a partial earlier run): ADD COLUMN with DEFAULT (uuid())
+        // back-fills existing rows; ADD PRIMARY KEY is the second step.
+        // The migration runner treats "duplicate column" / "Multiple
+        // primary key" as already-applied, so partial replays converge.
+        sql: "ALTER TABLE comments ADD COLUMN id CHAR(36) NOT NULL DEFAULT (uuid()) FIRST;
+              ALTER TABLE comments ADD PRIMARY KEY (id);
+              ALTER TABLE comments ADD COLUMN edited_at DATETIME NULL;
+              ALTER TABLE comments ADD COLUMN edit_reason TEXT NULL;
+              ALTER TABLE comments ADD COLUMN original_text TEXT NULL;
+              ALTER TABLE comments ADD COLUMN deleted_at DATETIME NULL",
+        description: "Audit-trail columns + UUID id for comment update/delete (rosary-a96b06)",
+    },
 ];
 
 impl DoltClient {
@@ -80,9 +96,15 @@ impl DoltClient {
                 .filter(|s| !s.is_empty())
             {
                 if let Err(e) = query(stmt).execute(&self.pool).await {
-                    // Dolt may already have the column from a previous partial run
+                    // Dolt may already have the column / index / key from a
+                    // previous partial run. Treat known "already-applied"
+                    // failure modes as idempotent; surface anything else.
                     let err_str = e.to_string();
-                    if err_str.contains("duplicate column") || err_str.contains("already exists") {
+                    let already_applied = err_str.contains("duplicate column")
+                        || err_str.contains("already exists")
+                        || err_str.contains("Duplicate key name")
+                        || err_str.contains("Multiple primary key");
+                    if already_applied {
                         eprintln!(
                             "[migrate] {}: already applied (idempotent)",
                             migration.version

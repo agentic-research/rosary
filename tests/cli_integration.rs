@@ -355,11 +355,107 @@ fn bead_comment() {
     };
 
     let id = sandbox.create_bead("Comment target");
-    let stdout = sandbox.run_ok(&["bead", "comment", &id, "progress update"]);
+    let stdout = sandbox.run_ok(&["bead", "comment", "add", &id, "progress update"]);
     assert!(
         stdout.contains("commented"),
         "comment should confirm: {stdout}"
     );
+}
+
+/// rosary-a96b06: end-to-end CLI exercise of the comment-edit primitives.
+/// add → list (find comment_id) → update (with reason) → list (verify edited)
+/// → delete --reason (soft) → list --include-deleted (verify still present).
+#[test]
+fn bead_comment_update_delete_audit_trail() {
+    let sandbox = match CliSandbox::new() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let id = sandbox.create_bead("Audit target");
+
+    // Add the original (deliberately leaky) comment.
+    sandbox.run_ok(&[
+        "bead",
+        "comment",
+        "add",
+        &id,
+        "see /Users/jamesgardner/path",
+    ]);
+
+    // List to find the comment_id.
+    let listed = sandbox.run_ok(&["bead", "comment", "list", &id]);
+    assert!(
+        listed.contains("/Users/jamesgardner/path"),
+        "list must show the original body: {listed}"
+    );
+    // First listed line has `#<id>` — extract the opaque id (UUID for Dolt,
+    // stringified integer for SQLite — both valid stable comment_ids).
+    let cid: String = listed
+        .lines()
+        .find_map(|ln| {
+            ln.trim()
+                .strip_prefix('#')
+                .and_then(|s| s.split_whitespace().next().map(|tok| tok.to_string()))
+        })
+        .expect("could not parse comment_id from list output");
+    assert!(!cid.is_empty(), "comment_id must be non-empty");
+
+    // Update with a reason — first edit must capture original_text.
+    let updated = sandbox.run_ok(&[
+        "bead",
+        "comment",
+        "update",
+        &id,
+        &cid,
+        "--body",
+        "see <home>/path",
+        "--reason",
+        "scrub absolute path",
+    ]);
+    assert!(
+        updated.contains("updated comment"),
+        "update should confirm: {updated}"
+    );
+
+    // Verify the edit landed and the audit trail records the original.
+    let after_edit = sandbox.run_ok(&["bead", "comment", "list", &id]);
+    assert!(after_edit.contains("see <home>/path"), "{after_edit}");
+    assert!(after_edit.contains("(edited)"), "{after_edit}");
+    assert!(
+        after_edit.contains("original: see /Users/jamesgardner/path"),
+        "list should surface original body: {after_edit}"
+    );
+    assert!(
+        after_edit.contains("scrub absolute path"),
+        "list should surface edit reason: {after_edit}"
+    );
+
+    // Soft-delete with another reason.
+    let deleted = sandbox.run_ok(&[
+        "bead",
+        "comment",
+        "delete",
+        &id,
+        &cid,
+        "--reason",
+        "no longer relevant",
+    ]);
+    assert!(
+        deleted.contains("soft-deleted"),
+        "delete should confirm: {deleted}"
+    );
+
+    // Default list hides it.
+    let list_default = sandbox.run_ok(&["bead", "comment", "list", &id]);
+    assert!(
+        list_default.contains("(no comments on") || !list_default.contains("(edited)"),
+        "soft-deleted comment must not appear in default list: {list_default}"
+    );
+
+    // --include-deleted brings it back, marked as such.
+    let list_all = sandbox.run_ok(&["bead", "comment", "list", &id, "--include-deleted"]);
+    assert!(list_all.contains("(deleted)"), "{list_all}");
 }
 
 #[test]
@@ -566,8 +662,8 @@ fn full_bead_lifecycle() {
     let id = sandbox.create_bead("Lifecycle test bead");
 
     // Comment
-    sandbox.run_ok(&["bead", "comment", &id, "Starting work"]);
-    sandbox.run_ok(&["bead", "comment", &id, "Progress update"]);
+    sandbox.run_ok(&["bead", "comment", "add", &id, "Starting work"]);
+    sandbox.run_ok(&["bead", "comment", "add", &id, "Progress update"]);
 
     // Search
     let stdout = sandbox.run_ok(&["bead", "search", "Lifecycle"]);

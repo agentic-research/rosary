@@ -373,12 +373,10 @@ enum BeadAction {
     },
     /// List open beads
     List,
-    /// Add a comment to a bead
+    /// Manage comments on a bead (add/update/delete/list)
     Comment {
-        /// Bead ID
-        id: String,
-        /// Comment body
-        body: String,
+        #[command(subcommand)]
+        action: BeadCommentAction,
     },
     /// Search beads by title/description
     Search {
@@ -395,6 +393,58 @@ enum BeadAction {
     Import {
         /// JSON file path (reads stdin if omitted)
         file: Option<String>,
+    },
+}
+
+/// Subcommands of `rsry bead comment` (rosary-a96b06).
+///
+/// `Add` is the legacy primitive (was `rsry bead comment <id> <body>` flat);
+/// `List`/`Update`/`Delete` were added with the audit-trail columns. Hard
+/// delete is CLI-only and gated behind `--hard` to preserve the audit-trail
+/// invariant for normal flows.
+#[derive(Subcommand)]
+enum BeadCommentAction {
+    /// Append a new comment to a bead.
+    Add {
+        /// Bead ID
+        id: String,
+        /// Comment body
+        body: String,
+    },
+    /// List comments on a bead with their comment_ids (needed for update/delete).
+    List {
+        /// Bead ID
+        id: String,
+        /// Include soft-deleted comments in the listing
+        #[arg(long)]
+        include_deleted: bool,
+    },
+    /// Update the body of an existing comment.
+    Update {
+        /// Bead ID (informational; comment_id is the addressable key)
+        id: String,
+        /// Stable comment id (see `rsry bead comment list`)
+        comment_id: String,
+        /// New comment body
+        #[arg(long)]
+        body: String,
+        /// Optional reason recorded in the audit trail
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Delete a comment. Soft-delete by default (preserves audit trail);
+    /// `--hard` removes the row entirely.
+    Delete {
+        /// Bead ID (informational; comment_id is the addressable key)
+        id: String,
+        /// Stable comment id (see `rsry bead comment list`)
+        comment_id: String,
+        /// Optional reason recorded in the audit trail (soft-delete only)
+        #[arg(long)]
+        reason: Option<String>,
+        /// Hard-delete: physically remove the row. Destroys audit trail.
+        #[arg(long)]
+        hard: bool,
     },
 }
 
@@ -1183,10 +1233,89 @@ async fn main() -> Result<()> {
                     let beads = client.list_beads(&repo_name).await?;
                     cli::bead_list(&beads);
                 }
-                BeadAction::Comment { id, body } => {
-                    client.add_comment(&id, &body, "rsry-cli").await?;
-                    cli::bead_commented(&id);
-                }
+                BeadAction::Comment { action } => match action {
+                    BeadCommentAction::Add { id, body } => {
+                        client.add_comment(&id, &body, "rsry-cli").await?;
+                        cli::bead_commented(&id);
+                    }
+                    BeadCommentAction::List {
+                        id,
+                        include_deleted,
+                    } => {
+                        let comments = client.list_comments(&id, include_deleted).await?;
+                        if comments.is_empty() {
+                            println!("(no comments on {id})");
+                        } else {
+                            for c in comments {
+                                let edited = if c.is_edited() { " (edited)" } else { "" };
+                                let deleted = if c.is_deleted() { " (deleted)" } else { "" };
+                                println!(
+                                    "  #{id_:<6} {when} {author}{edited}{deleted}\n      {text}",
+                                    id_ = c.id,
+                                    when = c.created_at.format("%Y-%m-%d %H:%M:%S"),
+                                    author = c.author,
+                                    text = c.text.lines().next().unwrap_or(&c.text),
+                                );
+                                if c.is_edited()
+                                    && let Some(orig) = &c.original_text
+                                {
+                                    println!(
+                                        "      original: {}",
+                                        orig.lines().next().unwrap_or(orig)
+                                    );
+                                }
+                                if let Some(reason) = &c.edit_reason {
+                                    println!("      reason: {reason}");
+                                }
+                            }
+                        }
+                    }
+                    BeadCommentAction::Update {
+                        id: _,
+                        comment_id,
+                        body,
+                        reason,
+                    } => {
+                        let updated = client
+                            .update_comment(&comment_id, &body, reason.as_deref())
+                            .await?;
+                        println!(
+                            "updated comment #{comment_id} on {} (edited at {})",
+                            updated.issue_id,
+                            updated
+                                .edited_at
+                                .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+                                .unwrap_or_else(|| "?".to_string())
+                        );
+                    }
+                    BeadCommentAction::Delete {
+                        id: _,
+                        comment_id,
+                        reason,
+                        hard,
+                    } => {
+                        if hard {
+                            // Hard-delete is irreversible and destroys audit
+                            // trail. Require explicit terminal confirmation.
+                            use std::io::Write;
+                            print!("hard-delete comment #{comment_id}? type 'yes' to confirm: ");
+                            std::io::stdout().flush().ok();
+                            let mut buf = String::new();
+                            std::io::stdin().read_line(&mut buf)?;
+                            if buf.trim() != "yes" {
+                                println!("aborted (audit trail preserved)");
+                                return Ok(());
+                            }
+                            client.hard_delete_comment(&comment_id).await?;
+                            println!("hard-deleted comment #{comment_id}");
+                        } else {
+                            client
+                                .delete_comment(&comment_id, reason.as_deref())
+                                .await?;
+                            println!("soft-deleted comment #{comment_id}");
+                        }
+                    }
+                },
                 BeadAction::Search { query } => {
                     let beads = client.search_beads(&query, &repo_name, 50).await?;
                     cli::bead_search_results(&beads, &query);
@@ -1380,10 +1509,17 @@ mod tests {
         assert!(matches!(list, BeadAction::List));
 
         let comment = BeadAction::Comment {
-            id: "rsry-abc".to_string(),
-            body: "looking into this".to_string(),
+            action: BeadCommentAction::Add {
+                id: "rsry-abc".to_string(),
+                body: "looking into this".to_string(),
+            },
         };
-        assert!(matches!(comment, BeadAction::Comment { .. }));
+        assert!(matches!(
+            comment,
+            BeadAction::Comment {
+                action: BeadCommentAction::Add { .. }
+            }
+        ));
     }
 
     #[test]
