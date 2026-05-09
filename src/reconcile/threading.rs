@@ -34,10 +34,13 @@ impl Reconciler {
                 continue;
             }
 
-            let thread_id = format!("auto/{}-{}", &cluster.bead_ids[0], &cluster.bead_ids[1]);
+            let thread_id = format!("backlog/{}-{}", &cluster.bead_ids[0], &cluster.bead_ids[1]);
             // decade_id must match the prefix extracted by workspace_ops.rs
-            // (thread_id.split('/').next()) so list_threads("auto") finds it.
-            let auto_decade_id = "auto";
+            // (thread_id.split('/').next()) so list_threads("backlog") finds it.
+            // The "backlog" name signals these are auto-clustered beads
+            // awaiting triage (by a triage-agent or a human), rather than
+            // ignore-me dead-letters.
+            let backlog_decade_id = "backlog";
 
             // Check if any bead in the cluster already has a thread
             let mut already_threaded = false;
@@ -64,11 +67,11 @@ impl Reconciler {
             let thread_name = format!("{:?} cluster", cluster.relationship);
             let feature_branch = crate::workspace::thread_branch_name("feature", &thread_name);
 
-            // Ensure the "auto" decade exists (FK constraint in SQLite backend).
+            // Ensure the "backlog" decade exists (FK constraint in SQLite backend).
             let _ = hierarchy
                 .upsert_decade(&crate::store::DecadeRecord {
-                    id: auto_decade_id.to_string(),
-                    title: "Auto-discovered clusters".to_string(),
+                    id: backlog_decade_id.to_string(),
+                    title: "Backlog: auto-clustered beads awaiting triage".to_string(),
                     source_path: String::new(),
                     status: "active".to_string(),
                 })
@@ -95,7 +98,7 @@ impl Reconciler {
             let thread = crate::store::ThreadRecord {
                 id: thread_id.clone(),
                 name: thread_name,
-                decade_id: auto_decade_id.to_string(),
+                decade_id: backlog_decade_id.to_string(),
                 feature_branch: Some(feature_branch),
             };
             if let Err(e) = hierarchy.upsert_thread(&thread).await {
@@ -206,8 +209,8 @@ impl Reconciler {
             let mut out: Vec<Candidate> = Vec::new();
             for thread_id in triggered {
                 // decade_id is the prefix before the first '/' in the thread id.
-                // auto_thread stores threads with decade_id = "auto" and thread_ids
-                // like "auto/{bead1}-{bead2}", so this correctly gives "auto".
+                // auto_thread stores threads with decade_id = "backlog" and thread_ids
+                // like "backlog/{bead1}-{bead2}", so this correctly gives "backlog".
                 let decade_id = thread_id
                     .split('/')
                     .next()
