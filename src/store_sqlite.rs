@@ -131,7 +131,7 @@ impl SqliteBackend {
     }
 }
 
-const SCHEMA: &str = "
+pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS decades (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -212,6 +212,43 @@ CREATE TABLE IF NOT EXISTS user_repos (
     repo_name TEXT NOT NULL,
     github_token_ref TEXT,
     PRIMARY KEY (user_id, repo_name)
+);
+
+-- ADR-0010 observation lattice substrate persistence (Phase 2).
+-- Storage for the G-set of authenticated observations; the per-field
+-- algebras + fold consume rows from this table to produce DerivedView.
+-- Dedup is enforced via the (source, source_event_id, payload_hash)
+-- unique index — a replayed webhook hits INSERT OR IGNORE and is a no-op.
+CREATE TABLE IF NOT EXISTS observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT '',
+    bead_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    field TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    cert_json TEXT,
+    payload_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_dedup
+    ON observations(source, source_event_id, payload_hash);
+CREATE INDEX IF NOT EXISTS idx_observations_work
+    ON observations(repo, scope, bead_id);
+CREATE INDEX IF NOT EXISTS idx_observations_field
+    ON observations(field);
+
+-- Sibling table for observations that fail cert validation. Kept
+-- separate so the fold's read query can never accidentally see them
+-- (ADR-0010 invariant 11). Surfaced via `rsry status --quarantine`
+-- in Phase 2+.
+CREATE TABLE IF NOT EXISTS observation_quarantine (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    observation_json TEXT NOT NULL,
+    reason_json TEXT NOT NULL,
+    quarantined_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 ";
 
