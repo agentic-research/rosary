@@ -353,8 +353,12 @@ CREATE TABLE IF NOT EXISTS comments (
     deleted_at TEXT,
     delete_reason TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_comments_issue_id ON comments(issue_id);
-CREATE INDEX IF NOT EXISTS idx_comments_deleted_at ON comments(deleted_at);
+-- Indexes on comments live in the post-ALTER block in `connect()`,
+-- not here. On legacy DBs whose comments table predates the audit-trail
+-- columns, `CREATE INDEX ON comments(deleted_at)` fails because the
+-- column doesn't exist yet — and execute_batch(SCHEMA)? would propagate
+-- that. Defining the index after the ALTER ADD COLUMN runs keeps
+-- legacy DBs migrating cleanly without spurious no-such-column warnings.
 
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -750,6 +754,10 @@ impl BeadStore for SqliteBeadStore {
             .map(|w| format!("%{}%", w.to_lowercase()))
             .collect();
 
+        // Each word must appear in title, description, id, OR a live
+        // (non-soft-deleted) comment. Comment-text matching is what
+        // rosary-a9bc77 added — most context lives in comments and
+        // wasn't previously searchable.
         let where_clause = if words.is_empty() {
             "1=1".to_string()
         } else {
@@ -757,11 +765,17 @@ impl BeadStore for SqliteBeadStore {
                 .iter()
                 .enumerate()
                 .map(|(i, _)| {
-                    let p = (i * 3) + 1;
+                    let p = (i * 4) + 1;
                     format!(
-                        "(LOWER(i.title) LIKE ?{p} OR LOWER(i.description) LIKE ?{} OR i.id LIKE ?{})",
+                        "(LOWER(i.title) LIKE ?{p} OR LOWER(i.description) LIKE ?{} \
+                          OR i.id LIKE ?{} \
+                          OR EXISTS (SELECT 1 FROM comments c \
+                                     WHERE c.issue_id = i.id \
+                                       AND c.deleted_at IS NULL \
+                                       AND LOWER(c.text) LIKE ?{}))",
                         p + 1,
-                        p + 2
+                        p + 2,
+                        p + 3,
                     )
                 })
                 .collect::<Vec<_>>()
@@ -792,11 +806,13 @@ impl BeadStore for SqliteBeadStore {
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        // Build params: each word appears three times (title + description + id)
+        // Build params: each word appears four times — title, description,
+        // id, comment text (rosary-a9bc77).
         let param_values: Vec<Box<dyn rusqlite::types::ToSql>> = words
             .iter()
             .flat_map(|w| {
                 vec![
+                    Box::new(w.clone()) as Box<dyn rusqlite::types::ToSql>,
                     Box::new(w.clone()) as Box<dyn rusqlite::types::ToSql>,
                     Box::new(w.clone()) as Box<dyn rusqlite::types::ToSql>,
                     Box::new(w.clone()) as Box<dyn rusqlite::types::ToSql>,
@@ -1277,6 +1293,72 @@ mod tests {
         let results = store.search_beads("dispatch", "repo", 10).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "a");
+    }
+
+    /// rosary-a9bc77: search hits comment text, not just title/description.
+    #[tokio::test]
+    async fn search_beads_matches_comment_text() {
+        let store = test_store();
+        store
+            .create_bead("a", "Generic title one", "", 1, "task")
+            .await
+            .unwrap();
+        store
+            .create_bead("b", "Generic title two", "", 1, "task")
+            .await
+            .unwrap();
+        // Distinctive content lives in a comment on bead `b`.
+        store
+            .add_comment("b", "investigating zarathustra anomaly", "u")
+            .await
+            .unwrap();
+
+        // Title search misses both (no overlap with comment text).
+        assert!(
+            store
+                .search_beads("zarathustra", "repo", 10)
+                .await
+                .unwrap()
+                .iter()
+                .any(|x| x.id == "b")
+        );
+        // Sanity: searching for a word in `a`'s title still works.
+        let one = store
+            .search_beads("Generic title one", "repo", 10)
+            .await
+            .unwrap();
+        assert!(one.iter().any(|x| x.id == "a"));
+    }
+
+    /// rosary-a9bc77: soft-deleted comments must NOT contribute to search hits.
+    /// Otherwise scrubbed PII would still surface — which is the exact failure
+    /// mode the comment-edit primitive was added to fix.
+    #[tokio::test]
+    async fn search_beads_excludes_soft_deleted_comments() {
+        let store = test_store();
+        store
+            .create_bead("a", "Title with no match", "", 1, "task")
+            .await
+            .unwrap();
+        store
+            .add_comment("a", "leaked /Users/alice/secret/path", "u")
+            .await
+            .unwrap();
+
+        // Pre-delete: comment-text search hits.
+        let pre = store.search_beads("alice", "repo", 10).await.unwrap();
+        assert!(pre.iter().any(|b| b.id == "a"), "comment text should match");
+
+        // Soft-delete the comment.
+        let cid = store.list_comments("a", false).await.unwrap()[0].id.clone();
+        store.delete_comment(&cid, Some("scrub")).await.unwrap();
+
+        // Post-delete: comment is hidden from search.
+        let post = store.search_beads("alice", "repo", 10).await.unwrap();
+        assert!(
+            !post.iter().any(|b| b.id == "a"),
+            "soft-deleted comment text must not surface in search",
+        );
     }
 
     #[tokio::test]

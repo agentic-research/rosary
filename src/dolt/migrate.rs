@@ -71,6 +71,18 @@ const MIGRATIONS: &[Migration] = &[
               ALTER TABLE comments ADD COLUMN delete_reason TEXT NULL",
         description: "Audit-trail columns + UUID id for comment update/delete (rosary-a96b06)",
     },
+    Migration {
+        version: "006_drop_events_issue_fk",
+        // The events table is best-effort audit logging. Synthetic IDs like
+        // `_schema` (used to record migration application) violate the FK on
+        // every rsry invocation, producing a noisy warning. Dropping the FK
+        // is the right call: events is append-only audit, orphaned rows
+        // after a hypothetical bead delete are harmless, and the SQLite
+        // backend never had this constraint either. The IF EXISTS guard is
+        // for older Dolt versions where the constraint may not be present.
+        sql: "ALTER TABLE events DROP FOREIGN KEY fk_events_issue",
+        description: "Drop fk_events_issue so synthetic _schema event log stops warning",
+    },
 ];
 
 impl DoltClient {
@@ -104,7 +116,15 @@ impl DoltClient {
                     let already_applied = err_str.contains("duplicate column")
                         || err_str.contains("already exists")
                         || err_str.contains("Duplicate key name")
-                        || err_str.contains("Multiple primary key");
+                        || err_str.contains("Multiple primary key")
+                        // ALTER ... DROP FOREIGN KEY on a non-existent FK
+                        // (already dropped, or never created on a fresh DB).
+                        || err_str.contains("Can't DROP")
+                        || err_str.contains("does not exist")
+                        // Dolt's specific phrasing for missing FK:
+                        // "foreign key `<name>` was not found on the table".
+                        || (err_str.contains("foreign key")
+                            && err_str.contains("was not found"));
                     if already_applied {
                         eprintln!(
                             "[migrate] {}: already applied (idempotent)",

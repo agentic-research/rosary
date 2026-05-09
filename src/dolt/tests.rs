@@ -71,10 +71,16 @@ impl SandboxBeads {
                 updated_at DATETIME NOT NULL
             )",
             "CREATE TABLE comments (
+                id CHAR(36) NOT NULL DEFAULT (uuid()) PRIMARY KEY,
                 issue_id VARCHAR(128) NOT NULL,
                 text TEXT NOT NULL,
                 author VARCHAR(128) NOT NULL,
-                created_at DATETIME NOT NULL
+                created_at DATETIME NOT NULL,
+                edited_at DATETIME NULL,
+                edit_reason TEXT NULL,
+                original_text TEXT NULL,
+                deleted_at DATETIME NULL,
+                delete_reason TEXT NULL
             )",
             "CREATE TABLE dependencies (
                 issue_id VARCHAR(128) NOT NULL,

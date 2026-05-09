@@ -30,16 +30,23 @@ impl DoltClient {
             .map(|w| format!("%{}%", w.to_lowercase()))
             .collect();
 
-        // Build WHERE clause: each word must appear in title, description, or id.
-        // ID is included so that passing a bead ID directly (e.g. "rosary-5ad4b0")
-        // surfaces an exact match without requiring a separate lookup path.
+        // Build WHERE clause: each word must appear in title, description, id,
+        // OR a live (non-soft-deleted) comment. ID is included so that passing
+        // a bead ID directly (e.g. "rosary-5ad4b0") surfaces an exact match
+        // without requiring a separate lookup path. Comment-text matching is
+        // what rosary-a9bc77 added — most bead context lives in comments and
+        // wasn't previously searchable.
         let where_clause = if words.is_empty() {
             "1=1".to_string()
         } else {
             words
                 .iter()
                 .map(|_| {
-                    "(LOWER(i.title) LIKE ? OR LOWER(i.description) LIKE ? OR i.id LIKE ?)"
+                    "(LOWER(i.title) LIKE ? OR LOWER(i.description) LIKE ? OR i.id LIKE ? \
+                      OR EXISTS (SELECT 1 FROM comments c \
+                                 WHERE c.issue_id = i.id \
+                                   AND c.deleted_at IS NULL \
+                                   AND LOWER(c.text) LIKE ?))"
                         .to_string()
                 })
                 .collect::<Vec<_>>()
@@ -70,8 +77,9 @@ impl DoltClient {
         );
 
         let mut q = query(&sql);
+        // Each word binds 4 times — title, description, id, comment text.
         for word in &words {
-            q = q.bind(word).bind(word).bind(word);
+            q = q.bind(word).bind(word).bind(word).bind(word);
         }
 
         let rows = q
