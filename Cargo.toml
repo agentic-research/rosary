@@ -28,7 +28,7 @@ dirs-next = "2.0.0"
 sqlx-core = { version = "0.8.6", features = ["chrono", "tokio", "_rt-tokio"], default-features = false }
 sqlx-mysql = { version = "0.8.6", features = ["chrono"], default-features = false }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
-leyline-vcs = { git = "https://github.com/agentic-research/ley-line", default-features = false, optional = true }
+leyline-vcs = { git = "https://github.com/agentic-research/ley-line-open", default-features = false, optional = true }
 agent-client-protocol = "0.10.2"
 async-trait = "0.1.89"
 tokio-util = { version = "0.7", features = ["compat"] }
@@ -47,13 +47,11 @@ socket2 = "0.5"
 rusqlite = { version = "0.34", features = ["bundled"] }
 
 [features]
-# `leyline` is OFF by default so public clones (rosary itself is public; the
-# leyline-vcs dep is in a private repo) `cargo build` works out of the box.
-# Local development with the integrated jj sidecar uses `--features leyline`,
-# which is wired through every relevant `task` target in Taskfile.yml.
-# Long-term: move leyline-vcs to ley-line-open (public) and re-enable as a
-# default — see follow-up bead.
-default = []
+# `leyline` is back on by default now that leyline-vcs ships from
+# `agentic-research/ley-line-open` (PUBLIC). Public clones build the
+# integrated jj sidecar + FUSE path natively, no `--features` flag
+# required. See rosary-7b1191 / ley-line-open#1 for the carve-out.
+default = ["leyline"]
 leyline = ["dep:leyline-vcs"]
 
 [dev-dependencies]
