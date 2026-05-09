@@ -46,6 +46,7 @@ pub mod algebra_lww;
 pub mod algebra_orset;
 pub mod fold;
 pub mod log;
+pub mod log_sqlite;
 pub mod quarantine;
 pub mod registry;
 pub mod tree_fold;
