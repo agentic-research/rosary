@@ -50,7 +50,7 @@ pub async fn run_assay_scan(repos: &[RepoConfig], registry: &PluginRegistry) -> 
                     3, // P3
                     "chore",
                     "dev-agent",
-                    &[stale_ref.source_file.clone()],
+                    std::slice::from_ref(&stale_ref.source_file),
                     &[],
                     &[],
                     None,
