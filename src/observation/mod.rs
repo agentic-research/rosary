@@ -50,6 +50,9 @@ pub mod quarantine;
 pub mod registry;
 pub mod tree_fold;
 
+#[cfg(test)]
+mod integration_tests;
+
 // ── Identity of the source emitting an observation ───────────────────────
 
 /// Identifier of the source emitting an observation.
@@ -328,33 +331,39 @@ pub trait Observer: Send + Sync {
 
 // ── Per-field algebra ───────────────────────────────────────────────────
 
-/// Object-safe algebra over [`FieldValue`].
+/// Object-safe algebra over a set of observations.
 ///
 /// Each registered field provides one impl; the registry stores
-/// `Box<dyn FieldAlgebra>`. Type-mismatched inputs return `Err` rather than
-/// panicking — the caller (the fold) routes the offending observation to
-/// quarantine.
+/// `Box<dyn FieldAlgebra>`. The fold is **N-way** (not pairwise) because
+/// non-pairwise-mergeable algebras like LWW-register need access to
+/// observation metadata (timestamp, source) for tiebreak — a pairwise
+/// `join(a, b)` of bare values cannot satisfy commutativity for LWW.
+/// Chain-max and OR-set could be expressed pairwise but using the same
+/// N-way shape across all algebras keeps the registry surface uniform.
 ///
 /// Implementations must satisfy:
-/// - **Idempotence**: `join(a, a) == a`.
-/// - **Commutativity**: `join(a, b) == join(b, a)`.
-/// - **Associativity**: `join(join(a, b), c) == join(a, join(b, c))`.
+/// - **Determinism**: same observation set → same result, regardless of
+///   slice order. Tested empirically by `reorder_invariance` in the
+///   integration contract.
+/// - **Idempotence under dedup**: duplicates filtered by
+///   [`Observation::dedup_key`] do not change the result (ADR-0010
+///   invariant 8).
+/// - **Type tolerance**: type-mismatched observations are an `Err`
+///   (caller routes to quarantine), never a panic.
 ///
-/// These are tested empirically by the integration contract in
-/// `tests/observation_lattice.rs` (ADR-0010 invariants 1, 6, 9, 14). That
-/// test file is added incrementally by the follow-up algebra beads
-/// (`obs-algebra-chain` and friends); it is not part of Phase 1's surface.
+/// See `tests/observation_lattice.rs` for the 14-invariant contract
+/// (ADR-0010 §"Test contract").
 pub trait FieldAlgebra: Send + Sync {
     /// Field this algebra handles. Used by the registry for routing.
     fn field_name(&self) -> FieldName;
 
-    /// Combine two values per the field's algebra. May refuse on type
-    /// mismatch — that's a quarantine signal, not a panic.
-    fn join(&self, a: &FieldValue, b: &FieldValue) -> anyhow::Result<FieldValue>;
-
-    /// The neutral element of this algebra (the empty join). Folding an
-    /// empty observation set must yield this for the field.
-    fn identity(&self) -> FieldValue;
+    /// Reduce a set of observations on this field to the derived value.
+    ///
+    /// The empty case must produce a sensible "no observations yet" value
+    /// (e.g. `FieldValue::OptString(None)` for nullable single-value
+    /// fields, the lowest chain element for chain-max). Implementations
+    /// MUST be invariant under reordering of `obs`.
+    fn fold(&self, obs: &[&Observation]) -> anyhow::Result<FieldValue>;
 }
 
 #[cfg(test)]

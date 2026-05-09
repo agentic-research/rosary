@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 // ── Data types ──────────────────────────────────────────
 
 /// A reference to a bead across repos.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct WorkRef {
     pub repo: String,
     /// Team/folder scope within a monorepo (e.g. "auth", "payments/core").
