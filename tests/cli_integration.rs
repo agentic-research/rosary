@@ -375,18 +375,12 @@ fn bead_comment_update_delete_audit_trail() {
     let id = sandbox.create_bead("Audit target");
 
     // Add the original (deliberately leaky) comment.
-    sandbox.run_ok(&[
-        "bead",
-        "comment",
-        "add",
-        &id,
-        "see /Users/jamesgardner/path",
-    ]);
+    sandbox.run_ok(&["bead", "comment", "add", &id, "see /Users/alice/path"]);
 
     // List to find the comment_id.
     let listed = sandbox.run_ok(&["bead", "comment", "list", &id]);
     assert!(
-        listed.contains("/Users/jamesgardner/path"),
+        listed.contains("/Users/alice/path"),
         "list must show the original body: {listed}"
     );
     // First listed line has `#<id>` — extract the opaque id (UUID for Dolt,
@@ -423,7 +417,7 @@ fn bead_comment_update_delete_audit_trail() {
     assert!(after_edit.contains("see <home>/path"), "{after_edit}");
     assert!(after_edit.contains("(edited)"), "{after_edit}");
     assert!(
-        after_edit.contains("original: see /Users/jamesgardner/path"),
+        after_edit.contains("original: see /Users/alice/path"),
         "list should surface original body: {after_edit}"
     );
     assert!(
@@ -453,9 +447,19 @@ fn bead_comment_update_delete_audit_trail() {
         "soft-deleted comment must not appear in default list: {list_default}"
     );
 
-    // --include-deleted brings it back, marked as such.
+    // --include-deleted brings it back with both reasons preserved
+    // (rosary-a96b06: edit_reason and delete_reason live in separate
+    // columns so the deletion reason survives the prior edit).
     let list_all = sandbox.run_ok(&["bead", "comment", "list", &id, "--include-deleted"]);
     assert!(list_all.contains("(deleted)"), "{list_all}");
+    assert!(
+        list_all.contains("edit reason: scrub absolute path"),
+        "edit reason must remain in audit trail: {list_all}"
+    );
+    assert!(
+        list_all.contains("delete reason: no longer relevant"),
+        "delete reason must be recorded in its own column: {list_all}"
+    );
 }
 
 #[test]

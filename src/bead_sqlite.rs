@@ -293,6 +293,7 @@ impl SqliteBeadStore {
         let _ = conn.execute_batch("ALTER TABLE comments ADD COLUMN edit_reason TEXT");
         let _ = conn.execute_batch("ALTER TABLE comments ADD COLUMN original_text TEXT");
         let _ = conn.execute_batch("ALTER TABLE comments ADD COLUMN deleted_at TEXT");
+        let _ = conn.execute_batch("ALTER TABLE comments ADD COLUMN delete_reason TEXT");
         let _ = conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_comments_issue_id ON comments(issue_id)",
         );
@@ -349,7 +350,8 @@ CREATE TABLE IF NOT EXISTS comments (
     edited_at TEXT,
     edit_reason TEXT,
     original_text TEXT,
-    deleted_at TEXT
+    deleted_at TEXT,
+    delete_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_comments_issue_id ON comments(issue_id);
 CREATE INDEX IF NOT EXISTS idx_comments_deleted_at ON comments(deleted_at);
@@ -989,11 +991,11 @@ impl BeadStore for SqliteBeadStore {
         let full_id = Self::resolve_id(&conn, issue_id)?;
         let sql = if include_deleted {
             "SELECT id, issue_id, text, author, created_at, edited_at, edit_reason,
-                    original_text, deleted_at
+                    original_text, deleted_at, delete_reason
              FROM comments WHERE issue_id = ?1 ORDER BY created_at ASC, id ASC"
         } else {
             "SELECT id, issue_id, text, author, created_at, edited_at, edit_reason,
-                    original_text, deleted_at
+                    original_text, deleted_at, delete_reason
              FROM comments WHERE issue_id = ?1 AND deleted_at IS NULL
              ORDER BY created_at ASC, id ASC"
         };
@@ -1013,6 +1015,7 @@ impl BeadStore for SqliteBeadStore {
                     edit_reason: row.get("edit_reason")?,
                     original_text: row.get("original_text")?,
                     deleted_at: deleted_str.map(|s| parse_datetime(&s)),
+                    delete_reason: row.get("delete_reason")?,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -1058,7 +1061,7 @@ impl BeadStore for SqliteBeadStore {
         // Re-fetch to return the canonical post-update row.
         let mut stmt = conn.prepare(
             "SELECT id, issue_id, text, author, created_at, edited_at, edit_reason,
-                    original_text, deleted_at
+                    original_text, deleted_at, delete_reason
              FROM comments WHERE id = ?1",
         )?;
         let comment = stmt.query_row(params![comment_id], |row| {
@@ -1075,6 +1078,7 @@ impl BeadStore for SqliteBeadStore {
                 edit_reason: row.get("edit_reason")?,
                 original_text: row.get("original_text")?,
                 deleted_at: deleted_str.map(|s| parse_datetime(&s)),
+                delete_reason: row.get("delete_reason")?,
             })
         })?;
         Ok(comment)
@@ -1090,26 +1094,16 @@ impl BeadStore for SqliteBeadStore {
         if exists == 0 {
             anyhow::bail!("comment {comment_id} not found");
         }
-        // If reason supplied, stash in edit_reason iff it's currently NULL —
-        // mirrors Dolt impl. Soft-delete is idempotent: a re-delete refreshes
-        // deleted_at without erroring.
-        match reason {
-            Some(r) => {
-                conn.execute(
-                    "UPDATE comments
-                     SET deleted_at = datetime('now'),
-                         edit_reason = COALESCE(edit_reason, ?1)
-                     WHERE id = ?2",
-                    params![r, comment_id],
-                )?;
-            }
-            None => {
-                conn.execute(
-                    "UPDATE comments SET deleted_at = datetime('now') WHERE id = ?1",
-                    params![comment_id],
-                )?;
-            }
-        }
+        // The deletion reason lands in `delete_reason` — its own column —
+        // so it survives even when the comment was previously edited (which
+        // would have set `edit_reason`). Soft-delete is idempotent: a
+        // re-delete refreshes both timestamp and reason.
+        conn.execute(
+            "UPDATE comments
+             SET deleted_at = datetime('now'), delete_reason = ?1
+             WHERE id = ?2",
+            params![reason, comment_id],
+        )?;
         Ok(())
     }
 
@@ -1490,13 +1484,56 @@ mod tests {
         assert!(msg.contains("99999") && msg.contains("not found"));
     }
 
+    /// rosary-a96b06 regression (Copilot review on PR #188): the deletion
+    /// reason must land in its own column so it survives even when the
+    /// comment was previously edited. The first cut overloaded
+    /// `edit_reason` via `COALESCE(edit_reason, ?)`, which silently dropped
+    /// the deletion reason whenever an edit had already populated it.
+    #[tokio::test]
+    async fn delete_reason_survives_prior_edit() {
+        let store = test_store();
+        store.create_bead("c", "T", "", 1, "task").await.unwrap();
+        store.add_comment("c", "v1", "u").await.unwrap();
+        let cid = store.list_comments("c", false).await.unwrap()[0].id.clone();
+
+        // Edit first, with an edit reason.
+        let edited = store
+            .update_comment(&cid, "v2", Some("typo fix"))
+            .await
+            .unwrap();
+        assert_eq!(edited.edit_reason.as_deref(), Some("typo fix"));
+        assert!(edited.delete_reason.is_none());
+
+        // Now soft-delete with a deletion reason. This is the case the
+        // first implementation got wrong.
+        store
+            .delete_comment(&cid, Some("no longer relevant"))
+            .await
+            .unwrap();
+
+        let after = store.list_comments("c", true).await.unwrap();
+        assert_eq!(after.len(), 1);
+        let c = &after[0];
+        assert!(c.is_deleted());
+        assert_eq!(
+            c.edit_reason.as_deref(),
+            Some("typo fix"),
+            "edit_reason must be preserved verbatim from the prior edit",
+        );
+        assert_eq!(
+            c.delete_reason.as_deref(),
+            Some("no longer relevant"),
+            "delete_reason must be recorded in its dedicated column, not lost",
+        );
+    }
+
     /// rosary-a96b06: soft-delete preserves the row + audit trail; hard-delete removes it.
     #[tokio::test]
     async fn soft_delete_preserves_audit_trail_hard_delete_removes_row() {
         let store = test_store();
         store.create_bead("c", "T", "", 1, "task").await.unwrap();
         store
-            .add_comment("c", "/Users/jamesgardner/leak", "u")
+            .add_comment("c", "/Users/alice/leak", "u")
             .await
             .unwrap();
         let cid = store.list_comments("c", false).await.unwrap()[0].id.clone();
@@ -1509,9 +1546,16 @@ mod tests {
         let after_soft = store.list_comments("c", true).await.unwrap();
         assert_eq!(after_soft.len(), 1);
         assert!(after_soft[0].is_deleted());
+        // Reason lands in delete_reason (the dedicated column), NOT
+        // edit_reason. This preserves it across previously-edited comments
+        // — see delete_reason_survives_prior_edit for the regression case.
         assert_eq!(
-            after_soft[0].edit_reason.as_deref(),
+            after_soft[0].delete_reason.as_deref(),
             Some("contains absolute path"),
+        );
+        assert!(
+            after_soft[0].edit_reason.is_none(),
+            "edit_reason must not be touched by delete",
         );
 
         // Soft-delete is idempotent.

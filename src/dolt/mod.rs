@@ -193,7 +193,8 @@ const BEADS_SCHEMA: &[&str] = &[
         edited_at DATETIME NULL,
         edit_reason TEXT NULL,
         original_text TEXT NULL,
-        deleted_at DATETIME NULL
+        deleted_at DATETIME NULL,
+        delete_reason TEXT NULL
     )",
     "CREATE TABLE IF NOT EXISTS dependencies (
         issue_id VARCHAR(128) NOT NULL,

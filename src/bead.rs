@@ -279,6 +279,11 @@ pub struct Comment {
     /// Soft-delete marker. Live comments have `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Optional rationale recorded when the comment was deleted. Independent
+    /// of `edit_reason` so the deletion reason is preserved even when the
+    /// comment was previously edited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_reason: Option<String>,
 }
 
 impl Comment {

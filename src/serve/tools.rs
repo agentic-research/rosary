@@ -162,13 +162,13 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_bead_comment_delete",
-                "description": "Soft-delete a comment by setting deleted_at. Audit trail (original_text, edit_reason) is preserved. Hard-delete is CLI-only — `rsry bead comment delete --hard` — never exposed via MCP. Idempotent: re-deleting refreshes the timestamp without erroring.",
+                "description": "Soft-delete a comment by setting deleted_at and optionally delete_reason. Audit trail (original_text, edit_reason, delete_reason) is preserved. Hard-delete is CLI-only — `rsry bead comment delete --hard` — never exposed via MCP. Idempotent: re-deleting refreshes both timestamp and reason without erroring.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
                         "comment_id": { "type": "string", "description": "Stable comment id (from rsry_bead_comment_list). Opaque string — Dolt produces UUIDs, SQLite produces stringified integers." },
-                        "reason": { "type": "string", "description": "Optional reason for the deletion (recorded in audit trail)" }
+                        "reason": { "type": "string", "description": "Optional reason for the deletion. Persisted in the dedicated `delete_reason` column (independent of `edit_reason`) so it is preserved even when the comment was previously edited." }
                     },
                     "required": ["repo_path", "comment_id"]
                 }

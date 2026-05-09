@@ -373,6 +373,12 @@ enum BeadAction {
     },
     /// List open beads
     List,
+    /// Reopen a closed bead (sets status to `open`).
+    /// Useful for recovering from accidental closures or revisiting work.
+    Reopen {
+        /// Bead ID
+        id: String,
+    },
     /// Manage comments on a bead (add/update/delete/list)
     Comment {
         #[command(subcommand)]
@@ -1233,6 +1239,11 @@ async fn main() -> Result<()> {
                     let beads = client.list_beads(&repo_name).await?;
                     cli::bead_list(&beads);
                 }
+                BeadAction::Reopen { id } => {
+                    client.update_status(&id, "open").await?;
+                    client.log_event(&id, "reopened", "via rsry-cli").await;
+                    println!("reopened {id}");
+                }
                 BeadAction::Comment { action } => match action {
                     BeadCommentAction::Add { id, body } => {
                         client.add_comment(&id, &body, "rsry-cli").await?;
@@ -1265,7 +1276,10 @@ async fn main() -> Result<()> {
                                     );
                                 }
                                 if let Some(reason) = &c.edit_reason {
-                                    println!("      reason: {reason}");
+                                    println!("      edit reason: {reason}");
+                                }
+                                if let Some(reason) = &c.delete_reason {
+                                    println!("      delete reason: {reason}");
                                 }
                             }
                         }

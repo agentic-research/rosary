@@ -97,11 +97,11 @@ impl DoltClient {
         let full_id = self.resolve_id(issue_id).await?;
         let sql = if include_deleted {
             "SELECT id, issue_id, text, author, created_at, edited_at, edit_reason,
-                    original_text, deleted_at
+                    original_text, deleted_at, delete_reason
              FROM comments WHERE issue_id = ? ORDER BY created_at ASC, id ASC"
         } else {
             "SELECT id, issue_id, text, author, created_at, edited_at, edit_reason,
-                    original_text, deleted_at
+                    original_text, deleted_at, delete_reason
              FROM comments WHERE issue_id = ? AND deleted_at IS NULL
              ORDER BY created_at ASC, id ASC"
         };
@@ -127,6 +127,10 @@ impl DoltClient {
                     .ok()
                     .flatten(),
                 deleted_at: r.try_get("deleted_at").ok(),
+                delete_reason: r
+                    .try_get::<Option<String>, _>("delete_reason")
+                    .ok()
+                    .flatten(),
             })
             .collect())
     }
@@ -144,7 +148,7 @@ impl DoltClient {
         // Fetch current state to determine whether to capture original_text.
         let existing = query(
             "SELECT id, issue_id, text, author, created_at, edited_at, edit_reason,
-                    original_text, deleted_at
+                    original_text, deleted_at, delete_reason
              FROM comments WHERE id = ?",
         )
         .bind(comment_id)
@@ -197,7 +201,7 @@ impl DoltClient {
         // Return the post-update row.
         let updated = query(
             "SELECT id, issue_id, text, author, created_at, edited_at, edit_reason,
-                    original_text, deleted_at
+                    original_text, deleted_at, delete_reason
              FROM comments WHERE id = ?",
         )
         .bind(comment_id)
@@ -225,6 +229,10 @@ impl DoltClient {
                 .ok()
                 .flatten(),
             deleted_at: updated.try_get("deleted_at").ok(),
+            delete_reason: updated
+                .try_get::<Option<String>, _>("delete_reason")
+                .ok()
+                .flatten(),
         })
     }
 
@@ -243,30 +251,20 @@ impl DoltClient {
             anyhow::bail!("comment {comment_id} not found");
         }
 
-        // If a deletion reason is supplied and there's no edit_reason yet,
-        // stash it in edit_reason so the audit trail records WHY this was
-        // removed. Otherwise just stamp deleted_at.
-        match reason {
-            Some(r) => {
-                query(
-                    "UPDATE comments SET deleted_at = NOW(),
-                       edit_reason = COALESCE(edit_reason, ?)
-                     WHERE id = ?",
-                )
-                .bind(r)
-                .bind(comment_id)
-                .execute(&self.pool)
-                .await
-                .with_context(|| format!("soft-deleting comment {comment_id}"))?;
-            }
-            None => {
-                query("UPDATE comments SET deleted_at = NOW() WHERE id = ?")
-                    .bind(comment_id)
-                    .execute(&self.pool)
-                    .await
-                    .with_context(|| format!("soft-deleting comment {comment_id}"))?;
-            }
-        }
+        // The deletion reason lands in `delete_reason` — its own column —
+        // so it's preserved even when the comment was previously edited
+        // (which would have populated `edit_reason`). Re-deletion overwrites
+        // an earlier deletion's reason; the timestamp is also refreshed.
+        query(
+            "UPDATE comments
+             SET deleted_at = NOW(), delete_reason = ?
+             WHERE id = ?",
+        )
+        .bind(reason)
+        .bind(comment_id)
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("soft-deleting comment {comment_id}"))?;
         self.auto_commit(&format!("comment soft-delete {comment_id}"))
             .await;
         Ok(())

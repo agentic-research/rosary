@@ -67,7 +67,8 @@ const MIGRATIONS: &[Migration] = &[
               ALTER TABLE comments ADD COLUMN edited_at DATETIME NULL;
               ALTER TABLE comments ADD COLUMN edit_reason TEXT NULL;
               ALTER TABLE comments ADD COLUMN original_text TEXT NULL;
-              ALTER TABLE comments ADD COLUMN deleted_at DATETIME NULL",
+              ALTER TABLE comments ADD COLUMN deleted_at DATETIME NULL;
+              ALTER TABLE comments ADD COLUMN delete_reason TEXT NULL",
         description: "Audit-trail columns + UUID id for comment update/delete (rosary-a96b06)",
     },
 ];
