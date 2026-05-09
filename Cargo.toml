@@ -47,7 +47,13 @@ socket2 = "0.5"
 rusqlite = { version = "0.34", features = ["bundled"] }
 
 [features]
-default = ["leyline"]
+# `leyline` is OFF by default so public clones (rosary itself is public; the
+# leyline-vcs dep is in a private repo) `cargo build` works out of the box.
+# Local development with the integrated jj sidecar uses `--features leyline`,
+# which is wired through every relevant `task` target in Taskfile.yml.
+# Long-term: move leyline-vcs to ley-line-open (public) and re-enable as a
+# default — see follow-up bead.
+default = []
 leyline = ["dep:leyline-vcs"]
 
 [dev-dependencies]
