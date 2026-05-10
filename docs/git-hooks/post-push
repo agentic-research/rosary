@@ -1,0 +1,9 @@
+#!/bin/sh
+# Sync beads to remote after git push.
+# Install: rsry hooks install
+# Or manually: cp docs/git-hooks/post-push .git/hooks/post-push && chmod +x .git/hooks/post-push
+REPO=$(basename "$PWD")
+BEADS_DIR=".beads/dolt/$REPO"
+if [ -d "$BEADS_DIR" ]; then
+    (cd "$BEADS_DIR" && dolt push origin main 2>/dev/null) || true
+fi

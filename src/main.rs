@@ -376,6 +376,14 @@ enum Command {
         #[arg(short, long, default_value = ".")]
         repo: String,
     },
+    /// Manage git hooks for bead sync (post-push / post-merge)
+    Hooks {
+        #[command(subcommand)]
+        action: HooksAction,
+        /// Repo path (defaults to current directory)
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -395,6 +403,14 @@ enum NotesAction {
         #[arg(long)]
         identity: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum HooksAction {
+    /// Copy post-push and post-merge hook templates into .git/hooks/
+    Install,
+    /// Show which bead-sync hooks are installed and whether Dolt remotes are configured
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -1590,9 +1606,168 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Command::Hooks { action, repo } => {
+            let repo_root = scanner::resolve_repo_path(Path::new(&repo));
+            match action {
+                HooksAction::Install => hooks::install(&repo_root)?,
+                HooksAction::Status => hooks::status(&repo_root),
+            }
+        }
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `rsry hooks` — git hook management for bead sync
+// ---------------------------------------------------------------------------
+
+mod hooks {
+    use std::path::Path;
+
+    const HOOK_NAMES: &[&str] = &["post-push", "post-merge"];
+
+    /// Copy hook templates from docs/git-hooks/ into .git/hooks/ and make them executable.
+    pub fn install(repo_root: &Path) -> anyhow::Result<()> {
+        let git_hooks_dir = repo_root.join(".git").join("hooks");
+        if !git_hooks_dir.exists() {
+            anyhow::bail!(
+                "no .git/hooks/ found at {} — is this a git repo?",
+                repo_root.display()
+            );
+        }
+
+        // Locate hook templates relative to the rosary binary, then fall back to
+        // looking them up relative to the current working directory (dev use-case).
+        let template_dir = find_template_dir()?;
+
+        for hook in HOOK_NAMES {
+            let src = template_dir.join(hook);
+            let dst = git_hooks_dir.join(hook);
+
+            if !src.exists() {
+                eprintln!("[hooks] template not found: {}", src.display());
+                continue;
+            }
+
+            std::fs::copy(&src, &dst)?;
+
+            // chmod +x
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&dst)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&dst, perms)?;
+            }
+
+            println!("[hooks] installed {} → {}", hook, dst.display());
+        }
+
+        // Warn if Dolt remote is not configured — hooks will silently no-op otherwise.
+        let repo_name = repo_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repo");
+        let dolt_dir = repo_root.join(".beads").join("dolt").join(repo_name);
+        if dolt_dir.exists() {
+            let remote_output = std::process::Command::new("dolt")
+                .args(["remote", "-v"])
+                .current_dir(&dolt_dir)
+                .output();
+            match remote_output {
+                Ok(out) if out.stdout.is_empty() => {
+                    eprintln!(
+                        "[hooks] WARNING: no dolt remote configured in {dolt_dir:?}",
+                        dolt_dir = dolt_dir
+                    );
+                    eprintln!(
+                        "[hooks] Run: cd {} && dolt remote add origin <url>",
+                        dolt_dir.display()
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Show which hooks are installed and whether Dolt remotes are configured.
+    pub fn status(repo_root: &Path) {
+        let git_hooks_dir = repo_root.join(".git").join("hooks");
+        println!("repo: {}", repo_root.display());
+        println!();
+        println!("git hooks:");
+        for hook in HOOK_NAMES {
+            let path = git_hooks_dir.join(hook);
+            let installed = if path.exists() { "✓" } else { "✗" };
+            println!("  {installed} {hook}");
+        }
+
+        let repo_name = repo_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repo");
+        let dolt_dir = repo_root.join(".beads").join("dolt").join(repo_name);
+        println!();
+        println!("dolt remote:");
+        if dolt_dir.exists() {
+            let out = std::process::Command::new("dolt")
+                .args(["remote", "-v"])
+                .current_dir(&dolt_dir)
+                .output();
+            match out {
+                Ok(o) if !o.stdout.is_empty() => {
+                    print!("{}", String::from_utf8_lossy(&o.stdout));
+                }
+                Ok(_) => println!("  ✗ no remote configured"),
+                Err(e) => println!("  ? dolt not available: {e}"),
+            }
+        } else {
+            println!("  ? no .beads/dolt/{repo_name} found");
+        }
+    }
+
+    /// Find the docs/git-hooks/ template directory.
+    /// Checks CARGO_MANIFEST_DIR (dev), then adjacent to the binary (installed).
+    fn find_template_dir() -> anyhow::Result<std::path::PathBuf> {
+        // Dev: check CARGO_MANIFEST_DIR/docs/git-hooks
+        if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+            let candidate = std::path::Path::new(&manifest)
+                .join("docs")
+                .join("git-hooks");
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+
+        // Installed: check next to the binary
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(exe_dir) = exe.parent()
+        {
+            let candidate = exe_dir
+                .parent()
+                .unwrap_or(exe_dir)
+                .join("share")
+                .join("rsry")
+                .join("git-hooks");
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+
+        // CWD fallback: docs/git-hooks relative to current directory
+        let cwd_candidate = std::path::Path::new("docs").join("git-hooks");
+        if cwd_candidate.exists() {
+            return Ok(cwd_candidate);
+        }
+
+        anyhow::bail!(
+            "hook templates not found — expected docs/git-hooks/ relative to rosary source \
+             or $CARGO_MANIFEST_DIR/docs/git-hooks/"
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
