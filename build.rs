@@ -26,4 +26,15 @@ fn main() {
     // Only re-run when HEAD changes (new commits), not on every build.
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/heads/");
+
+    // capnp codegen for the cloister↔rosary wire schema (rosary-6371e3).
+    // Schema is vendored from cloister/wire/cloister.capnp at the same commit
+    // those bytes mean to be cross-host equivalent; bump in sync with cloister
+    // when that file evolves.
+    println!("cargo:rerun-if-changed=schemas/cloister.capnp");
+    capnpc::CompilerCommand::new()
+        .src_prefix("schemas")
+        .file("schemas/cloister.capnp")
+        .run()
+        .expect("capnpc codegen for schemas/cloister.capnp");
 }

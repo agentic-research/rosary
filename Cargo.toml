@@ -45,6 +45,11 @@ owo-colors = "4.3.0"
 jsonwebtoken = "9"
 socket2 = "0.5"
 rusqlite = { version = "0.34", features = ["bundled"] }
+capnp = "0.21"
+capnp-futures = "0.21"
+
+[build-dependencies]
+capnpc = "0.21"
 
 [features]
 # `leyline` is back on by default now that leyline-vcs ships from

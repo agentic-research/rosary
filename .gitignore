@@ -10,6 +10,7 @@
 !/src
 !/crates
 !/tests
+!/schemas
 
 # === CONFIG ===
 !/.cargo

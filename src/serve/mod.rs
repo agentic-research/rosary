@@ -6,6 +6,7 @@
 
 mod github_webhook;
 mod handlers;
+mod ipc;
 mod landing;
 mod tools;
 mod webhook;
@@ -257,6 +258,15 @@ pub async fn run(transport: &str, port: u16) -> Result<()> {
             anyhow::bail!("Unknown transport: {other}. Supported: stdio, http");
         }
     }
+}
+
+/// Run the MCP server over a Unix Domain Socket (capnp ToolCall/Result).
+///
+/// Entry point for the `rsry mcp --ipc-socket <path>` cluster invocation
+/// declared in cloister's `cluster.capnp` (rosary-6371e3, ADR-0005
+/// intra-cluster amendment).
+pub async fn run_ipc(ipc_socket: &std::path::Path) -> Result<()> {
+    ipc::run(ipc_socket, &crate::config::resolve_config_path()).await
 }
 
 // ---------------------------------------------------------------------------
