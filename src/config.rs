@@ -351,16 +351,6 @@ pub struct DispatchConfig {
     /// Toggle with `rsry approve <repo>` / `rsry reject <repo>`.
     #[serde(default)]
     pub require_approval: bool,
-    /// Allow `rsry_dispatch` to spawn worker processes server-side from the
-    /// MCP path (rosary-748f07). When `false` (default), the MCP tool refuses
-    /// to spawn — operators must explicitly enable this on hosts where the
-    /// MCP transport is trusted (local stdio, localhost-bound HTTP).
-    ///
-    /// Expands the server's trust boundary: any client reachable on the MCP
-    /// transport can trigger subprocess execution while this is `true`. Keep
-    /// it `false` on hosts where rosary's HTTP transport is publicly reachable.
-    #[serde(default)]
-    pub allow_mcp_spawn: bool,
 }
 
 fn default_dispatch_provider() -> String {
