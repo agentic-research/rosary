@@ -188,7 +188,40 @@ pub struct GeminiProvider {
     pub extra_args: Vec<String>,
 }
 
+impl GeminiProvider {
+    /// Resolve the binary path, defaulting to `gemini` from PATH.
+    fn resolved_binary(&self) -> &str {
+        if self.binary.is_empty() {
+            "gemini"
+        } else {
+            self.binary.as_str()
+        }
+    }
+}
+
 impl AgentProvider for GeminiProvider {
+    fn build_command(
+        &self,
+        prompt: &str,
+        permissions: &PermissionProfile,
+        system_prompt: &str,
+    ) -> (String, Vec<String>) {
+        // Mirror spawn_agent's invocation so detached spawn (MCP path)
+        // produces the same wire as the orchestrator path. Gemini doesn't
+        // support --append-system-prompt; prepend to user prompt instead.
+        let full_prompt = format!("{system_prompt}\n\n---\n\n{prompt}");
+        let mut args = vec![
+            "-p".to_string(),
+            full_prompt,
+            "-o".to_string(),
+            "json".to_string(),
+            "--approval-mode".to_string(),
+            permissions.gemini_approval_mode().to_string(),
+        ];
+        args.extend(self.extra_args.iter().cloned());
+        (self.resolved_binary().to_string(), args)
+    }
+
     fn spawn_agent(
         &self,
         prompt: &str,
@@ -453,5 +486,82 @@ pub fn provider_by_name(
             Ok(Box::new(AcpNativeProvider { binary }))
         }
         other => anyhow::bail!("unknown provider: {other} (available: claude, gemini, acp)"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_build_command_produces_dash_p_invocation() {
+        let provider = ClaudeProvider::default();
+        let perms = PermissionProfile::default();
+        let (bin, args) = provider.build_command("the prompt", &perms, "the sys prompt");
+        assert_eq!(bin, "claude");
+        // -p flag + prompt
+        assert!(args.iter().any(|a| a == "-p"));
+        assert!(args.iter().any(|a| a == "the prompt"));
+        // System prompt is appended via --append-system-prompt (claude-specific)
+        assert!(args.iter().any(|a| a == "--append-system-prompt"));
+        assert!(args.iter().any(|a| a == "the sys prompt"));
+        // Allowed tools wired through
+        assert!(args.iter().any(|a| a == "--allowedTools"));
+        // Output format pins JSON for stream parsing
+        assert!(args.iter().any(|a| a == "--output-format"));
+        assert!(args.iter().any(|a| a == "json"));
+    }
+
+    /// Regression for Copilot finding on PR #200: `GeminiProvider` used the
+    /// trait-default `build_command` (empty), so `rsry_dispatch
+    /// provider=gemini` errored at spawn time even though the tool schema
+    /// advertised gemini as a valid choice. Gemini now implements
+    /// `build_command` mirroring its `spawn_agent` invocation.
+    #[test]
+    fn gemini_build_command_is_non_empty_and_mirrors_spawn_agent() {
+        let provider = GeminiProvider {
+            binary: String::new(), // default → "gemini" from PATH
+            extra_args: vec!["--foo".to_string()],
+        };
+        let perms = PermissionProfile::default();
+        let (bin, args) = provider.build_command("the prompt", &perms, "the sys prompt");
+
+        assert_eq!(bin, "gemini", "default binary should resolve to gemini");
+        assert!(
+            !args.is_empty(),
+            "gemini build_command must not fall through to trait-default empty (rosary-748f07)"
+        );
+        // Gemini has no --append-system-prompt; system prompt is prepended.
+        let p_index = args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("gemini build_command must include -p flag");
+        let full_prompt = &args[p_index + 1];
+        assert!(
+            full_prompt.contains("the sys prompt"),
+            "system prompt must be prepended into -p arg, got: {full_prompt}"
+        );
+        assert!(
+            full_prompt.contains("the prompt"),
+            "user prompt must be in -p arg, got: {full_prompt}"
+        );
+        // Extra args appended verbatim
+        assert!(args.iter().any(|a| a == "--foo"));
+        // Approval mode wired through
+        assert!(args.iter().any(|a| a == "--approval-mode"));
+    }
+
+    #[test]
+    fn gemini_resolved_binary_falls_back_to_path_lookup() {
+        let p = GeminiProvider {
+            binary: String::new(),
+            extra_args: vec![],
+        };
+        assert_eq!(p.resolved_binary(), "gemini");
+        let p = GeminiProvider {
+            binary: "/opt/gemini-cli".to_string(),
+            extra_args: vec![],
+        };
+        assert_eq!(p.resolved_binary(), "/opt/gemini-cli");
     }
 }

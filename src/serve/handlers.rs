@@ -969,9 +969,25 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     };
     let allowed_tools = perms.claude_allowed_tools().to_string();
 
-    // Resolve the provider by name (with optional binary path overrides
-    // from config so containerized rosary can point at a specific binary).
+    // Resolve provider config + trust gate FIRST, before any work that
+    // would need to be rolled back. `allow_mcp_spawn` must be explicitly
+    // enabled by operators — server-side spawn from the MCP transport
+    // expands the trust boundary (HTTP-bound rosary can reach arbitrary
+    // subprocess execution if exposed publicly), so we refuse by default.
     let cfg = crate::config::load(_config_path).ok();
+    let allow_mcp_spawn = cfg
+        .as_ref()
+        .and_then(|c| c.dispatch.as_ref())
+        .map(|d| d.allow_mcp_spawn)
+        .unwrap_or(false);
+    anyhow::ensure!(
+        allow_mcp_spawn,
+        "rsry_dispatch refuses to spawn workers from the MCP path: set \
+         `[dispatch] allow_mcp_spawn = true` in your config to opt in. \
+         This gate exists because the MCP transport can be reached by any \
+         client authorized to call the server (rosary-748f07 security note)."
+    );
+
     let binaries = cfg
         .as_ref()
         .and_then(|c| c.dispatch.as_ref())
@@ -979,6 +995,11 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         .unwrap_or_default();
     let provider = crate::dispatch::providers::provider_by_name(provider_name, &binaries)
         .with_context(|| format!("resolving provider {provider_name}"))?;
+
+    // Pre-flight: load the registry now and validate it's writable so we
+    // don't spawn a worker we can't track. Loading is best-effort
+    // (corrupted file → start fresh); saving is the real test.
+    let mut registry = crate::session::SessionRegistry::load().unwrap_or_default();
 
     // Server-side spawn: setsid + detached so the worker survives the MCP
     // request returning AND isn't subject to the caller's safety classifier.
@@ -990,9 +1011,9 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         &perms,
         &system_prompt,
     )
+    .await
     .with_context(|| format!("spawning agent for {bead_id}"))?;
 
-    // Register the live session so `rsry_active` / health-check can see it.
     let workspace_vcs = workspace
         .as_ref()
         .map(|ws| match ws.vcs {
@@ -1002,8 +1023,7 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         })
         .unwrap_or("")
         .to_string();
-    let mut registry = crate::session::SessionRegistry::load().unwrap_or_default();
-    let _ = registry.register(crate::session::SessionEntry {
+    let session_entry = crate::session::SessionEntry {
         bead_id: bead_id.to_string(),
         repo: repo_name.clone(),
         provider: provider_name.to_string(),
@@ -1016,15 +1036,41 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         repo_path: repo_path.to_string(),
         last_activity: None,
         last_comment: None,
-    });
+    };
 
-    // Mark bead in-progress: the worker is actually running now (this is
-    // the behavior change from the pre-748f07 design, which marked
-    // `dispatched` and waited for the caller to spawn the process).
+    // Register the live session so `rsry_active` / health-check can see it.
+    // If registry.register fails (permissions, disk full, concurrent write)
+    // we have to choose: leak an untracked worker, or kill it. We kill,
+    // because an untracked worker is worse than no worker — it leaves the
+    // bead in an indeterminate state and gives the operator no handle to
+    // recover. The worker will exit when we send SIGTERM; the tokio reaper
+    // task in spawn_detached will waitpid it.
+    if let Err(e) = registry.register(session_entry) {
+        let pid = spawned.pid;
+        eprintln!("[dispatch] registry write failed; killing untracked worker pid={pid}: {e}");
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        return Err(e).with_context(|| {
+            format!("persisting session for {bead_id} (pid {pid} killed to keep state consistent)")
+        });
+    }
+
+    // Mark bead in-progress: the worker is actually running now (behavior
+    // change from the pre-748f07 design, which marked `dispatched` and
+    // waited for the caller to spawn the process). Status update failing
+    // here is recoverable (operator can mark out-of-band) so we don't kill
+    // the worker — just surface the error.
     client
         .update_status(bead_id, "in_progress")
         .await
-        .with_context(|| format!("marking bead {bead_id} as in_progress"))?;
+        .with_context(|| {
+            format!(
+                "marking bead {bead_id} in_progress (worker is RUNNING at pid {}; \
+                 bead status update failed but the agent is tracked in sessions.json)",
+                spawned.pid,
+            )
+        })?;
 
     Ok(json!({
         "bead_id": bead_id,
