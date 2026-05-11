@@ -257,6 +257,13 @@ impl Reconciler {
             // from above is already released by this point.
             self.persist_status(&candidate.bead_id, &repo, "dead_letter")
                 .await;
+            // Surface the forensic context the sweep collected so operators
+            // tailing the reconciler log see WHY each bead got deadlettered
+            // (pid, worktree, last_activity) — not just the bead id.
+            eprintln!(
+                "[reconcile] {} → dead_letter [{}]",
+                candidate.bead_id, candidate.detail
+            );
             deadlettered.push(candidate.bead_id);
         }
         deadlettered
