@@ -40,16 +40,33 @@ impl SweepReport {
     }
 }
 
-/// Result of a liveness sweep — bead IDs that were moved to dead-letter.
+/// Candidate identified by the liveness sweep — a Dispatched bead whose
+/// worker pid is gone. The sweep does NOT perform the state transition
+/// itself; callers transition to `dead_letter` via the reconciler's
+/// `persist_status` so Linear mirroring + state_change events fire.
+#[derive(Debug, Clone)]
+pub struct DeadWorkerCandidate {
+    pub bead_id: String,
+    /// Forensic context — pid, started_at, last_activity, work_dir.
+    /// Already written to the event log by the sweep itself; included here
+    /// so callers can surface it in user-facing logs without re-querying.
+    pub detail: String,
+}
+
+/// Result of a liveness sweep — bead IDs identified as needing transition
+/// to `dead_letter`. The sweep writes a forensic event to the event log
+/// for each but does NOT mutate bead status; the caller is responsible
+/// for the actual state transition (typically through the reconciler's
+/// `persist_status` path so Linear/issue-tracker mirroring fires).
 #[derive(Debug, Default, Clone)]
 pub struct LivenessSweepReport {
-    pub deadlettered: Vec<String>,
+    pub candidates: Vec<DeadWorkerCandidate>,
 }
 
 impl LivenessSweepReport {
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
-        self.deadlettered.is_empty()
+        self.candidates.is_empty()
     }
 }
 
@@ -192,7 +209,10 @@ pub async fn sweep_dead_workers(
             continue; // Healthy session, leave alone.
         }
 
-        // Worker is gone. Move bead to dead_letter with forensic context.
+        // Worker is gone. Surface as a candidate. The actual `dead_letter`
+        // status transition is performed by the caller (the reconciler)
+        // via `persist_status` so Linear mirroring + state_change events
+        // fire — bypassing it would skip the audit/sync round.
         let detail = format!(
             "pid={} started_at={} last_activity={:?} work_dir={}",
             pid,
@@ -200,21 +220,17 @@ pub async fn sweep_dead_workers(
             session.last_activity.map(|t| t.to_rfc3339()),
             session.work_dir,
         );
-        match client.update_status(&bead.id, "dead_letter").await {
-            Ok(()) => {
-                eprintln!(
-                    "[liveness-sweep] {} → dead_letter (worker pid={pid} is dead)",
-                    bead.id
-                );
-                let _ = client
-                    .log_event(&bead.id, "deadletter_dead_worker", &detail)
-                    .await;
-                report.deadlettered.push(bead.id);
-            }
-            Err(e) => {
-                eprintln!("[liveness-sweep] failed to deadletter {}: {e}", bead.id);
-            }
-        }
+        eprintln!(
+            "[liveness-sweep] {} candidate for dead_letter (worker pid={pid} is dead)",
+            bead.id
+        );
+        let _ = client
+            .log_event(&bead.id, "deadletter_dead_worker", &detail)
+            .await;
+        report.candidates.push(DeadWorkerCandidate {
+            bead_id: bead.id,
+            detail,
+        });
     }
 
     report
@@ -363,16 +379,31 @@ mod tests {
         let sessions = vec![fake_session("dead-w-1", "test-repo", Some(dead_pid))];
 
         let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
-        assert_eq!(report.deadlettered, vec!["dead-w-1".to_string()]);
+        // After round-7 refactor: sweep returns CANDIDATES; the caller is
+        // responsible for the actual `dead_letter` transition via
+        // `persist_status` (Linear mirroring + state_change event).
+        assert_eq!(report.candidates.len(), 1);
+        assert_eq!(report.candidates[0].bead_id, "dead-w-1");
+        assert!(
+            report.candidates[0]
+                .detail
+                .contains(&format!("pid={dead_pid}")),
+            "forensic detail must include pid; got: {}",
+            report.candidates[0].detail
+        );
 
+        // Sweep itself MUST NOT mutate status — that's the caller's job
+        // (the reconciler routes through persist_status). Test the
+        // separation of concerns explicitly so a regression that re-adds
+        // direct update_status calls would fail here.
         let bead = store
             .get_bead("dead-w-1", "test-repo")
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
-            bead.status, "dead_letter",
-            "dead worker should move bead to dead_letter"
+            bead.status, "dispatched",
+            "sweep is candidate-only; status transition happens at the reconciler layer"
         );
     }
 

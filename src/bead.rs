@@ -123,9 +123,8 @@ impl BeadState {
             // Linear→rosary webhook would silently demote a DeadLetter bead to
             // Done on every sync, losing the operator-triage semantics.
             "canceled" => {
-                if state_name.to_lowercase().contains("dead letter")
-                    || state_name.to_lowercase().contains("dead_letter")
-                {
+                let lowered = state_name.to_lowercase();
+                if lowered.contains("dead letter") || lowered.contains("dead_letter") {
                     BeadState::DeadLetter
                 } else {
                     BeadState::Done

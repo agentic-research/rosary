@@ -233,16 +233,31 @@ impl Reconciler {
             }
         }
 
-        let mut deadlettered = Vec::new();
+        // Two-phase: first collect candidates across all repos (sweep is
+        // read-only on bead status), then perform the state transition via
+        // `persist_status` so Linear mirroring + state_change events fire.
+        // Routing dead_letter through persist_status was the round-7
+        // Copilot finding — direct `update_status` from inside the sweep
+        // bypassed the audit/sync path.
+        let mut all_candidates: Vec<(String, crate::dispatch::sweep::DeadWorkerCandidate)> =
+            Vec::new();
         for repo in repos_to_sweep {
             let Some(client) = self.dolt_client(&repo).await else {
                 continue;
             };
             let report = crate::dispatch::sweep::sweep_dead_workers(client, &repo, sessions).await;
-            // sweep_dead_workers already logs per-bead at the `[liveness-sweep]`
-            // tag. Don't double-log here — just accumulate the IDs for the
-            // iteration summary. Round-4 review on PR #202.
-            deadlettered.extend(report.deadlettered);
+            for candidate in report.candidates {
+                all_candidates.push((repo.clone(), candidate));
+            }
+        }
+
+        let mut deadlettered = Vec::new();
+        for (repo, candidate) in all_candidates {
+            // persist_status borrows &mut self; the outer `client` borrow
+            // from above is already released by this point.
+            self.persist_status(&candidate.bead_id, &repo, "dead_letter")
+                .await;
+            deadlettered.push(candidate.bead_id);
         }
         deadlettered
     }
