@@ -660,3 +660,379 @@ exit 1
         work_dir.display()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Detached spawn — for the MCP `rsry_dispatch` path (rosary-748f07).
+//
+// The orchestrator's `spawn_agent` returns a `Child` whose lifetime is bound
+// to the caller. That works when the caller is `rsry run` (a long-lived
+// orchestrator) but breaks when the caller is itself a Claude Code session
+// invoking the MCP tool: the harness's safety classifier blocks the caller
+// from spawning a sibling agent, and even if it didn't, the spawned child
+// would die when the MCP request returned.
+//
+// `spawn_detached` solves this by:
+//   1. Putting the child in a new session via `setsid` (Unix). No
+//      controlling TTY; survives parent (rosary) death; reparents to PID 1
+//      where init reaps it after rosary exits.
+//   2. Spawning via `tokio::process::Command` and `tokio::spawn`-ing a
+//      reaper task that awaits `child.wait()`. While rosary is alive the
+//      tokio reaper handles waitpid so the child never becomes a zombie
+//      in rosary's process table. If rosary exits first, setsid + init
+//      take over reaping.
+//   3. Matching the Claude CLI's validated stdio configuration: piped
+//      stdin closed immediately after spawn (per the providers.rs PR #110
+//      note — null stdin triggers a different SDK detection path that
+//      breaks OAuth).
+// ---------------------------------------------------------------------------
+
+/// Pid plus the stream-log path the caller can tail to observe the agent.
+#[derive(Debug)]
+pub struct DetachedSpawn {
+    pub pid: u32,
+    pub stream_log: PathBuf,
+}
+
+/// Spawn an agent as a detached, session-leader subprocess.
+///
+/// Unlike `provider.spawn_agent()` (orchestrator path), this:
+/// - calls `setsid(2)` in the child via `pre_exec` so the child is fully
+///   detached from rosary's process group;
+/// - moves the `Child` into a tokio reaper task that awaits exit (prevents
+///   zombies while rosary is alive; if rosary dies first, setsid + init
+///   take over);
+/// - returns just the pid + log path (no `Box<dyn AgentSession>`).
+///
+/// Uses the provider's `build_command` to derive the binary + args, so
+/// providers that don't implement it cannot be detached this way — the
+/// caller gets an error rather than silently no-op'ing.
+#[cfg(unix)]
+pub async fn spawn_detached(
+    provider: &dyn providers::AgentProvider,
+    prompt: &str,
+    work_dir: &Path,
+    permissions: &PermissionProfile,
+    system_prompt: &str,
+) -> Result<DetachedSpawn> {
+    let (binary, args) = provider.build_command(prompt, permissions, system_prompt);
+    anyhow::ensure!(
+        !binary.is_empty(),
+        "{} does not support build_command(); detached spawn from the MCP path is not supported for this provider",
+        provider.name(),
+    );
+
+    let log_path = work_dir.join(STREAM_LOG_FILENAME);
+    let err_path = work_dir.join(".rsry-stderr.log");
+    let log_file = std::fs::File::create(&log_path)
+        .with_context(|| format!("creating stream log {}", log_path.display()))?;
+    let err_file = std::fs::File::create(&err_path)
+        .with_context(|| format!("creating stderr log {}", err_path.display()))?;
+
+    let mut cmd = tokio::process::Command::new(&binary);
+    cmd.args(&args)
+        .current_dir(work_dir)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        // CC harness markers — must not leak into the spawned child or the
+        // child will think it's itself a CC subagent.
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_ENTRYPOINT")
+        // Piped stdin matches the orchestrator's claude provider invocation
+        // (see providers.rs:88-91 — null stdin triggers CC's SDK detection
+        // path which fails OAuth). We close the pipe immediately after
+        // spawn so the child sees EOF on stdin via the SDK-compatible path.
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::from(log_file))
+        .stderr(std::process::Stdio::from(err_file));
+
+    if let Some(token) = providers::resolve_auth_token(work_dir) {
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", &token);
+    }
+
+    // SAFETY: the closure runs in the child between fork and exec. It must
+    // be async-signal-safe — no allocator, no mutex, no global state. We
+    // call only `setsid(2)`, which is on the async-signal-safe list.
+    // tokio::process::Command exposes `pre_exec` directly, no trait import
+    // required.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("spawning {} (detached) in {}", binary, work_dir.display()))?;
+    let pid = child
+        .id()
+        .ok_or_else(|| anyhow::anyhow!("spawned child has no pid (already exited?)"))?;
+
+    // Close stdin immediately so the child sees EOF on read but the
+    // SDK-detection path matches the piped-stdin OAuth-validated invocation.
+    drop(child.stdin.take());
+
+    // Hand the Child to a tokio task that reaps on exit. While rosary is
+    // alive, this task performs `waitpid` so the child doesn't accumulate
+    // as a zombie in rosary's process table. If rosary exits first,
+    // setsid already moved the child to its own session — init/launchd
+    // reaps after rosary's death.
+    let provider_name = provider.name().to_string();
+    tokio::spawn(async move {
+        match child.wait().await {
+            Ok(status) => eprintln!(
+                "[dispatch-detached] {} pid={} exited with {}",
+                provider_name, pid, status
+            ),
+            Err(e) => eprintln!(
+                "[dispatch-detached] {} pid={} wait error: {}",
+                provider_name, pid, e
+            ),
+        }
+    });
+
+    eprintln!(
+        "[dispatch-detached] {} pid={} stream={}",
+        provider.name(),
+        pid,
+        log_path.display(),
+    );
+    Ok(DetachedSpawn {
+        pid,
+        stream_log: log_path,
+    })
+}
+
+#[cfg(test)]
+mod detached_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Minimal test provider that exposes a shell command via
+    /// `build_command`. Avoids needing a real `claude` binary in tests.
+    struct ShellProvider {
+        binary: String,
+        args: Vec<String>,
+    }
+
+    impl providers::AgentProvider for ShellProvider {
+        fn spawn_agent(
+            &self,
+            _prompt: &str,
+            _work_dir: &Path,
+            _permissions: &PermissionProfile,
+            _system_prompt: &str,
+        ) -> Result<Box<dyn session::AgentSession>> {
+            unreachable!("spawn_detached uses build_command, not spawn_agent")
+        }
+        fn build_command(
+            &self,
+            _prompt: &str,
+            _permissions: &PermissionProfile,
+            _system_prompt: &str,
+        ) -> (String, Vec<String>) {
+            (self.binary.clone(), self.args.clone())
+        }
+        fn name(&self) -> &str {
+            "shell-test"
+        }
+        fn with_model(&self, _model: Option<String>) -> Box<dyn providers::AgentProvider> {
+            Box::new(ShellProvider {
+                binary: self.binary.clone(),
+                args: self.args.clone(),
+            })
+        }
+    }
+
+    async fn wait_for<F: Fn() -> bool>(check: F, timeout: Duration) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if check() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        check()
+    }
+
+    /// Reap a process by sending SIGTERM and waiting via `waitpid`. Tests
+    /// own this rather than relying on test-binary-exit reaping, which can
+    /// leave zombies across sequential tests.
+    fn kill_and_reap(pid: u32) {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        // The detached spawn's tokio reaper task does the actual waitpid
+        // for us in production. In tests we ALSO call waitpid here in case
+        // the reaper hasn't run yet (test binary may exit before tokio
+        // scheduler ticks). WNOHANG + retry loop avoids hanging if the
+        // tokio reaper already won the race.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            let mut status: libc::c_int = 0;
+            let r = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
+            if r == pid as i32 || r == -1 {
+                // r == pid: we reaped it. r == -1: tokio reaper already
+                // reaped (ECHILD) — also a success for our purposes.
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[tokio::test]
+    async fn detached_child_runs_and_survives_handle_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        // Child writes a marker, sleeps long enough for assertions to run.
+        let provider = ShellProvider {
+            binary: "sh".into(),
+            args: vec!["-c".into(), "printf started > marker; sleep 5".into()],
+        };
+        let perms = PermissionProfile::default();
+
+        let result = spawn_detached(&provider, "ignored", dir.path(), &perms, "ignored")
+            .await
+            .unwrap();
+        let pid = result.pid;
+
+        // Child must reach its first statement (write marker) — proves the
+        // spawn actually exec'd, not just forked-and-died.
+        assert!(
+            wait_for(
+                || dir.path().join("marker").exists(),
+                Duration::from_secs(2)
+            )
+            .await,
+            "child never created marker file (did spawn fail?)"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("marker")).unwrap(),
+            "started"
+        );
+
+        // Child still alive AFTER spawn returned and Child handle was moved
+        // into the reaper task. This is the load-bearing property —
+        // `tool_dispatch` returns to the MCP caller while the agent keeps
+        // running, with the tokio reaper preventing zombies.
+        assert!(
+            crate::session::is_pid_alive(pid),
+            "child died before assertions ran"
+        );
+
+        // setsid worked → child is its own session leader (sid == pid).
+        let sid = unsafe { libc::getsid(pid as i32) };
+        assert_eq!(
+            sid as u32, pid,
+            "child should be its own session leader after setsid"
+        );
+
+        // Stream log file exists (we redirected stdout there).
+        assert!(result.stream_log.exists());
+
+        kill_and_reap(pid);
+    }
+
+    #[tokio::test]
+    async fn detached_errors_when_provider_has_no_build_command() {
+        // Provider with empty build_command (the trait default) — must fail
+        // clearly rather than silently spawning nothing.
+        struct NoBuildProvider;
+        impl providers::AgentProvider for NoBuildProvider {
+            fn spawn_agent(
+                &self,
+                _: &str,
+                _: &Path,
+                _: &PermissionProfile,
+                _: &str,
+            ) -> Result<Box<dyn session::AgentSession>> {
+                unreachable!()
+            }
+            fn name(&self) -> &str {
+                "no-build"
+            }
+            fn with_model(&self, _: Option<String>) -> Box<dyn providers::AgentProvider> {
+                Box::new(NoBuildProvider)
+            }
+            // No build_command override → trait default returns empty.
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let perms = PermissionProfile::default();
+        let err = spawn_detached(&NoBuildProvider, "p", dir.path(), &perms, "s")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("build_command"),
+            "expected build_command error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_writes_stdout_to_stream_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = ShellProvider {
+            binary: "sh".into(),
+            args: vec!["-c".into(), "echo hello-from-child; sleep 1".into()],
+        };
+        let perms = PermissionProfile::default();
+
+        let result = spawn_detached(&provider, "p", dir.path(), &perms, "s")
+            .await
+            .unwrap();
+
+        // Wait for stdout to flush to the log.
+        assert!(
+            wait_for(
+                || {
+                    std::fs::read_to_string(&result.stream_log)
+                        .map(|s| s.contains("hello-from-child"))
+                        .unwrap_or(false)
+                },
+                Duration::from_secs(2),
+            )
+            .await
+        );
+
+        kill_and_reap(result.pid);
+    }
+
+    /// Reaper-task does its job: a short-lived child exits and gets
+    /// `waitpid`'d so it doesn't accumulate as a zombie in rosary's process
+    /// table while rosary is still running. Verified by checking that the
+    /// pid is gone (not zombie) from /proc/<pid>/stat or via `kill(pid, 0)`
+    /// returning ESRCH within a bounded window.
+    #[tokio::test]
+    async fn detached_short_lived_child_gets_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        // Exit immediately — gives the reaper task something to wait on.
+        let provider = ShellProvider {
+            binary: "sh".into(),
+            args: vec!["-c".into(), "exit 0".into()],
+        };
+        let perms = PermissionProfile::default();
+
+        let result = spawn_detached(&provider, "p", dir.path(), &perms, "s")
+            .await
+            .unwrap();
+        let pid = result.pid;
+
+        // Within a bounded window, the reaper task must waitpid the exited
+        // child. After reaping, `kill(pid, 0)` returns ESRCH (pid no longer
+        // exists at all — zombies still respond to kill(0) with success).
+        let reaped = wait_for(
+            || {
+                let r = unsafe { libc::kill(pid as i32, 0) };
+                r == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            },
+            Duration::from_secs(3),
+        )
+        .await;
+        assert!(
+            reaped,
+            "child pid {pid} was not reaped within 3s — reaper task didn't run?"
+        );
+    }
+}

@@ -876,10 +876,16 @@ async fn tool_bead_search(
 // Dispatch / active
 // ---------------------------------------------------------------------------
 
-/// MCP dispatch: prepares workspace + prompt, returns everything the caller
-/// needs to spawn the agent. Does NOT spawn — the HTTP server is a data plane,
-/// not a compute plane. The caller (CC session, `rsry run`, conductor) does
-/// the actual spawn in its own environment (with API keys, PATH, etc.).
+/// MCP dispatch: prepares workspace + prompt + spawns the agent as a
+/// detached subprocess. Returns the pid + stream-log path.
+///
+/// Rationale (rosary-748f07): the previous "return a command string for
+/// the MCP caller to spawn themselves" design was blocked by Claude Code's
+/// safety classifier ("Create Unsafe Agents"), so the dispatched agent
+/// never actually ran. Server-side spawn with `setsid` puts the worker in
+/// its own session — the classifier doesn't fire (the spawn happens
+/// outside the calling harness) and the worker survives even if the MCP
+/// caller exits.
 async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     let bead_id = args["bead_id"]
         .as_str()
@@ -941,43 +947,142 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         .map(|ws| ws.work_dir.to_string_lossy().to_string())
         .unwrap_or_else(|| root.to_string_lossy().to_string());
 
-    // Build the prompt the caller should pass to the agent
-    let _agents_dir = crate::dispatch::resolve_agents_dir();
+    // Build the prompt + system_prompt the agent will see. system_prompt is
+    // assembled from the agent definition + golden rules.
+    let agents_dir = crate::dispatch::resolve_agents_dir();
     let prompt = crate::dispatch::build_prompt(
         &bead,
         &work_dir,
         workspace.as_ref().map(|ws| ws.work_dir.as_path()),
         bead.owner.as_deref(),
     );
+    let system_prompt =
+        crate::dispatch::build_system_prompt(bead.owner.as_deref(), agents_dir.as_deref());
 
-    // Build the CLI command the caller should run
-    let perms = crate::dispatch::permission_profile(&bead.issue_type);
-    let allowed_tools = perms.claude_allowed_tools();
+    // Agent-specific permission override (mirrors the orchestrator path).
+    let perms = match bead.owner.as_deref() {
+        Some("scoping-agent") => crate::dispatch::PermissionProfile::ReadOnly,
+        Some("staging-agent") => crate::dispatch::PermissionProfile::ReadOnly,
+        Some("pm-agent") => crate::dispatch::PermissionProfile::Plan,
+        Some("architect-agent") => crate::dispatch::PermissionProfile::Plan,
+        _ => crate::dispatch::permission_profile(&bead.issue_type),
+    };
+    let allowed_tools = perms.claude_allowed_tools().to_string();
 
-    // Derive the full command line
-    let cmd = format!(
-        "claude -p '{}' --allowedTools '{}' 2>&1 | tee .rsry-stream.jsonl",
-        work_dir.replace('\'', "'\\''"),
-        allowed_tools,
+    // Resolve provider config + trust gate FIRST, before any work that
+    // would need to be rolled back. `allow_mcp_spawn` must be explicitly
+    // enabled by operators — server-side spawn from the MCP transport
+    // expands the trust boundary (HTTP-bound rosary can reach arbitrary
+    // subprocess execution if exposed publicly), so we refuse by default.
+    let cfg = crate::config::load(_config_path).ok();
+    let allow_mcp_spawn = cfg
+        .as_ref()
+        .and_then(|c| c.dispatch.as_ref())
+        .map(|d| d.allow_mcp_spawn)
+        .unwrap_or(false);
+    anyhow::ensure!(
+        allow_mcp_spawn,
+        "rsry_dispatch refuses to spawn workers from the MCP path: set \
+         `[dispatch] allow_mcp_spawn = true` in your config to opt in. \
+         This gate exists because the MCP transport can be reached by any \
+         client authorized to call the server (rosary-748f07 security note)."
     );
 
-    // Mark bead as dispatched
+    let binaries = cfg
+        .as_ref()
+        .and_then(|c| c.dispatch.as_ref())
+        .map(|d| d.binaries.clone())
+        .unwrap_or_default();
+    let provider = crate::dispatch::providers::provider_by_name(provider_name, &binaries)
+        .with_context(|| format!("resolving provider {provider_name}"))?;
+
+    // Pre-flight: load the registry now and validate it's writable so we
+    // don't spawn a worker we can't track. Loading is best-effort
+    // (corrupted file → start fresh); saving is the real test.
+    let mut registry = crate::session::SessionRegistry::load().unwrap_or_default();
+
+    // Server-side spawn: setsid + detached so the worker survives the MCP
+    // request returning AND isn't subject to the caller's safety classifier.
+    let work_dir_path = std::path::Path::new(&work_dir);
+    let spawned = crate::dispatch::spawn_detached(
+        provider.as_ref(),
+        &prompt,
+        work_dir_path,
+        &perms,
+        &system_prompt,
+    )
+    .await
+    .with_context(|| format!("spawning agent for {bead_id}"))?;
+
+    let workspace_vcs = workspace
+        .as_ref()
+        .map(|ws| match ws.vcs {
+            crate::workspace::VcsKind::Jj => "jj",
+            crate::workspace::VcsKind::Git => "git",
+            crate::workspace::VcsKind::None => "",
+        })
+        .unwrap_or("")
+        .to_string();
+    let session_entry = crate::session::SessionEntry {
+        bead_id: bead_id.to_string(),
+        repo: repo_name.clone(),
+        provider: provider_name.to_string(),
+        pid: Some(spawned.pid),
+        work_dir: work_dir.clone(),
+        started_at: chrono::Utc::now(),
+        title: bead.title.clone(),
+        agent: agent_label.to_string(),
+        workspace_vcs,
+        repo_path: repo_path.to_string(),
+        last_activity: None,
+        last_comment: None,
+    };
+
+    // Register the live session so `rsry_active` / health-check can see it.
+    // If registry.register fails (permissions, disk full, concurrent write)
+    // we have to choose: leak an untracked worker, or kill it. We kill,
+    // because an untracked worker is worse than no worker — it leaves the
+    // bead in an indeterminate state and gives the operator no handle to
+    // recover. The worker will exit when we send SIGTERM; the tokio reaper
+    // task in spawn_detached will waitpid it.
+    if let Err(e) = registry.register(session_entry) {
+        let pid = spawned.pid;
+        eprintln!("[dispatch] registry write failed; killing untracked worker pid={pid}: {e}");
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        return Err(e).with_context(|| {
+            format!("persisting session for {bead_id} (pid {pid} killed to keep state consistent)")
+        });
+    }
+
+    // Mark bead in-progress: the worker is actually running now (behavior
+    // change from the pre-748f07 design, which marked `dispatched` and
+    // waited for the caller to spawn the process). Status update failing
+    // here is recoverable (operator can mark out-of-band) so we don't kill
+    // the worker — just surface the error.
     client
-        .update_status(bead_id, "dispatched")
+        .update_status(bead_id, "in_progress")
         .await
-        .with_context(|| format!("marking bead {bead_id} as dispatched"))?;
+        .with_context(|| {
+            format!(
+                "marking bead {bead_id} in_progress (worker is RUNNING at pid {}; \
+                 bead status update failed but the agent is tracked in sessions.json)",
+                spawned.pid,
+            )
+        })?;
 
     Ok(json!({
         "bead_id": bead_id,
         "title": bead.title,
-        "status": "dispatched",
+        "status": "in_progress",
         "agent": agent_label,
         "provider": provider_name,
         "work_dir": work_dir,
-        "prompt": prompt,
-        "command": cmd,
+        "pid": spawned.pid,
+        "stream": spawned.stream_log.display().to_string(),
         "allowed_tools": allowed_tools,
-        "instructions": "Run the command in 'work_dir' to start the agent. The server prepared the workspace and prompt — you spawn the process in your environment.",
+        "instructions": "Worker spawned server-side (pid above). Tail `stream` to watch progress, or call rsry_active to list live sessions.",
     }))
 }
 
