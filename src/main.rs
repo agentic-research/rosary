@@ -407,9 +407,14 @@ enum NotesAction {
 
 #[derive(Subcommand)]
 enum HooksAction {
-    /// Copy post-push and post-merge hook templates into .git/hooks/
+    /// Splice post-push / post-merge bead-sync blocks into the repo's hooks
+    /// directory. The hooks dir is resolved via `git rev-parse --git-path
+    /// hooks` so worktrees, submodules, and `core.hooksPath` overrides all
+    /// route correctly. Existing user content outside the rsry markers is
+    /// preserved.
     Install,
-    /// Show which bead-sync hooks are installed and whether Dolt remotes are configured
+    /// Show whether each rsry-managed hook is installed (and where) and
+    /// whether the Dolt remote is configured for bead sync.
     Status,
 }
 
@@ -1631,21 +1636,28 @@ mod hooks {
     //! being adjacent to the executable.
     //!
     //! Installation is merge-aware: rather than clobbering existing hooks, the
-    //! rsry block is spliced between `# >>> rsry-managed >>>` markers, so user
-    //! content outside the markers is preserved across re-installs and the
-    //! operation is idempotent.
+    //! rsry block is spliced between the literal marker lines defined as
+    //! [`MARKER_START`] and [`MARKER_END`] below. User content outside those
+    //! markers is preserved across re-installs and the operation is
+    //! idempotent. `MARKER_END` is intentionally short so the closing line is
+    //! easy to grep for; `MARKER_START` carries the do-not-edit hint so
+    //! anyone opening the hook file sees the convention without a separate
+    //! README round-trip.
     //!
     //! The hooks directory is resolved via `git rev-parse --git-path hooks`
-    //! so worktrees and submodules (`.git` is a file pointer to the real
-    //! gitdir, not a directory) work correctly.
+    //! so worktrees, submodules (`.git` is a file pointer to the real
+    //! gitdir, not a directory), and `core.hooksPath` overrides all route to
+    //! the right place.
     use anyhow::{Context, Result};
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    /// Begin marker for the rsry-managed shell block inside a hook file.
-    /// Anything between this and `MARKER_END` is regenerated on each install.
+    /// Begin marker line for the rsry-managed shell block inside a hook file.
+    /// Anything between this line and [`MARKER_END`] is regenerated on each
+    /// install. Including the do-not-edit hint on the start marker keeps the
+    /// convention visible inside the file itself.
     pub(crate) const MARKER_START: &str = "# >>> rsry-managed (do not edit between these markers; `rsry hooks install` regenerates) >>>";
-    /// End marker — closes the rsry-managed section.
+    /// End marker line — closes the rsry-managed section.
     pub(crate) const MARKER_END: &str = "# <<< rsry-managed <<<";
 
     /// Hooks rsry manages and their canonical shell-body content.
@@ -1793,21 +1805,28 @@ mod hooks {
             .unwrap_or("repo");
         let dolt_dir = repo_root.join(".beads").join("dolt").join(repo_name);
         if dolt_dir.exists() {
-            let remote_output = Command::new("dolt")
-                .args(["remote", "-v"])
-                .current_dir(&dolt_dir)
-                .output();
-            if let Ok(out) = remote_output
-                && out.stdout.is_empty()
-            {
-                eprintln!(
-                    "[hooks] WARNING: no dolt remote configured in {}",
-                    dolt_dir.display()
-                );
-                eprintln!(
-                    "[hooks] Run: cd {} && dolt remote add origin <url>",
-                    dolt_dir.display()
-                );
+            match check_dolt_remote(&dolt_dir) {
+                DoltRemoteStatus::Configured(_) => {}
+                DoltRemoteStatus::NotConfigured => {
+                    eprintln!(
+                        "[hooks] WARNING: no dolt remote configured in {}",
+                        dolt_dir.display()
+                    );
+                    eprintln!(
+                        "[hooks] Run: cd {} && dolt remote add origin <url>",
+                        dolt_dir.display()
+                    );
+                }
+                DoltRemoteStatus::Errored { exit, stderr } => {
+                    eprintln!(
+                        "[hooks] WARNING: `dolt remote -v` failed in {} (exit {exit}): {}",
+                        dolt_dir.display(),
+                        stderr.trim()
+                    );
+                }
+                DoltRemoteStatus::NotInvokable(e) => {
+                    eprintln!("[hooks] WARNING: couldn't invoke dolt: {e}");
+                }
             }
         }
 
@@ -1843,22 +1862,66 @@ mod hooks {
         let dolt_dir = repo_root.join(".beads").join("dolt").join(repo_name);
         println!();
         println!("dolt remote:");
-        if dolt_dir.exists() {
-            let out = Command::new("dolt")
-                .args(["remote", "-v"])
-                .current_dir(&dolt_dir)
-                .output();
-            match out {
-                Ok(o) if !o.stdout.is_empty() => {
-                    print!("{}", String::from_utf8_lossy(&o.stdout));
-                }
-                Ok(_) => println!("  ✗ no remote configured"),
-                Err(e) => println!("  ? dolt not available: {e}"),
-            }
-        } else {
+        if !dolt_dir.exists() {
             println!("  ? no .beads/dolt/{repo_name} found");
+            return Ok(());
+        }
+        match check_dolt_remote(&dolt_dir) {
+            DoltRemoteStatus::Configured(stdout) => print!("{stdout}"),
+            DoltRemoteStatus::NotConfigured => println!("  ✗ no remote configured"),
+            DoltRemoteStatus::Errored { exit, stderr } => {
+                println!(
+                    "  ! `dolt remote -v` failed (exit {exit}): {}",
+                    stderr.trim()
+                );
+            }
+            DoltRemoteStatus::NotInvokable(e) => println!("  ? dolt not available: {e}"),
         }
         Ok(())
+    }
+
+    /// Result of probing `dolt remote -v` in a Dolt-backed bead directory.
+    ///
+    /// Distinguishes "command ran cleanly with no remote" from "command
+    /// failed" — the previous code lumped both into "no remote configured"
+    /// and hid real errors (e.g. corrupted repo, unsupported Dolt version).
+    pub(crate) enum DoltRemoteStatus {
+        /// `dolt remote -v` exited 0 with non-empty stdout.
+        Configured(String),
+        /// `dolt remote -v` exited 0 with empty stdout — truly no remote.
+        NotConfigured,
+        /// `dolt remote -v` exited non-zero; preserve stderr for the user.
+        Errored { exit: i32, stderr: String },
+        /// The `dolt` binary couldn't be spawned (missing, no exec perm).
+        NotInvokable(String),
+    }
+
+    /// Classify a `dolt remote -v` invocation result. Pure function over the
+    /// command output so it can be unit-tested without an actual `dolt`
+    /// binary.
+    pub(crate) fn classify_dolt_remote(
+        result: std::io::Result<std::process::Output>,
+    ) -> DoltRemoteStatus {
+        match result {
+            Err(e) => DoltRemoteStatus::NotInvokable(e.to_string()),
+            Ok(out) if !out.status.success() => DoltRemoteStatus::Errored {
+                exit: out.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            },
+            Ok(out) if out.stdout.is_empty() => DoltRemoteStatus::NotConfigured,
+            Ok(out) => {
+                DoltRemoteStatus::Configured(String::from_utf8_lossy(&out.stdout).into_owned())
+            }
+        }
+    }
+
+    /// Run `dolt remote -v` in the given directory and classify the result.
+    fn check_dolt_remote(dolt_dir: &Path) -> DoltRemoteStatus {
+        let result = Command::new("dolt")
+            .args(["remote", "-v"])
+            .current_dir(dolt_dir)
+            .output();
+        classify_dolt_remote(result)
     }
 
     #[cfg(test)]
@@ -1866,11 +1929,29 @@ mod hooks {
         use super::*;
         use std::process::Command;
 
-        /// Run `git` with a deterministic env so the host's gitconfig doesn't
-        /// interfere with test commits (commit.gpgsign, user.email, etc.).
+        /// Run `git` with a genuinely-isolated env so the host's gitconfig
+        /// can't leak into the test (commit.gpgsign, core.hooksPath, user
+        /// identity, etc.). We override:
+        ///
+        /// - `HOME` → empty tempdir so `$HOME/.gitconfig` is a fresh file
+        /// - `GIT_CONFIG_GLOBAL` → /dev/null on Unix so the global file is
+        ///   forced empty regardless of HOME
+        /// - `GIT_CONFIG_NOSYSTEM=1` → skip `/etc/gitconfig`
+        ///
+        /// Each call gets its own scratch HOME so tests don't share state.
         fn git(dir: &Path, args: &[&str]) -> std::process::Output {
+            // Use the existing dir for HOME; git only writes to ~/.gitconfig
+            // when called with `config --global`, which we never do. Pointing
+            // HOME at a tempdir under our control is sufficient isolation.
+            let home = tempfile::tempdir().expect("HOME tempdir");
             Command::new("git")
                 .current_dir(dir)
+                .env_clear()
+                .env("HOME", home.path())
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                // Preserve PATH so git itself and its subcommands can be found.
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
                 .args(args)
                 .output()
                 .expect("spawn git")
@@ -1878,6 +1959,9 @@ mod hooks {
 
         fn init_repo(dir: &Path) {
             assert!(git(dir, &["init", "-q", "-b", "main"]).status.success());
+            // user.email / user.name go into THIS repo's local config, not
+            // global — so they don't need the env scaffolding above to take
+            // effect, but they also don't hurt.
             assert!(
                 git(dir, &["config", "user.email", "test@example.invalid"])
                     .status
@@ -2199,6 +2283,100 @@ mod hooks {
             assert!(
                 err.to_string().contains("not a git repo"),
                 "expected error mentioning `not a git repo`, got: {err}",
+            );
+        }
+
+        // --- classify_dolt_remote (pure-function decision logic) ----------
+
+        /// Forge a `std::process::Output` with the given exit status and
+        /// stdout/stderr. Used to drive `classify_dolt_remote` deterministically
+        /// without an actual `dolt` binary.
+        fn forge_output(success: bool, stdout: &str, stderr: &str) -> std::process::Output {
+            use std::os::unix::process::ExitStatusExt;
+            let status = std::process::ExitStatus::from_raw(if success { 0 } else { 1 << 8 });
+            std::process::Output {
+                status,
+                stdout: stdout.as_bytes().to_vec(),
+                stderr: stderr.as_bytes().to_vec(),
+            }
+        }
+
+        #[test]
+        fn classify_dolt_remote_configured() {
+            let out = forge_output(true, "origin\thttps://example.com (fetch)\n", "");
+            match classify_dolt_remote(Ok(out)) {
+                DoltRemoteStatus::Configured(s) => assert!(s.contains("origin")),
+                other => panic!(
+                    "expected Configured, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        }
+
+        #[test]
+        fn classify_dolt_remote_not_configured() {
+            let out = forge_output(true, "", "");
+            assert!(matches!(
+                classify_dolt_remote(Ok(out)),
+                DoltRemoteStatus::NotConfigured
+            ));
+        }
+
+        #[test]
+        fn classify_dolt_remote_errored_surfaces_stderr() {
+            // The bug Copilot caught: exit-non-zero with empty stdout was
+            // misreported as "no remote configured". Now it must surface
+            // the failure with stderr preserved.
+            let out = forge_output(false, "", "fatal: not a dolt repository\n");
+            match classify_dolt_remote(Ok(out)) {
+                DoltRemoteStatus::Errored { exit, stderr } => {
+                    assert_eq!(exit, 1);
+                    assert!(stderr.contains("not a dolt repository"));
+                }
+                _ => panic!("expected Errored variant for exit-1"),
+            }
+        }
+
+        #[test]
+        fn classify_dolt_remote_spawn_failure() {
+            let err = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
+            match classify_dolt_remote(Err(err)) {
+                DoltRemoteStatus::NotInvokable(msg) => assert!(msg.contains("no such file")),
+                _ => panic!("expected NotInvokable for spawn failure"),
+            }
+        }
+
+        // --- documentation / marker consistency ---------------------------
+
+        #[test]
+        fn marker_constants_have_expected_shape() {
+            // Both markers must start with `# >>>` / `# <<<` so they're
+            // greppable AND obviously comments in shell. Anyone who edits
+            // the markers later should see this test fail before drift
+            // leaks into installed hooks.
+            assert!(
+                MARKER_START.starts_with("# >>> rsry-managed"),
+                "MARKER_START shape changed: {MARKER_START}"
+            );
+            assert!(
+                MARKER_END.starts_with("# <<< rsry-managed"),
+                "MARKER_END shape changed: {MARKER_END}"
+            );
+        }
+
+        #[test]
+        fn readme_documents_actual_marker_lines() {
+            // Drift-detector: if the marker constants change, the docs/git-hooks
+            // README MUST reference the new strings. The README explains where
+            // users should look in hook files to find the rsry-managed block.
+            let readme = include_str!("../docs/git-hooks/README.md");
+            assert!(
+                readme.contains(MARKER_START),
+                "README must contain MARKER_START literal so users can grep for it"
+            );
+            assert!(
+                readme.contains(MARKER_END),
+                "README must contain MARKER_END literal so users can grep for it"
             );
         }
     }
