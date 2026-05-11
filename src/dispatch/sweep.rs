@@ -21,8 +21,27 @@
 //! `Path::exists`).
 
 use crate::bead::BeadState;
-use crate::session::{SessionRegistry, is_pid_alive};
+use crate::session::{SessionEntry, SessionRegistry, is_pid_alive};
 use crate::store::BeadStore;
+use std::collections::HashMap;
+
+/// Pre-built lookup of session entries by `(bead_id, repo)`. Callers
+/// (the reconciler today) build this ONCE per iteration and pass it
+/// into each per-repo `sweep_dead_workers` call. Without the shared
+/// index the sweep would rebuild a per-call HashMap making the total
+/// work O(repos × sessions) on every iteration — round-9 finding on
+/// PR #202.
+pub type SessionIndex<'a> = HashMap<(&'a str, &'a str), &'a SessionEntry>;
+
+/// Build the `SessionIndex` from a slice of session entries. One-time
+/// O(sessions) work; callers reuse the same index across all repos in
+/// an iteration.
+pub fn build_session_index(sessions: &[SessionEntry]) -> SessionIndex<'_> {
+    sessions
+        .iter()
+        .map(|s| ((s.bead_id.as_str(), s.repo.as_str()), s))
+        .collect()
+}
 
 /// Result of a sweep — the bead IDs that were reverted to `open`.
 #[derive(Debug, Default, Clone)]
@@ -175,7 +194,7 @@ pub async fn sweep_orphan_dispatches(
 pub async fn sweep_dead_workers(
     client: &dyn BeadStore,
     repo_name: &str,
-    sessions: &[crate::session::SessionEntry],
+    session_index: &SessionIndex<'_>,
 ) -> LivenessSweepReport {
     let mut report = LivenessSweepReport::default();
 
@@ -186,16 +205,6 @@ pub async fn sweep_dead_workers(
             return report;
         }
     };
-
-    // Pre-index sessions by (bead_id, repo) — without this the inner loop
-    // is O(beads × sessions). On a daemon iterating every few seconds across
-    // 100+ sessions and 1000+ beads that's a real per-iteration cost. The
-    // index is built once per sweep, so we get O(beads + sessions).
-    let session_index: std::collections::HashMap<(&str, &str), &crate::session::SessionEntry> =
-        sessions
-            .iter()
-            .map(|s| ((s.bead_id.as_str(), s.repo.as_str()), s))
-            .collect();
 
     for bead in beads {
         if bead.state() != BeadState::Dispatched {
@@ -232,10 +241,9 @@ pub async fn sweep_dead_workers(
             session.last_activity.map(|t| t.to_rfc3339()),
             session.work_dir,
         );
-        eprintln!(
-            "[liveness-sweep] {} candidate for dead_letter (worker pid={pid} is dead)",
-            bead.id
-        );
+        // No eprintln here — the reconciler logs once per bead with the
+        // forensic detail. Logging in both layers (round-4 / round-9
+        // findings) just adds daemon-mode noise.
         let _ = client
             .log_event(&bead.id, "deadletter_dead_worker", &detail)
             .await;
@@ -390,7 +398,7 @@ mod tests {
         let dead_pid = spawn_and_reap();
         let sessions = vec![fake_session("dead-w-1", "test-repo", Some(dead_pid))];
 
-        let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
+        let report = sweep_dead_workers(&store, "test-repo", &build_session_index(&sessions)).await;
         // After round-7 refactor: sweep returns CANDIDATES; the caller is
         // responsible for the actual `dead_letter` transition via
         // `persist_status` (Linear mirroring + state_change event).
@@ -433,7 +441,7 @@ mod tests {
         let our_pid = std::process::id();
         let sessions = vec![fake_session("live-w", "test-repo", Some(our_pid))];
 
-        let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
+        let report = sweep_dead_workers(&store, "test-repo", &build_session_index(&sessions)).await;
         assert!(report.is_empty(), "live pid must not be deadlettered");
 
         let bead = store
@@ -463,7 +471,7 @@ mod tests {
 
         let sessions: Vec<crate::session::SessionEntry> = vec![]; // empty registry
 
-        let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
+        let report = sweep_dead_workers(&store, "test-repo", &build_session_index(&sessions)).await;
         assert!(
             report.is_empty(),
             "bead with no session entry must NOT be deadlettered (that's sweep_orphan_dispatches's job)"
@@ -483,7 +491,7 @@ mod tests {
         let dead_pid = spawn_and_reap();
         let sessions = vec![fake_session("not-dispatched", "test-repo", Some(dead_pid))];
 
-        let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
+        let report = sweep_dead_workers(&store, "test-repo", &build_session_index(&sessions)).await;
         assert!(
             report.is_empty(),
             "open bead must not be deadlettered even with a dead session entry"
@@ -505,7 +513,7 @@ mod tests {
 
         let sessions = vec![fake_session("no-pid", "test-repo", None)];
 
-        let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
+        let report = sweep_dead_workers(&store, "test-repo", &build_session_index(&sessions)).await;
         assert!(report.is_empty());
     }
 
@@ -523,7 +531,7 @@ mod tests {
         // Session entry is for a DIFFERENT repo than the sweep is scoped to.
         let sessions = vec![fake_session("xrepo", "OTHER-repo", Some(dead_pid))];
 
-        let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
+        let report = sweep_dead_workers(&store, "test-repo", &build_session_index(&sessions)).await;
         assert!(
             report.is_empty(),
             "sweep must not deadletter when session entry is for a different repo"

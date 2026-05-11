@@ -233,6 +233,11 @@ impl Reconciler {
             }
         }
 
+        // Build the session index ONCE; reused across all per-repo sweeps
+        // so total cost is O(sessions) + O(beads), not O(repos × sessions).
+        // Round-9 finding on PR #202.
+        let session_index = crate::dispatch::sweep::build_session_index(sessions);
+
         // Two-phase: first collect candidates across all repos (sweep is
         // read-only on bead status), then perform the state transition via
         // `persist_status` so Linear mirroring + state_change events fire.
@@ -245,7 +250,8 @@ impl Reconciler {
             let Some(client) = self.dolt_client(&repo).await else {
                 continue;
             };
-            let report = crate::dispatch::sweep::sweep_dead_workers(client, &repo, sessions).await;
+            let report =
+                crate::dispatch::sweep::sweep_dead_workers(client, &repo, &session_index).await;
             for candidate in report.candidates {
                 all_candidates.push((repo.clone(), candidate));
             }
@@ -257,6 +263,28 @@ impl Reconciler {
             // from above is already released by this point.
             self.persist_status(&candidate.bead_id, &repo, "dead_letter")
                 .await;
+
+            // Verify the write actually landed before counting it.
+            // `persist_status` is best-effort (eprintln on update_status
+            // failure, doesn't propagate). Counting unconditionally would
+            // make `deadlettered_ids` lie about the bead's real state and
+            // could false-trip target-bead-mode exit. Round-9 finding on
+            // PR #202.
+            let persisted = match self.dolt_client(&repo).await {
+                Some(client) => matches!(
+                    client.get_status(&candidate.bead_id).await,
+                    Ok(Some(ref s)) if s == "dead_letter"
+                ),
+                None => false,
+            };
+            if !persisted {
+                eprintln!(
+                    "[reconcile] persist_status for {} didn't land — not counting as deadlettered",
+                    candidate.bead_id
+                );
+                continue;
+            }
+
             // Surface the forensic context the sweep collected so operators
             // tailing the reconciler log see WHY each bead got deadlettered
             // (pid, worktree, last_activity) — not just the bead id.
