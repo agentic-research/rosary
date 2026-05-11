@@ -368,7 +368,7 @@ impl AgentProvider for AcpNativeProvider {
 /// 3. `.envrc` in work_dir
 /// 4. `.envrc` in git repo root (for worktrees)
 /// 5. `dispatch.anthropic_api_key` in `~/.rsry/config.toml` (wasteland / hosted rigs)
-fn resolve_auth_token(work_dir: &Path) -> Option<String> {
+pub(crate) fn resolve_auth_token(work_dir: &Path) -> Option<String> {
     // 1. Env vars (set by direnv, shell profile, or launchd plist)
     if let Ok(token) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN") {
         return Some(token);

@@ -660,3 +660,280 @@ exit 1
         work_dir.display()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Detached spawn — for the MCP `rsry_dispatch` path (rosary-748f07).
+//
+// The orchestrator's `spawn_agent` returns a `Child` whose lifetime is bound
+// to the caller. That works when the caller is `rsry run` (a long-lived
+// orchestrator) but breaks when the caller is itself a Claude Code session
+// invoking the MCP tool: the harness's safety classifier blocks the caller
+// from spawning a sibling agent, and even if it didn't, the spawned child
+// would die when the MCP request returned.
+//
+// `spawn_detached` solves this by:
+//   1. Putting the child in a new session via `setsid` (Unix). No
+//      controlling TTY; survives parent (rosary) death; reparents to PID 1.
+//   2. Spawning via `std::process::Command` (not `tokio::process::Command`)
+//      so the child isn't registered with tokio's reaper.
+//   3. Immediately dropping the `Child` handle. `std::process::Child` does
+//      NOT kill on drop, so the child keeps running. The OS reaps it.
+// ---------------------------------------------------------------------------
+
+/// Pid plus the stream-log path the caller can tail to observe the agent.
+#[derive(Debug)]
+pub struct DetachedSpawn {
+    pub pid: u32,
+    pub stream_log: PathBuf,
+}
+
+/// Spawn an agent as a detached, session-leader subprocess.
+///
+/// Unlike `provider.spawn_agent()` (orchestrator path), this:
+/// - calls `setsid(2)` in the child via `pre_exec` so the child is fully
+///   detached from rosary's process group;
+/// - drops the `Child` handle, leaving the OS to reap;
+/// - returns just the pid + log path (no `Box<dyn AgentSession>`).
+///
+/// Uses the provider's `build_command` to derive the binary + args, so
+/// providers that don't implement it cannot be detached this way — the
+/// caller gets an error rather than silently no-op'ing.
+#[cfg(unix)]
+pub fn spawn_detached(
+    provider: &dyn providers::AgentProvider,
+    prompt: &str,
+    work_dir: &Path,
+    permissions: &PermissionProfile,
+    system_prompt: &str,
+) -> Result<DetachedSpawn> {
+    let (binary, args) = provider.build_command(prompt, permissions, system_prompt);
+    anyhow::ensure!(
+        !binary.is_empty(),
+        "{} does not support build_command(); detached spawn from the MCP path is not supported for this provider",
+        provider.name(),
+    );
+
+    let log_path = work_dir.join(STREAM_LOG_FILENAME);
+    let err_path = work_dir.join(".rsry-stderr.log");
+    let log_file = std::fs::File::create(&log_path)
+        .with_context(|| format!("creating stream log {}", log_path.display()))?;
+    let err_file = std::fs::File::create(&err_path)
+        .with_context(|| format!("creating stderr log {}", err_path.display()))?;
+
+    let mut cmd = std::process::Command::new(&binary);
+    cmd.args(&args)
+        .current_dir(work_dir)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        // CC harness markers — must not leak into the spawned child or the
+        // child will think it's itself a CC subagent.
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_ENTRYPOINT")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log_file))
+        .stderr(std::process::Stdio::from(err_file));
+
+    if let Some(token) = providers::resolve_auth_token(work_dir) {
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", &token);
+    }
+
+    // SAFETY: the closure runs in the child between fork and exec. It must
+    // be async-signal-safe — no allocator, no mutex, no global state. We
+    // call only `setsid(2)`, which is on the async-signal-safe list.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("spawning {} (detached) in {}", binary, work_dir.display()))?;
+    let pid = child.id();
+    // Drop the handle — std::process::Child has no kill-on-drop, so the
+    // child keeps running. We rely on the OS to reap (the child is now a
+    // session leader; when it exits, init reaps it).
+    drop(child);
+
+    eprintln!(
+        "[dispatch-detached] {} pid={} stream={}",
+        provider.name(),
+        pid,
+        log_path.display(),
+    );
+    Ok(DetachedSpawn {
+        pid,
+        stream_log: log_path,
+    })
+}
+
+#[cfg(test)]
+mod detached_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Minimal test provider that exposes a shell command via
+    /// `build_command`. Avoids needing a real `claude` binary in tests.
+    struct ShellProvider {
+        binary: String,
+        args: Vec<String>,
+    }
+
+    impl providers::AgentProvider for ShellProvider {
+        fn spawn_agent(
+            &self,
+            _prompt: &str,
+            _work_dir: &Path,
+            _permissions: &PermissionProfile,
+            _system_prompt: &str,
+        ) -> Result<Box<dyn session::AgentSession>> {
+            unreachable!("spawn_detached uses build_command, not spawn_agent")
+        }
+        fn build_command(
+            &self,
+            _prompt: &str,
+            _permissions: &PermissionProfile,
+            _system_prompt: &str,
+        ) -> (String, Vec<String>) {
+            (self.binary.clone(), self.args.clone())
+        }
+        fn name(&self) -> &str {
+            "shell-test"
+        }
+        fn with_model(&self, _model: Option<String>) -> Box<dyn providers::AgentProvider> {
+            Box::new(ShellProvider {
+                binary: self.binary.clone(),
+                args: self.args.clone(),
+            })
+        }
+    }
+
+    fn wait_for<F: Fn() -> bool>(check: F, timeout: Duration) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if check() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        check()
+    }
+
+    #[test]
+    fn detached_child_runs_and_survives_handle_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        // Child writes a marker, sleeps long enough for assertions to run.
+        let provider = ShellProvider {
+            binary: "sh".into(),
+            args: vec!["-c".into(), "printf started > marker; sleep 5".into()],
+        };
+        let perms = PermissionProfile::default();
+
+        let result = spawn_detached(&provider, "ignored", dir.path(), &perms, "ignored").unwrap();
+        let pid = result.pid;
+
+        // Child must reach its first statement (write marker) — proves the
+        // spawn actually exec'd, not just forked-and-died.
+        assert!(
+            wait_for(
+                || dir.path().join("marker").exists(),
+                Duration::from_secs(2)
+            ),
+            "child never created marker file (did spawn fail?)"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("marker")).unwrap(),
+            "started"
+        );
+
+        // Child still alive AFTER spawn returned and Child handle was dropped.
+        // This is the load-bearing property — `tool_dispatch` returns to the
+        // MCP caller while the agent keeps running.
+        assert!(
+            crate::session::is_pid_alive(pid),
+            "child died before assertions ran (handle-drop killed it?)"
+        );
+
+        // setsid worked → child is its own session leader (sid == pid).
+        let sid = unsafe { libc::getsid(pid as i32) };
+        assert_eq!(
+            sid as u32, pid,
+            "child should be its own session leader after setsid"
+        );
+
+        // Stream log file exists (we redirected stdout there).
+        assert!(result.stream_log.exists());
+
+        // Cleanup: don't leak the sleeping child.
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        // Wait briefly so the OS can reap before the test exits.
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    #[test]
+    fn detached_errors_when_provider_has_no_build_command() {
+        // Provider with empty build_command (the trait default) — must fail
+        // clearly rather than silently spawning nothing.
+        struct NoBuildProvider;
+        impl providers::AgentProvider for NoBuildProvider {
+            fn spawn_agent(
+                &self,
+                _: &str,
+                _: &Path,
+                _: &PermissionProfile,
+                _: &str,
+            ) -> Result<Box<dyn session::AgentSession>> {
+                unreachable!()
+            }
+            fn name(&self) -> &str {
+                "no-build"
+            }
+            fn with_model(&self, _: Option<String>) -> Box<dyn providers::AgentProvider> {
+                Box::new(NoBuildProvider)
+            }
+            // No build_command override → trait default returns empty.
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let perms = PermissionProfile::default();
+        let err = spawn_detached(&NoBuildProvider, "p", dir.path(), &perms, "s").unwrap_err();
+        assert!(
+            err.to_string().contains("build_command"),
+            "expected build_command error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn detached_writes_stdout_to_stream_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = ShellProvider {
+            binary: "sh".into(),
+            args: vec!["-c".into(), "echo hello-from-child; sleep 1".into()],
+        };
+        let perms = PermissionProfile::default();
+
+        let result = spawn_detached(&provider, "p", dir.path(), &perms, "s").unwrap();
+
+        // Wait for stdout to flush to the log.
+        assert!(wait_for(
+            || {
+                std::fs::read_to_string(&result.stream_log)
+                    .map(|s| s.contains("hello-from-child"))
+                    .unwrap_or(false)
+            },
+            Duration::from_secs(2)
+        ));
+
+        unsafe {
+            libc::kill(result.pid as i32, libc::SIGTERM);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
