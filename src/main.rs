@@ -216,6 +216,25 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         ipc_socket: PathBuf,
     },
+    /// Send a single capnp ToolCall to a rosary IPC server (smoke + ops).
+    ///
+    /// Connects to `--ipc-socket`, sends one ToolCall, prints the
+    /// `text` content of the ToolResult to stdout. Exit 0 on
+    /// `isError = false`, 1 otherwise. Used by `task image:smoke` and
+    /// the docker e2e test to verify the wire from inside the same
+    /// container/VM namespace as the server (sidesteps the Docker
+    /// Desktop macOS host→container AF_UNIX boundary).
+    IpcCall {
+        /// UDS path to connect to.
+        #[arg(long, value_name = "PATH")]
+        ipc_socket: PathBuf,
+        /// MCP tool name (e.g. `rsry_status`).
+        #[arg(long)]
+        tool: String,
+        /// JSON arguments. Defaults to `{}`.
+        #[arg(long, default_value = "{}")]
+        args: String,
+    },
     /// Register current repo (or path) in the global registry (~/.rsry/repos.toml)
     Enable {
         /// Path to repo root (defaults to current directory)
@@ -905,6 +924,20 @@ async fn main() -> Result<()> {
         }
         Command::Mcp { ipc_socket } => {
             serve::run_ipc(&ipc_socket).await?;
+        }
+        Command::IpcCall {
+            ipc_socket,
+            tool,
+            args,
+        } => {
+            let (text, is_error) = serve::run_ipc_call(&ipc_socket, &tool, args.as_bytes()).await?;
+            print!("{text}");
+            if !text.ends_with('\n') {
+                println!();
+            }
+            if is_error {
+                std::process::exit(1);
+            }
         }
         Command::Enable { path } => {
             let entry = config::enable_repo(Path::new(&path))?;

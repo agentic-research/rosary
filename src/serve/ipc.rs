@@ -119,6 +119,66 @@ pub async fn run(ipc_socket: &Path, config_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Client-side: connect to a rosary IPC server, send one `ToolCall`, read
+/// the `ToolResult`. Returns `(text, is_error)` — the JSON-stringified
+/// payload from the first `text` content variant plus the `isError` flag.
+///
+/// Intended for smoke tests (`task image:smoke`, the docker e2e test) and
+/// operator debugging (`rsry ipc-call`). Production traffic goes through
+/// cloister-companion, not this function.
+pub async fn call_once(
+    ipc_socket: &Path,
+    tool_name: &str,
+    args_json: &[u8],
+) -> Result<(String, bool)> {
+    let stream = tokio::net::UnixStream::connect(ipc_socket)
+        .await
+        .with_context(|| format!("connecting to UDS at {}", ipc_socket.display()))?;
+    let (read_half, write_half) = stream.into_split();
+    let mut read = read_half.compat();
+    let mut write = write_half.compat_write();
+
+    let mut builder = Builder::new_default();
+    {
+        let mut root = builder.init_root::<tool_call::Builder>();
+        root.set_upstream_id("rosary");
+        root.set_tool_name(tool_name);
+        root.set_arguments_json(args_json);
+    }
+    serialize::write_message(&mut write, builder)
+        .await
+        .context("writing ToolCall")?;
+
+    let reader = serialize::try_read_message(&mut read, ReaderOptions::new())
+        .await
+        .context("reading ToolResult")?
+        .ok_or_else(|| anyhow::anyhow!("server closed connection without responding"))?;
+
+    let result: tool_result::Reader = reader
+        .get_root::<tool_result::Reader>()
+        .context("decoding ToolResult root")?;
+    let is_error = result.get_is_error();
+    let content_list = result.get_content().context("ToolResult.content")?;
+    if content_list.is_empty() {
+        anyhow::bail!("ToolResult.content is empty");
+    }
+    let body = content_list.get(0).get_body();
+    let text = match body.which().context("Content.body union")? {
+        crate::cloister_capnp::content::body::Which::Text(t) => t
+            .context("Content.text bytes")?
+            .to_str()
+            .context("Content.text not utf-8")?
+            .to_string(),
+        crate::cloister_capnp::content::body::Which::Binary(_) => {
+            anyhow::bail!("binary ToolResult content not supported by ipc-call")
+        }
+        crate::cloister_capnp::content::body::Which::Resource(_) => {
+            anyhow::bail!("resource ToolResult content not supported by ipc-call")
+        }
+    };
+    Ok((text, is_error))
+}
+
 async fn serve_connection(
     stream: UnixStream,
     pool: Arc<RepoPool>,

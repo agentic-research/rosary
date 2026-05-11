@@ -269,6 +269,19 @@ pub async fn run_ipc(ipc_socket: &std::path::Path) -> Result<()> {
     ipc::run(ipc_socket, &crate::config::resolve_config_path()).await
 }
 
+/// Client-side single-shot call against an IPC server (smoke + ops).
+///
+/// Exposes `serve::ipc::call_once` to the binary so `rsry ipc-call` can
+/// invoke it. Returns `(text, is_error)`; the binary picks an exit code
+/// based on `is_error` and prints `text` verbatim.
+pub async fn run_ipc_call(
+    ipc_socket: &std::path::Path,
+    tool: &str,
+    args_json: &[u8],
+) -> Result<(String, bool)> {
+    ipc::call_once(ipc_socket, tool, args_json).await
+}
+
 // ---------------------------------------------------------------------------
 // HTTP transport (MCP Streamable HTTP)
 // ---------------------------------------------------------------------------
