@@ -210,7 +210,7 @@ impl Reconciler {
         &mut self,
         beads: &[crate::bead::Bead],
         sessions: &[crate::session::SessionEntry],
-    ) -> usize {
+    ) -> Vec<String> {
         // Collect unique repo names that have at least one Dispatched bead.
         // Avoids per-bead client lookups for repos with no live work.
         let mut repos_to_sweep: std::collections::HashSet<String> =
@@ -221,17 +221,17 @@ impl Reconciler {
             }
         }
 
-        let mut total = 0usize;
+        let mut deadlettered = Vec::new();
         for repo in repos_to_sweep {
             let Some(client) = self.dolt_client(&repo).await else {
                 continue;
             };
             let report = crate::dispatch::sweep::sweep_dead_workers(client, &repo, sessions).await;
-            total += report.deadlettered.len();
-            for id in &report.deadlettered {
+            for id in report.deadlettered {
                 eprintln!("[reconcile] {id} → dead_letter (worker pid gone)");
+                deadlettered.push(id);
             }
         }
-        total
+        deadlettered
     }
 }

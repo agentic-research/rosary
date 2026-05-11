@@ -32,6 +32,7 @@ fn iteration_summary_display() {
         passed: 1,
         failed: 0,
         deadlettered: 0,
+        deadlettered_ids: Vec::new(),
         agent_closed: 0,
         vcs_transitions: 1,
     };
@@ -1758,8 +1759,8 @@ async fn liveness_sweep_deadletters_dead_worker_via_reconciler() {
     let pid = dead_pid();
     let sessions = vec![fake_session("dead-r-1", "test-repo", pid)];
 
-    let count = r.liveness_sweep(&[bead], &sessions).await;
-    assert_eq!(count, 1, "exactly one bead should have been deadlettered");
+    let ids = r.liveness_sweep(&[bead], &sessions).await;
+    assert_eq!(ids, vec!["dead-r-1".to_string()]);
 
     let reaped_bead = r
         .dolt_clients
@@ -1804,8 +1805,8 @@ async fn liveness_sweep_leaves_live_worker_alone_via_reconciler() {
     // Our own pid — guaranteed alive throughout the test.
     let sessions = vec![fake_session("live-r-1", "test-repo", std::process::id())];
 
-    let count = r.liveness_sweep(&[bead], &sessions).await;
-    assert_eq!(count, 0, "live worker must not be touched");
+    let ids = r.liveness_sweep(&[bead], &sessions).await;
+    assert!(ids.is_empty(), "live worker must not be touched");
 
     let bead = r
         .dolt_clients
@@ -1816,4 +1817,65 @@ async fn liveness_sweep_leaves_live_worker_alone_via_reconciler() {
         .unwrap()
         .unwrap();
     assert_eq!(bead.status, "dispatched");
+}
+
+/// Regression for Copilot review on PR #202: target-bead mode used to
+/// exit if `cumulative.deadlettered > 0` regardless of which bead was
+/// deadlettered. With the new liveness sweep adding deadletter events
+/// for ANY dead worker (not just retry-exhaustion on the target), the
+/// false-positive exit would terminate target mode the first time an
+/// unrelated worker died. The fix splits `deadlettered_ids` from the
+/// counter and checks set-membership; this test pins that contract.
+#[tokio::test]
+async fn target_bead_mode_only_exits_when_target_bead_deadletters() {
+    let beads_dir = tempfile::TempDir::new().unwrap();
+    let store = crate::bead_sqlite::connect_bead_store(beads_dir.path())
+        .await
+        .unwrap();
+    // Two beads: TARGET (the one the operator asked for) and SIBLING.
+    store
+        .create_bead("TARGET", "T", "", 1, "task")
+        .await
+        .unwrap();
+    store.update_status("TARGET", "dispatched").await.unwrap();
+    store
+        .create_bead("SIBLING", "S", "", 1, "task")
+        .await
+        .unwrap();
+    store.update_status("SIBLING", "dispatched").await.unwrap();
+
+    let config = ReconcilerConfig {
+        once: true,
+        target_bead: Some("TARGET".to_string()),
+        repo: Vec::new(),
+        ..Default::default()
+    };
+    let mut r = Reconciler::new(config).await;
+    r.dolt_clients.insert("test-repo".to_string(), store);
+
+    let mut target_bead = crate::testutil::make_bead("TARGET", "task", "test-repo");
+    target_bead.status = "dispatched".to_string();
+    let mut sibling_bead = crate::testutil::make_bead("SIBLING", "task", "test-repo");
+    sibling_bead.status = "dispatched".to_string();
+
+    // SIBLING's worker has died; TARGET's worker is alive (our pid).
+    let dead = dead_pid();
+    let sessions = vec![
+        fake_session("SIBLING", "test-repo", dead),
+        fake_session("TARGET", "test-repo", std::process::id()),
+    ];
+
+    let ids = r
+        .liveness_sweep(&[target_bead, sibling_bead], &sessions)
+        .await;
+
+    // Liveness sweep correctly identifies SIBLING but NOT TARGET.
+    assert_eq!(ids, vec!["SIBLING".to_string()]);
+    // The membership check the run() loop now uses:
+    let target = "TARGET";
+    assert!(
+        !ids.iter().any(|id| id == target),
+        "target {target} must NOT appear in deadlettered_ids when only SIBLING died — \
+         the old `deadlettered > 0` check would have falsely terminated target mode here"
+    );
 }

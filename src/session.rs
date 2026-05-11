@@ -118,9 +118,27 @@ impl SessionRegistry {
     }
 }
 
-/// Check if a PID is alive via kill(pid, 0).
+/// Check if a PID is alive via `kill(pid, 0)`.
+///
+/// Returns:
+/// - `true` if `kill(pid, 0)` returns 0 (process exists, we can signal it).
+/// - `true` if `kill(pid, 0)` returns -1 with `errno = EPERM` — the process
+///   exists but is owned by another user / sandbox. Critical for liveness
+///   checks: a process we can't signal is still alive, and treating EPERM
+///   as "dead" would incorrectly dead-letter live workers spawned under a
+///   different uid (e.g. setuid binaries, containerized siblings).
+/// - `false` only on `ESRCH` (no such process — truly dead).
+/// - `false` on any other unexpected errno; treats unknown errors as dead
+///   so a broken `kill(2)` doesn't masquerade as a live worker.
 pub(crate) fn is_pid_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    unsafe {
+        if libc::kill(pid as i32, 0) == 0 {
+            return true;
+        }
+        // kill returned -1 — distinguish ESRCH (dead) from EPERM (alive).
+        let err = std::io::Error::last_os_error().raw_os_error();
+        matches!(err, Some(libc::EPERM))
+    }
 }
 
 /// Clean up workspace for a dead session (best-effort).
@@ -193,6 +211,33 @@ mod tests {
         });
         reg.sessions.retain(|s| s.bead_id != "rsry-abc");
         assert!(reg.active().is_empty());
+    }
+
+    #[test]
+    /// Regression for Copilot review on PR #202: `kill(pid, 0)` returns
+    /// EPERM (not 0, not ESRCH) when the target process exists but is
+    /// owned by another user. Treating EPERM as "dead" would falsely
+    /// dead-letter live workers (or false-revert orphan dispatches). PID 1
+    /// (`launchd` on macOS, `systemd` on Linux) is always alive and always
+    /// owned by root, so a non-root test gets EPERM from `kill(1, 0)` —
+    /// the exact case `is_pid_alive` must treat as alive.
+    #[test]
+    fn is_pid_alive_returns_true_on_eperm() {
+        // Skip if running as root — root can signal pid 1, so kill(1, 0)
+        // returns 0 (not EPERM), which doesn't exercise the EPERM branch.
+        // Use `unsafe getuid` since we're not in a real test scaffold that
+        // exposes uid through std.
+        let uid = unsafe { libc::getuid() };
+        if uid == 0 {
+            eprintln!("[skip] running as root, can't observe EPERM from kill(1, 0)");
+            return;
+        }
+        assert!(
+            is_pid_alive(1),
+            "pid 1 (init/launchd) is always alive — kill(1, 0) returns EPERM \
+             from a non-root process and is_pid_alive must treat that as alive, \
+             not dead"
+        );
     }
 
     #[test]

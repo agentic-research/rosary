@@ -192,6 +192,13 @@ pub struct IterationSummary {
     pub passed: usize,
     pub failed: usize,
     pub deadlettered: usize,
+    /// IDs of beads moved to `dead_letter` THIS iteration. Used by
+    /// target-bead mode to distinguish "this run's target bead deadlettered"
+    /// (operator should be told and the loop should exit) from "an unrelated
+    /// bead deadlettered" (observed via `deadlettered` counter, no exit).
+    /// Without this split, the liveness sweep deadlettering a sibling bead
+    /// would falsely trip target-bead-mode exit.
+    pub deadlettered_ids: Vec<String>,
     /// Beads closed by the agent via MCP (skipped verification).
     pub agent_closed: usize,
     /// Beads transitioned by VCS commit references.
@@ -485,6 +492,9 @@ impl Reconciler {
             cumulative.passed += summary.passed;
             cumulative.failed += summary.failed;
             cumulative.deadlettered += summary.deadlettered;
+            cumulative
+                .deadlettered_ids
+                .extend(summary.deadlettered_ids.iter().cloned());
 
             if self.config.once {
                 if !self.active.is_empty() {
@@ -499,8 +509,11 @@ impl Reconciler {
                 // reaches a terminal state. Check if the bead is still
                 // retriable (in backoff queue or was just dispatched).
                 if let Some(ref target) = self.config.target_bead {
-                    // Exit on terminal outcomes
-                    if cumulative.deadlettered > 0 {
+                    // Exit on terminal outcomes. Check specifically whether
+                    // the TARGET bead was dead-lettered — not the counter,
+                    // which now includes liveness-sweep deadletters for
+                    // unrelated beads (would false-trip otherwise).
+                    if cumulative.deadlettered_ids.iter().any(|id| id == target) {
                         eprintln!(
                             "[reconcile] bead {target} deadlettered after {} retries",
                             cumulative.failed
@@ -661,7 +674,9 @@ impl Reconciler {
         let live_sessions = crate::session::SessionRegistry::load()
             .map(|r| r.active().to_vec())
             .unwrap_or_default();
-        summary.deadlettered += self.liveness_sweep(&beads, &live_sessions).await;
+        let liveness_ids = self.liveness_sweep(&beads, &live_sessions).await;
+        summary.deadlettered += liveness_ids.len();
+        summary.deadlettered_ids.extend(liveness_ids);
 
         // Phase 1.75: AUTO-ASSIGN — set owner on beads without one
         // Uses pipeline engine (config-driven) not dispatch::default_agent (hardcoded).

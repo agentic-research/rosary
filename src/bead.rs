@@ -116,7 +116,21 @@ impl BeadState {
     pub fn from_linear_type(state_type: &str, state_name: &str) -> Self {
         match state_type {
             "completed" => BeadState::Done,
-            "canceled" => BeadState::Done,
+            // Refine "canceled" by name: a state literally named "Dead Letter"
+            // (the upstream label `to_linear_type` emits for DeadLetter) round-
+            // trips back to DeadLetter. Anything else canceled — workflow-level
+            // cancellations, manual closes — stays Done. Without this branch the
+            // Linear→rosary webhook would silently demote a DeadLetter bead to
+            // Done on every sync, losing the operator-triage semantics.
+            "canceled" => {
+                if state_name.to_lowercase().contains("dead letter")
+                    || state_name.to_lowercase().contains("dead_letter")
+                {
+                    BeadState::DeadLetter
+                } else {
+                    BeadState::Done
+                }
+            }
             "started" => {
                 // Refine by name within the "started" type
                 if state_name.to_lowercase().contains("review") {
@@ -590,6 +604,22 @@ mod tests {
         assert_eq!(BeadState::from("backlog"), BeadState::Backlog);
         assert_eq!(BeadState::from("open"), BeadState::Open);
         assert_eq!(BeadState::from("queued"), BeadState::Queued);
+        // Regression for Copilot review on PR #202: Linear round-trip used
+        // to demote DeadLetter to Done because `canceled` type mapped back
+        // unconditionally to Done. Now the "Dead Letter" name within the
+        // `canceled` type round-trips to DeadLetter; everything else
+        // canceled (workflow cancellations) stays Done.
+        let (ty, name) = BeadState::DeadLetter.to_linear_type();
+        assert_eq!(
+            BeadState::from_linear_type(ty, name),
+            BeadState::DeadLetter,
+            "DeadLetter must survive Linear round-trip via to/from_linear_type"
+        );
+        // Sanity: an actual cancellation (not our managed DeadLetter) still maps to Done.
+        assert_eq!(
+            BeadState::from_linear_type("canceled", "Cancelled"),
+            BeadState::Done
+        );
         assert_eq!(BeadState::from("dispatched"), BeadState::Dispatched);
         assert_eq!(BeadState::from("verifying"), BeadState::Verifying);
         assert_eq!(BeadState::from("done"), BeadState::Done);
