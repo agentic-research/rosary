@@ -72,10 +72,19 @@ impl DoltClient {
     }
 
     /// Add a comment to an issue.
+    ///
+    /// Generates the comment `id` in Rust (UUID v4) and supplies it explicitly
+    /// at INSERT time. Migration 005 (rosary-a96b06) makes `comments.id` a
+    /// `CHAR(36) NOT NULL PRIMARY KEY` with no SQL-side default — the previous
+    /// `DEFAULT (uuid())` was unreliable across Dolt versions and was removed in
+    /// rosary-5ad4b0. The Rust-side generation keeps INSERT paths working after
+    /// the migration ships.
     pub async fn add_comment(&self, issue_id: &str, body: &str, author: &str) -> Result<()> {
         let full_id = self.resolve_id(issue_id).await?;
         let body = crate::secrets::scrub_and_warn(body, &format!("comment on {issue_id}"));
-        query("INSERT INTO comments (issue_id, text, author, created_at) VALUES (?, ?, ?, NOW())")
+        let comment_id = uuid::Uuid::new_v4().to_string();
+        query("INSERT INTO comments (id, issue_id, text, author, created_at) VALUES (?, ?, ?, ?, NOW())")
+            .bind(&comment_id)
             .bind(&full_id)
             .bind(&body)
             .bind(author)

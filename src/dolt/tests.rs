@@ -70,8 +70,12 @@ impl SandboxBeads {
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL
             )",
+            // Schema matches migration 005's post-state (no DEFAULT (uuid())):
+            // production INSERTs must supply `id`. Mirroring the real schema
+            // here catches regressions like "add_comment doesn't bind id" that
+            // would only surface after migration 005 lands.
             "CREATE TABLE comments (
-                id CHAR(36) NOT NULL DEFAULT (uuid()) PRIMARY KEY,
+                id CHAR(36) NOT NULL PRIMARY KEY,
                 issue_id VARCHAR(128) NOT NULL,
                 text TEXT NOT NULL,
                 author VARCHAR(128) NOT NULL,
@@ -542,4 +546,51 @@ async fn search_multi_word_non_contiguous() {
     // Empty query returns all beads
     let results = client.search_beads("", "test", 50).await.unwrap();
     assert!(results.len() >= 3, "empty query should return all beads");
+}
+
+/// Regression for the migration 005 INSERT-time id contract.
+///
+/// Sandbox schema mirrors migration 005 output (no `DEFAULT (uuid())`),
+/// so a missing client-side id would surface as an INSERT failure here
+/// rather than silently passing only in dev. We assert:
+/// - add_comment succeeds against the no-default schema
+/// - the persisted row has a UUID-shaped id (36 chars, four `-`)
+/// - list_comments retrieves the same id verbatim
+#[tokio::test]
+async fn add_comment_supplies_uuid_id() {
+    let sandbox = match SandboxBeads::new().await {
+        Some(s) => s,
+        None => return,
+    };
+
+    let writer = sandbox.fresh_client().await;
+    writer
+        .create_bead("uuid-1", "test for uuid id", "", 2, "task")
+        .await
+        .unwrap();
+    writer
+        .add_comment("uuid-1", "first comment body", "test-runner")
+        .await
+        .expect("add_comment must succeed against migration-005 schema (no DEFAULT (uuid()))");
+    drop(writer);
+
+    let reader = sandbox.fresh_client().await;
+    let comments = reader.list_comments("uuid-1", false).await.unwrap();
+    assert_eq!(comments.len(), 1, "exactly one comment");
+    let comment = &comments[0];
+    // UUID v4 hex form is 36 chars: 8-4-4-4-12 with 4 hyphens.
+    assert_eq!(
+        comment.id.len(),
+        36,
+        "expected UUID-shaped id (36 chars), got: {:?}",
+        comment.id
+    );
+    assert_eq!(
+        comment.id.matches('-').count(),
+        4,
+        "expected UUID-shaped id (4 hyphens), got: {:?}",
+        comment.id
+    );
+    // Bytewise the id should round-trip through uuid::Uuid parsing.
+    uuid::Uuid::parse_str(&comment.id).expect("id must parse as a UUID");
 }

@@ -1,0 +1,5 @@
+REPO=$(basename "$PWD")
+BEADS_DIR=".beads/dolt/$REPO"
+if [ -d "$BEADS_DIR" ]; then
+    (cd "$BEADS_DIR" && dolt push origin main 2>/dev/null) || true
+fi
