@@ -5,6 +5,13 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+// Generated capnp bindings for the cloister↔rosary IPC wire (rosary-6371e3).
+// Source schema: schemas/cloister.capnp (vendored from cloister/wire/cloister.capnp).
+#[allow(clippy::all, dead_code, unused_imports)]
+mod cloister_capnp {
+    include!(concat!(env!("OUT_DIR"), "/cloister_capnp.rs"));
+}
+
 mod acp;
 #[allow(dead_code)] // API surface — wired in rsry-e608bb (reconciler integration)
 mod backend;
@@ -195,6 +202,38 @@ enum Command {
         /// Port for HTTP transport
         #[arg(long, default_value = "8383")]
         port: u16,
+    },
+    /// Start MCP server over a Unix Domain Socket (capnp ToolCall/Result).
+    ///
+    /// Invoked by cloister's `cluster.capnp` with
+    /// `args = ["mcp", "--ipc-socket", "/run/cloister-uds/rosary.sock"]`.
+    /// Wire format is the intra-cluster amendment of ADR-0005: plain capnp
+    /// ToolCall in, ToolResult out, no Manifest envelope, no AEAD. The UDS
+    /// permissions are the trust boundary.
+    Mcp {
+        /// Path to bind the UDS at. Stale socket files at this path are
+        /// removed before bind.
+        #[arg(long, value_name = "PATH")]
+        ipc_socket: PathBuf,
+    },
+    /// Send a single capnp ToolCall to a rosary IPC server (smoke + ops).
+    ///
+    /// Connects to `--ipc-socket`, sends one ToolCall, prints the
+    /// `text` content of the ToolResult to stdout. Exit 0 on
+    /// `isError = false`, 1 otherwise. Used by `task image:smoke` and
+    /// the docker e2e test to verify the wire from inside the same
+    /// container/VM namespace as the server (sidesteps the Docker
+    /// Desktop macOS host→container AF_UNIX boundary).
+    IpcCall {
+        /// UDS path to connect to.
+        #[arg(long, value_name = "PATH")]
+        ipc_socket: PathBuf,
+        /// MCP tool name (e.g. `rsry_status`).
+        #[arg(long)]
+        tool: String,
+        /// JSON arguments. Defaults to `{}`.
+        #[arg(long, default_value = "{}")]
+        args: String,
     },
     /// Register current repo (or path) in the global registry (~/.rsry/repos.toml)
     Enable {
@@ -882,6 +921,23 @@ async fn main() -> Result<()> {
         }
         Command::Serve { transport, port } => {
             serve::run(&transport, port).await?;
+        }
+        Command::Mcp { ipc_socket } => {
+            serve::run_ipc(&ipc_socket).await?;
+        }
+        Command::IpcCall {
+            ipc_socket,
+            tool,
+            args,
+        } => {
+            let (text, is_error) = serve::run_ipc_call(&ipc_socket, &tool, args.as_bytes()).await?;
+            print!("{text}");
+            if !text.ends_with('\n') {
+                println!();
+            }
+            if is_error {
+                std::process::exit(1);
+            }
         }
         Command::Enable { path } => {
             let entry = config::enable_repo(Path::new(&path))?;

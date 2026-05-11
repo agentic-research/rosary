@@ -1,11 +1,18 @@
-//! MCP server for rosary — exposes beads capabilities as tools over JSON-RPC.
+//! MCP server for rosary — exposes beads capabilities as tools.
 //!
-//! Supports two transports:
-//! - **stdio**: line-delimited JSON-RPC over stdin/stdout (default)
-//! - **http**: MCP Streamable HTTP transport over a single `/mcp` endpoint
+//! Three transports, all dispatching through the same `handlers::call_tool`
+//! surface:
+//! - **stdio** (`run_stdio`): line-delimited JSON-RPC over stdin/stdout
+//!   (default; used by Claude Code via `rsry serve --transport stdio`)
+//! - **http** (`run_http`): MCP Streamable HTTP transport on `/mcp`
+//!   (used by `rsry serve --transport http --port 8383`)
+//! - **ipc** (`run_ipc`): capnp `ToolCall` / `ToolResult` over a Unix
+//!   Domain Socket, intra-cluster wire per cloister ADR-0005 amendment
+//!   (used by `rsry mcp --ipc-socket <path>`, the cluster.capnp invocation)
 
 mod github_webhook;
 mod handlers;
+mod ipc;
 mod landing;
 mod tools;
 mod webhook;
@@ -257,6 +264,28 @@ pub async fn run(transport: &str, port: u16) -> Result<()> {
             anyhow::bail!("Unknown transport: {other}. Supported: stdio, http");
         }
     }
+}
+
+/// Run the MCP server over a Unix Domain Socket (capnp ToolCall/Result).
+///
+/// Entry point for the `rsry mcp --ipc-socket <path>` cluster invocation
+/// declared in cloister's `cluster.capnp` (rosary-6371e3, ADR-0005
+/// intra-cluster amendment).
+pub async fn run_ipc(ipc_socket: &std::path::Path) -> Result<()> {
+    ipc::run(ipc_socket, &crate::config::resolve_config_path()).await
+}
+
+/// Client-side single-shot call against an IPC server (smoke + ops).
+///
+/// Exposes `serve::ipc::call_once` to the binary so `rsry ipc-call` can
+/// invoke it. Returns `(text, is_error)`; the binary picks an exit code
+/// based on `is_error` and prints `text` verbatim.
+pub async fn run_ipc_call(
+    ipc_socket: &std::path::Path,
+    tool: &str,
+    args_json: &[u8],
+) -> Result<(String, bool)> {
+    ipc::call_once(ipc_socket, tool, args_json).await
 }
 
 // ---------------------------------------------------------------------------
