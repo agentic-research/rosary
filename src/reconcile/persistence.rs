@@ -229,10 +229,10 @@ impl Reconciler {
                 continue;
             };
             let report = crate::dispatch::sweep::sweep_dead_workers(client, &repo, sessions).await;
-            for id in report.deadlettered {
-                eprintln!("[reconcile] {id} → dead_letter (worker pid gone)");
-                deadlettered.push(id);
-            }
+            // sweep_dead_workers already logs per-bead at the `[liveness-sweep]`
+            // tag. Don't double-log here — just accumulate the IDs for the
+            // iteration summary. Round-4 review on PR #202.
+            deadlettered.extend(report.deadlettered);
         }
         deadlettered
     }
