@@ -152,11 +152,23 @@ pub async fn sweep_orphan_dispatches(
 /// - SessionRegistry has a matching entry with `pid` set
 /// - `is_pid_alive(pid)` returns `false`
 ///
-/// We transition to `BeadState::DeadLetter` (NOT `Open`). The forensic
-/// distinction matters: worktree may contain unmerged work the operator
-/// wants to recover; reverting to Open would let auto-dispatch wipe it.
-/// DeadLetter means "an operator must look at this before it re-enters
-/// the pipeline."
+/// **This sweep does NOT mutate bead status.** It surfaces matching beads
+/// as `DeadWorkerCandidate` entries (bead_id + forensic detail) and
+/// writes a `deadletter_dead_worker` event to the log; the caller is
+/// responsible for the actual `Dispatched → DeadLetter` state
+/// transition. In rosary today the caller is `Reconciler::liveness_sweep`,
+/// which routes through `persist_status` so the standard `state_change`
+/// audit event + Linear/issue-tracker mirroring fire alongside the
+/// status change. Bypassing that path (calling `update_status` directly)
+/// was the round-7 Copilot finding on PR #202; this contract pins the
+/// fix.
+///
+/// The semantic distinction between this sweep and the
+/// `sweep_orphan_dispatches → Open` revert still matters even though
+/// neither writes status here anymore: worktrees from dead workers
+/// often contain unmerged work the operator wants to recover, so the
+/// caller transitions them to `DeadLetter` (operator review required)
+/// rather than `Open` (auto-dispatch would wipe the worktree).
 ///
 /// `repo_name` filter scopes the sweep to one repo at a time. Iterate over
 /// all configured repos at the call site for global coverage.
