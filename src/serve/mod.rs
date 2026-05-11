@@ -1,8 +1,14 @@
-//! MCP server for rosary — exposes beads capabilities as tools over JSON-RPC.
+//! MCP server for rosary — exposes beads capabilities as tools.
 //!
-//! Supports two transports:
-//! - **stdio**: line-delimited JSON-RPC over stdin/stdout (default)
-//! - **http**: MCP Streamable HTTP transport over a single `/mcp` endpoint
+//! Three transports, all dispatching through the same `handlers::call_tool`
+//! surface:
+//! - **stdio** (`run_stdio`): line-delimited JSON-RPC over stdin/stdout
+//!   (default; used by Claude Code via `rsry serve --transport stdio`)
+//! - **http** (`run_http`): MCP Streamable HTTP transport on `/mcp`
+//!   (used by `rsry serve --transport http --port 8383`)
+//! - **ipc** (`run_ipc`): capnp `ToolCall` / `ToolResult` over a Unix
+//!   Domain Socket, intra-cluster wire per cloister ADR-0005 amendment
+//!   (used by `rsry mcp --ipc-socket <path>`, the cluster.capnp invocation)
 
 mod github_webhook;
 mod handlers;

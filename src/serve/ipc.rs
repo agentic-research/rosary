@@ -40,12 +40,55 @@ use crate::store::BackendStore;
 /// Binds at `ipc_socket`, accepts connections, and serves capnp ToolCall →
 /// ToolResult until SIGTERM or SIGHUP.
 pub async fn run(ipc_socket: &Path, config_path: &str) -> Result<()> {
-    // Best-effort cleanup of a stale socket file from a previous crash —
-    // bind would otherwise fail with EADDRINUSE. The bind itself will still
-    // surface a real error if the parent dir is missing or non-writable.
+    // Discriminate "stale socket from prior crash" (safe to unlink) from
+    // "another rosary instance is already serving here" (refuse to bind,
+    // surface the conflict instead of silently hijacking the path).
+    //
+    // Probe by connecting first: ECONNREFUSED / ENOENT → previous process
+    // died without unlinking → ours to clean up; success → live server, bail.
     if ipc_socket.exists() {
-        std::fs::remove_file(ipc_socket)
-            .with_context(|| format!("removing stale socket at {}", ipc_socket.display()))?;
+        match tokio::net::UnixStream::connect(ipc_socket).await {
+            Ok(_) => anyhow::bail!(
+                "refusing to bind: another process is already serving at {} — \
+                 stop that instance first, or pick a different --ipc-socket path",
+                ipc_socket.display()
+            ),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
+                ) =>
+            {
+                // Stale socket — unlink and continue. Verify it's actually a
+                // socket before removing so a misplaced regular file doesn't
+                // get accidentally deleted.
+                let meta = std::fs::symlink_metadata(ipc_socket).with_context(|| {
+                    format!("stat'ing {} for stale-socket check", ipc_socket.display())
+                })?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::FileTypeExt;
+                    if !meta.file_type().is_socket() {
+                        anyhow::bail!(
+                            "refusing to remove non-socket file at {} — please clean it up manually",
+                            ipc_socket.display()
+                        );
+                    }
+                }
+                let _ = meta; // suppress unused warning on non-unix
+                std::fs::remove_file(ipc_socket).with_context(|| {
+                    format!("removing stale socket at {}", ipc_socket.display())
+                })?;
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(e)).with_context(|| {
+                    format!(
+                        "probing existing path at {} (couldn't decide stale vs live)",
+                        ipc_socket.display()
+                    )
+                });
+            }
+        }
     }
 
     let listener = UnixListener::bind(ipc_socket)
@@ -138,13 +181,22 @@ pub async fn call_once(
     let mut read = read_half.compat();
     let mut write = write_half.compat_write();
 
-    let mut builder = Builder::new_default();
+    // Same canonical-encoding discipline as the server side — see
+    // `encode_tool_result` for rationale.
+    let mut staging = Builder::new_default();
     {
-        let mut root = builder.init_root::<tool_call::Builder>();
+        let mut root = staging.init_root::<tool_call::Builder>();
         root.set_upstream_id("rosary");
         root.set_tool_name(tool_name);
         root.set_arguments_json(args_json);
     }
+    let staging_reader = staging
+        .get_root_as_reader::<tool_call::Reader>()
+        .context("staging ToolCall reader")?;
+    let mut builder = Builder::new_default();
+    builder
+        .set_root_canonical(staging_reader)
+        .context("canonicalizing ToolCall")?;
     serialize::write_message(&mut write, builder)
         .await
         .context("writing ToolCall")?;
@@ -210,7 +262,7 @@ async fn serve_connection(
         )
         .await;
 
-        let response = encode_tool_result(result);
+        let response = encode_tool_result(result)?;
         serialize::write_message(&mut write, response)
             .await
             .context("writing ToolResult")?;
@@ -240,7 +292,7 @@ fn decode_tool_call(
     Ok((tool_name, args_value))
 }
 
-fn encode_tool_result(result: Result<serde_json::Value>) -> Builder<HeapAllocator> {
+fn encode_tool_result(result: Result<serde_json::Value>) -> Result<Builder<HeapAllocator>> {
     let (text, is_error) = match result {
         Ok(value) => (
             serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string()),
@@ -249,16 +301,28 @@ fn encode_tool_result(result: Result<serde_json::Value>) -> Builder<HeapAllocato
         Err(e) => (format!("Error: {e}"), true),
     };
 
-    let mut builder = Builder::new_default();
+    // Build the message field-by-field in a staging builder, then copy it
+    // canonically into the output builder. `set_root_canonical` as the
+    // first action on a fresh builder guarantees single-segment unpacked
+    // output, which is what cloister's hand-rolled TS decoder requires
+    // (see schemas/cloister.capnp canonicalization notes + ADR-0005).
+    let mut staging = Builder::new_default();
     {
-        let mut root = builder.init_root::<tool_result::Builder>();
+        let mut root = staging.init_root::<tool_result::Builder>();
         root.set_is_error(is_error);
         let mut content_list = root.init_content(1);
         let entry = content_list.reborrow().get(0);
         let mut body = entry.init_body();
         body.set_text(text.as_str());
     }
-    builder
+    let reader = staging
+        .get_root_as_reader::<tool_result::Reader>()
+        .context("staging ToolResult reader")?;
+    let mut canonical = Builder::new_default();
+    canonical
+        .set_root_canonical(reader)
+        .context("canonicalizing ToolResult")?;
+    Ok(canonical)
 }
 
 #[cfg(test)]

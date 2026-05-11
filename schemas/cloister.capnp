@@ -1,15 +1,18 @@
-# wire/cloister.capnp — cloister↔companion wire schema (ADR-0005 Phase 2A).
+# schemas/cloister.capnp — vendored from cloister (ADR-0005 Phase 2A).
 #
-# This is the THIRD capnp file in this repo, by deliberate intention:
+# Source of truth: <cloister-repo>/wire/cloister.capnp. This file is a
+# verbatim copy used by rosary's `build.rs` to generate capnp Rust
+# bindings for the `rsry mcp --ipc-socket` transport (rosary-6371e3).
+# When cloister evolves the schema, re-vendor this file in lockstep —
+# capnp's schema-evolution discipline below applies regardless of which
+# repo holds the canonical copy.
 #
-#   - manifest/cloister.capnp  (ADR-0004) — declarative gateway config
-#   - config.capnp             (ADR-0001) — workerd runtime config
-#   - wire/cloister.capnp      (ADR-0005) — over-the-wire frames between
-#                                            cloister (workerd) and
-#                                            cloister-companion (Rust)
-#
-# Each owns a distinct concern; sharing the schema language keeps the
-# toolchain and error format unified.
+# Cloister itself organizes this schema alongside two siblings
+# (`manifest/cloister.capnp`, `config.capnp`) that aren't relevant here
+# and aren't vendored — see the cloister repo for that context. This
+# vendored copy only covers the over-the-wire frames cloister exchanges
+# with its companion sidecar (and, by extension, with rosary as a
+# sibling bundle on the same UDS).
 #
 # ── What this file describes ─────────────────────────────────────────────
 #

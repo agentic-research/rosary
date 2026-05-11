@@ -28,13 +28,24 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/refs/heads/");
 
     // capnp codegen for the cloister↔rosary wire schema (rosary-6371e3).
-    // Schema is vendored from cloister/wire/cloister.capnp at the same commit
-    // those bytes mean to be cross-host equivalent; bump in sync with cloister
-    // when that file evolves.
+    // Schema is vendored from cloister/wire/cloister.capnp; bump in sync
+    // with cloister when that file evolves.
+    //
+    // Prereq: the `capnp` schema compiler must be on PATH. The `capnpc`
+    // crate shells out to it — no external compiler, no Rust bindings.
+    // Install: `brew install capnp` (macOS) or `apt-get install capnproto`
+    // (Debian/Ubuntu) — both ship a recent-enough version.
+    //
+    // CI/contributors without capnp installed will see a clear error
+    // from this build step rather than a downstream cryptic miss.
     println!("cargo:rerun-if-changed=schemas/cloister.capnp");
     capnpc::CompilerCommand::new()
         .src_prefix("schemas")
         .file("schemas/cloister.capnp")
         .run()
-        .expect("capnpc codegen for schemas/cloister.capnp");
+        .expect(
+            "capnpc codegen for schemas/cloister.capnp failed — \
+             ensure the `capnp` schema compiler is on PATH \
+             (`brew install capnp` on macOS, `apt-get install capnproto` on Debian)",
+        );
 }

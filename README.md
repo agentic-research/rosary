@@ -228,6 +228,12 @@ task all       # fmt + check + lint + test
 
 Pre-commit hooks enforce `cargo fmt` and `cargo clippy` on every commit.
 
+**Build prereqs:**
+
+- Rust toolchain (`rustup`) and `cargo`
+- The `capnp` schema compiler (`brew install capnp` / `apt-get install capnproto`)
+  — `build.rs` invokes it to generate Rust bindings from `schemas/cloister.capnp`.
+
 ## Building the image
 
 `task image` produces a distroless OCI image tagged `rosary:0.2.0` — the
@@ -237,7 +243,7 @@ image's default `CMD` matches cluster.capnp's launch args
 
 ```bash
 task image          # krust musl cross-compile + docker COPY
-task image:smoke    # verify the binary runs inside chainguard/static
+task image:smoke    # verify the binary runs inside the distroless image
 ```
 
 The pipeline is two steps:
@@ -246,8 +252,9 @@ The pipeline is two steps:
    `aarch64-unknown-linux-musl` (`target/krust/.../release/rsry`, ~19MB
    static).
 2. **`image.Dockerfile`** drops that binary onto
-   `cgr.dev/chainguard/static:latest` (distroless, nonroot uid 65532) —
-   a single `COPY`, no Rust toolchain in the container.
+   `gcr.io/distroless/static-debian12:nonroot` (no shell, no package
+   manager, nonroot uid 65532) — a single `COPY`, no Rust toolchain in
+   the container.
 
 Pattern adopted from `ley-line-open` after its melange/apko path stalled
 on Apple Silicon (precedent: `ley-line-open-2b255c`). The `melange.yaml`

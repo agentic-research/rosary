@@ -30,10 +30,24 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const IMAGE_TAG: &str = "rosary:0.2.0";
-const PLATFORM: &str = "linux/arm64";
 /// UDS path inside the container. No volume mount — both server and client
 /// live inside the container's tmpfs.
 const CONTAINER_SOCK: &str = "/tmp/rosary.sock";
+
+/// Container platform. Defaults to the host architecture so the test runs
+/// on whatever arch a contributor built the image for; override via
+/// `ROSARY_E2E_PLATFORM=linux/amd64` (etc.) if you built `rosary:0.2.0`
+/// for a non-host arch and have binfmt/QEMU configured.
+fn platform() -> String {
+    if let Ok(p) = std::env::var("ROSARY_E2E_PLATFORM") {
+        return p;
+    }
+    match std::env::consts::ARCH {
+        "aarch64" => "linux/arm64".to_string(),
+        "x86_64" => "linux/amd64".to_string(),
+        other => format!("linux/{other}"),
+    }
+}
 
 fn docker_available() -> bool {
     Command::new("docker")
@@ -132,6 +146,7 @@ fn capnp_uds_roundtrip_against_built_image() {
 
     let container = format!("rosary-ipc-e2e-{}", std::process::id());
     let _guard = ContainerGuard::new(&container);
+    let platform_arg = platform();
 
     let run = Command::new("docker")
         .args([
@@ -141,7 +156,7 @@ fn capnp_uds_roundtrip_against_built_image() {
             "--name",
             &container,
             "--platform",
-            PLATFORM,
+            &platform_arg,
             // Run the server with the in-container UDS path.
             IMAGE_TAG,
             "mcp",

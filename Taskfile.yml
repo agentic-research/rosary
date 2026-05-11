@@ -194,16 +194,17 @@ tasks:
     deps: [image]
     vars:
       VERSION: '0.2.0'
+      PLATFORM: 'linux/arm64'
     cmds:
       - docker rm -f rosary-smoke 2>/dev/null || true
       - |
         # --version exits 0 and prints the build hash if the musl binary is
-        # actually executable inside chainguard/static. Cheap proof the image
-        # is functional without requiring a UDS volume mount in the smoke path.
-        docker run --rm --platform linux/arm64 \
+        # actually executable inside distroless. Cheap proof the image is
+        # functional without requiring a UDS volume mount in the smoke path.
+        docker run --rm --platform {{.PLATFORM}} \
           --entrypoint /usr/bin/rsry \
           rosary:{{.VERSION}} --version
-      - echo "smoke passed — binary runs inside chainguard/static"
+      - echo "smoke passed — binary runs inside distroless base"
 
   setup:
     desc: First-time setup — install git hooks, conductor deps
