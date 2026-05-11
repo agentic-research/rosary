@@ -145,7 +145,11 @@ tasks:
       - cargo test --test cli_integration -- --test-threads=1
 
   apk:
-    desc: Build distroless OCI image via melange + apko (release)
+    desc: "[deferred] Build distroless OCI image via melange + apko (release)"
+    # Kept for reference; the active path is `task image` (krust + image.Dockerfile)
+    # — adopted from ley-line-open after its melange path stalled on Apple Silicon
+    # (ley-line-open-2b255c). Bind-mounting this repo's 31GB target/ into a melange
+    # docker runner makes the `populating workspace` phase pathological.
     cmds:
       - melange keygen melange.rsa
       - |
@@ -159,6 +163,47 @@ tasks:
           rosary.tar \
           --keyring-append melange.rsa.pub
       - echo "Built rosary.tar (load with docker load < rosary.tar)"
+
+  image:
+    desc: Build rosary:0.2.0 OCI image (krust musl binary + docker COPY)
+    # cluster.capnp pins `rosary:0.2.0` and invokes the binary as
+    # `mcp --ipc-socket /run/cloister-uds/rosary.sock` — both encoded
+    # in image.Dockerfile as ENTRYPOINT + default CMD.
+    vars:
+      KRUST_REPO: '{{.KRUST_REPO | default "localhost/rosary"}}'
+      VERSION: '0.2.0'
+      PLATFORM: 'linux/arm64'
+    cmds:
+      - |
+        KRUST_REPO={{.KRUST_REPO}} krust build "$(pwd)" \
+          --no-push --platform {{.PLATFORM}} -- --bin rsry
+      - |
+        docker build -f image.Dockerfile \
+          -t rosary:{{.VERSION}} \
+          --platform {{.PLATFORM}} .
+      - |
+        echo "Built rosary:{{.VERSION}} ({{.PLATFORM}})."
+        echo "Default CMD matches cluster.capnp:"
+        echo "  docker run --rm -v /tmp/rosary-uds:/run/cloister-uds rosary:{{.VERSION}}"
+        echo "Override for ad-hoc UDS path:"
+        echo "  docker run --rm -v /tmp/rosary-uds:/sock rosary:{{.VERSION}} \\"
+        echo "    mcp --ipc-socket /sock/rosary.sock"
+
+  image:smoke:
+    desc: Build image and verify the binary boots inside the container
+    deps: [image]
+    vars:
+      VERSION: '0.2.0'
+    cmds:
+      - docker rm -f rosary-smoke 2>/dev/null || true
+      - |
+        # --version exits 0 and prints the build hash if the musl binary is
+        # actually executable inside chainguard/static. Cheap proof the image
+        # is functional without requiring a UDS volume mount in the smoke path.
+        docker run --rm --platform linux/arm64 \
+          --entrypoint /usr/bin/rsry \
+          rosary:{{.VERSION}} --version
+      - echo "smoke passed — binary runs inside chainguard/static"
 
   setup:
     desc: First-time setup — install git hooks, conductor deps

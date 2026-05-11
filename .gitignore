@@ -17,8 +17,14 @@
 !/Taskfile.yml
 !/rosary.toml
 !/rosary-self.toml
+# Image build — configs tracked, artifacts/keys local-only.
+# Active path: `task image` uses krust + image.Dockerfile (see Taskfile.yml).
+# apko.yaml / melange.yaml retained for reference but deferred — Apple Silicon
+# bind-mount of 31GB target/ made the melange path pathological (rosary-16df06,
+# tracked precedent in ley-line-open-2b255c).
 !/apko.yaml
 !/melange.yaml
+!/image.Dockerfile
 !/entitlements.plist
 
 # === DOCS & DEFINITIONS ===

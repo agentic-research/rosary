@@ -47,6 +47,11 @@ socket2 = "0.5"
 rusqlite = { version = "0.34", features = ["bundled"] }
 capnp = "0.21"
 capnp-futures = "0.21"
+# Force vendored OpenSSL so the musl cross-build (`task image` via krust)
+# can produce a static binary without a target-native libssl on the host.
+# Transitive: reqwest → native-tls → openssl-sys; adding the openssl direct
+# dep with `vendored` propagates the feature globally.
+openssl = { version = "0.10", features = ["vendored"] }
 
 [build-dependencies]
 capnpc = "0.21"
