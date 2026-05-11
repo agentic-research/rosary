@@ -213,7 +213,6 @@ mod tests {
         assert!(reg.active().is_empty());
     }
 
-    #[test]
     /// Regression for Copilot review on PR #202: `kill(pid, 0)` returns
     /// EPERM (not 0, not ESRCH) when the target process exists but is
     /// owned by another user. Treating EPERM as "dead" would falsely

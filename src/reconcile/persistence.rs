@@ -196,11 +196,13 @@ impl Reconciler {
     }
 
     /// Per-iteration liveness sweep: walks each repo's `Dispatched` beads,
-    /// cross-references the `SessionRegistry`, and transitions to
-    /// `dead_letter` any bead whose registered worker pid is gone.
+    /// cross-references `sessions`, and transitions to `dead_letter` any
+    /// bead whose registered worker pid is gone.
     ///
-    /// Returns the count of beads moved to dead_letter this iteration —
-    /// added to `IterationSummary.deadlettered` for observability.
+    /// Returns the IDs of beads moved to dead_letter this iteration. The
+    /// caller updates `IterationSummary.deadlettered_ids` (set-membership
+    /// for target-bead-mode exit) and `IterationSummary.deadlettered`
+    /// (count for observability).
     ///
     /// Wired into `iterate()` Phase 1.8. Unlike `recover_stuck_beads()`
     /// (which runs once at startup and reverts ALL Dispatched beads

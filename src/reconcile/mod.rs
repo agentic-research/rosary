@@ -492,9 +492,16 @@ impl Reconciler {
             cumulative.passed += summary.passed;
             cumulative.failed += summary.failed;
             cumulative.deadlettered += summary.deadlettered;
-            cumulative
-                .deadlettered_ids
-                .extend(summary.deadlettered_ids.iter().cloned());
+            // Only accumulate IDs in target-bead mode — that's the only
+            // caller that needs set-membership for exit. In daemon mode
+            // (`once == false`, no `target_bead`) this Vec would grow
+            // unbounded across iterations otherwise. Per-iteration
+            // observability is still preserved via the counter above.
+            if self.config.target_bead.is_some() {
+                cumulative
+                    .deadlettered_ids
+                    .extend(summary.deadlettered_ids.iter().cloned());
+            }
 
             if self.config.once {
                 if !self.active.is_empty() {
@@ -671,9 +678,24 @@ impl Reconciler {
         // forensic context preserved). Per-iteration so the failure mode is
         // caught while the operator is still around, not just at next
         // cold-start.
-        let live_sessions = crate::session::SessionRegistry::load()
-            .map(|r| r.active().to_vec())
-            .unwrap_or_default();
+        let live_sessions = match crate::session::SessionRegistry::load() {
+            Ok(r) => r.active().to_vec(),
+            Err(e) => {
+                // Loud failure: silent fallback to "no sessions" disables
+                // the liveness sweep without any signal, and dispatched
+                // beads silently accumulate the very state this is meant
+                // to clean up. Operators need to know why the sweep is a
+                // no-op so they can fix `~/.rsry/sessions.json` perms /
+                // corruption.
+                eprintln!(
+                    "[reconcile] liveness sweep DISABLED — could not load \
+                     SessionRegistry: {e}. Dispatched beads will not move \
+                     to dead_letter until this is resolved (check \
+                     ~/.rsry/sessions.json perms/format)."
+                );
+                Vec::new()
+            }
+        };
         let liveness_ids = self.liveness_sweep(&beads, &live_sessions).await;
         summary.deadlettered += liveness_ids.len();
         summary.deadlettered_ids.extend(liveness_ids);
