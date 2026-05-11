@@ -700,7 +700,7 @@ impl Reconciler {
         summary.deadlettered += liveness_ids.len();
         summary.deadlettered_ids.extend(liveness_ids);
 
-        // Phase 1.75: AUTO-ASSIGN — set owner on beads without one
+        // Phase 1.9: AUTO-ASSIGN — set owner on beads without one
         // Uses pipeline engine (config-driven) not dispatch::default_agent (hardcoded).
         for bead in &beads {
             if bead.owner.is_some() || bead.status == "closed" || bead.status == "done" {

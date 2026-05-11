@@ -222,20 +222,36 @@ mod tests {
     /// the exact case `is_pid_alive` must treat as alive.
     #[test]
     fn is_pid_alive_returns_true_on_eperm() {
-        // Skip if running as root — root can signal pid 1, so kill(1, 0)
-        // returns 0 (not EPERM), which doesn't exercise the EPERM branch.
-        // Use `unsafe getuid` since we're not in a real test scaffold that
-        // exposes uid through std.
-        let uid = unsafe { libc::getuid() };
-        if uid == 0 {
-            eprintln!("[skip] running as root, can't observe EPERM from kill(1, 0)");
+        // Probe `kill(1, 0)` directly and require errno == EPERM before
+        // exercising the regression. `geteuid() != 0` was the previous
+        // guard but isn't sufficient — in some environments (containers
+        // where pid 1 isn't root-owned, processes with extra capabilities,
+        // user namespaces) the syscall can return 0 even for non-root
+        // callers, making the assertion vacuous. Probing directly ensures
+        // we only run the regression when EPERM is the actual signal,
+        // and we use `geteuid` (effective uid — what `kill(2)` consults)
+        // rather than `getuid` for the eligibility log.
+        let probe = unsafe { libc::kill(1, 0) };
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        let euid = unsafe { libc::geteuid() };
+        if probe == 0 {
+            eprintln!(
+                "[skip] kill(1, 0) returned 0 (euid={euid}) — EPERM branch \
+                 unobservable in this environment"
+            );
+            return;
+        }
+        if errno != Some(libc::EPERM) {
+            eprintln!(
+                "[skip] kill(1, 0) returned {probe} with errno={errno:?} \
+                 (euid={euid}); test requires EPERM to exercise the regression"
+            );
             return;
         }
         assert!(
             is_pid_alive(1),
-            "pid 1 (init/launchd) is always alive — kill(1, 0) returns EPERM \
-             from a non-root process and is_pid_alive must treat that as alive, \
-             not dead"
+            "pid 1 (init/launchd) is alive and kill(1, 0) gave us EPERM — \
+             is_pid_alive must treat that as alive, not dead"
         );
     }
 
