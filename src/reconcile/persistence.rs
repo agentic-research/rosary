@@ -213,6 +213,16 @@ impl Reconciler {
         beads: &[crate::bead::Bead],
         sessions: &[crate::session::SessionEntry],
     ) -> Vec<String> {
+        // Empty session list → no dispatched workers we could possibly
+        // detect as dead. Short-circuit BEFORE the per-repo list_beads
+        // scans, which would otherwise run every iteration in the
+        // SessionRegistry::load failure path (where the caller passes
+        // an empty slice as a fallback) and do guaranteed-zero work.
+        // Round-5 review on PR #202.
+        if sessions.is_empty() {
+            return Vec::new();
+        }
+
         // Collect unique repo names that have at least one Dispatched bead.
         // Avoids per-bead client lookups for repos with no live work.
         let mut repos_to_sweep: std::collections::HashSet<String> =

@@ -1819,6 +1819,44 @@ async fn liveness_sweep_leaves_live_worker_alone_via_reconciler() {
     assert_eq!(bead.status, "dispatched");
 }
 
+/// Regression for Copilot review round 5 on PR #202: when
+/// `SessionRegistry::load()` fails, `iterate()` falls back to passing
+/// an empty `sessions` slice to `liveness_sweep`. Without a short-circuit
+/// the sweep would still do per-repo `list_beads()` scans every
+/// iteration despite being guaranteed to no-op (no sessions → no dead
+/// PIDs detectable). This test pins that the short-circuit fires —
+/// even when the bead list contains Dispatched beads, an empty sessions
+/// slice produces zero deadletters AND avoids the per-repo scan that
+/// would otherwise hit the DB.
+#[tokio::test]
+async fn liveness_sweep_short_circuits_on_empty_sessions() {
+    // Construct a reconciler that has NO dolt_clients registered. If the
+    // sweep didn't short-circuit, the per-repo loop would still call
+    // `self.dolt_client(&repo).await`, which (per persistence.rs:11)
+    // attempts to lazily connect via `bead_sqlite::connect_bead_store` —
+    // failing with eprintln noise. The short-circuit must run BEFORE
+    // the repo collection logic.
+    let config = ReconcilerConfig {
+        once: true,
+        repo: Vec::new(),
+        ..Default::default()
+    };
+    let mut r = Reconciler::new(config).await;
+    // Intentionally NO dolt_clients insert — if the short-circuit fails,
+    // we'd attempt a connect and see "[bead] failed to connect" noise.
+
+    let mut bead = crate::testutil::make_bead("any-bead", "task", "test-repo");
+    bead.status = "dispatched".to_string();
+
+    let empty_sessions: Vec<crate::session::SessionEntry> = Vec::new();
+    let ids = r.liveness_sweep(&[bead], &empty_sessions).await;
+
+    assert!(
+        ids.is_empty(),
+        "empty sessions must short-circuit — no scans, no deadletters"
+    );
+}
+
 /// Regression for Copilot review on PR #202: target-bead mode used to
 /// exit if `cumulative.deadlettered > 0` regardless of which bead was
 /// deadlettered. With the new liveness sweep adding deadletter events
