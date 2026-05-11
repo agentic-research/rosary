@@ -194,4 +194,106 @@ impl Reconciler {
             }
         }
     }
+
+    /// Per-iteration liveness sweep: walks each repo's `Dispatched` beads,
+    /// cross-references `sessions`, and transitions to `dead_letter` any
+    /// bead whose registered worker pid is gone.
+    ///
+    /// Returns the IDs of beads moved to dead_letter this iteration. The
+    /// caller updates `IterationSummary.deadlettered_ids` (set-membership
+    /// for target-bead-mode exit) and `IterationSummary.deadlettered`
+    /// (count for observability).
+    ///
+    /// Wired into `iterate()` Phase 1.8. Unlike `recover_stuck_beads()`
+    /// (which runs once at startup and reverts ALL Dispatched beads
+    /// unconditionally), this runs every iteration AND is liveness-aware
+    /// — live workers are left alone.
+    pub(super) async fn liveness_sweep(
+        &mut self,
+        beads: &[crate::bead::Bead],
+        sessions: &[crate::session::SessionEntry],
+    ) -> Vec<String> {
+        // Empty session list → no dispatched workers we could possibly
+        // detect as dead. Short-circuit BEFORE the per-repo list_beads
+        // scans, which would otherwise run every iteration in the
+        // SessionRegistry::load failure path (where the caller passes
+        // an empty slice as a fallback) and do guaranteed-zero work.
+        // Round-5 review on PR #202.
+        if sessions.is_empty() {
+            return Vec::new();
+        }
+
+        // Collect unique repo names that have at least one Dispatched bead.
+        // Avoids per-bead client lookups for repos with no live work.
+        let mut repos_to_sweep: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for bead in beads {
+            if bead.state() == crate::bead::BeadState::Dispatched {
+                repos_to_sweep.insert(bead.repo.clone());
+            }
+        }
+
+        // Build the session index ONCE; reused across all per-repo sweeps
+        // so total cost is O(sessions) + O(beads), not O(repos × sessions).
+        // Round-9 finding on PR #202.
+        let session_index = crate::dispatch::sweep::build_session_index(sessions);
+
+        // Two-phase: first collect candidates across all repos (sweep is
+        // read-only on bead status), then perform the state transition via
+        // `persist_status` so Linear mirroring + state_change events fire.
+        // Routing dead_letter through persist_status was the round-7
+        // Copilot finding — direct `update_status` from inside the sweep
+        // bypassed the audit/sync path.
+        let mut all_candidates: Vec<(String, crate::dispatch::sweep::DeadWorkerCandidate)> =
+            Vec::new();
+        for repo in repos_to_sweep {
+            let Some(client) = self.dolt_client(&repo).await else {
+                continue;
+            };
+            let report =
+                crate::dispatch::sweep::sweep_dead_workers(client, &repo, &session_index).await;
+            for candidate in report.candidates {
+                all_candidates.push((repo.clone(), candidate));
+            }
+        }
+
+        let mut deadlettered = Vec::new();
+        for (repo, candidate) in all_candidates {
+            // persist_status borrows &mut self; the outer `client` borrow
+            // from above is already released by this point.
+            self.persist_status(&candidate.bead_id, &repo, "dead_letter")
+                .await;
+
+            // Verify the write actually landed before counting it.
+            // `persist_status` is best-effort (eprintln on update_status
+            // failure, doesn't propagate). Counting unconditionally would
+            // make `deadlettered_ids` lie about the bead's real state and
+            // could false-trip target-bead-mode exit. Round-9 finding on
+            // PR #202.
+            let persisted = match self.dolt_client(&repo).await {
+                Some(client) => matches!(
+                    client.get_status(&candidate.bead_id).await,
+                    Ok(Some(ref s)) if s == "dead_letter"
+                ),
+                None => false,
+            };
+            if !persisted {
+                eprintln!(
+                    "[reconcile] persist_status for {} didn't land — not counting as deadlettered",
+                    candidate.bead_id
+                );
+                continue;
+            }
+
+            // Surface the forensic context the sweep collected so operators
+            // tailing the reconciler log see WHY each bead got deadlettered
+            // (pid, worktree, last_activity) — not just the bead id.
+            eprintln!(
+                "[reconcile] {} → dead_letter [{}]",
+                candidate.bead_id, candidate.detail
+            );
+            deadlettered.push(candidate.bead_id);
+        }
+        deadlettered
+    }
 }

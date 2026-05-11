@@ -192,6 +192,13 @@ pub struct IterationSummary {
     pub passed: usize,
     pub failed: usize,
     pub deadlettered: usize,
+    /// IDs of beads moved to `dead_letter` THIS iteration. Used by
+    /// target-bead mode to distinguish "this run's target bead deadlettered"
+    /// (operator should be told and the loop should exit) from "an unrelated
+    /// bead deadlettered" (observed via `deadlettered` counter, no exit).
+    /// Without this split, the liveness sweep deadlettering a sibling bead
+    /// would falsely trip target-bead-mode exit.
+    pub deadlettered_ids: Vec<String>,
     /// Beads closed by the agent via MCP (skipped verification).
     pub agent_closed: usize,
     /// Beads transitioned by VCS commit references.
@@ -485,6 +492,16 @@ impl Reconciler {
             cumulative.passed += summary.passed;
             cumulative.failed += summary.failed;
             cumulative.deadlettered += summary.deadlettered;
+            // Only accumulate IDs in target-bead mode — that's the only
+            // caller that needs set-membership for exit. In daemon mode
+            // (`once == false`, no `target_bead`) this Vec would grow
+            // unbounded across iterations otherwise. Per-iteration
+            // observability is still preserved via the counter above.
+            if self.config.target_bead.is_some() {
+                cumulative
+                    .deadlettered_ids
+                    .extend(summary.deadlettered_ids.iter().cloned());
+            }
 
             if self.config.once {
                 if !self.active.is_empty() {
@@ -499,8 +516,11 @@ impl Reconciler {
                 // reaches a terminal state. Check if the bead is still
                 // retriable (in backoff queue or was just dispatched).
                 if let Some(ref target) = self.config.target_bead {
-                    // Exit on terminal outcomes
-                    if cumulative.deadlettered > 0 {
+                    // Exit on terminal outcomes. Check specifically whether
+                    // the TARGET bead was dead-lettered — not the counter,
+                    // which now includes liveness-sweep deadletters for
+                    // unrelated beads (would false-trip otherwise).
+                    if cumulative.deadlettered_ids.iter().any(|id| id == target) {
                         eprintln!(
                             "[reconcile] bead {target} deadlettered after {} retries",
                             cumulative.failed
@@ -651,7 +671,36 @@ impl Reconciler {
             xref::sync_external_refs(&ext_refs, &self.dolt_clients, &beads).await;
         }
 
-        // Phase 1.75: AUTO-ASSIGN — set owner on beads without one
+        // Phase 1.8: LIVENESS — catch dispatched workers whose process died.
+        // Without this, beads that were spawned by `rsry_dispatch` and whose
+        // worker has since crashed stay stuck at `dispatched` forever. The
+        // sweep moves them to `dead_letter` for operator triage (with
+        // forensic context preserved). Per-iteration so the failure mode is
+        // caught while the operator is still around, not just at next
+        // cold-start.
+        let live_sessions = match crate::session::SessionRegistry::load() {
+            Ok(r) => r.active().to_vec(),
+            Err(e) => {
+                // Loud failure: silent fallback to "no sessions" disables
+                // the liveness sweep without any signal, and dispatched
+                // beads silently accumulate the very state this is meant
+                // to clean up. Operators need to know why the sweep is a
+                // no-op so they can fix `~/.rsry/sessions.json` perms /
+                // corruption.
+                eprintln!(
+                    "[reconcile] liveness sweep DISABLED — could not load \
+                     SessionRegistry: {e}. Dispatched beads will not move \
+                     to dead_letter until this is resolved (check \
+                     ~/.rsry/sessions.json perms/format)."
+                );
+                Vec::new()
+            }
+        };
+        let liveness_ids = self.liveness_sweep(&beads, &live_sessions).await;
+        summary.deadlettered += liveness_ids.len();
+        summary.deadlettered_ids.extend(liveness_ids);
+
+        // Phase 1.9: AUTO-ASSIGN — set owner on beads without one
         // Uses pipeline engine (config-driven) not dispatch::default_agent (hardcoded).
         for bead in &beads {
             if bead.owner.is_some() || bead.status == "closed" || bead.status == "done" {

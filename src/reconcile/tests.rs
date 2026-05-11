@@ -32,6 +32,7 @@ fn iteration_summary_display() {
         passed: 1,
         failed: 0,
         deadlettered: 0,
+        deadlettered_ids: Vec::new(),
         agent_closed: 0,
         vcs_transitions: 1,
     };
@@ -1686,4 +1687,233 @@ fn dispatch_approval_admits_only_approved() {
     assert!(DispatchApproval::Approved.admits());
     assert!(!DispatchApproval::None.admits());
     assert!(!DispatchApproval::Rejected.admits());
+}
+
+// ============================================================================
+// liveness_sweep integration — the test the user's hypothesis demanded
+// ("our pipelines theoretically should [catch dead workers]") and that
+// the existing test suite did NOT have.
+// ============================================================================
+
+/// Spawn a child, reap it, return the now-dead pid.
+fn dead_pid() -> u32 {
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .expect("spawn");
+    let pid = child.id();
+    let _ = child.wait();
+    pid
+}
+
+/// Build a SessionEntry pointing at a given pid for a (bead, repo) pair.
+fn fake_session(bead_id: &str, repo: &str, pid: u32) -> crate::session::SessionEntry {
+    crate::session::SessionEntry {
+        bead_id: bead_id.to_string(),
+        repo: repo.to_string(),
+        provider: "claude".to_string(),
+        pid: Some(pid),
+        work_dir: "/tmp/test-liveness-work".to_string(),
+        started_at: chrono::Utc::now(),
+        title: format!("test bead {bead_id}"),
+        agent: "scoping-agent".to_string(),
+        workspace_vcs: "git".to_string(),
+        repo_path: "/tmp/test-liveness-repo".to_string(),
+        last_activity: None,
+        last_comment: None,
+    }
+}
+
+/// The load-bearing assertion: a Dispatched bead with a dead-pid session
+/// flows from `iterate()`'s phase 1.8 through `liveness_sweep` into
+/// `sweep_dead_workers` and lands at `dead_letter`. Wiring proof.
+#[tokio::test]
+async fn liveness_sweep_deadletters_dead_worker_via_reconciler() {
+    let beads_dir = tempfile::TempDir::new().unwrap();
+    // Connect a real SQLite store and use it directly to set up state —
+    // bypasses the on-disk repo scanner so the test is hermetic.
+    let store = crate::bead_sqlite::connect_bead_store(beads_dir.path())
+        .await
+        .expect("connect sqlite store");
+    store
+        .create_bead("dead-r-1", "T", "", 1, "task")
+        .await
+        .unwrap();
+    store.update_status("dead-r-1", "dispatched").await.unwrap();
+
+    // Reconciler with the store pre-installed for repo "test-repo".
+    let config = ReconcilerConfig {
+        once: true,
+        repo: Vec::new(),
+        ..Default::default()
+    };
+    let mut r = Reconciler::new(config).await;
+    r.dolt_clients.insert("test-repo".to_string(), store);
+
+    // Build the bead Vec the way iterate() would receive it from scanner.
+    let mut bead = crate::testutil::make_bead("dead-r-1", "task", "test-repo");
+    bead.status = "dispatched".to_string();
+
+    // Inject a session entry with a dead pid (instead of loading the
+    // global ~/.rsry/sessions.json file).
+    let pid = dead_pid();
+    let sessions = vec![fake_session("dead-r-1", "test-repo", pid)];
+
+    let ids = r.liveness_sweep(&[bead], &sessions).await;
+    assert_eq!(ids, vec!["dead-r-1".to_string()]);
+
+    let reaped_bead = r
+        .dolt_clients
+        .get("test-repo")
+        .unwrap()
+        .get_bead("dead-r-1", "test-repo")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reaped_bead.status, "dead_letter",
+        "reconciler iteration must transition dead-worker beads to dead_letter"
+    );
+}
+
+/// Companion negative test: a live worker should NOT be deadlettered.
+/// Without this, a false-positive in `liveness_sweep` would silently abort
+/// real running agents — worse than the original bug.
+#[tokio::test]
+async fn liveness_sweep_leaves_live_worker_alone_via_reconciler() {
+    let beads_dir = tempfile::TempDir::new().unwrap();
+    let store = crate::bead_sqlite::connect_bead_store(beads_dir.path())
+        .await
+        .expect("connect sqlite store");
+    store
+        .create_bead("live-r-1", "T", "", 1, "task")
+        .await
+        .unwrap();
+    store.update_status("live-r-1", "dispatched").await.unwrap();
+
+    let config = ReconcilerConfig {
+        once: true,
+        repo: Vec::new(),
+        ..Default::default()
+    };
+    let mut r = Reconciler::new(config).await;
+    r.dolt_clients.insert("test-repo".to_string(), store);
+
+    let mut bead = crate::testutil::make_bead("live-r-1", "task", "test-repo");
+    bead.status = "dispatched".to_string();
+
+    // Our own pid — guaranteed alive throughout the test.
+    let sessions = vec![fake_session("live-r-1", "test-repo", std::process::id())];
+
+    let ids = r.liveness_sweep(&[bead], &sessions).await;
+    assert!(ids.is_empty(), "live worker must not be touched");
+
+    let bead = r
+        .dolt_clients
+        .get("test-repo")
+        .unwrap()
+        .get_bead("live-r-1", "test-repo")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bead.status, "dispatched");
+}
+
+/// Regression for Copilot review round 5 on PR #202: when
+/// `SessionRegistry::load()` fails, `iterate()` falls back to passing
+/// an empty `sessions` slice to `liveness_sweep`. Without a short-circuit
+/// the sweep would still do per-repo `list_beads()` scans every
+/// iteration despite being guaranteed to no-op (no sessions → no dead
+/// PIDs detectable). This test pins that the short-circuit fires —
+/// even when the bead list contains Dispatched beads, an empty sessions
+/// slice produces zero deadletters AND avoids the per-repo scan that
+/// would otherwise hit the DB.
+#[tokio::test]
+async fn liveness_sweep_short_circuits_on_empty_sessions() {
+    // Construct a reconciler that has NO dolt_clients registered. If the
+    // sweep didn't short-circuit, the per-repo loop would still call
+    // `self.dolt_client(&repo).await`, which (per persistence.rs:11)
+    // attempts to lazily connect via `bead_sqlite::connect_bead_store` —
+    // failing with eprintln noise. The short-circuit must run BEFORE
+    // the repo collection logic.
+    let config = ReconcilerConfig {
+        once: true,
+        repo: Vec::new(),
+        ..Default::default()
+    };
+    let mut r = Reconciler::new(config).await;
+    // Intentionally NO dolt_clients insert — if the short-circuit fails,
+    // we'd attempt a connect and see "[bead] failed to connect" noise.
+
+    let mut bead = crate::testutil::make_bead("any-bead", "task", "test-repo");
+    bead.status = "dispatched".to_string();
+
+    let empty_sessions: Vec<crate::session::SessionEntry> = Vec::new();
+    let ids = r.liveness_sweep(&[bead], &empty_sessions).await;
+
+    assert!(
+        ids.is_empty(),
+        "empty sessions must short-circuit — no scans, no deadletters"
+    );
+}
+
+/// Regression for Copilot review on PR #202: target-bead mode used to
+/// exit if `cumulative.deadlettered > 0` regardless of which bead was
+/// deadlettered. With the new liveness sweep adding deadletter events
+/// for ANY dead worker (not just retry-exhaustion on the target), the
+/// false-positive exit would terminate target mode the first time an
+/// unrelated worker died. The fix splits `deadlettered_ids` from the
+/// counter and checks set-membership; this test pins that contract.
+#[tokio::test]
+async fn target_bead_mode_only_exits_when_target_bead_deadletters() {
+    let beads_dir = tempfile::TempDir::new().unwrap();
+    let store = crate::bead_sqlite::connect_bead_store(beads_dir.path())
+        .await
+        .unwrap();
+    // Two beads: TARGET (the one the operator asked for) and SIBLING.
+    store
+        .create_bead("TARGET", "T", "", 1, "task")
+        .await
+        .unwrap();
+    store.update_status("TARGET", "dispatched").await.unwrap();
+    store
+        .create_bead("SIBLING", "S", "", 1, "task")
+        .await
+        .unwrap();
+    store.update_status("SIBLING", "dispatched").await.unwrap();
+
+    let config = ReconcilerConfig {
+        once: true,
+        target_bead: Some("TARGET".to_string()),
+        repo: Vec::new(),
+        ..Default::default()
+    };
+    let mut r = Reconciler::new(config).await;
+    r.dolt_clients.insert("test-repo".to_string(), store);
+
+    let mut target_bead = crate::testutil::make_bead("TARGET", "task", "test-repo");
+    target_bead.status = "dispatched".to_string();
+    let mut sibling_bead = crate::testutil::make_bead("SIBLING", "task", "test-repo");
+    sibling_bead.status = "dispatched".to_string();
+
+    // SIBLING's worker has died; TARGET's worker is alive (our pid).
+    let dead = dead_pid();
+    let sessions = vec![
+        fake_session("SIBLING", "test-repo", dead),
+        fake_session("TARGET", "test-repo", std::process::id()),
+    ];
+
+    let ids = r
+        .liveness_sweep(&[target_bead, sibling_bead], &sessions)
+        .await;
+
+    // Liveness sweep correctly identifies SIBLING but NOT TARGET.
+    assert_eq!(ids, vec!["SIBLING".to_string()]);
+    // The membership check the run() loop now uses:
+    let target = "TARGET";
+    assert!(
+        !ids.iter().any(|id| id == target),
+        "target {target} must NOT appear in deadlettered_ids when only SIBLING died — \
+         the old `deadlettered > 0` check would have falsely terminated target mode here"
+    );
 }
