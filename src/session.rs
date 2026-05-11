@@ -127,7 +127,7 @@ impl SessionRegistry {
 ///   checks: a process we can't signal is still alive, and treating EPERM
 ///   as "dead" would incorrectly dead-letter live workers spawned under a
 ///   different uid (e.g. setuid binaries, containerized siblings).
-/// - `false` only on `ESRCH` (no such process — truly dead).
+/// - `false` on `ESRCH` (no such process — truly dead).
 /// - `false` on any other unexpected errno; treats unknown errors as dead
 ///   so a broken `kill(2)` doesn't masquerade as a live worker.
 pub(crate) fn is_pid_alive(pid: u32) -> bool {

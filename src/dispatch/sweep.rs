@@ -158,6 +158,16 @@ pub async fn sweep_dead_workers(
         }
     };
 
+    // Pre-index sessions by (bead_id, repo) — without this the inner loop
+    // is O(beads × sessions). On a daemon iterating every few seconds across
+    // 100+ sessions and 1000+ beads that's a real per-iteration cost. The
+    // index is built once per sweep, so we get O(beads + sessions).
+    let session_index: std::collections::HashMap<(&str, &str), &crate::session::SessionEntry> =
+        sessions
+            .iter()
+            .map(|s| ((s.bead_id.as_str(), s.repo.as_str()), s))
+            .collect();
+
     for bead in beads {
         if bead.state() != BeadState::Dispatched {
             continue;
@@ -165,11 +175,8 @@ pub async fn sweep_dead_workers(
 
         // Find the session entry for this bead+repo. If none, this isn't a
         // liveness case — sweep_orphan_dispatches handles "never spawned".
-        let session = match sessions
-            .iter()
-            .find(|s| s.bead_id == bead.id && s.repo == repo_name)
-        {
-            Some(s) => s,
+        let session = match session_index.get(&(bead.id.as_str(), repo_name)) {
+            Some(s) => *s,
             None => continue,
         };
 

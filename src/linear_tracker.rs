@@ -260,6 +260,14 @@ fn map_linear_status(state_type: &str, state_name: &str) -> &'static str {
         BeadState::Done => "closed",
         BeadState::Dispatched => "in_progress",
         BeadState::Verifying => "verifying",
+        // DeadLetter must round-trip: from_linear_type maps
+        // (canceled, "Dead Letter") → DeadLetter, and this match must
+        // emit "dead_letter" so the Linear→Dolt sync path preserves
+        // the operator-triage semantics. Without this explicit arm
+        // the `_ => "open"` fall-through would demote DeadLetter to
+        // open on every sync — the exact failure mode flagged in
+        // Copilot review round 3 on PR #202.
+        BeadState::DeadLetter => "dead_letter",
         _ => "open",
     }
 }
@@ -486,6 +494,21 @@ mod tests {
     fn map_status_done() {
         assert_eq!(map_linear_status("completed", "Done"), "closed");
         assert_eq!(map_linear_status("canceled", "Cancelled"), "closed");
+    }
+
+    /// Regression for Copilot review round 3 on PR #202: the Linear→Dolt
+    /// sync path used `_ => "open"` as a fall-through. With DeadLetter now
+    /// a representable variant, that fall-through would have demoted any
+    /// "Dead Letter" state in Linear to `open` on every sync, defeating
+    /// the operator-triage semantics. This test pins the explicit
+    /// `BeadState::DeadLetter => "dead_letter"` arm.
+    #[test]
+    fn map_status_dead_letter_preserves() {
+        assert_eq!(
+            map_linear_status("canceled", "Dead Letter"),
+            "dead_letter",
+            "Linear→rosary sync must preserve DeadLetter — not fall through to open"
+        );
     }
 
     #[test]
