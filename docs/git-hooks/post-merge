@@ -1,7 +1,3 @@
-#!/bin/sh
-# Pull beads after git pull/merge.
-# Install: rsry hooks install
-# Or manually: cp docs/git-hooks/post-merge .git/hooks/post-merge && chmod +x .git/hooks/post-merge
 REPO=$(basename "$PWD")
 BEADS_DIR=".beads/dolt/$REPO"
 if [ -d "$BEADS_DIR" ]; then

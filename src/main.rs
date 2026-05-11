@@ -1610,7 +1610,7 @@ async fn main() -> Result<()> {
             let repo_root = scanner::resolve_repo_path(Path::new(&repo));
             match action {
                 HooksAction::Install => hooks::install(&repo_root)?,
-                HooksAction::Status => hooks::status(&repo_root),
+                HooksAction::Status => hooks::status(&repo_root)?,
             }
         }
     }
@@ -1623,36 +1623,159 @@ async fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 mod hooks {
-    use std::path::Path;
+    //! Git hook management for bead sync (post-push / post-merge).
+    //!
+    //! Templates are embedded into the binary at compile time via `include_str!`
+    //! so installation works in any environment — release images, packaged
+    //! binaries, contributor checkouts — without depending on the source tree
+    //! being adjacent to the executable.
+    //!
+    //! Installation is merge-aware: rather than clobbering existing hooks, the
+    //! rsry block is spliced between `# >>> rsry-managed >>>` markers, so user
+    //! content outside the markers is preserved across re-installs and the
+    //! operation is idempotent.
+    //!
+    //! The hooks directory is resolved via `git rev-parse --git-path hooks`
+    //! so worktrees and submodules (`.git` is a file pointer to the real
+    //! gitdir, not a directory) work correctly.
+    use anyhow::{Context, Result};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
-    const HOOK_NAMES: &[&str] = &["post-push", "post-merge"];
+    /// Begin marker for the rsry-managed shell block inside a hook file.
+    /// Anything between this and `MARKER_END` is regenerated on each install.
+    pub(crate) const MARKER_START: &str = "# >>> rsry-managed (do not edit between these markers; `rsry hooks install` regenerates) >>>";
+    /// End marker — closes the rsry-managed section.
+    pub(crate) const MARKER_END: &str = "# <<< rsry-managed <<<";
 
-    /// Copy hook templates from docs/git-hooks/ into .git/hooks/ and make them executable.
-    pub fn install(repo_root: &Path) -> anyhow::Result<()> {
-        let git_hooks_dir = repo_root.join(".git").join("hooks");
-        if !git_hooks_dir.exists() {
+    /// Hooks rsry manages and their canonical shell-body content.
+    ///
+    /// Content lives in `docs/git-hooks/*` so it's reviewable alongside the
+    /// code; `include_str!` bakes it into the binary so installation works
+    /// in released images without `find_template_dir` style filesystem
+    /// guessing.
+    pub(crate) const HOOKS: &[(&str, &str)] = &[
+        ("post-push", include_str!("../docs/git-hooks/post-push")),
+        ("post-merge", include_str!("../docs/git-hooks/post-merge")),
+    ];
+
+    /// Resolve the actual hooks directory for `repo_root`.
+    ///
+    /// Uses `git rev-parse --git-path hooks` so worktrees and submodules
+    /// (where `.git` is a file pointing at the real gitdir) work correctly —
+    /// the previous `repo_root.join(".git").join("hooks")` shortcut was wrong
+    /// for both cases.
+    pub(crate) fn resolve_hooks_dir(repo_root: &Path) -> Result<PathBuf> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["rev-parse", "--git-path", "hooks"])
+            .output()
+            .with_context(|| format!("invoking `git` in {}", repo_root.display()))?;
+        if !out.status.success() {
             anyhow::bail!(
-                "no .git/hooks/ found at {} — is this a git repo?",
-                repo_root.display()
+                "{} is not a git repo: {}",
+                repo_root.display(),
+                String::from_utf8_lossy(&out.stderr).trim(),
             );
         }
+        let rel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let candidate = Path::new(&rel);
+        Ok(if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else {
+            repo_root.join(candidate)
+        })
+    }
 
-        // Locate hook templates relative to the rosary binary, then fall back to
-        // looking them up relative to the current working directory (dev use-case).
-        let template_dir = find_template_dir()?;
+    /// Build a fresh hook file from scratch (no existing file at the path).
+    /// Wraps the rsry block in `#!/bin/sh` + a brief header + markers.
+    pub(crate) fn fresh_hook(block: &str) -> String {
+        let mut out = String::new();
+        out.push_str("#!/bin/sh\n");
+        out.push_str("# Installed by `rsry hooks install`. Edit outside the rsry-managed\n");
+        out.push_str("# section below to add your own logic; re-running install will\n");
+        out.push_str("# regenerate only the marked block and preserve everything else.\n\n");
+        out.push_str(MARKER_START);
+        out.push('\n');
+        out.push_str(block);
+        if !block.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(MARKER_END);
+        out.push('\n');
+        out
+    }
 
-        for hook in HOOK_NAMES {
-            let src = template_dir.join(hook);
-            let dst = git_hooks_dir.join(hook);
-
-            if !src.exists() {
-                eprintln!("[hooks] template not found: {}", src.display());
-                continue;
+    /// Splice `block` into an existing hook file's contents.
+    ///
+    /// - If the file already has an rsry marker section, replace just that
+    ///   section. Content outside the markers (including the shebang and any
+    ///   user-written shell logic) is preserved verbatim.
+    /// - If the file has no marker section, append one at the end so the
+    ///   user's pre-existing hook continues to run AND the rsry block runs
+    ///   after it.
+    pub(crate) fn merge_hook(existing: &str, block: &str) -> String {
+        if let Some(start) = existing.find(MARKER_START) {
+            let after_start = start + MARKER_START.len();
+            // Find the matching end marker; if missing (corrupted file),
+            // replace through end-of-file rather than leaving stale content.
+            let end_inclusive = existing[after_start..]
+                .find(MARKER_END)
+                .map(|i| after_start + i + MARKER_END.len())
+                .unwrap_or(existing.len());
+            let mut out = String::with_capacity(existing.len() + block.len());
+            out.push_str(&existing[..start]);
+            out.push_str(MARKER_START);
+            out.push('\n');
+            out.push_str(block);
+            if !block.ends_with('\n') {
+                out.push('\n');
             }
+            out.push_str(MARKER_END);
+            out.push_str(&existing[end_inclusive..]);
+            out
+        } else {
+            // Append. Leave a blank line between user content and our block
+            // so the boundary is visually clear when someone `cat`s the file.
+            let mut out = existing.to_string();
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+            out.push_str(MARKER_START);
+            out.push('\n');
+            out.push_str(block);
+            if !block.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(MARKER_END);
+            out.push('\n');
+            out
+        }
+    }
 
-            std::fs::copy(&src, &dst)?;
+    /// Install rsry hooks into `repo_root`.
+    ///
+    /// Merge-aware: existing user hooks are preserved. The rsry block is
+    /// (re)inserted between markers in each managed hook file. Idempotent —
+    /// running install twice produces the same file content the second time.
+    pub fn install(repo_root: &Path) -> Result<()> {
+        let hooks_dir = resolve_hooks_dir(repo_root)?;
+        std::fs::create_dir_all(&hooks_dir)
+            .with_context(|| format!("creating {}", hooks_dir.display()))?;
 
-            // chmod +x
+        for (name, block) in HOOKS {
+            let dst = hooks_dir.join(name);
+            let content = if dst.exists() {
+                let existing = std::fs::read_to_string(&dst)
+                    .with_context(|| format!("reading existing hook at {}", dst.display()))?;
+                merge_hook(&existing, block)
+            } else {
+                fresh_hook(block)
+            };
+            std::fs::write(&dst, &content)
+                .with_context(|| format!("writing hook at {}", dst.display()))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -1660,8 +1783,7 @@ mod hooks {
                 perms.set_mode(0o755);
                 std::fs::set_permissions(&dst, perms)?;
             }
-
-            println!("[hooks] installed {} → {}", hook, dst.display());
+            println!("[hooks] installed {} → {}", name, dst.display());
         }
 
         // Warn if Dolt remote is not configured — hooks will silently no-op otherwise.
@@ -1671,38 +1793,47 @@ mod hooks {
             .unwrap_or("repo");
         let dolt_dir = repo_root.join(".beads").join("dolt").join(repo_name);
         if dolt_dir.exists() {
-            let remote_output = std::process::Command::new("dolt")
+            let remote_output = Command::new("dolt")
                 .args(["remote", "-v"])
                 .current_dir(&dolt_dir)
                 .output();
-            match remote_output {
-                Ok(out) if out.stdout.is_empty() => {
-                    eprintln!(
-                        "[hooks] WARNING: no dolt remote configured in {dolt_dir:?}",
-                        dolt_dir = dolt_dir
-                    );
-                    eprintln!(
-                        "[hooks] Run: cd {} && dolt remote add origin <url>",
-                        dolt_dir.display()
-                    );
-                }
-                _ => {}
+            if let Ok(out) = remote_output
+                && out.stdout.is_empty()
+            {
+                eprintln!(
+                    "[hooks] WARNING: no dolt remote configured in {}",
+                    dolt_dir.display()
+                );
+                eprintln!(
+                    "[hooks] Run: cd {} && dolt remote add origin <url>",
+                    dolt_dir.display()
+                );
             }
         }
 
         Ok(())
     }
 
-    /// Show which hooks are installed and whether Dolt remotes are configured.
-    pub fn status(repo_root: &Path) {
-        let git_hooks_dir = repo_root.join(".git").join("hooks");
+    /// Show which rsry hooks are installed and whether Dolt remotes are configured.
+    pub fn status(repo_root: &Path) -> Result<()> {
+        let hooks_dir = resolve_hooks_dir(repo_root)?;
         println!("repo: {}", repo_root.display());
+        println!("hooks dir: {}", hooks_dir.display());
         println!();
         println!("git hooks:");
-        for hook in HOOK_NAMES {
-            let path = git_hooks_dir.join(hook);
-            let installed = if path.exists() { "✓" } else { "✗" };
-            println!("  {installed} {hook}");
+        for (name, _) in HOOKS {
+            let path = hooks_dir.join(name);
+            let state = if !path.exists() {
+                "✗ not installed"
+            } else if std::fs::read_to_string(&path)
+                .map(|c| c.contains(MARKER_START))
+                .unwrap_or(false)
+            {
+                "✓ rsry-managed"
+            } else {
+                "△ exists, no rsry markers (run `rsry hooks install` to merge in)"
+            };
+            println!("  {state}  {name}");
         }
 
         let repo_name = repo_root
@@ -1713,7 +1844,7 @@ mod hooks {
         println!();
         println!("dolt remote:");
         if dolt_dir.exists() {
-            let out = std::process::Command::new("dolt")
+            let out = Command::new("dolt")
                 .args(["remote", "-v"])
                 .current_dir(&dolt_dir)
                 .output();
@@ -1727,46 +1858,349 @@ mod hooks {
         } else {
             println!("  ? no .beads/dolt/{repo_name} found");
         }
+        Ok(())
     }
 
-    /// Find the docs/git-hooks/ template directory.
-    /// Checks CARGO_MANIFEST_DIR (dev), then adjacent to the binary (installed).
-    fn find_template_dir() -> anyhow::Result<std::path::PathBuf> {
-        // Dev: check CARGO_MANIFEST_DIR/docs/git-hooks
-        if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-            let candidate = std::path::Path::new(&manifest)
-                .join("docs")
-                .join("git-hooks");
-            if candidate.exists() {
-                return Ok(candidate);
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::process::Command;
+
+        /// Run `git` with a deterministic env so the host's gitconfig doesn't
+        /// interfere with test commits (commit.gpgsign, user.email, etc.).
+        fn git(dir: &Path, args: &[&str]) -> std::process::Output {
+            Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .expect("spawn git")
+        }
+
+        fn init_repo(dir: &Path) {
+            assert!(git(dir, &["init", "-q", "-b", "main"]).status.success());
+            assert!(
+                git(dir, &["config", "user.email", "test@example.invalid"])
+                    .status
+                    .success()
+            );
+            assert!(git(dir, &["config", "user.name", "test"]).status.success());
+            assert!(
+                git(dir, &["config", "commit.gpgsign", "false"])
+                    .status
+                    .success()
+            );
+        }
+
+        fn seed_commit(dir: &Path) {
+            std::fs::write(dir.join("seed"), "x").unwrap();
+            assert!(git(dir, &["add", "seed"]).status.success());
+            assert!(git(dir, &["commit", "-q", "-m", "seed"]).status.success());
+        }
+
+        // --- embedded-template invariants ---------------------------------
+
+        #[test]
+        fn templates_embedded_and_nonempty() {
+            // include_str! is a compile-time op; reading them here proves the
+            // build had access to docs/git-hooks/* AND the content survived
+            // into the binary. Anything that depends on a real filesystem
+            // lookup at runtime (the old find_template_dir path) would fail
+            // here when run from a different cwd.
+            for (name, content) in HOOKS {
+                assert!(!content.trim().is_empty(), "template {name} is empty");
+                assert!(
+                    content.contains("dolt"),
+                    "template {name} should reference dolt commands"
+                );
             }
         }
 
-        // Installed: check next to the binary
-        if let Ok(exe) = std::env::current_exe()
-            && let Some(exe_dir) = exe.parent()
-        {
-            let candidate = exe_dir
-                .parent()
-                .unwrap_or(exe_dir)
-                .join("share")
-                .join("rsry")
-                .join("git-hooks");
-            if candidate.exists() {
-                return Ok(candidate);
+        // --- resolve_hooks_dir --------------------------------------------
+
+        #[test]
+        fn resolve_hooks_dir_regular_repo() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            let resolved = resolve_hooks_dir(dir.path()).unwrap();
+            // Canonicalize to avoid symlink-prefix mismatches on macOS
+            // (/var vs /private/var).
+            assert_eq!(
+                resolved.canonicalize().unwrap(),
+                dir.path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(".git")
+                    .join("hooks")
+            );
+        }
+
+        #[test]
+        fn resolve_hooks_dir_worktree() {
+            // Main repo with a seed commit, then `git worktree add` a sibling.
+            // Inside the worktree, `.git` is a FILE pointing at the gitdir —
+            // the old `repo_root.join(".git").join("hooks")` shortcut would
+            // produce a non-existent path here.
+            let main = tempfile::tempdir().unwrap();
+            init_repo(main.path());
+            seed_commit(main.path());
+
+            let wt_parent = tempfile::tempdir().unwrap();
+            let wt_path = wt_parent.path().join("wt");
+            assert!(
+                git(
+                    main.path(),
+                    &[
+                        "worktree",
+                        "add",
+                        "-q",
+                        "-b",
+                        "wt-branch",
+                        wt_path.to_str().unwrap(),
+                    ],
+                )
+                .status
+                .success(),
+                "git worktree add must succeed",
+            );
+
+            // Sanity: in a worktree, .git is a file (not a directory).
+            assert!(wt_path.join(".git").is_file());
+
+            let resolved = resolve_hooks_dir(&wt_path).unwrap();
+            // The resolved path must NOT be wt_path/.git/hooks (which doesn't
+            // exist as a directory in a worktree). It should point under the
+            // main gitdir or a worktree-specific hooks dir, but in any case
+            // the canonicalized prefix should be the main repo's gitdir.
+            let main_gitdir = main.path().canonicalize().unwrap().join(".git");
+            assert!(
+                resolved
+                    .canonicalize()
+                    .or_else(|_| resolved.parent().unwrap().canonicalize())
+                    .unwrap()
+                    .starts_with(&main_gitdir),
+                "worktree hooks dir {} should be under main gitdir {}",
+                resolved.display(),
+                main_gitdir.display(),
+            );
+        }
+
+        #[test]
+        fn resolve_hooks_dir_non_git_errors() {
+            let dir = tempfile::tempdir().unwrap();
+            // Empty tempdir, no git init — must fail loudly.
+            let err = resolve_hooks_dir(dir.path()).unwrap_err();
+            assert!(
+                err.to_string().contains("not a git repo"),
+                "expected `not a git repo` in error, got: {err}",
+            );
+        }
+
+        // --- merge_hook (pure-function behavior) --------------------------
+
+        #[test]
+        fn merge_hook_replaces_existing_marker_block() {
+            let existing = format!(
+                "#!/bin/sh\n# user header\necho hi\n\n{}\nold block contents\n{}\necho after\n",
+                MARKER_START, MARKER_END
+            );
+            let merged = merge_hook(&existing, "new block contents\n");
+            assert!(merged.contains("user header"));
+            assert!(merged.contains("echo hi"));
+            assert!(merged.contains("echo after"));
+            assert!(merged.contains("new block contents"));
+            assert!(
+                !merged.contains("old block contents"),
+                "old marked content should be replaced"
+            );
+        }
+
+        #[test]
+        fn merge_hook_appends_when_no_existing_markers() {
+            let existing = "#!/bin/sh\necho user logic\n";
+            let merged = merge_hook(existing, "rsry block\n");
+            assert!(merged.contains("echo user logic"));
+            assert!(merged.contains(MARKER_START));
+            assert!(merged.contains("rsry block"));
+            assert!(merged.contains(MARKER_END));
+            // User content must precede the marker block when appending.
+            assert!(
+                merged.find("echo user logic").unwrap() < merged.find(MARKER_START).unwrap(),
+                "user content should come before appended rsry block",
+            );
+        }
+
+        #[test]
+        fn merge_hook_idempotent_when_block_unchanged() {
+            // Two calls with the same block produce the same final content.
+            let starting = format!(
+                "#!/bin/sh\necho user\n\n{}\nsame block\n{}\n",
+                MARKER_START, MARKER_END
+            );
+            let first = merge_hook(&starting, "same block\n");
+            let second = merge_hook(&first, "same block\n");
+            assert_eq!(first, second, "merge should be idempotent");
+            assert_eq!(
+                second.matches(MARKER_START).count(),
+                1,
+                "no duplicated marker block"
+            );
+        }
+
+        #[test]
+        fn merge_hook_recovers_when_end_marker_missing() {
+            // Defensive: if the file has START but no END (manual edit damage),
+            // we replace from START to EOF rather than leaving cruft.
+            let existing = format!("#!/bin/sh\n{}\nstale\n(no end marker)\n", MARKER_START);
+            let merged = merge_hook(&existing, "fresh\n");
+            assert!(!merged.contains("stale"));
+            assert!(!merged.contains("(no end marker)"));
+            assert!(merged.contains("fresh"));
+            assert!(merged.contains(MARKER_END));
+        }
+
+        // --- install (full filesystem + git interaction) ------------------
+
+        #[test]
+        fn install_into_fresh_repo() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            install(dir.path()).unwrap();
+            for (name, block) in HOOKS {
+                let path = dir.path().join(".git").join("hooks").join(name);
+                assert!(path.exists(), "{name} should be installed");
+                let content = std::fs::read_to_string(&path).unwrap();
+                assert!(content.starts_with("#!/bin/sh"));
+                assert!(content.contains(MARKER_START));
+                assert!(content.contains(MARKER_END));
+                assert!(
+                    content.contains(block.trim()),
+                    "{name} should contain template content",
+                );
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+                    assert_eq!(mode, 0o755, "{name} should be executable (0o755)");
+                }
             }
         }
 
-        // CWD fallback: docs/git-hooks relative to current directory
-        let cwd_candidate = std::path::Path::new("docs").join("git-hooks");
-        if cwd_candidate.exists() {
-            return Ok(cwd_candidate);
+        #[test]
+        fn install_merges_into_existing_user_hook() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            let hooks_dir = dir.path().join(".git").join("hooks");
+            std::fs::create_dir_all(&hooks_dir).unwrap();
+            let post_push = hooks_dir.join("post-push");
+            // Simulate a pre-existing user hook with custom logic.
+            std::fs::write(
+                &post_push,
+                "#!/bin/sh\n# team-managed hook\necho 'user custom logic'\n",
+            )
+            .unwrap();
+
+            install(dir.path()).unwrap();
+
+            let content = std::fs::read_to_string(&post_push).unwrap();
+            assert!(
+                content.contains("user custom logic"),
+                "user logic must be preserved across install: {content}",
+            );
+            assert!(content.contains(MARKER_START));
+            assert!(content.contains(MARKER_END));
+            assert!(content.contains("team-managed hook"));
         }
 
-        anyhow::bail!(
-            "hook templates not found — expected docs/git-hooks/ relative to rosary source \
-             or $CARGO_MANIFEST_DIR/docs/git-hooks/"
-        )
+        #[test]
+        fn install_idempotent_on_reinstall() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            install(dir.path()).unwrap();
+            let path = dir.path().join(".git").join("hooks").join("post-push");
+            let first = std::fs::read_to_string(&path).unwrap();
+            // Reinstall — should produce identical bytes (no duplicated block).
+            install(dir.path()).unwrap();
+            let second = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(first, second, "reinstall should be idempotent");
+            assert_eq!(
+                second.matches(MARKER_START).count(),
+                1,
+                "no duplicated rsry block on reinstall",
+            );
+        }
+
+        #[test]
+        fn install_preserves_user_content_after_marker_section() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            // First install lays down the rsry block.
+            install(dir.path()).unwrap();
+            let path = dir.path().join(".git").join("hooks").join("post-push");
+            // User appends their own logic AFTER the rsry marker block.
+            let original = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(&path, format!("{}\necho 'user trailer'\n", original)).unwrap();
+
+            // Reinstall — must preserve the user trailer.
+            install(dir.path()).unwrap();
+            let after = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                after.contains("user trailer"),
+                "user trailer dropped: {after}"
+            );
+            assert!(after.contains(MARKER_START));
+        }
+
+        #[test]
+        fn install_works_in_git_worktree() {
+            // The bug Copilot caught: in a worktree, `.git` is a file pointer
+            // and `.git/hooks/` doesn't exist. Old code bailed with "is this a
+            // git repo?" — new code routes through `git rev-parse` and writes
+            // to the right place.
+            let main = tempfile::tempdir().unwrap();
+            init_repo(main.path());
+            seed_commit(main.path());
+            let wt_parent = tempfile::tempdir().unwrap();
+            let wt_path = wt_parent.path().join("wt");
+            assert!(
+                git(
+                    main.path(),
+                    &[
+                        "worktree",
+                        "add",
+                        "-q",
+                        "-b",
+                        "wt-install",
+                        wt_path.to_str().unwrap(),
+                    ],
+                )
+                .status
+                .success()
+            );
+
+            install(&wt_path).expect("install must succeed in a worktree");
+
+            // The hook landed somewhere reachable via resolve_hooks_dir.
+            let hooks_dir = resolve_hooks_dir(&wt_path).unwrap();
+            for (name, _) in HOOKS {
+                assert!(
+                    hooks_dir.join(name).exists(),
+                    "{name} should be installed at {}",
+                    hooks_dir.display(),
+                );
+            }
+        }
+
+        #[test]
+        fn install_errors_outside_git_repo() {
+            let dir = tempfile::tempdir().unwrap();
+            // No git init — install must refuse rather than write into a
+            // random directory.
+            let err = install(dir.path()).unwrap_err();
+            assert!(
+                err.to_string().contains("not a git repo"),
+                "expected error mentioning `not a git repo`, got: {err}",
+            );
+        }
     }
 }
 
