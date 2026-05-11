@@ -969,24 +969,15 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     };
     let allowed_tools = perms.claude_allowed_tools().to_string();
 
-    // Resolve provider config + trust gate FIRST, before any work that
-    // would need to be rolled back. `allow_mcp_spawn` must be explicitly
-    // enabled by operators — server-side spawn from the MCP transport
-    // expands the trust boundary (HTTP-bound rosary can reach arbitrary
-    // subprocess execution if exposed publicly), so we refuse by default.
+    // Trust model: rosary's MCP transports are all post-auth by deployment
+    // topology — stdio is the local user's own shell, IPC (UDS) is gated by
+    // filesystem permissions, and HTTP sits behind cloister (the MCP
+    // gateway, per ADR-0005). Authentication is cloister's job, not
+    // rosary's. The earlier `allow_mcp_spawn` config flag (PR #200) was
+    // rosary reinventing auth one level too deep; it was removed in this
+    // commit. If you publicly expose rosary's HTTP transport you've broken
+    // the deployment contract — fix that, don't ask rosary to compensate.
     let cfg = crate::config::load(_config_path).ok();
-    let allow_mcp_spawn = cfg
-        .as_ref()
-        .and_then(|c| c.dispatch.as_ref())
-        .map(|d| d.allow_mcp_spawn)
-        .unwrap_or(false);
-    anyhow::ensure!(
-        allow_mcp_spawn,
-        "rsry_dispatch refuses to spawn workers from the MCP path: set \
-         `[dispatch] allow_mcp_spawn = true` in your config to opt in. \
-         This gate exists because the MCP transport can be reached by any \
-         client authorized to call the server (rosary-748f07 security note)."
-    );
 
     let binaries = cfg
         .as_ref()
