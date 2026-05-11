@@ -651,6 +651,18 @@ impl Reconciler {
             xref::sync_external_refs(&ext_refs, &self.dolt_clients, &beads).await;
         }
 
+        // Phase 1.8: LIVENESS — catch dispatched workers whose process died.
+        // Without this, beads that were spawned by `rsry_dispatch` and whose
+        // worker has since crashed stay stuck at `dispatched` forever. The
+        // sweep moves them to `dead_letter` for operator triage (with
+        // forensic context preserved). Per-iteration so the failure mode is
+        // caught while the operator is still around, not just at next
+        // cold-start.
+        let live_sessions = crate::session::SessionRegistry::load()
+            .map(|r| r.active().to_vec())
+            .unwrap_or_default();
+        summary.deadlettered += self.liveness_sweep(&beads, &live_sessions).await;
+
         // Phase 1.75: AUTO-ASSIGN — set owner on beads without one
         // Uses pipeline engine (config-driven) not dispatch::default_agent (hardcoded).
         for bead in &beads {

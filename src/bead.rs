@@ -30,6 +30,14 @@ pub enum BeadState {
     Rejected,
     Blocked,
     Stale,
+    /// Worker died mid-flight (process exited / SIGKILL'd / crashed) and the
+    /// reconciler's liveness check detected it. The bead is NOT eligible for
+    /// auto-dispatch — an operator must explicitly transition it (retry → Open,
+    /// or close as won't-fix → Done). Worktree + session-registry entry are
+    /// preserved for forensics. Different from `Stale` (no-activity timer) and
+    /// `Blocked` (dependency wait) — DeadLetter specifically means "we tried
+    /// and the worker process is gone."
+    DeadLetter,
 }
 
 impl BeadState {
@@ -44,22 +52,30 @@ impl BeadState {
             // Open → Dispatched: reconciler's triage→dispatch path (skips Queued in practice)
             BeadState::Open => &[BeadState::Queued, BeadState::Dispatched],
             BeadState::Queued => &[BeadState::Dispatched],
-            // Dispatched → Open: recovery for stuck agents
-            BeadState::Dispatched => &[BeadState::Verifying, BeadState::Open],
+            // Dispatched → Open: recovery for stuck agents (cold-start path)
+            // Dispatched → DeadLetter: liveness sweep detected dead worker mid-flight
+            BeadState::Dispatched => {
+                &[BeadState::Verifying, BeadState::Open, BeadState::DeadLetter]
+            }
             // Verifying → PrOpen: pipeline complete, PR created
             // Verifying → Open: phase failed, retry (reconciler uses "open" not "rejected")
+            // Verifying → DeadLetter: verify worker died
             BeadState::Verifying => &[
                 BeadState::Done,
                 BeadState::Rejected,
                 BeadState::Blocked,
                 BeadState::PrOpen,
                 BeadState::Open,
+                BeadState::DeadLetter,
             ],
             BeadState::PrOpen => &[BeadState::Done],
             BeadState::Rejected => &[BeadState::Open],
             BeadState::Blocked => &[BeadState::Open],
             BeadState::Done => &[],
             BeadState::Stale => &[BeadState::Open],
+            // DeadLetter is a manual-resolution state. Operator either retries
+            // (→ Open) or closes as won't-fix (→ Done). No auto-transitions.
+            BeadState::DeadLetter => &[BeadState::Open, BeadState::Done],
         }
     }
 
@@ -87,6 +103,9 @@ impl BeadState {
             BeadState::PrOpen => ("started", "In Review"),
             BeadState::Done => ("completed", "Done"),
             BeadState::Blocked => ("backlog", "Backlog"),
+            // DeadLetter maps to "canceled" so Linear stops nagging — the bead
+            // needs explicit operator review before re-entering the pipeline.
+            BeadState::DeadLetter => ("canceled", "Dead Letter"),
         }
     }
 
@@ -126,6 +145,7 @@ impl fmt::Display for BeadState {
             BeadState::Rejected => "rejected",
             BeadState::Blocked => "blocked",
             BeadState::Stale => "stale",
+            BeadState::DeadLetter => "dead_letter",
         };
         write!(f, "{s}")
     }
@@ -145,6 +165,7 @@ impl From<&str> for BeadState {
             "stale" => BeadState::Stale,
             "pr_open" => BeadState::PrOpen,
             "in_progress" => BeadState::Dispatched, // legacy mapping
+            "dead_letter" | "deadletter" => BeadState::DeadLetter,
             _ => BeadState::Open,
         }
     }

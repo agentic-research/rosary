@@ -194,4 +194,44 @@ impl Reconciler {
             }
         }
     }
+
+    /// Per-iteration liveness sweep: walks each repo's `Dispatched` beads,
+    /// cross-references the `SessionRegistry`, and transitions to
+    /// `dead_letter` any bead whose registered worker pid is gone.
+    ///
+    /// Returns the count of beads moved to dead_letter this iteration —
+    /// added to `IterationSummary.deadlettered` for observability.
+    ///
+    /// Wired into `iterate()` Phase 1.8. Unlike `recover_stuck_beads()`
+    /// (which runs once at startup and reverts ALL Dispatched beads
+    /// unconditionally), this runs every iteration AND is liveness-aware
+    /// — live workers are left alone.
+    pub(super) async fn liveness_sweep(
+        &mut self,
+        beads: &[crate::bead::Bead],
+        sessions: &[crate::session::SessionEntry],
+    ) -> usize {
+        // Collect unique repo names that have at least one Dispatched bead.
+        // Avoids per-bead client lookups for repos with no live work.
+        let mut repos_to_sweep: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for bead in beads {
+            if bead.state() == crate::bead::BeadState::Dispatched {
+                repos_to_sweep.insert(bead.repo.clone());
+            }
+        }
+
+        let mut total = 0usize;
+        for repo in repos_to_sweep {
+            let Some(client) = self.dolt_client(&repo).await else {
+                continue;
+            };
+            let report = crate::dispatch::sweep::sweep_dead_workers(client, &repo, sessions).await;
+            total += report.deadlettered.len();
+            for id in &report.deadlettered {
+                eprintln!("[reconcile] {id} → dead_letter (worker pid gone)");
+            }
+        }
+        total
+    }
 }

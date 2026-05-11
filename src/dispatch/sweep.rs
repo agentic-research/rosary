@@ -40,6 +40,19 @@ impl SweepReport {
     }
 }
 
+/// Result of a liveness sweep — bead IDs that were moved to dead-letter.
+#[derive(Debug, Default, Clone)]
+pub struct LivenessSweepReport {
+    pub deadlettered: Vec<String>,
+}
+
+impl LivenessSweepReport {
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.deadlettered.is_empty()
+    }
+}
+
 /// Sweep orphan dispatches in the given repo. Reverts any
 /// `BeadState::Dispatched` bead with no live session and no worktree
 /// back to `"open"`.
@@ -105,6 +118,94 @@ pub async fn sweep_orphan_dispatches(
             }
             Err(e) => {
                 eprintln!("[sweep] failed to revert {}: {e}", bead.id);
+            }
+        }
+    }
+
+    report
+}
+
+/// Liveness sweep: catch dispatched workers whose process is gone.
+///
+/// Where `sweep_orphan_dispatches` handles "dispatched but never spawned"
+/// (no session registered, no worktree on disk → safe to revert to Open),
+/// THIS sweep handles "dispatched, spawn happened, worker has since died":
+///
+/// - bead state is `Dispatched`
+/// - SessionRegistry has a matching entry with `pid` set
+/// - `is_pid_alive(pid)` returns `false`
+///
+/// We transition to `BeadState::DeadLetter` (NOT `Open`). The forensic
+/// distinction matters: worktree may contain unmerged work the operator
+/// wants to recover; reverting to Open would let auto-dispatch wipe it.
+/// DeadLetter means "an operator must look at this before it re-enters
+/// the pipeline."
+///
+/// `repo_name` filter scopes the sweep to one repo at a time. Iterate over
+/// all configured repos at the call site for global coverage.
+pub async fn sweep_dead_workers(
+    client: &dyn BeadStore,
+    repo_name: &str,
+    sessions: &[crate::session::SessionEntry],
+) -> LivenessSweepReport {
+    let mut report = LivenessSweepReport::default();
+
+    let beads = match client.list_beads(repo_name).await {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[liveness-sweep] list_beads({repo_name}) failed: {e}");
+            return report;
+        }
+    };
+
+    for bead in beads {
+        if bead.state() != BeadState::Dispatched {
+            continue;
+        }
+
+        // Find the session entry for this bead+repo. If none, this isn't a
+        // liveness case — sweep_orphan_dispatches handles "never spawned".
+        let session = match sessions
+            .iter()
+            .find(|s| s.bead_id == bead.id && s.repo == repo_name)
+        {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let pid = match session.pid {
+            Some(p) => p,
+            // Entry exists but pid is None — registration was incomplete.
+            // Don't touch; sweep_orphan_dispatches will revert if there's
+            // also no worktree.
+            None => continue,
+        };
+
+        if is_pid_alive(pid) {
+            continue; // Healthy session, leave alone.
+        }
+
+        // Worker is gone. Move bead to dead_letter with forensic context.
+        let detail = format!(
+            "pid={} started_at={} last_activity={:?} work_dir={}",
+            pid,
+            session.started_at.to_rfc3339(),
+            session.last_activity.map(|t| t.to_rfc3339()),
+            session.work_dir,
+        );
+        match client.update_status(&bead.id, "dead_letter").await {
+            Ok(()) => {
+                eprintln!(
+                    "[liveness-sweep] {} → dead_letter (worker pid={pid} is dead)",
+                    bead.id
+                );
+                let _ = client
+                    .log_event(&bead.id, "deadletter_dead_worker", &detail)
+                    .await;
+                report.deadlettered.push(bead.id);
+            }
+            Err(e) => {
+                eprintln!("[liveness-sweep] failed to deadletter {}: {e}", bead.id);
             }
         }
     }
@@ -205,5 +306,177 @@ mod tests {
 
         // Cleanup — remove the test worktree dir so re-runs don't accumulate.
         let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    // ---- sweep_dead_workers ---------------------------------------------
+
+    /// Synthesize a `SessionEntry` for tests. The `pid` field is what the
+    /// sweep checks; everything else is forensic context.
+    fn fake_session(bead_id: &str, repo: &str, pid: Option<u32>) -> crate::session::SessionEntry {
+        crate::session::SessionEntry {
+            bead_id: bead_id.to_string(),
+            repo: repo.to_string(),
+            provider: "claude".to_string(),
+            pid,
+            work_dir: "/tmp/test-work-dir".to_string(),
+            started_at: chrono::Utc::now(),
+            title: format!("test bead {bead_id}"),
+            agent: "scoping-agent".to_string(),
+            workspace_vcs: "git".to_string(),
+            repo_path: "/tmp/test-repo".to_string(),
+            last_activity: None,
+            last_comment: None,
+        }
+    }
+
+    /// Spawn a real subprocess we can kill to get a guaranteed-dead pid.
+    /// Returns the pid AFTER killing + reaping the child.
+    fn spawn_and_reap() -> u32 {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+        let _ = child.wait();
+        // pid is now reaped; kill(pid, 0) → ESRCH on subsequent checks.
+        pid
+    }
+
+    #[tokio::test]
+    async fn liveness_sweep_deadletters_dead_worker() {
+        let tmp = TempDir::new().unwrap();
+        let store = test_store_in(tmp.path());
+        store
+            .create_bead("dead-w-1", "T", "", 1, "task")
+            .await
+            .unwrap();
+        store.update_status("dead-w-1", "dispatched").await.unwrap();
+
+        let dead_pid = spawn_and_reap();
+        let sessions = vec![fake_session("dead-w-1", "test-repo", Some(dead_pid))];
+
+        let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
+        assert_eq!(report.deadlettered, vec!["dead-w-1".to_string()]);
+
+        let bead = store
+            .get_bead("dead-w-1", "test-repo")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bead.status, "dead_letter",
+            "dead worker should move bead to dead_letter"
+        );
+    }
+
+    #[tokio::test]
+    async fn liveness_sweep_leaves_live_workers_alone() {
+        let tmp = TempDir::new().unwrap();
+        let store = test_store_in(tmp.path());
+        store
+            .create_bead("live-w", "T", "", 1, "task")
+            .await
+            .unwrap();
+        store.update_status("live-w", "dispatched").await.unwrap();
+
+        // Use our own pid — guaranteed alive.
+        let our_pid = std::process::id();
+        let sessions = vec![fake_session("live-w", "test-repo", Some(our_pid))];
+
+        let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
+        assert!(report.is_empty(), "live pid must not be deadlettered");
+
+        let bead = store
+            .get_bead("live-w", "test-repo")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(bead.status, "dispatched");
+    }
+
+    #[tokio::test]
+    async fn liveness_sweep_skips_beads_without_session_entry() {
+        // sweep_dead_workers is specifically for the "session existed, pid
+        // is now dead" path. Beads with no session entry are sweep_orphan_
+        // dispatches's territory (never spawned). They must NOT get
+        // deadlettered — that would lose the dispatch lifecycle distinction.
+        let tmp = TempDir::new().unwrap();
+        let store = test_store_in(tmp.path());
+        store
+            .create_bead("no-session", "T", "", 1, "task")
+            .await
+            .unwrap();
+        store
+            .update_status("no-session", "dispatched")
+            .await
+            .unwrap();
+
+        let sessions: Vec<crate::session::SessionEntry> = vec![]; // empty registry
+
+        let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
+        assert!(
+            report.is_empty(),
+            "bead with no session entry must NOT be deadlettered (that's sweep_orphan_dispatches's job)"
+        );
+    }
+
+    #[tokio::test]
+    async fn liveness_sweep_skips_non_dispatched_beads() {
+        let tmp = TempDir::new().unwrap();
+        let store = test_store_in(tmp.path());
+        store
+            .create_bead("not-dispatched", "T", "", 1, "task")
+            .await
+            .unwrap();
+        // status stays "open"
+
+        let dead_pid = spawn_and_reap();
+        let sessions = vec![fake_session("not-dispatched", "test-repo", Some(dead_pid))];
+
+        let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
+        assert!(
+            report.is_empty(),
+            "open bead must not be deadlettered even with a dead session entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn liveness_sweep_skips_session_with_none_pid() {
+        // Session entry exists but pid is None — registration was incomplete.
+        // sweep_orphan_dispatches handles that case (worktree check); this
+        // sweep should leave it alone.
+        let tmp = TempDir::new().unwrap();
+        let store = test_store_in(tmp.path());
+        store
+            .create_bead("no-pid", "T", "", 1, "task")
+            .await
+            .unwrap();
+        store.update_status("no-pid", "dispatched").await.unwrap();
+
+        let sessions = vec![fake_session("no-pid", "test-repo", None)];
+
+        let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
+        assert!(report.is_empty());
+    }
+
+    #[tokio::test]
+    async fn liveness_sweep_only_touches_matching_repo() {
+        let tmp = TempDir::new().unwrap();
+        let store = test_store_in(tmp.path());
+        store
+            .create_bead("xrepo", "T", "", 1, "task")
+            .await
+            .unwrap();
+        store.update_status("xrepo", "dispatched").await.unwrap();
+
+        let dead_pid = spawn_and_reap();
+        // Session entry is for a DIFFERENT repo than the sweep is scoped to.
+        let sessions = vec![fake_session("xrepo", "OTHER-repo", Some(dead_pid))];
+
+        let report = sweep_dead_workers(&store, "test-repo", &sessions).await;
+        assert!(
+            report.is_empty(),
+            "sweep must not deadletter when session entry is for a different repo"
+        );
     }
 }
