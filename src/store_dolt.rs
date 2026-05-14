@@ -40,7 +40,9 @@ impl DoltBackend {
         if !data_dir.join(".dolt").exists() {
             crate::dolt::dolt_init_dir(&data_dir)
                 .await
-                .with_context(|| format!("initializing rosary backend at {}", data_dir.display()))?;
+                .with_context(|| {
+                    format!("initializing rosary backend at {}", data_dir.display())
+                })?;
         }
 
         // State files live next to the database dir

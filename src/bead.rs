@@ -1062,8 +1062,7 @@ mod tests {
         );
         // Missing priority → None
         assert!(
-            Bead::from_json(&json!({"id": "x", "title": "t", "status": "open"}), "repo")
-                .is_none(),
+            Bead::from_json(&json!({"id": "x", "title": "t", "status": "open"}), "repo").is_none(),
             "missing priority must return None"
         );
         // Missing status → None
