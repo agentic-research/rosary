@@ -58,8 +58,11 @@ jobs:
           LEYLINE_PAT: ${{ secrets.LEYLINE_PAT }}
         run: git config --global url."https://x-access-token:${LEYLINE_PAT}@github.com/".insteadOf "https://github.com/"
 
-      - name: docker build
-        run: docker build -f e2e.Dockerfile -t rosary-e2e .
+      - uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: run fresh-setup assertions
-        run: docker run --rm rosary-e2e
+      # Delegate to `task e2e:fresh` so this workflow runs exactly what a
+      # developer runs locally — Taskfile.yml is the single source of truth
+      # for both the docker build invocation and the assertion run.
+      - run: task e2e:fresh
