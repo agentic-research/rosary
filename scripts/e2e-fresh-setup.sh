@@ -103,5 +103,45 @@ if echo "$NOISE" | grep -q 'migration 001_add_user_id failed'; then
 fi
 pass "no '[migrate] migration 001_add_user_id failed' noise on read paths"
 
+# --- Phase 5: orchestrator-backend init path also preflights identity ---
+
+# Independent of the per-repo `.beads/` init: commands like `rsry backup`,
+# `rsry sync`, `rsry run`, and `rsry serve` go through
+# config::BackendConfig::connect → store_dolt::DoltBackend::connect, which
+# is a *second* dolt-init call site. Before the shared dolt_init_dir
+# helper, this site swallowed dolt's stderr and left a half-init backend
+# directory behind on failure — the same anti-pattern init_beads_db used
+# to have. Exercise it by configuring a `[backend]` section, nuking the
+# data dir, unsetting identity, then asserting backup fails with the
+# same actionable hint and leaves no half-init.
+
+BACKEND_DIR="$HOME/.rsry/dolt/rosary"
+cat >> "$HOME/.rsry/config.toml" <<'EOF'
+
+[backend]
+provider = "dolt"
+path = "~/.rsry/dolt/rosary"
+EOF
+rm -rf "$BACKEND_DIR"
+dolt config --global --unset user.email >/dev/null 2>&1 || true
+dolt config --global --unset user.name  >/dev/null 2>&1 || true
+
+set +e
+BACKUP_OUT=$("$RSRY" backup --output "$WORK/backup.json" 2>&1)
+BACKUP_RC=$?
+set -e
+
+[ "$BACKUP_RC" -ne 0 ] \
+    || fail "expected backup to fail without dolt identity (got rc=0)"
+echo "$BACKUP_OUT" | grep -q 'dolt config --global --add user' \
+    || fail "orchestrator backend init missed actionable hint:\n$BACKUP_OUT"
+[ ! -d "$BACKEND_DIR" ] \
+    || fail "orchestrator init left a half-initialized $BACKEND_DIR behind"
+pass "orchestrator backend init refuses without dolt identity, no half-init"
+
+# Restore identity for any future phases / interactive debugging.
+dolt config --global --add user.email "e2e@example.com" >/dev/null
+dolt config --global --add user.name  "e2e"             >/dev/null
+
 echo ""
 echo "e2e fresh-setup: all assertions passed"

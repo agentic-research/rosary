@@ -110,6 +110,67 @@ fn pool_options() -> PoolOptions<MySql> {
         .max_connections(3)
 }
 
+/// Initialize a fresh Dolt database directory by running `dolt init`.
+///
+/// Shared by `init_beads_db` (per-repo `.beads/`) and the orchestrator
+/// backend in `store_dolt.rs`. Both paths previously had their own copy
+/// of this logic that swallowed dolt's stderr, skipped the identity
+/// preflight, and left a half-initialized directory behind on failure —
+/// the worst combination because the partial directory made later
+/// commands behave as if init had succeeded.
+///
+/// Behavior:
+///   1. Pre-flight `dolt config --global --get user.{name,email}`. If
+///      either is unset, bail with an actionable hint before touching
+///      the filesystem (`dolt init` would otherwise fail with
+///      `fatal: empty ident name not allowed`).
+///   2. `mkdir -p <dir>` then run `dolt init` with stdout+stderr
+///      captured.
+///   3. On non-zero exit, `rm -rf <dir>` so a retry sees a clean slate,
+///      and surface dolt's stdout/stderr verbatim in the error.
+pub async fn dolt_init_dir(dir: &Path) -> Result<()> {
+    for key in ["user.name", "user.email"] {
+        let out = tokio::process::Command::new("dolt")
+            .args(["config", "--global", "--get", key])
+            .output()
+            .await
+            .context("running `dolt config` — is dolt installed?")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "dolt has no global {key} set — `dolt init` would abort.\n\
+                 Fix:\n  \
+                 dolt config --global --add user.email \"you@example.com\"\n  \
+                 dolt config --global --add user.name  \"Your Name\""
+            );
+        }
+    }
+
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+
+    let output = tokio::process::Command::new("dolt")
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .await
+        .context("running dolt init")?;
+    if !output.status.success() {
+        // Roll back so a retry can recreate cleanly. Without this, the
+        // next caller finds an existing directory and skips `dolt init`,
+        // then breaks on lookups that assume the database was populated.
+        let _ = std::fs::remove_dir_all(dir);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "dolt init failed in {} (exit {}):\n--- stderr ---\n{}--- stdout ---\n{}",
+            dir.display(),
+            output.status.code().unwrap_or(-1),
+            stderr,
+            stdout
+        );
+    }
+    Ok(())
+}
+
 /// Initialize a `.beads/` directory with Dolt database and schema.
 /// Called by `rsry enable` when a repo has no `.beads/` yet.
 pub async fn init_beads_db(repo_path: &Path) -> Result<()> {
@@ -128,52 +189,7 @@ pub async fn init_beads_db(repo_path: &Path) -> Result<()> {
         }
     }
 
-    // Pre-flight: `dolt init` aborts with `fatal: empty ident name not allowed`
-    // unless a global identity is configured. Surface a precise, actionable
-    // error before we touch the filesystem so users don't end up with a
-    // half-initialized `.beads/` that confuses later commands.
-    for key in ["user.name", "user.email"] {
-        let out = tokio::process::Command::new("dolt")
-            .args(["config", "--global", "--get", key])
-            .output()
-            .await
-            .context("running `dolt config` — is dolt installed?")?;
-        if !out.status.success() {
-            anyhow::bail!(
-                "dolt has no global {key} set — `dolt init` would abort.\n\
-                 Fix:\n  \
-                 dolt config --global --add user.email \"you@example.com\"\n  \
-                 dolt config --global --add user.name  \"Your Name\""
-            );
-        }
-    }
-
-    std::fs::create_dir_all(&db_dir).with_context(|| format!("creating {}", db_dir.display()))?;
-
-    // Capture dolt init's output so a failure produces a precise diagnostic
-    // instead of "No such file or directory" with no further context.
-    let output = tokio::process::Command::new("dolt")
-        .args(["init"])
-        .current_dir(&db_dir)
-        .output()
-        .await
-        .context("running dolt init")?;
-    if !output.status.success() {
-        // Roll back the empty db_dir so a retry can recreate it cleanly.
-        // Without this, the second `rsry enable` finds an existing dir, skips
-        // `dolt init`, and later operations fail looking up the default
-        // database name `beads/` instead of `<repo>/`.
-        let _ = std::fs::remove_dir_all(&db_dir);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        anyhow::bail!(
-            "dolt init failed in {} (exit {}):\n--- stderr ---\n{}--- stdout ---\n{}",
-            db_dir.display(),
-            output.status.code().unwrap_or(-1),
-            stderr,
-            stdout
-        );
-    }
+    dolt_init_dir(&db_dir).await?;
 
     std::fs::write(
         beads_dir.join("metadata.json"),
