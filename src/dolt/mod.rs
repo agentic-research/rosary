@@ -128,18 +128,51 @@ pub async fn init_beads_db(repo_path: &Path) -> Result<()> {
         }
     }
 
+    // Pre-flight: `dolt init` aborts with `fatal: empty ident name not allowed`
+    // unless a global identity is configured. Surface a precise, actionable
+    // error before we touch the filesystem so users don't end up with a
+    // half-initialized `.beads/` that confuses later commands.
+    for key in ["user.name", "user.email"] {
+        let out = tokio::process::Command::new("dolt")
+            .args(["config", "--global", "--get", key])
+            .output()
+            .await
+            .context("running `dolt config` — is dolt installed?")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "dolt has no global {key} set — `dolt init` would abort.\n\
+                 Fix:\n  \
+                 dolt config --global --add user.email \"you@example.com\"\n  \
+                 dolt config --global --add user.name  \"Your Name\""
+            );
+        }
+    }
+
     std::fs::create_dir_all(&db_dir).with_context(|| format!("creating {}", db_dir.display()))?;
 
-    let status = tokio::process::Command::new("dolt")
+    // Capture dolt init's output so a failure produces a precise diagnostic
+    // instead of "No such file or directory" with no further context.
+    let output = tokio::process::Command::new("dolt")
         .args(["init"])
         .current_dir(&db_dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .output()
         .await
         .context("running dolt init")?;
-    if !status.success() {
-        anyhow::bail!("dolt init failed in {}", db_dir.display());
+    if !output.status.success() {
+        // Roll back the empty db_dir so a retry can recreate it cleanly.
+        // Without this, the second `rsry enable` finds an existing dir, skips
+        // `dolt init`, and later operations fail looking up the default
+        // database name `beads/` instead of `<repo>/`.
+        let _ = std::fs::remove_dir_all(&db_dir);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "dolt init failed in {} (exit {}):\n--- stderr ---\n{}--- stdout ---\n{}",
+            db_dir.display(),
+            output.status.code().unwrap_or(-1),
+            stderr,
+            stdout
+        );
     }
 
     std::fs::write(

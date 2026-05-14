@@ -235,7 +235,7 @@ enum Command {
         #[arg(long, default_value = "{}")]
         args: String,
     },
-    /// Register current repo (or path) in the global registry (~/.rsry/repos.toml)
+    /// Register current repo (or path) in the global registry (~/.rsry/config.toml)
     Enable {
         /// Path to repo root (defaults to current directory)
         #[arg(default_value = ".")]

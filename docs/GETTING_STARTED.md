@@ -23,9 +23,12 @@ dolt config --global --add user.name  "Your Name"         # to `dolt init`, whic
 # Version control + FUSE bridge (macOS uses fuse-t; on Linux fuse3 is enough)
 brew install jj fuse-t
 
-# ART tools
+# ART tools (mache provides structural code intel; rosary uses it via MCP)
 brew tap agentic-research/tap
-brew install mache beads
+brew install mache
+# Note: the `bd` (beads) CLI is NOT required. Rosary talks directly to the
+# per-repo Dolt server over MySQL — no CLI shelling — so installing `beads`
+# is unnecessary unless you want it for ad-hoc scripts outside rosary.
 
 # Claude Code (the AI pair-programming CLI)
 npm install -g @anthropic-ai/claude-code
@@ -273,21 +276,22 @@ to the Cap'n Proto schema compiler to generate Rust bindings from
 `schemas/cloister.capnp`. Install it with `brew install capnp` (macOS) or
 `apt-get install capnproto` (Debian/Ubuntu).
 
-**`rsry enable` succeeds but `rsry bead list` later says "Dolt database not
-initialized"**: `rsry enable` runs `dolt init` with stdout/stderr suppressed,
-so a failing init does not surface as a clear error. The most common cause is
-that Dolt has no global identity configured — `dolt init` aborts with
-`fatal: empty ident name not allowed`. Fix:
+**`rsry enable` errors with "dolt has no global user.name set"**: `rsry enable`
+runs `dolt init`, which refuses to operate without a configured identity.
+Configure once, then retry:
 
 ```bash
 dolt config --global --add user.email "you@example.com"
 dolt config --global --add user.name  "Your Name"
-rm -rf .beads          # remove the half-initialized directory
 rsry enable .
 ```
 
-You can also confirm by running `dolt init` manually in
-`.beads/dolt/<repo-name>/` — if that fails, `rsry enable` will fail the same way.
+`rsry enable` now refuses up-front when the identity is missing rather than
+leaving behind a half-initialized `.beads/` directory. (Older binaries
+suppressed the dolt error; if you have a partial `.beads/` from one of
+those, `rm -rf .beads` and rerun `rsry enable .`.) The full fresh-setup
+flow is covered by `task e2e:fresh`, which builds a clean Ubuntu image and
+asserts both the failure mode and the happy path.
 
 **`rsry bead create … --type bug` returns "unexpected argument '--type' found"**:
 The CLI flag is `--issue-type` (short `-t`). The README's quick-reference example
@@ -295,12 +299,11 @@ uses the long form `--issue-type` now; older copies of the docs may still show
 `--type`.
 
 **`[bead] migration warning … migration 001_add_user_id failed: ALTER TABLE issues`
-appears on every command**: This warning is benign on freshly-initialized repos —
-the `issues` table is created lazily on the first write, and migration 001 races
-ahead of it. Once you create your first bead the table exists and subsequent
-commands continue to work, even though the warning may keep appearing on some
-Dolt versions whose duplicate-column error string does not match rosary's
-"already applied" heuristic. Tracked separately; safe to ignore for now.
+appears on every command**: Fixed. The migration heuristic now recognizes
+Dolt 2.x's `Column "..." already exists` error string in addition to the
+classic `Duplicate column name` form, so migration 001 is correctly
+recorded as applied on the first read. If you still see this warning, your
+`rsry` binary predates the fix — rebuild with `task install`.
 
 **`rsry status` shows nothing**: Your repos aren't registered or don't have `.beads/` directories. Check `~/.rsry/config.toml` and run `rsry enable <path>` in each repo.
 

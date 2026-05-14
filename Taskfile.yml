@@ -138,6 +138,17 @@ tasks:
     cmds:
       - ./scripts/e2e-sandbox.sh
 
+  e2e:fresh:
+    desc: Fresh-setup regression test — vanilla Ubuntu, prereqs, build, smoke
+    # Builds e2e.Dockerfile and runs scripts/e2e-fresh-setup.sh inside the
+    # container. Mirrors the documented "first-time user" path on a clean
+    # machine — asserts that `rsry enable` rejects a missing dolt identity
+    # without half-initializing .beads/, and that no migration-noise
+    # regression has snuck back in.
+    cmds:
+      - docker build -f e2e.Dockerfile -t rosary-e2e .
+      - docker run --rm rosary-e2e
+
   integration:
     desc: Rust CLI integration tests (requires dolt in PATH)
     deps: [build]
