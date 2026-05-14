@@ -4,12 +4,23 @@ How to go from zero to productive with rosary and the ART toolchain.
 
 ## Prerequisites
 
-```bash
-# Rust toolchain
-brew install rustup
-rustup-init  # follow prompts, then restart shell
+Rosary is developed and tested on **macOS (Apple Silicon)**. Linux mostly works for
+building and running the CLI/MCP server; the `task install` launchd setup and the
+`codesign` step in the install task are macOS-only.
 
-# Version control
+```bash
+# Build toolchain
+brew install rustup task capnp                  # rustup for cargo, task for the Taskfile,
+rustup-init                                     # capnp for the build.rs codegen step
+                                                # (apt: capnproto on Debian/Ubuntu)
+
+# Beads storage — Dolt is required at runtime, not just for builds
+brew install dolt
+dolt config --global --add user.email "you@example.com"   # `rsry enable` shells out
+dolt config --global --add user.name  "Your Name"         # to `dolt init`, which
+                                                          # refuses without an identity
+
+# Version control + FUSE bridge (macOS uses fuse-t; on Linux fuse3 is enough)
 brew install jj fuse-t
 
 # ART tools
@@ -20,16 +31,26 @@ brew install mache beads
 npm install -g @anthropic-ai/claude-code
 ```
 
-You need org access to [agentic-research](https://github.com/agentic-research) on GitHub.
+You need org access to [agentic-research](https://github.com/agentic-research) on
+GitHub for the sibling repos referenced below.
+
+> **Not needed for normal use:** `krust` (the cross-compile driver used by
+> `task image` to produce the distroless OCI image) is only required if you
+> are building container images. It is not a Homebrew formula — install it
+> from source if and when you need it.
 
 ## Clone
+
+The Taskfile reads `../ley-line-open/rs/pkgconfig` to wire fuse-t into the
+`leyline-vcs` build on macOS, so it expects `ley-line-open` as a **sibling**
+of the rosary checkout.
 
 ```bash
 mkdir -p ~/remotes/art && cd ~/remotes/art
 git clone git@github.com:agentic-research/rosary.git
-git clone git@github.com:agentic-research/ley-line.git
+git clone git@github.com:agentic-research/ley-line-open.git   # sibling required on macOS
 git clone git@github.com:agentic-research/mache.git
-git clone git@github.com:agentic-research/venturi.git  # vulnerability intelligence (optional)
+git clone git@github.com:agentic-research/venturi.git         # vulnerability intel (optional)
 ```
 
 ## Build rosary
@@ -39,7 +60,14 @@ cd ~/remotes/art/rosary
 task install  # builds release, codesigns, installs to ~/.local/bin, sets up HTTP MCP service
 ```
 
-This also installs a launchd service (`com.rosary.serve`) that runs the HTTP MCP server on port 8383. It auto-restarts when the binary changes (i.e., after each `task install`).
+On macOS this also installs a launchd service (`com.rosary.serve`) that runs the HTTP
+MCP server on port 8383. It auto-restarts when the binary changes (i.e., after each
+`task install`).
+
+> **Linux users:** `task install` invokes `codesign` (macOS-only) and the launchd
+> setup is gated to Darwin. Use `task release` to produce the binary, then either
+> copy it into `~/.local/bin` yourself or run `rsry serve --transport stdio`
+> directly from each Claude Code session.
 
 Verify: `rsry status` should print bead counts (or zeros if no repos are registered yet).
 
@@ -50,7 +78,9 @@ cd ~/path/to/your/project
 rsry enable .
 ```
 
-This registers the repo in `~/.rsry/config.toml`, initializes the `.beads/` Dolt database, and installs git hooks. You can also edit the config directly:
+This registers the repo in `~/.rsry/config.toml`, runs `dolt init` to create
+`.beads/dolt/<repo-name>/`, writes `.beads/metadata.json`, and installs git hooks.
+You can also edit the config directly:
 
 ```toml
 [[repo]]
@@ -238,7 +268,41 @@ Both modes use the same beads, same constraints, same verification. The differen
 
 ## Troubleshooting
 
-**`rsry status` shows nothing**: Your repos aren't registered or don't have `.beads/` directories. Check `~/.rsry/config.toml` and run `beads init` in each repo.
+**`cargo build` fails on a missing `capnp` binary**: The `build.rs` step shells out
+to the Cap'n Proto schema compiler to generate Rust bindings from
+`schemas/cloister.capnp`. Install it with `brew install capnp` (macOS) or
+`apt-get install capnproto` (Debian/Ubuntu).
+
+**`rsry enable` succeeds but `rsry bead list` later says "Dolt database not
+initialized"**: `rsry enable` runs `dolt init` with stdout/stderr suppressed,
+so a failing init does not surface as a clear error. The most common cause is
+that Dolt has no global identity configured — `dolt init` aborts with
+`fatal: empty ident name not allowed`. Fix:
+
+```bash
+dolt config --global --add user.email "you@example.com"
+dolt config --global --add user.name  "Your Name"
+rm -rf .beads          # remove the half-initialized directory
+rsry enable .
+```
+
+You can also confirm by running `dolt init` manually in
+`.beads/dolt/<repo-name>/` — if that fails, `rsry enable` will fail the same way.
+
+**`rsry bead create … --type bug` returns "unexpected argument '--type' found"**:
+The CLI flag is `--issue-type` (short `-t`). The README's quick-reference example
+uses the long form `--issue-type` now; older copies of the docs may still show
+`--type`.
+
+**`[bead] migration warning … migration 001_add_user_id failed: ALTER TABLE issues`
+appears on every command**: This warning is benign on freshly-initialized repos —
+the `issues` table is created lazily on the first write, and migration 001 races
+ahead of it. Once you create your first bead the table exists and subsequent
+commands continue to work, even though the warning may keep appearing on some
+Dolt versions whose duplicate-column error string does not match rosary's
+"already applied" heuristic. Tracked separately; safe to ignore for now.
+
+**`rsry status` shows nothing**: Your repos aren't registered or don't have `.beads/` directories. Check `~/.rsry/config.toml` and run `rsry enable <path>` in each repo.
 
 **Dolt connection errors**: Each `.beads/` directory runs its own Dolt SQL server. Check `dolt sql-server` is available in your PATH and that the port file (`.beads/dolt-server.port`) isn't stale.
 

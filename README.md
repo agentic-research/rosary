@@ -43,7 +43,7 @@ Beads are organized into **threads** (ordered progressions of related work) and 
 
 ```bash
 # Beads are managed via rosary's MCP tools or CLI:
-rsry bead create "Fix auth bug" --priority 1 --type bug --files src/auth.rs
+rsry bead create "Fix auth bug" --priority 1 --issue-type bug --files src/auth.rs
 rsry bead list
 rsry bead search "auth"
 rsry bead close rsry-abc123          # requires a verifiable test command in the description
