@@ -1,0 +1,65 @@
+name: e2e fresh-setup
+
+# Builds e2e.Dockerfile (vanilla Ubuntu → install prereqs → cargo build →
+# scripts/e2e-fresh-setup.sh) and asserts that the documented onboarding
+# path produces a working bead store with no migration-noise regressions.
+#
+# Path-filtered so it doesn't fire on doc-only or unrelated PRs — touches
+# anything that could break the "first-time user" experience or the
+# regression assertions themselves.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/dolt/**'
+      - 'src/main.rs'
+      - 'src/bead_sqlite.rs'
+      - 'docs/GETTING_STARTED.md'
+      - 'e2e.Dockerfile'
+      - 'scripts/e2e-fresh-setup.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Taskfile.yml'
+      - 'build.rs'
+      - '.github/workflows/e2e-fresh.yml'
+  pull_request:
+    paths:
+      - 'src/dolt/**'
+      - 'src/main.rs'
+      - 'src/bead_sqlite.rs'
+      - 'docs/GETTING_STARTED.md'
+      - 'e2e.Dockerfile'
+      - 'scripts/e2e-fresh-setup.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Taskfile.yml'
+      - 'build.rs'
+      - '.github/workflows/e2e-fresh.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fresh-setup:
+    name: docker build + assert
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      # The e2e image's `cargo build` step pulls leyline-vcs from
+      # agentic-research/ley-line-open. On runs where the repo is public this
+      # is a no-op; for private deps the LEYLINE_PAT secret is injected the
+      # same way as the other CI jobs in ci.yml.
+      - name: configure git auth for private deps
+        if: ${{ secrets.LEYLINE_PAT != '' }}
+        env:
+          LEYLINE_PAT: ${{ secrets.LEYLINE_PAT }}
+        run: git config --global url."https://x-access-token:${LEYLINE_PAT}@github.com/".insteadOf "https://github.com/"
+
+      - name: docker build
+        run: docker build -f e2e.Dockerfile -t rosary-e2e .
+
+      - name: run fresh-setup assertions
+        run: docker run --rm rosary-e2e

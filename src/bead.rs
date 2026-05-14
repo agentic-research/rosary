@@ -367,13 +367,13 @@ impl Bead {
         BeadState::from(self.status.as_str())
     }
 
-    /// Parse from `bd list --json` output.
+    /// Parse a `Bead` from a JSON value matching the rosary bead JSON shape.
     ///
     /// Returns `None` if any required field is missing or invalid.
     /// `id`, `title`, `status`, and `priority` are required — a bare
     /// `{"id":"x","title":"y"}` must NOT silently create a dispatchable bead.
     #[allow(dead_code)] // used in tests and future CLI integration
-    pub fn from_bd_json(value: &serde_json::Value, repo: &str) -> Option<Self> {
+    pub fn from_json(value: &serde_json::Value, repo: &str) -> Option<Self> {
         Some(Bead {
             id: value.get("id")?.as_str()?.to_string(),
             title: value.get("title")?.as_str()?.to_string(),
@@ -592,7 +592,7 @@ mod tests {
             "comment_count": 0
         });
 
-        let bead = Bead::from_bd_json(&val, "mache").unwrap();
+        let bead = Bead::from_json(&val, "mache").unwrap();
         assert_eq!(bead.id, "mache-tgl");
         assert_eq!(bead.repo, "mache");
         assert!(bead.is_ready());
@@ -732,7 +732,7 @@ mod tests {
 
     #[test]
     fn generation_changes_with_content() {
-        let bead1 = Bead::from_bd_json(
+        let bead1 = Bead::from_json(
             &json!({
                 "id": "x-1", "title": "fix bug", "description": "desc",
                 "status": "open", "priority": 1,
@@ -743,7 +743,7 @@ mod tests {
         )
         .unwrap();
 
-        let bead2 = Bead::from_bd_json(
+        let bead2 = Bead::from_json(
             &json!({
                 "id": "x-1", "title": "fix bug UPDATED", "description": "desc",
                 "status": "open", "priority": 1,
@@ -762,7 +762,7 @@ mod tests {
 
     #[test]
     fn generation_ignores_status_and_timestamps() {
-        let bead1 = Bead::from_bd_json(
+        let bead1 = Bead::from_json(
             &json!({
                 "id": "x-1", "title": "t", "description": "d",
                 "status": "open", "priority": 1,
@@ -773,7 +773,7 @@ mod tests {
         )
         .unwrap();
 
-        let bead2 = Bead::from_bd_json(
+        let bead2 = Bead::from_json(
             &json!({
                 "id": "x-1", "title": "t", "description": "d",
                 "status": "in_progress", "priority": 1,
@@ -789,7 +789,7 @@ mod tests {
 
     #[test]
     fn bead_state_accessor() {
-        let bead = Bead::from_bd_json(
+        let bead = Bead::from_json(
             &json!({
                 "id": "x-1", "title": "t",
                 "status": "in_progress", "priority": 1,
@@ -816,7 +816,7 @@ mod tests {
             "updated_at": "2026-03-12T00:00:00Z"
         });
 
-        let bead = Bead::from_bd_json(&val, "mache").unwrap();
+        let bead = Bead::from_json(&val, "mache").unwrap();
         assert!(!bead.is_ready());
     }
 
@@ -831,7 +831,7 @@ mod tests {
             "updated_at": "2026-03-12T00:00:00Z"
         });
 
-        let bead = Bead::from_bd_json(&val, "repo").unwrap();
+        let bead = Bead::from_json(&val, "repo").unwrap();
         assert!(bead.branch.is_none());
         assert!(bead.pr_url.is_none());
         assert!(bead.jj_change_id.is_none());
@@ -864,7 +864,7 @@ mod tests {
             "created_at": "2026-03-12T00:00:00Z",
             "updated_at": "2026-03-12T00:00:00Z"
         });
-        let bead = Bead::from_bd_json(&val, "repo").unwrap();
+        let bead = Bead::from_json(&val, "repo").unwrap();
         assert!(bead.needs_refinement());
     }
 
@@ -877,7 +877,7 @@ mod tests {
             "created_at": "2026-03-12T00:00:00Z",
             "updated_at": "2026-03-12T00:00:00Z"
         });
-        let bead = Bead::from_bd_json(&val, "repo").unwrap();
+        let bead = Bead::from_json(&val, "repo").unwrap();
         assert!(bead.needs_refinement());
     }
 
@@ -891,7 +891,7 @@ mod tests {
             "created_at": "2026-03-12T00:00:00Z",
             "updated_at": "2026-03-12T00:00:00Z"
         });
-        let bead = Bead::from_bd_json(&val, "repo").unwrap();
+        let bead = Bead::from_json(&val, "repo").unwrap();
         assert!(!bead.needs_refinement());
     }
 
@@ -906,7 +906,7 @@ mod tests {
                 "created_at": "2026-03-12T00:00:00Z",
                 "updated_at": "2026-03-12T00:00:00Z"
             });
-            let bead = Bead::from_bd_json(&val, "repo").unwrap();
+            let bead = Bead::from_json(&val, "repo").unwrap();
             assert!(!bead.needs_refinement(), "{issue_type} should be exempt");
         }
     }
@@ -953,7 +953,7 @@ mod tests {
             "created_at": "2026-03-12T00:00:00Z",
             "updated_at": "2026-03-12T00:00:00Z"
         });
-        let bead = Bead::from_bd_json(&val, "repo").unwrap();
+        let bead = Bead::from_json(&val, "repo").unwrap();
         assert!(
             !bead.is_ready(),
             "pr_open bead should NOT be ready for dispatch"
@@ -972,7 +972,7 @@ mod tests {
             "updated_at": "2026-03-12T00:00:00Z"
         });
 
-        let bead = Bead::from_bd_json(&val, "repo").unwrap();
+        let bead = Bead::from_json(&val, "repo").unwrap();
         let display = format!("{bead}");
         assert!(
             display.contains("https://github.com/org/repo/pull/42"),
@@ -1020,7 +1020,7 @@ mod tests {
     #[test]
     fn generation_is_deterministic() {
         let make = |title: &str| {
-            Bead::from_bd_json(
+            Bead::from_json(
                 &json!({
                     "id": "x-1", "title": title, "description": "desc",
                     "status": "open", "priority": 1,
@@ -1050,29 +1050,29 @@ mod tests {
         );
     }
 
-    /// Finding #16: from_bd_json silently defaulted every field except id/title.
+    /// Finding #16: from_json silently defaulted every field except id/title.
     /// A bare {"id":"x","title":"y"} created a dispatchable priority-2 open bead.
     /// Now status and priority are required — missing either must return None.
     #[test]
-    fn from_bd_json_requires_status_and_priority() {
+    fn from_json_requires_status_and_priority() {
         // Missing both → None
         assert!(
-            Bead::from_bd_json(&json!({"id": "x", "title": "t"}), "repo").is_none(),
+            Bead::from_json(&json!({"id": "x", "title": "t"}), "repo").is_none(),
             "missing status and priority must return None"
         );
         // Missing priority → None
         assert!(
-            Bead::from_bd_json(&json!({"id": "x", "title": "t", "status": "open"}), "repo")
+            Bead::from_json(&json!({"id": "x", "title": "t", "status": "open"}), "repo")
                 .is_none(),
             "missing priority must return None"
         );
         // Missing status → None
         assert!(
-            Bead::from_bd_json(&json!({"id": "x", "title": "t", "priority": 1}), "repo").is_none(),
+            Bead::from_json(&json!({"id": "x", "title": "t", "priority": 1}), "repo").is_none(),
             "missing status must return None"
         );
         // Both present → Ok
-        let b = Bead::from_bd_json(
+        let b = Bead::from_json(
             &json!({"id": "x", "title": "t", "status": "open", "priority": 2}),
             "repo",
         );

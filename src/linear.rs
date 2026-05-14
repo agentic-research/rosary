@@ -107,7 +107,8 @@ fn priority_label(p: i64) -> &'static str {
 /// Decompose a Linear ticket into repo-scoped beads (top-down planning).
 ///
 /// Currently fetches and displays the issue. Future: analyze description for repo
-/// references and create beads in each referenced repo via `bd create`.
+/// references and create beads in each referenced repo (rosary writes directly
+/// to per-repo Dolt — no `bd` CLI involved).
 pub async fn plan(ticket: &str) -> Result<()> {
     let api_key = match get_api_key() {
         Some(k) => k,

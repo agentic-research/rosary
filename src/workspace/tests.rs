@@ -105,7 +105,7 @@ async fn workspace_cleanup_noop_is_safe() {
 }
 
 /// Regression: git worktree must branch from HEAD, not an orphan.
-/// Bug: worktree only had .beads/ bd init commit, no source code.
+/// Bug: worktree only had the `.beads/` init commit, no source code.
 #[tokio::test]
 async fn git_worktree_has_source_code_not_just_beads() {
     let tmp = tempfile::TempDir::new().unwrap();
