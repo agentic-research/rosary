@@ -25,6 +25,9 @@
 !/apko.yaml
 !/melange.yaml
 !/image.Dockerfile
+# Fresh-setup regression image (vanilla Ubuntu → builds + runs e2e-fresh-setup.sh).
+# Active path: `task e2e:fresh`.
+!/e2e.Dockerfile
 !/entitlements.plist
 
 # === DOCS & DEFINITIONS ===

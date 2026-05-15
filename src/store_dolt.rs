@@ -33,26 +33,16 @@ impl DoltBackend {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "rosary".to_string());
 
-        // Ensure the database directory exists and is initialized
+        // Ensure the database directory exists and is initialized.
+        // Delegates to the shared helper so this site can't drift from the
+        // per-repo `.beads/` init path — both preflight the dolt identity,
+        // capture stdout+stderr, and roll back a half-init on failure.
         if !data_dir.join(".dolt").exists() {
-            std::fs::create_dir_all(&data_dir)
-                .with_context(|| format!("creating backend dir {}", data_dir.display()))?;
-            let status = tokio::process::Command::new("dolt")
-                .args(["init"])
-                .current_dir(&data_dir)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
+            crate::dolt::dolt_init_dir(&data_dir)
                 .await
                 .with_context(|| {
-                    format!(
-                        "running dolt init in {} (is dolt installed?)",
-                        data_dir.display()
-                    )
+                    format!("initializing rosary backend at {}", data_dir.display())
                 })?;
-            if !status.success() {
-                anyhow::bail!("dolt init failed in {}", data_dir.display());
-            }
         }
 
         // State files live next to the database dir

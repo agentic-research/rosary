@@ -142,6 +142,13 @@ impl DoltClient {
                     let already_applied = err_lower.contains("duplicate column name")
                         || err_lower.contains("duplicate key name")
                         || err_lower.contains("multiple primary key")
+                        // Dolt 2.x duplicate-column error string differs from
+                        // the MySQL-classic form above:
+                        //   `Column "user_id" already exists`
+                        // Anchored on both `column` and `already exists` to stay
+                        // narrow enough to not catch unrelated "already exists".
+                        || (err_lower.contains("column")
+                            && err_lower.contains("already exists"))
                         // DROP FOREIGN KEY on one that was already dropped / never existed.
                         || (err_lower.contains("can't drop")
                             && (err_lower.contains("doesn't exist")

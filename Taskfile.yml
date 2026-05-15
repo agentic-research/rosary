@@ -59,6 +59,12 @@ tasks:
 
   install:
     desc: Build, codesign, install rsry, and set up HTTP MCP service
+    # Compose from the named release + lint tasks rather than reinventing
+    # them inline. `release` produces the binary; `lint` (clippy -D warnings,
+    # via its fmt dep) gates the install so we don't ship a binary that
+    # wouldn't pass CI. Both are cached by taskfile if they ran in the
+    # same invocation, so `task all && task install` doesn't double-build.
+    deps: [release, lint]
     cmds:
       - |
         # Check for existing rsry in PATH (brew, cargo install, system package)
@@ -80,7 +86,6 @@ tasks:
             exit 1
           fi
         fi
-      - cargo build --release
       - mkdir -p ~/.local/bin ~/.rsry
       # Stage + codesign in /tmp, then atomic rename to install path.
       # This ensures WatchPaths sees exactly one change (the rename),
@@ -137,6 +142,17 @@ tasks:
     deps: [build]
     cmds:
       - ./scripts/e2e-sandbox.sh
+
+  e2e:fresh:
+    desc: Fresh-setup regression test — vanilla Ubuntu, prereqs, build, smoke
+    # Builds e2e.Dockerfile and runs scripts/e2e-fresh-setup.sh inside the
+    # container. Mirrors the documented "first-time user" path on a clean
+    # machine — asserts that `rsry enable` rejects a missing dolt identity
+    # without half-initializing .beads/, and that no migration-noise
+    # regression has snuck back in.
+    cmds:
+      - docker build -f e2e.Dockerfile -t rosary-e2e .
+      - docker run --rm rosary-e2e
 
   integration:
     desc: Rust CLI integration tests (requires dolt in PATH)
@@ -232,3 +248,13 @@ tasks:
       - task: check
       - task: lint
       - task: test
+
+  ci:
+    desc: Mirror what GitHub Actions runs (cargo fmt --check + clippy + test)
+    # Useful before pushing — same gates as .github/workflows/ci.yml, in
+    # the same order. Does *not* mutate the tree (fmt --check vs fmt) so
+    # it's safe to run in a dirty worktree.
+    cmds:
+      - cargo fmt --check
+      - cargo clippy -- -D warnings
+      - cargo test
