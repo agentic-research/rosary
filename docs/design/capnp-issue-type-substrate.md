@@ -99,7 +99,15 @@ Every LLM output passes through a guardrail chain before any side effect. Existi
 
 Guardrail failures feed back as structured violations the LLM can re-attempt against, up to K retries. After K, the agent demotes itself and emits a handoff (section 5).
 
-### 3.3 Trust ramp tied to shape tightness, not review count
+### 3.3 Non-moving falsification gates
+
+A bead's success criteria are falsification gates. Once declared, they do not move retroactively. If a gate is missed, the bead stays open — even if other gates passed, even if the implementation produced "real value", even if mid-flight discovery suggests the gate was wrong.
+
+If the gate was wrong, that observation is itself a finding (categories `processSmell` or `scopeCreep` in §5). A new bead with a new gate is the correct response. Retroactively softening the original gate to "honest about partial result" or "shipped progress" is the failure mode this rule prevents — the rule exists because *every other discipline in this spec depends on knowing whether a gate was actually hit*. Trust ramp, dedup, post-mortem rollup, federation merge — all of them treat `closed` as ground truth. If `closed` can mean "we lowered the bar," none of them work.
+
+Concrete shape for the agent's self-rating in §5.3: report each gate's target and actual side-by-side. Words like "honest", "partial", "best-effort", or "essentially passing" do not appear in gate status reports. They appear at most as adjacent observations, never as modifiers on the status.
+
+### 3.4 Trust ramp tied to shape tightness, not review count
 
 Trust starting tier is a function of how tight the shape is, not how many humans approved:
 
@@ -109,7 +117,7 @@ Trust starting tier is a function of how tight the shape is, not how many humans
 | Structured object with validated fields | `BeadSpec` with title, scope, deps | Human-gated, ramps fast |
 | Free-form natural language | "Draft a summary paragraph" | Shadow only, rarely promotes |
 
-Promotion/demotion is driven by `trustSignal` findings from self-narrated handoffs (section 5.3). Human review only triggers when guardrails are ambiguous or a new shape is needed — humans set goals and shape, the runtime enforces, the agents execute.
+Promotion/demotion is driven by `trustSignal` findings from self-narrated handoffs (section 5.3) — gated by §3.3, since `closed` must mean "all gates hit" for trust signal to mean anything. Human review only triggers when guardrails are ambiguous or a new shape is needed — humans set goals and shape, the runtime enforces, the agents execute.
 
 ## 4. Federation substrate (ADR-0010 + reflog)
 
