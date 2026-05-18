@@ -597,6 +597,37 @@ async fn add_comment_supplies_uuid_id() {
 
 // ── Migration repair (rosary-b61362) ────────────────────
 
+/// Hard-mark a migration as applied for repair-path tests. Uses a direct
+/// INSERT instead of `log_event` (which is best-effort and only prints
+/// warnings on failure) so the test cannot false-pass by routing through
+/// the normal apply path when the marker silently failed to land.
+async fn force_mark_migration_applied(client: &DoltClient, version: &str) {
+    client
+        .execute_raw(&format!(
+            "INSERT INTO events (issue_id, event_type, actor, comment, created_at) \
+             VALUES ('_schema', 'migration', 'test-runner', '{version}', NOW())"
+        ))
+        .await
+        .expect("force-mark migration applied must succeed for repair-path test setup");
+
+    // Belt-and-suspenders: also assert the row is queryable, since a
+    // silent insert into a misconfigured events table would also let the
+    // test through the wrong path.
+    let row = sqlx_core::query::query(
+        "SELECT COUNT(*) as cnt FROM events WHERE event_type = 'migration' AND comment = ?",
+    )
+    .bind(version)
+    .fetch_one(&client.pool)
+    .await
+    .expect("count migration marker rows");
+    let count: i64 = sqlx_core::row::Row::try_get(&row, "cnt").unwrap_or(0);
+    assert!(
+        count > 0,
+        "test setup invariant: migration marker for `{version}` must be present \
+         in events table; got count={count}"
+    );
+}
+
 /// Reproduces the `rosary-b61362` symptom and pins the auto-repair contract:
 /// when migration 005 is marked applied (via `_schema` event) but the live
 /// schema is missing one of the audit columns, `migrate()` MUST repair the
@@ -628,11 +659,10 @@ async fn migrate_repairs_partial_005_when_marked_applied() {
         .await
         .expect("drop delete_reason for test setup");
 
-    // Mark migration 005 as applied (using the same path migrate() itself
-    // uses, so the row shape matches `migration_applied()`'s expectations).
-    client
-        .log_event("_schema", "migration", "005_comments_audit_columns")
-        .await;
+    // Mark migration 005 as applied via a direct INSERT (not log_event,
+    // which is best-effort and would let the test false-pass through the
+    // normal apply path if the marker silently failed to land).
+    force_mark_migration_applied(&client, "005_comments_audit_columns").await;
 
     // Sanity-check the broken state: verify SQL must reject the schema as
     // it stands. Without this assert, a passing migrate() could pass for
@@ -673,12 +703,10 @@ async fn migrate_errors_when_repair_cannot_restore_schema() {
 
     let client = sandbox.fresh_client().await;
 
-    // Mark 005 applied, then drop the entire comments table — the
-    // migration's ALTER statements cannot recreate it, so re-apply
+    // Mark 005 applied via a direct INSERT (same robustness reason as the
+    // repair-path test), then drop the entire comments table so re-apply
     // surfaces a non-already-applied error and propagates Err.
-    client
-        .log_event("_schema", "migration", "005_comments_audit_columns")
-        .await;
+    force_mark_migration_applied(&client, "005_comments_audit_columns").await;
     client
         .execute_raw("DROP TABLE comments")
         .await

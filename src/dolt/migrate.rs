@@ -206,9 +206,22 @@ impl DoltClient {
         // ADD COLUMN can land in a per-session state that doesn't reach
         // the next pooled query (observed on Dolt 1.x with mixed-result
         // multi-statement migrations — rosary-b61362).
-        let _ = query("CALL DOLT_COMMIT('-Am', 'migrate apply', '--allow-empty')")
+        //
+        // Log on failure rather than swallow silently: a failed commit
+        // here surfaces downstream as a verify error with a confusing
+        // schema message, but the *cause* is the commit. Logging
+        // preserves the real cause for operators while letting the
+        // verify path proceed (it'll fail loudly with its own context
+        // if the commit genuinely didn't land).
+        if let Err(e) = query("CALL DOLT_COMMIT('-Am', 'migrate apply', '--allow-empty')")
             .execute(&self.pool)
-            .await;
+            .await
+        {
+            eprintln!(
+                "[migrate] {} DOLT_COMMIT after apply failed: {e} — verify may report a misleading schema error",
+                migration.version
+            );
+        }
         Ok(())
     }
 
