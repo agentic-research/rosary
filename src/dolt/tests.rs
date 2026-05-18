@@ -594,3 +594,137 @@ async fn add_comment_supplies_uuid_id() {
     // Bytewise the id should round-trip through uuid::Uuid parsing.
     uuid::Uuid::parse_str(&comment.id).expect("id must parse as a UUID");
 }
+
+// ── Migration repair (rosary-b61362) ────────────────────
+
+/// Reproduces the `rosary-b61362` symptom and pins the auto-repair contract:
+/// when migration 005 is marked applied (via `_schema` event) but the live
+/// schema is missing one of the audit columns, `migrate()` MUST repair the
+/// schema rather than emit a silent warning.
+///
+/// Pre-fix behavior: the verify-on-already-applied path printed two
+/// `[migrate] WARNING:` lines and continued; the column stayed missing
+/// across every subsequent CLI invocation, and every `bead comment delete
+/// --reason` write would fail at the write boundary.
+///
+/// Post-fix behavior: verify failure on an already-applied migration
+/// triggers an idempotent re-apply (duplicate-column errors tolerated by
+/// the apply loop's `already_applied` heuristic), followed by a second
+/// verify that loud-fails if the schema is still wrong.
+#[tokio::test]
+async fn migrate_repairs_partial_005_when_marked_applied() {
+    let sandbox = match SandboxBeads::new().await {
+        Some(s) => s,
+        None => return,
+    };
+
+    let client = sandbox.fresh_client().await;
+
+    // Simulate the broken state: drop `delete_reason` while leaving the
+    // rest of the migration-005 columns in place — exactly the shape the
+    // bug report observed in production.
+    client
+        .execute_raw("ALTER TABLE comments DROP COLUMN delete_reason")
+        .await
+        .expect("drop delete_reason for test setup");
+
+    // Mark migration 005 as applied (using the same path migrate() itself
+    // uses, so the row shape matches `migration_applied()`'s expectations).
+    client
+        .log_event("_schema", "migration", "005_comments_audit_columns")
+        .await;
+
+    // Sanity-check the broken state: verify SQL must reject the schema as
+    // it stands. Without this assert, a passing migrate() could pass for
+    // the wrong reason (e.g. the test setup didn't actually drop the
+    // column).
+    let verify_sql = "SELECT id, edited_at, edit_reason, original_text, \
+                      deleted_at, delete_reason FROM comments LIMIT 0";
+    client
+        .execute_raw(verify_sql)
+        .await
+        .expect_err("verify SQL must reject the partial-applied schema");
+
+    // Action under test: migrate() observes 005 marked applied + verify
+    // failing, and repairs the schema.
+    client
+        .migrate()
+        .await
+        .expect("migrate() must succeed on a repairable partial-apply");
+
+    // The audit columns must exist again after the repair.
+    client
+        .execute_raw(verify_sql)
+        .await
+        .expect("verify SQL must accept the repaired schema");
+}
+
+/// Pins the loud-fail contract for unrepairable partial-applies. When
+/// the schema is in a state the migration's own SQL cannot fix (here:
+/// the entire `comments` table is gone), `migrate()` must return Err
+/// naming the migration version rather than silently continuing past a
+/// known-broken schema.
+#[tokio::test]
+async fn migrate_errors_when_repair_cannot_restore_schema() {
+    let sandbox = match SandboxBeads::new().await {
+        Some(s) => s,
+        None => return,
+    };
+
+    let client = sandbox.fresh_client().await;
+
+    // Mark 005 applied, then drop the entire comments table — the
+    // migration's ALTER statements cannot recreate it, so re-apply
+    // surfaces a non-already-applied error and propagates Err.
+    client
+        .log_event("_schema", "migration", "005_comments_audit_columns")
+        .await;
+    client
+        .execute_raw("DROP TABLE comments")
+        .await
+        .expect("drop comments table for test setup");
+
+    let err = client
+        .migrate()
+        .await
+        .expect_err("migrate() must Err when repair cannot restore the schema");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("005_comments_audit_columns"),
+        "error must name the failing migration; got: {msg}"
+    );
+}
+
+/// `migrate()` must be idempotent across repeated invocations: after a
+/// clean first run, the second call exercises the verify-on-already-applied
+/// path for migrations both with and without a verify clause (005 has one;
+/// 001/003/004/006 don't), and must return Ok with no surprises.
+///
+/// This pins both early-return arms of `verify_or_repair`: the no-verify
+/// short-circuit and the verify-passes short-circuit.
+#[tokio::test]
+async fn migrate_is_idempotent_across_invocations() {
+    let sandbox = match SandboxBeads::new().await {
+        Some(s) => s,
+        None => return,
+    };
+
+    let client = sandbox.fresh_client().await;
+    client
+        .migrate()
+        .await
+        .expect("first migrate() succeeds against the sandbox post-005 schema");
+
+    // Second invocation: every migration is recorded as applied. 005 has
+    // verify=Some and the schema is intact, so verify_or_repair takes the
+    // verify-passes short-circuit. 001/003/004/006 have verify=None and
+    // take the no-verify short-circuit.
+    let applied = client
+        .migrate()
+        .await
+        .expect("second migrate() must succeed without re-applying anything");
+    assert!(
+        applied.is_empty(),
+        "second migrate() must report zero applied migrations; got: {applied:?}"
+    );
+}
