@@ -96,28 +96,38 @@ const MIGRATIONS: &[Migration] = &[
     },
 ];
 
+/// True when a DDL error means "schema already in the post-apply state" —
+/// the statement is a duplicate of work already done. Anchored on the
+/// structural error strings Dolt emits (both MySQL-classic and Dolt 2.x
+/// variants); broad keywords like bare "already exists" / "does not exist"
+/// are deliberately excluded because they masked real failures (e.g.
+/// `DEFAULT (uuid())` unsupported) before being tightened.
+fn is_already_applied_error(err: &str) -> bool {
+    let s = err.to_lowercase();
+    s.contains("duplicate column name")
+        || s.contains("duplicate key name")
+        || s.contains("multiple primary key")
+        // Dolt 2.x form: `Column "user_id" already exists`.
+        || (s.contains("column") && s.contains("already exists"))
+        // DROP FOREIGN KEY on one that was already dropped / never existed.
+        || (s.contains("can't drop")
+            && (s.contains("doesn't exist") || s.contains("does not exist")))
+        // Dolt-specific FK missing: "foreign key `name` was not found".
+        || (s.contains("foreign key") && s.contains("was not found"))
+}
+
 impl DoltClient {
     /// Run all pending migrations on this database.
-    /// Idempotent — skips already-applied migrations.
+    /// Idempotent — skips already-applied migrations. When an already-applied
+    /// migration's verify SQL fails (partial-apply state from rosary-b61362),
+    /// re-runs the migration's SQL idempotently and re-verifies; loud-fails
+    /// if the schema is still broken after the repair.
     pub async fn migrate(&self) -> Result<Vec<String>> {
         let mut applied = Vec::new();
 
         for migration in MIGRATIONS {
             if self.migration_applied(migration.version).await? {
-                // Already recorded as applied — but verify anyway if we can.
-                // A partial apply (SQL failed, but error was silently swallowed)
-                // would mark the migration done while leaving the schema broken.
-                if let Some(verify_sql) = migration.verify
-                    && let Err(e) = query(verify_sql).execute(&self.pool).await
-                {
-                    eprintln!(
-                        "[migrate] WARNING: {} is marked applied but verify failed: {e}",
-                        migration.version
-                    );
-                    eprintln!(
-                        "[migrate] WARNING: schema may be partially applied — run manual repair"
-                    );
-                }
+                self.verify_or_repair(migration).await?;
                 continue;
             }
 
@@ -126,48 +136,7 @@ impl DoltClient {
                 migration.version, migration.description
             );
 
-            // Execute migration SQL (may be multiple statements separated by ;)
-            for stmt in migration
-                .sql
-                .split(';')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                if let Err(e) = query(stmt).execute(&self.pool).await {
-                    let err_lower = e.to_string().to_lowercase();
-                    // Only treat as already-applied when the error is structurally
-                    // about duplication — not any error containing a vague keyword.
-                    // "already exists" and "does not exist" were removed: too broad,
-                    // they masked real failures (e.g. DEFAULT (uuid()) not supported).
-                    let already_applied = err_lower.contains("duplicate column name")
-                        || err_lower.contains("duplicate key name")
-                        || err_lower.contains("multiple primary key")
-                        // Dolt 2.x duplicate-column error string differs from
-                        // the MySQL-classic form above:
-                        //   `Column "user_id" already exists`
-                        // Anchored on both `column` and `already exists` to stay
-                        // narrow enough to not catch unrelated "already exists".
-                        || (err_lower.contains("column")
-                            && err_lower.contains("already exists"))
-                        // DROP FOREIGN KEY on one that was already dropped / never existed.
-                        || (err_lower.contains("can't drop")
-                            && (err_lower.contains("doesn't exist")
-                                || err_lower.contains("does not exist")))
-                        // Dolt-specific FK missing: "foreign key `name` was not found".
-                        || (err_lower.contains("foreign key")
-                            && err_lower.contains("was not found"));
-                    if already_applied {
-                        eprintln!(
-                            "[migrate] {}: already applied (idempotent)",
-                            migration.version
-                        );
-                    } else {
-                        return Err(e).with_context(|| {
-                            format!("migration {} failed: {stmt}", migration.version)
-                        });
-                    }
-                }
-            }
+            self.apply_migration_sql(migration).await?;
 
             // Verify schema is actually in place before recording as applied.
             // This prevents partial applies from silently being marked done.
@@ -206,5 +175,134 @@ impl DoltClient {
 
         let count: i64 = row.try_get("cnt").unwrap_or(0);
         Ok(count > 0)
+    }
+
+    /// Apply a migration's SQL statements, tolerating duplicate-shape errors
+    /// as idempotent no-ops. Shared between first-apply and verify-failure
+    /// repair so both paths use the same already-applied heuristic.
+    async fn apply_migration_sql(&self, migration: &Migration) -> Result<()> {
+        for stmt in migration
+            .sql
+            .split(';')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if let Err(e) = query(stmt).execute(&self.pool).await {
+                if is_already_applied_error(&e.to_string()) {
+                    eprintln!(
+                        "[migrate] {}: already applied (idempotent)",
+                        migration.version
+                    );
+                } else {
+                    return Err(e).with_context(|| {
+                        format!("migration {} failed: {stmt}", migration.version)
+                    });
+                }
+            }
+        }
+        // Force a Dolt commit so DDL applied after intermediate
+        // `already-applied` errors becomes visible to subsequent verify
+        // queries on this pool. Without this, statement N's successful
+        // ADD COLUMN can land in a per-session state that doesn't reach
+        // the next pooled query (observed on Dolt 1.x with mixed-result
+        // multi-statement migrations — rosary-b61362).
+        //
+        // Log on failure rather than swallow silently: a failed commit
+        // here surfaces downstream as a verify error with a confusing
+        // schema message, but the *cause* is the commit. Logging
+        // preserves the real cause for operators while letting the
+        // verify path proceed (it'll fail loudly with its own context
+        // if the commit genuinely didn't land).
+        if let Err(e) = query("CALL DOLT_COMMIT('-Am', 'migrate apply', '--allow-empty')")
+            .execute(&self.pool)
+            .await
+        {
+            eprintln!(
+                "[migrate] {} DOLT_COMMIT after apply failed: {e} — verify may report a misleading schema error",
+                migration.version
+            );
+        }
+        Ok(())
+    }
+
+    /// When a migration is marked applied but its verify SQL fails, the
+    /// live schema diverged from the recorded state (e.g. a column never
+    /// landed — rosary-b61362). Re-apply the migration idempotently and
+    /// re-verify. If verify still fails after re-apply, the divergence is
+    /// not auto-repairable and we propagate the error rather than silently
+    /// continuing with a known-broken schema.
+    async fn verify_or_repair(&self, migration: &Migration) -> Result<()> {
+        let Some(verify_sql) = migration.verify else {
+            return Ok(());
+        };
+        if query(verify_sql).execute(&self.pool).await.is_ok() {
+            return Ok(());
+        }
+        eprintln!(
+            "[migrate] {} marked applied but verify failed — re-applying to repair schema",
+            migration.version
+        );
+        self.apply_migration_sql(migration).await?;
+        query(verify_sql)
+            .execute(&self.pool)
+            .await
+            .with_context(|| {
+                format!(
+                    "migration {} repair failed — verify still rejects after re-apply",
+                    migration.version
+                )
+            })?;
+        eprintln!("[migrate] {} repaired", migration.version);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod heuristic_tests {
+    use super::is_already_applied_error;
+
+    #[test]
+    fn classic_mysql_duplicates_are_tolerated() {
+        assert!(is_already_applied_error("Duplicate column name 'user_id'"));
+        assert!(is_already_applied_error("Duplicate key name 'idx_x'"));
+        assert!(is_already_applied_error("Multiple primary key defined"));
+    }
+
+    #[test]
+    fn dolt_2x_duplicate_column_form_is_tolerated() {
+        // Dolt 2.x emits `Column "x" already exists` — different shape from
+        // the MySQL-classic `Duplicate column name 'x'` and both must match.
+        assert!(is_already_applied_error(
+            "1105 (HY000): Column \"edited_at\" already exists"
+        ));
+    }
+
+    #[test]
+    fn missing_foreign_key_drops_are_tolerated() {
+        // MySQL-style: "Can't DROP 'fk_x'; check that column/key exists".
+        assert!(is_already_applied_error(
+            "Can't DROP 'fk_events_issue'; it doesn't exist"
+        ));
+        assert!(is_already_applied_error(
+            "Can't DROP CONSTRAINT 'fk'; it does not exist"
+        ));
+        // Dolt-specific: foreign key by name was not found.
+        assert!(is_already_applied_error(
+            "foreign key `fk_events_issue` was not found"
+        ));
+    }
+
+    #[test]
+    fn unrelated_errors_propagate() {
+        // Real failures must NOT be silently swallowed — the heuristic
+        // exists to tolerate idempotent re-apply, not mask real bugs.
+        assert!(!is_already_applied_error("syntax error near 'FRIST'"));
+        assert!(!is_already_applied_error("table comments does not exist"));
+        assert!(!is_already_applied_error(
+            "DEFAULT (uuid()) is not supported"
+        ));
+        // "Already exists" without "column" anchor must NOT match — that
+        // was the over-broad form the heuristic was tightened against.
+        assert!(!is_already_applied_error("Trigger 'foo' already exists"));
     }
 }
