@@ -175,7 +175,7 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_bead_link",
-                "description": "Add or remove a dependency between beads. Use to express 'A depends on B' (A is blocked until B completes). Example: rsry_bead_link(repo_path='/path/to/cloister', id='cloister-1', depends_on='cloister-2'). For cross-repo deps, set depends_on to '<repo>-<id>' (e.g. 'signet-9605a3') — handler auto-routes via LinkageStore when the prefix names a different repo than repo_path's repo. Use explicit cross_repo='<repo>/<bead-id>' to override the auto-detection.",
+                "description": "Add or remove a dependency between beads. Use to express 'A depends on B' (A is blocked until B completes). Example: rsry_bead_link(repo_path='/path/to/cloister', id='cloister-963a5c', depends_on='cloister-aaaaaa'). For cross-repo deps, set depends_on to '<repo>-<6hex>' (e.g. 'signet-9605a3') — handler auto-routes via LinkageStore when the prefix names a different repo than repo_path's repo. Use explicit cross_repo='<repo>/<bead-id>' to override the auto-detection.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

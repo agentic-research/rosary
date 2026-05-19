@@ -754,15 +754,14 @@ async fn tool_bead_comment_delete(
 }
 
 /// Infer the cross-repo target from a `depends_on` bead id and the calling
-/// `repo_path`. Returns `Some("repo/bead-id")` when the bead id's prefix
-/// (everything before the last `-<6hex>` suffix or the canonical hub-name)
-/// names a repo other than the calling one — meaning the dep is cross-repo
-/// even though the caller didn't pass `cross_repo` explicitly.
+/// `repo_path`. Returns `Some("repo/bead-id")` when the bead id matches
+/// the canonical `<repo>-<6hex>` shape and the `<repo>` prefix names a
+/// repo other than the calling one — meaning the dep is cross-repo even
+/// though the caller didn't pass `cross_repo` explicitly.
 ///
 /// Returns None when:
-/// - the bead id is malformed (no recognizable prefix),
-/// - the inferred prefix matches the calling repo (so the dep is same-repo),
-/// - the bead id doesn't look like the canonical `<repo>-<hex>` shape.
+/// - the bead id is malformed (no recognizable `<repo>-<6hex>` shape),
+/// - the inferred prefix matches the calling repo (so the dep is same-repo).
 ///
 /// rosary-98ee93: lets callers express cross-repo deps using only the
 /// canonical bead id without needing to remember the `cross_repo` arg
@@ -776,7 +775,9 @@ fn infer_cross_repo_target(repo_path: &str, depends_on: &str) -> Option<String> 
         return None;
     }
     let calling_repo = repo_name_from_path(repo_path);
-    if prefix == calling_repo {
+    // Compare as `String == &str` (stdlib `PartialEq<&str> for String`) to
+    // make the type direction explicit for readers.
+    if calling_repo == prefix {
         return None;
     }
     Some(format!("{prefix}/{depends_on}"))
@@ -1863,9 +1864,25 @@ async fn tool_decade_create(args: &Value, backend: Option<&dyn BackendStore>) ->
                 "action": "existed",
             }));
         }
+        // Name the actually-diverging field(s) so the operator can see
+        // what changed. Reporting "conflicting title" when only
+        // source_path differs misleads readers (Copilot #205 finding).
+        let mut diffs = Vec::new();
+        if existing.title != title {
+            diffs.push(format!(
+                "title (`{}` vs requested `{title}`)",
+                existing.title
+            ));
+        }
+        if existing.source_path != source_path {
+            diffs.push(format!(
+                "source_path (`{}` vs requested `{source_path}`)",
+                existing.source_path
+            ));
+        }
         anyhow::bail!(
-            "decade `{id}` already exists with a conflicting title (`{}` vs requested `{title}`); refusing silent overwrite",
-            existing.title
+            "decade `{id}` already exists with conflicting {}; refusing silent overwrite",
+            diffs.join(" and ")
         );
     }
 
@@ -1909,11 +1926,22 @@ async fn tool_thread_create(args: &Value, backend: Option<&dyn BackendStore>) ->
         );
     }
 
-    let existing = backend
-        .list_threads(decade_id)
-        .await?
-        .into_iter()
-        .find(|t| t.id == id);
+    // Thread IDs are globally unique — the `threads` table primary key is
+    // just `id`, not `(decade_id, id)`. Scan every decade for an existing
+    // thread with this id; otherwise a same-id thread under a different
+    // decade would silently get re-parented by upsert (Copilot #205 finding).
+    let mut existing: Option<crate::store::ThreadRecord> = None;
+    for decade in backend.list_decades(None).await? {
+        if let Some(t) = backend
+            .list_threads(&decade.id)
+            .await?
+            .into_iter()
+            .find(|t| t.id == id)
+        {
+            existing = Some(t);
+            break;
+        }
+    }
     if let Some(existing) = existing {
         if existing.name == name && existing.decade_id == decade_id {
             return Ok(json!({
@@ -1923,6 +1951,12 @@ async fn tool_thread_create(args: &Value, backend: Option<&dyn BackendStore>) ->
                 "feature_branch": existing.feature_branch,
                 "action": "existed",
             }));
+        }
+        if existing.decade_id != decade_id {
+            anyhow::bail!(
+                "thread `{id}` already exists under decade `{}` (requested `{decade_id}`); thread ids are globally unique — re-parent via rsry_thread_reparent instead",
+                existing.decade_id
+            );
         }
         anyhow::bail!(
             "thread `{id}` already exists under decade `{decade_id}` with a conflicting name (`{}` vs requested `{name}`)",
@@ -2766,5 +2800,81 @@ mod input_validation_tests {
             .await
             .expect("re-create with identical payload must succeed");
         assert_eq!(again["action"], "existed");
+    }
+
+    /// Copilot #205 finding: the in-decade existence check in
+    /// `tool_thread_create` would miss a thread with the same `id`
+    /// living under a *different* decade, and silently let upsert
+    /// re-parent it. Global uniqueness across decades is the right
+    /// contract — otherwise two callers issuing the same thread id
+    /// against different decades would clobber each other.
+    #[tokio::test]
+    async fn thread_create_errors_on_global_id_conflict_across_decades() {
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        tool_decade_create(&json!({ "id": "d-1", "title": "D1" }), Some(&store))
+            .await
+            .expect("create d-1");
+        tool_decade_create(&json!({ "id": "d-2", "title": "D2" }), Some(&store))
+            .await
+            .expect("create d-2");
+        tool_thread_create(
+            &json!({ "decade_id": "d-1", "id": "shared-thread-id", "name": "First" }),
+            Some(&store),
+        )
+        .await
+        .expect("first thread_create");
+
+        // Same id under a DIFFERENT decade must error — otherwise the
+        // second create would silently re-parent the first thread.
+        let err = tool_thread_create(
+            &json!({ "decade_id": "d-2", "id": "shared-thread-id", "name": "Second" }),
+            Some(&store),
+        )
+        .await
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("shared-thread-id"),
+            "error must name the conflicting thread id; got: {msg}"
+        );
+        assert!(
+            msg.contains("d-1") || msg.contains("already exists"),
+            "error must surface where the existing thread lives or that it already exists; got: {msg}"
+        );
+    }
+
+    /// Copilot #205 finding: when only `source_path` differs (title
+    /// matches), the conflict message must not falsely claim "conflicting
+    /// title" — it should name the actual diverging field. This pins the
+    /// error-message accuracy contract so a reader of the failure isn't
+    /// misled about what to fix.
+    #[tokio::test]
+    async fn decade_create_conflict_message_distinguishes_title_from_source_path() {
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        tool_decade_create(
+            &json!({ "id": "d-1", "title": "Same Title", "source_path": "a.md" }),
+            Some(&store),
+        )
+        .await
+        .expect("first");
+        // Title matches; source_path differs. The error must mention
+        // source_path, not just title.
+        let err = tool_decade_create(
+            &json!({ "id": "d-1", "title": "Same Title", "source_path": "b.md" }),
+            Some(&store),
+        )
+        .await
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("source_path"),
+            "error must surface that source_path is the conflicting field, not just title; got: {msg}"
+        );
+        assert!(
+            msg.contains("a.md") && msg.contains("b.md"),
+            "error must show both source_paths so the operator can see what changed; got: {msg}"
+        );
     }
 }
