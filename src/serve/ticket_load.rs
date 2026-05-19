@@ -17,12 +17,19 @@ use serde_json::Value;
 use crate::pool::RepoPool;
 use crate::store::BeadStore;
 
+/// Strip query string and fragment from a path segment (e.g. `42?tab=foo` → `42`).
+/// Used to keep numeric-id parsing robust against URLs that carry trackers.
+fn strip_url_tail(segment: &str) -> &str {
+    let cut = segment.find(['?', '#']).unwrap_or(segment.len());
+    &segment[..cut]
+}
+
 /// Detect a GitHub issue or pull-request URL embedded in free text.
 ///
 /// Matches `https://github.com/{org}/{repo}/(issues|pull)/{N}`. Returns the
-/// first match, canonicalized to the four-segment form (anything after the
-/// number — query strings, fragments, slugs — is dropped). No regex —
-/// whitespace tokenization + `str::strip_prefix` only.
+/// first match, canonicalized to the four-segment form (query strings,
+/// fragments, slugs — anything past the numeric id — are dropped). No regex
+/// — whitespace tokenization + `str::strip_prefix` only.
 pub(crate) fn extract_github_link(text: &str) -> Option<String> {
     for raw in text.split_whitespace() {
         let token = raw.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/');
@@ -36,12 +43,13 @@ pub(crate) fn extract_github_link(text: &str) -> Option<String> {
         if parts[2] != "issues" && parts[2] != "pull" {
             continue;
         }
-        if parts[3].parse::<u64>().is_err() {
+        let id = strip_url_tail(parts[3]);
+        if id.parse::<u64>().is_err() {
             continue;
         }
         return Some(format!(
             "https://github.com/{}/{}/{}/{}",
-            parts[0], parts[1], parts[2], parts[3]
+            parts[0], parts[1], parts[2], id
         ));
     }
     None
@@ -50,7 +58,8 @@ pub(crate) fn extract_github_link(text: &str) -> Option<String> {
 /// Detect a Zendesk ticket URL embedded in free text.
 ///
 /// Matches `https://{subdomain}.zendesk.com/agent/tickets/{N}`. Returns the
-/// first match. No regex — whitespace tokenization + `str::strip_prefix`.
+/// first match with query strings and fragments stripped from the numeric id.
+/// No regex — whitespace tokenization + `str::strip_prefix`.
 pub(crate) fn extract_zendesk_link(text: &str) -> Option<String> {
     for raw in text.split_whitespace() {
         let token = raw.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/');
@@ -67,12 +76,13 @@ pub(crate) fn extract_zendesk_link(text: &str) -> Option<String> {
         if parts[1] != "agent" || parts[2] != "tickets" {
             continue;
         }
-        if parts[3].parse::<u64>().is_err() {
+        let id = strip_url_tail(parts[3]);
+        if id.parse::<u64>().is_err() {
             continue;
         }
         return Some(format!(
             "https://{}/{}/{}/{}",
-            parts[0], parts[1], parts[2], parts[3]
+            parts[0], parts[1], parts[2], id
         ));
     }
     None
@@ -199,6 +209,38 @@ mod tests {
     fn extract_zendesk_link_rejects_non_zendesk_host() {
         let body = "https://example.com/agent/tickets/9";
         assert!(extract_zendesk_link(body).is_none());
+    }
+
+    /// Copilot review #215: URLs often carry `?tab=...` or `#anchor`; the
+    /// canonical form must still emerge from those inputs, not be rejected by
+    /// `parse::<u64>()` choking on the trailing characters.
+    #[test]
+    fn extract_github_link_handles_query_string() {
+        let body = "https://github.com/agentic-research/rosary/issues/42?tab=files";
+        assert_eq!(
+            extract_github_link(body).as_deref(),
+            Some("https://github.com/agentic-research/rosary/issues/42"),
+        );
+    }
+
+    /// Same shape, fragment instead of query.
+    #[test]
+    fn extract_github_link_handles_fragment() {
+        let body = "see https://github.com/agentic-research/rosary/pull/214#discussion_r1";
+        assert_eq!(
+            extract_github_link(body).as_deref(),
+            Some("https://github.com/agentic-research/rosary/pull/214"),
+        );
+    }
+
+    /// Zendesk URLs carry tabs/anchors too.
+    #[test]
+    fn extract_zendesk_link_handles_query_string() {
+        let body = "https://chainguard.zendesk.com/agent/tickets/12345?source=email";
+        assert_eq!(
+            extract_zendesk_link(body).as_deref(),
+            Some("https://chainguard.zendesk.com/agent/tickets/12345"),
+        );
     }
 
     /// All-optional-absent path: every linked-* and existing_bead field is

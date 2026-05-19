@@ -2446,12 +2446,15 @@ async fn tool_ticket_load(args: &Value, pool: &RepoPool) -> Result<Value> {
         .with_context(|| format!("fetching Linear ticket {ticket_id}"))?;
 
     // Linear's `id` is the internal UUID required for the comments query.
-    // If absent for any reason, surface an empty comments list rather than
-    // failing the whole tool call.
+    // Propagate comments-fetch errors instead of swallowing them — a transient
+    // Linear/GraphQL failure here would otherwise produce a successful-looking
+    // response with an empty `comments` array, which is indistinguishable from
+    // "the ticket has no comments" and silently degrades URL discovery + bead
+    // matching that depend on comment text. (Copilot review on PR #215.)
     let comments = match linear_issue["id"].as_str() {
         Some(internal_id) => crate::linear::get_ticket_comments(&client, internal_id)
             .await
-            .unwrap_or_default(),
+            .with_context(|| format!("fetching comments for Linear ticket {ticket_id}"))?,
         None => Vec::new(),
     };
 
@@ -2473,7 +2476,13 @@ async fn tool_ticket_load(args: &Value, pool: &RepoPool) -> Result<Value> {
         json!({ "url": url, "body": null, "state": null })
     });
     let linked_zendesk = extract_zendesk_link(&combined_text);
-    let existing_bead = find_triage_bead(pool, ticket_id).await;
+    // Bead lookup uses the canonical Linear identifier (`CUS-495`) returned by
+    // `get_ticket`, NOT the raw caller-supplied `ticket_id` — which may be a
+    // full URL. Existing beads consistently reference the identifier form, so
+    // this normalization is what makes URL-shaped inputs match real beads.
+    // (Copilot review on PR #215.)
+    let lookup_id = linear_issue["identifier"].as_str().unwrap_or(ticket_id);
+    let existing_bead = find_triage_bead(pool, lookup_id).await;
 
     Ok(assemble_context(
         linear_issue,
