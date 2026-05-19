@@ -425,9 +425,11 @@ async fn tool_bead_create(
     pool: &RepoPool,
     user_scope: Option<&str>,
 ) -> Result<Value> {
-    let repo_path = args["repo_path"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+    // rosary-b5da2f PR 6: accept `scope` or `repo_path` via the shared
+    // resolver. Validation of other args runs BEFORE resolve_repo_client
+    // so test fixtures + real callers get the expected error class
+    // (e.g. "title must not be blank") rather than an FS error from a
+    // nonexistent repo_path that wouldn't have mattered.
     let title = args["title"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("title required"))?;
@@ -507,10 +509,12 @@ async fn tool_bead_create(
         );
     }
 
-    let client_ref = get_client(repo_path, pool).await?;
+    let (scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
-    let repo_name = repo_name_from_path(repo_path);
-    let id = crate::generate_bead_id(&repo_name);
+    let repo_name = scope
+        .as_repo_name()
+        .expect("Repo-only scope verified by resolve_repo_client");
+    let id = crate::generate_bead_id(repo_name);
 
     // Wire dependencies if provided
     let depends_on: Vec<String> = args
@@ -523,8 +527,14 @@ async fn tool_bead_create(
         })
         .unwrap_or_default();
 
-    // Capture git username from the repo's git config for creator attribution.
-    let created_by = crate::git_config_user_name(std::path::Path::new(repo_path));
+    // Capture git username from the repo's git config for creator
+    // attribution — best-effort, only when `repo_path` is passed
+    // explicitly. Pure scope-only callers get `created_by = None`
+    // until repo-name → path resolution lands in a follow-up.
+    let created_by = args
+        .get("repo_path")
+        .and_then(|v| v.as_str())
+        .and_then(|p| crate::git_config_user_name(std::path::Path::new(p)));
 
     // Single transaction: INSERT + assignee + files + deps → one dolt commit
     client
@@ -560,9 +570,6 @@ async fn tool_bead_update(
     pool: &RepoPool,
     _user_scope: Option<&str>,
 ) -> Result<Value> {
-    let repo_path = args["repo_path"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     let id = args["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("id required"))?;
@@ -647,7 +654,7 @@ async fn tool_bead_update(
         anyhow::bail!("no fields to update — provide at least one field besides repo_path and id");
     }
 
-    let client_ref = get_client(repo_path, pool).await?;
+    let (_scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
     let updated_fields = client.update_bead_fields(id, &update).await?;
 
@@ -664,25 +671,18 @@ async fn tool_bead_close(
     pool: &RepoPool,
     _user_scope: Option<&str>,
 ) -> Result<Value> {
-    let repo_path = args["repo_path"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     let id = args["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("id required"))?;
 
-    let client_ref = get_client(repo_path, pool).await?;
+    let (scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
     client.close_bead(id).await?;
 
     // Unregister the session so rsry_active stops showing it.
     // Best-effort — session may not exist if bead was closed manually.
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {
-        let repo = std::path::Path::new(repo_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        let _ = registry.unregister(id, repo);
+        let _ = registry.unregister(id, scope.as_repo_name().unwrap_or(""));
     }
 
     Ok(json!({ "id": id, "status": "closed" }))
@@ -693,9 +693,6 @@ async fn tool_bead_comment(
     pool: &RepoPool,
     _user_scope: Option<&str>,
 ) -> Result<Value> {
-    let repo_path = args["repo_path"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     let id = args["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("id required"))?;
@@ -709,17 +706,13 @@ async fn tool_bead_comment(
         anyhow::bail!("body exceeds {BODY_MAX_LEN} bytes (got {})", body.len());
     }
 
-    let client_ref = get_client(repo_path, pool).await?;
+    let (scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
     client.add_comment(id, body, "rsry-mcp").await?;
 
     // Update session registry so rsry_active shows last activity
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {
-        let repo = std::path::Path::new(repo_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        let _ = registry.touch(id, repo, body);
+        let _ = registry.touch(id, scope.as_repo_name().unwrap_or(""), body);
     }
 
     Ok(json!({ "id": id, "comment_added": true }))
@@ -730,9 +723,6 @@ async fn tool_bead_comment_list(
     pool: &RepoPool,
     _user_scope: Option<&str>,
 ) -> Result<Value> {
-    let repo_path = args["repo_path"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     let id = args["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("id required"))?;
@@ -741,7 +731,7 @@ async fn tool_bead_comment_list(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let client_ref = get_client(repo_path, pool).await?;
+    let (_scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
     let comments = client.list_comments(id, include_deleted).await?;
 
@@ -757,9 +747,6 @@ async fn tool_bead_comment_update(
     pool: &RepoPool,
     _user_scope: Option<&str>,
 ) -> Result<Value> {
-    let repo_path = args["repo_path"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     // comment_id is an opaque string — Dolt produces UUIDs (char(36)),
     // SQLite produces stringified integers. Accept both via JSON string;
     // also accept JSON numbers for backward compatibility.
@@ -781,7 +768,7 @@ async fn tool_bead_comment_update(
     }
     let reason = args.get("reason").and_then(|v| v.as_str());
 
-    let client_ref = get_client(repo_path, pool).await?;
+    let (_scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
     let updated = client.update_comment(comment_id, body, reason).await?;
 
@@ -797,9 +784,6 @@ async fn tool_bead_comment_delete(
     pool: &RepoPool,
     _user_scope: Option<&str>,
 ) -> Result<Value> {
-    let repo_path = args["repo_path"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     // comment_id is an opaque string — Dolt produces UUIDs (char(36)),
     // SQLite produces stringified integers. Accept both via JSON string;
     // also accept JSON numbers for backward compatibility.
@@ -814,7 +798,7 @@ async fn tool_bead_comment_delete(
 
     // MCP path is soft-delete only — never hard. Hard-delete is CLI-only by
     // design (see rosary-a96b06: audit-trail preservation).
-    let client_ref = get_client(repo_path, pool).await?;
+    let (_scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
     client.delete_comment(comment_id, reason).await?;
 
@@ -1001,9 +985,6 @@ async fn tool_bead_search(
     pool: &RepoPool,
     _user_scope: Option<&str>,
 ) -> Result<Value> {
-    let repo_path = args["repo_path"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
     let query_str = args["query"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("query required"))?;
@@ -1013,10 +994,12 @@ async fn tool_bead_search(
         .unwrap_or(SEARCH_DEFAULT_LIMIT)
         .min(SEARCH_MAX_LIMIT) as u32;
 
-    let client_ref = get_client(repo_path, pool).await?;
+    let (scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
-    let repo_name = repo_name_from_path(repo_path);
-    let beads = client.search_beads(query_str, &repo_name, limit).await?;
+    let repo_name = scope
+        .as_repo_name()
+        .expect("Repo-only scope verified by resolve_repo_client");
+    let beads = client.search_beads(query_str, repo_name, limit).await?;
 
     // Truncate descriptions to keep response size bounded
     let beads: Vec<Value> = beads
@@ -2942,6 +2925,174 @@ mod input_validation_tests {
             deps.is_empty(),
             "same-repo links must NOT route through LinkageStore; got: {deps:?}"
         );
+    }
+
+    // ---- scope-arg acceptance per converted handler (rosary-b5da2f PR 6) --
+    //
+    // These tests are the repeatable test harness the user asked for:
+    // each converted handler must accept `scope: "repo:<name>"` as a
+    // substitute for `repo_path: "/path/to/repo"`. The empty_pool +
+    // FAKE_REPO pattern means resolve_repo_client falls to get_client
+    // which itself errors on FS lookup — what we're pinning is that
+    // **the error is NOT** `"repo_path required"`, which would mean
+    // the handler is still doing bespoke arg parsing rather than
+    // delegating to resolve_repo_client.
+
+    /// Helper: assert that the error doesn't come from the legacy
+    /// `repo_path required` path (i.e. handler is wired to
+    /// resolve_repo_client and the scope arg flowed through).
+    fn assert_scope_path_engaged(err: &anyhow::Error) {
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("repo_path required"),
+            "handler must delegate to resolve_repo_client when only `scope` is passed; \
+             error names the legacy parser instead: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bead_create_accepts_scope_arg() {
+        let args = json!({
+            "scope": "repo:nonexistent",
+            "title": "Test bead",
+            "issue_type": "task",
+            "files": ["a.rs"],
+        });
+        let err = tool_bead_create(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert_scope_path_engaged(&err);
+    }
+
+    #[tokio::test]
+    async fn bead_update_accepts_scope_arg() {
+        let args = json!({
+            "scope": "repo:nonexistent",
+            "id": "x-1",
+            "title": "new title",
+        });
+        let err = tool_bead_update(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert_scope_path_engaged(&err);
+    }
+
+    #[tokio::test]
+    async fn bead_close_accepts_scope_arg() {
+        let args = json!({
+            "scope": "repo:nonexistent",
+            "id": "x-1",
+        });
+        let err = tool_bead_close(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert_scope_path_engaged(&err);
+    }
+
+    #[tokio::test]
+    async fn bead_comment_accepts_scope_arg() {
+        let args = json!({
+            "scope": "repo:nonexistent",
+            "id": "x-1",
+            "body": "test",
+        });
+        let err = tool_bead_comment(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert_scope_path_engaged(&err);
+    }
+
+    #[tokio::test]
+    async fn bead_comment_list_accepts_scope_arg() {
+        let args = json!({ "scope": "repo:nonexistent", "id": "x-1" });
+        let err = tool_bead_comment_list(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert_scope_path_engaged(&err);
+    }
+
+    #[tokio::test]
+    async fn bead_comment_update_accepts_scope_arg() {
+        let args = json!({
+            "scope": "repo:nonexistent",
+            "comment_id": "c-1",
+            "body": "edited",
+        });
+        let err = tool_bead_comment_update(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert_scope_path_engaged(&err);
+    }
+
+    #[tokio::test]
+    async fn bead_comment_delete_accepts_scope_arg() {
+        let args = json!({ "scope": "repo:nonexistent", "comment_id": "c-1" });
+        let err = tool_bead_comment_delete(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert_scope_path_engaged(&err);
+    }
+
+    #[tokio::test]
+    async fn bead_search_accepts_scope_arg() {
+        let args = json!({ "scope": "repo:nonexistent", "query": "auth" });
+        let err = tool_bead_search(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert_scope_path_engaged(&err);
+    }
+
+    /// Cross-cutting: every converted handler MUST surface the
+    /// resolve_scope error when neither `scope` nor `repo_path` is
+    /// provided — error names BOTH accepted args so callers know
+    /// either is valid. Regression catch for any handler that
+    /// reintroduces bespoke `args["repo_path"].ok_or_else(...)` logic.
+    #[tokio::test]
+    async fn all_converted_handlers_surface_resolve_scope_error() {
+        // Args that pass all per-handler validation EXCEPT scope/repo_path,
+        // so the resolve_scope-missing-arg path is the actual failure
+        // point in every case.
+        let bare_args_pairs = [
+            (
+                "bead_create",
+                json!({
+                    "title": "x", "issue_type": "task", "files": ["a.rs"]
+                }),
+            ),
+            ("bead_update", json!({"id": "x-1", "title": "x"})),
+            ("bead_close", json!({"id": "x-1"})),
+            ("bead_comment", json!({"id": "x-1", "body": "x"})),
+            ("bead_comment_list", json!({"id": "x-1"})),
+            (
+                "bead_comment_update",
+                json!({"comment_id": "c-1", "body": "x"}),
+            ),
+            ("bead_comment_delete", json!({"comment_id": "c-1"})),
+            ("bead_search", json!({"query": "x"})),
+        ];
+
+        for (handler_name, args) in bare_args_pairs {
+            let result = match handler_name {
+                "bead_create" => tool_bead_create(&args, &empty_pool(), None).await,
+                "bead_update" => tool_bead_update(&args, &empty_pool(), None).await,
+                "bead_close" => tool_bead_close(&args, &empty_pool(), None).await,
+                "bead_comment" => tool_bead_comment(&args, &empty_pool(), None).await,
+                "bead_comment_list" => tool_bead_comment_list(&args, &empty_pool(), None).await,
+                "bead_comment_update" => tool_bead_comment_update(&args, &empty_pool(), None).await,
+                "bead_comment_delete" => tool_bead_comment_delete(&args, &empty_pool(), None).await,
+                "bead_search" => tool_bead_search(&args, &empty_pool(), None).await,
+                _ => unreachable!(),
+            };
+            let err = match result {
+                Ok(_) => panic!("handler `{handler_name}` accepted args with no scope/repo_path"),
+                Err(e) => e,
+            };
+            let msg = err.to_string();
+            assert!(
+                msg.contains("scope") && msg.contains("repo_path"),
+                "handler `{handler_name}` error must list both accepted args; got: {msg}"
+            );
+        }
     }
 
     // ---- resolve_repo_client (rosary-b5da2f PR 5) -------------------------
