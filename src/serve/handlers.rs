@@ -73,6 +73,62 @@ pub(crate) fn repo_name_from_path(repo_path: &str) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// Resolve the calling MCP args into a `(ScopeId, StoreRef)` pair for
+/// any handler that needs a per-repo `BeadStore`. Centralizes the
+/// scope-or-repo_path parsing pattern that bead_link uses (PR #212) so
+/// converting the other 13 repo_path-taking handlers becomes a
+/// one-liner — they all share this entry point.
+///
+/// Behavior:
+/// - Args parse via [`resolve_scope`](crate::serve::scope_args::resolve_scope)
+///   (`scope` takes precedence over `repo_path`; bare repo names parse
+///   as `ScopeId::Repo`).
+/// - For `ScopeId::Repo(name)`: try `pool.get(&name)` first, then fall
+///   back to [`get_client`] with `repo_path` (which itself tries
+///   `pool.get_by_path` then a fresh SQLite connection). This means a
+///   caller can pass `scope: "repo:rosary"` without `repo_path` so
+///   long as the pool already has the repo loaded.
+/// - For `ScopeId::External(_)` or `ScopeId::Global`: errors. These
+///   scopes are addressing-only — no per-repo Dolt store exists for
+///   them. Personal-scope storage (the future `rosary-792ed6`
+///   substrate) gets its own resolver when it lands.
+///
+/// rosary-b5da2f PR 5/N (the scope-abstraction series).
+pub(crate) async fn resolve_repo_client<'a>(
+    args: &Value,
+    pool: &'a RepoPool,
+) -> Result<(crate::scope::ScopeId, StoreRef<'a>)> {
+    use crate::serve::scope_args::resolve_scope;
+    let scope = resolve_scope(args)?;
+    let repo_name = scope.as_repo_name().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{scope} scope has no per-repo bead store; this operation is Repo-only. \
+             External / Global addressing is supported for LinkageStore edges only \
+             (see rsry_bead_link); Personal substrate is tracked under rosary-792ed6."
+        )
+    })?;
+    // Try the pool by name first — handles the "scope-only, no
+    // repo_path" case for any repo already registered.
+    if let Some(store) = pool.get(repo_name) {
+        return Ok((scope, StoreRef::Pooled(store)));
+    }
+    // Fall back to the existing get_client path which expects a
+    // filesystem path. This preserves back-compat for callers that
+    // still pass `repo_path` directly + handles repos not yet in the
+    // pool (one-shot CLI invocations).
+    let repo_path = args
+        .get("repo_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "scope `{repo_name}` is not loaded in the repo pool and no `repo_path` was passed; \
+                 register the repo via `rsry_repo_register` or pass `repo_path` explicitly"
+            )
+        })?;
+    let store_ref = get_client(repo_path, pool).await?;
+    Ok((scope, store_ref))
+}
+
 // ---------------------------------------------------------------------------
 // Tool router
 // ---------------------------------------------------------------------------
@@ -2870,6 +2926,109 @@ mod input_validation_tests {
         assert!(
             deps.is_empty(),
             "same-repo links must NOT route through LinkageStore; got: {deps:?}"
+        );
+    }
+
+    // ---- resolve_repo_client (rosary-b5da2f PR 5) -------------------------
+
+    /// `resolve_repo_client` rejects `Global` scope with a message
+    /// naming the supported addressing paths — Global is identifier-
+    /// only, no per-repo bead store.
+    #[tokio::test]
+    async fn resolve_repo_client_rejects_global_scope() {
+        let args = json!({ "scope": "global", "id": "x", "depends_on": "y" });
+        let err = match resolve_repo_client(&args, &empty_pool()).await {
+            Ok(_) => panic!("resolve_repo_client must reject; returned Ok"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("global") || msg.contains("Global"),
+            "error must name the rejected scope; got: {msg}"
+        );
+        assert!(
+            msg.contains("Repo-only") || msg.contains("Personal") || msg.contains("LinkageStore"),
+            "error must explain the right alternative addressing; got: {msg}"
+        );
+    }
+
+    /// Same guard for `External` scope.
+    #[tokio::test]
+    async fn resolve_repo_client_rejects_external_scope() {
+        let args = json!({ "scope": "external:zen://inbox", "id": "x" });
+        let err = match resolve_repo_client(&args, &empty_pool()).await {
+            Ok(_) => panic!("resolve_repo_client must reject; returned Ok"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("external") || msg.contains("External"),
+            "error must name the rejected scope; got: {msg}"
+        );
+    }
+
+    /// When `scope: "repo:foo"` is passed but `foo` isn't in the pool
+    /// AND no `repo_path` is provided, the error must point the caller
+    /// at the two recovery paths: register the repo, or pass repo_path.
+    #[tokio::test]
+    async fn resolve_repo_client_errors_when_repo_not_in_pool_and_no_repo_path() {
+        let args = json!({ "scope": "repo:unloaded-repo" });
+        let err = match resolve_repo_client(&args, &empty_pool()).await {
+            Ok(_) => panic!("resolve_repo_client must reject; returned Ok"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unloaded-repo"),
+            "error must name the missing repo; got: {msg}"
+        );
+        assert!(
+            msg.contains("rsry_repo_register") || msg.contains("repo_path"),
+            "error must surface the two recovery paths; got: {msg}"
+        );
+    }
+
+    /// `resolve_repo_client` is the unified arg-parser; both `scope`
+    /// and `repo_path` paths must error symmetrically when *neither*
+    /// arg is provided. Delegates to `resolve_scope` for the message
+    /// shape (already TDD'd in `serve::scope_args::tests`); this test
+    /// pins the delegation contract.
+    #[tokio::test]
+    async fn resolve_repo_client_errors_when_neither_scope_nor_repo_path() {
+        let args = json!({ "id": "x" });
+        let err = match resolve_repo_client(&args, &empty_pool()).await {
+            Ok(_) => panic!("resolve_repo_client must reject; returned Ok"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("scope") && msg.contains("repo_path"),
+            "error must list both accepted args (delegated to resolve_scope); got: {msg}"
+        );
+    }
+
+    /// When `repo_path` (legacy arg) is passed alone, `resolve_repo_client`
+    /// must still work — that's the back-compat contract for the 13
+    /// handlers about to migrate. Uses FAKE_REPO path to exercise the
+    /// fallback to `get_client` (which itself will error on FS lookup,
+    /// but resolve_repo_client gets that far cleanly).
+    #[tokio::test]
+    async fn resolve_repo_client_falls_back_to_repo_path() {
+        let args = json!({ "repo_path": FAKE_REPO });
+        // The fallback path calls `get_client(FAKE_REPO, ...)` which
+        // fails at FS lookup. resolve_repo_client itself is correct;
+        // the error must surface from get_client (not the scope
+        // parser), proving the fallback engaged.
+        let err = match resolve_repo_client(&args, &empty_pool()).await {
+            Ok(_) => panic!("resolve_repo_client must reject; returned Ok"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        // The error should NOT be a scope-parser error — that would
+        // mean resolve_repo_client never reached the fallback.
+        assert!(
+            !msg.starts_with("scope") && !msg.contains("not loaded in the repo pool"),
+            "fallback must reach get_client (not error in scope parsing); got: {msg}"
         );
     }
 
