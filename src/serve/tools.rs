@@ -72,11 +72,12 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_bead_create",
-                "description": "Create a new bead (work item) in a repo's Dolt database. Use when you've identified a discrete, actionable issue. Set file scopes accurately — they determine parallel dispatch safety via has_file_overlap().",
+                "description": "Create a new bead (work item) in a repo's Dolt database. Use when you've identified a discrete, actionable issue. Set file scopes accurately — they determine parallel dispatch safety via has_file_overlap(). Pass either `scope: 'repo:<name>'` (canonical) or `repo_path: '/path/to/repo'` (legacy).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "scope": { "type": "string", "description": "Canonical scope: 'repo:<name>' (bare names like 'rosary' also parse). Takes priority over repo_path." },
+                        "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory" },
                         "title": { "type": "string", "description": "Bead title" },
                         "description": { "type": "string", "description": "Bead description", "default": "" },
                         "priority": { "type": "integer", "description": "Priority 0-3 (0=P0 highest)", "default": 2 },
@@ -86,16 +87,21 @@ pub(crate) fn tool_definitions() -> Value {
                         "test_files": { "type": "array", "items": { "type": "string" }, "description": "Test files to validate the change. Also checked for overlap — two beads sharing a test file will be serialized, not parallelized." },
                         "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Bead IDs this bead depends on (blocked until they complete). Creates entries in the dependencies table." }
                     },
-                    "required": ["repo_path", "title"]
+                    "required": ["title"],
+                    "anyOf": [
+                        { "required": ["scope"] },
+                        { "required": ["repo_path"] }
+                    ]
                 }
             },
             {
                 "name": "rsry_bead_update",
-                "description": "Update a bead's fields (PATCH semantics). Only provided fields are changed; omitted fields are left unchanged.",
+                "description": "Update a bead's fields (PATCH semantics). Only provided fields are changed; omitted fields are left unchanged. Pass either `scope: 'repo:<name>'` (canonical) or `repo_path` (legacy).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "scope": { "type": "string", "description": "Canonical scope: 'repo:<name>' (bare names parse). Takes priority over repo_path." },
+                        "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory" },
                         "id": { "type": "string", "description": "Bead ID to update" },
                         "title": { "type": "string", "description": "New title" },
                         "description": { "type": "string", "description": "New description" },
@@ -105,77 +111,88 @@ pub(crate) fn tool_definitions() -> Value {
                         "files": { "type": "array", "items": { "type": "string" }, "description": "Updated source files list. These scope parallel dispatch — see has_file_overlap() (epic.rs:386-393). Verify against actual code before setting; inaccurate scopes cause agent collisions or missed overlap detection." },
                         "test_files": { "type": "array", "items": { "type": "string" }, "description": "Updated test files list. Also checked for overlap at dispatch time (reconcile.rs:372-380)." }
                     },
-                    "required": ["repo_path", "id"]
+                    "required": ["id"],
+                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
                 }
             },
             {
                 "name": "rsry_bead_close",
-                "description": "Close a bead by ID, marking it as done. Use after your changes are committed and tests pass. Do not close if the fix is incomplete or tests are failing — comment explaining the state instead.",
+                "description": "Close a bead by ID, marking it as done. Use after your changes are committed and tests pass. Do not close if the fix is incomplete or tests are failing — comment explaining the state instead. Pass either `scope` or `repo_path`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "scope": { "type": "string", "description": "Canonical scope: 'repo:<name>'. Takes priority over repo_path." },
+                        "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory" },
                         "id": { "type": "string", "description": "Bead ID to close" }
                     },
-                    "required": ["repo_path", "id"]
+                    "required": ["id"],
+                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
                 }
             },
             {
                 "name": "rsry_bead_comment",
-                "description": "Add a progress comment to a bead. Use throughout your work to log what you've tried, found, and what remains. Other agents in the pipeline and human reviewers read these comments for context.",
+                "description": "Add a progress comment to a bead. Use throughout your work to log what you've tried, found, and what remains. Other agents in the pipeline and human reviewers read these comments for context. Pass either `scope` or `repo_path`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "scope": { "type": "string", "description": "Canonical scope: 'repo:<name>'. Takes priority over repo_path." },
+                        "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory" },
                         "id": { "type": "string", "description": "Bead ID" },
                         "body": { "type": "string", "description": "Comment text" }
                     },
-                    "required": ["repo_path", "id", "body"]
+                    "required": ["id", "body"],
+                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
                 }
             },
             {
                 "name": "rsry_bead_comment_list",
-                "description": "List comments on a bead with their stable comment_ids. Soft-deleted comments are hidden by default; pass include_deleted=true to see them. Use this to find a comment_id before calling rsry_bead_comment_update or rsry_bead_comment_delete.",
+                "description": "List comments on a bead with their stable comment_ids. Soft-deleted comments are hidden by default; pass include_deleted=true to see them. Use this to find a comment_id before calling rsry_bead_comment_update or rsry_bead_comment_delete. Pass either `scope` or `repo_path`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "scope": { "type": "string", "description": "Canonical scope: 'repo:<name>'. Takes priority over repo_path." },
+                        "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory" },
                         "id": { "type": "string", "description": "Bead ID" },
                         "include_deleted": { "type": "boolean", "description": "If true, include soft-deleted comments", "default": false }
                     },
-                    "required": ["repo_path", "id"]
+                    "required": ["id"],
+                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
                 }
             },
             {
                 "name": "rsry_bead_comment_update",
-                "description": "Edit the body of an existing comment. Records edit_reason in the audit trail and captures the prior body in original_text on the FIRST edit (immutable thereafter — subsequent edits do not rewrite original_text). Returns the updated comment. Use rsry_bead_comment_list to find comment_ids.",
+                "description": "Edit the body of an existing comment. Records edit_reason in the audit trail and captures the prior body in original_text on the FIRST edit (immutable thereafter — subsequent edits do not rewrite original_text). Returns the updated comment. Use rsry_bead_comment_list to find comment_ids. Pass either `scope` or `repo_path`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "scope": { "type": "string", "description": "Canonical scope: 'repo:<name>'. Takes priority over repo_path." },
+                        "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory" },
                         "comment_id": { "type": "string", "description": "Stable comment id (from rsry_bead_comment_list). Opaque string — Dolt produces UUIDs, SQLite produces stringified integers." },
                         "body": { "type": "string", "description": "New comment text" },
                         "reason": { "type": "string", "description": "Optional reason for the edit (recorded in edit_reason)" }
                     },
-                    "required": ["repo_path", "comment_id", "body"]
+                    "required": ["comment_id", "body"],
+                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
                 }
             },
             {
                 "name": "rsry_bead_comment_delete",
-                "description": "Soft-delete a comment by setting deleted_at and optionally delete_reason. Audit trail (original_text, edit_reason, delete_reason) is preserved. Hard-delete is CLI-only — `rsry bead comment delete --hard` — never exposed via MCP. Idempotent: re-deleting refreshes both timestamp and reason without erroring.",
+                "description": "Soft-delete a comment by setting deleted_at and optionally delete_reason. Audit trail (original_text, edit_reason, delete_reason) is preserved. Hard-delete is CLI-only — `rsry bead comment delete --hard` — never exposed via MCP. Idempotent: re-deleting refreshes both timestamp and reason without erroring. Pass either `scope` or `repo_path`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "scope": { "type": "string", "description": "Canonical scope: 'repo:<name>'. Takes priority over repo_path." },
+                        "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory" },
                         "comment_id": { "type": "string", "description": "Stable comment id (from rsry_bead_comment_list). Opaque string — Dolt produces UUIDs, SQLite produces stringified integers." },
                         "reason": { "type": "string", "description": "Optional reason for the deletion. Persisted in the dedicated `delete_reason` column (independent of `edit_reason`) so it is preserved even when the comment was previously edited." }
                     },
-                    "required": ["repo_path", "comment_id"]
+                    "required": ["comment_id"],
+                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
                 }
             },
             {
                 "name": "rsry_bead_link",
-                "description": "Add or remove a dependency between beads. Use to express 'A depends on B' (A is blocked until B completes). Cross-repo example (scope-only): rsry_bead_link(scope='repo:cloister', id='cloister-963a5c', depends_on='signet-9605a3') — `depends_on`'s 'signet-' prefix auto-routes through LinkageStore. Same-repo example: rsry_bead_link(repo_path='/path/to/cloister', id='cloister-963a5c', depends_on='cloister-aaaaaa') — same-repo deps still need `repo_path` until name→path resolution lands. Scope forms: 'repo:<name>' (canonical), 'external:<uri>' (zen inbox, cloister bundles), 'global' (org-level beads). `cross_repo` target is repo-only; reserved namespaces (global, external:) are rejected. Either `scope` or `repo_path` is required.",
+                "description": "Add or remove a dependency between beads. Use to express 'A depends on B' (A is blocked until B completes). Cross-repo example (scope-only): rsry_bead_link(scope='repo:cloister', id='cloister-963a5c', depends_on='signet-9605a3') — `depends_on`'s 'signet-' prefix auto-routes through LinkageStore. Same-repo example: rsry_bead_link(repo_path='/path/to/cloister', id='cloister-963a5c', depends_on='cloister-aaaaaa') — same-repo deps still need `repo_path` until name→path resolution lands. Scope forms: 'repo:<name>' (canonical), 'external:<uri>' (zen inbox, cloister bundles), 'global' (org-level beads). `cross_repo` target is repo-only; reserved namespaces (global, external:) are rejected. At least one of `scope` or `repo_path` is required; passing both is allowed when they name the same repo (the handler rejects disagreement).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -195,15 +212,17 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_bead_search",
-                "description": "Search beads in a specific repo by title/description substring. Returns matching beads with their status and metadata. Use to check for existing beads before creating duplicates.",
+                "description": "Search beads in a specific repo by title/description substring. Returns matching beads with their status and metadata. Use to check for existing beads before creating duplicates. Pass either `scope` or `repo_path`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
+                        "scope": { "type": "string", "description": "Canonical scope: 'repo:<name>'. Takes priority over repo_path." },
+                        "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory" },
                         "query": { "type": "string", "description": "Search query" },
                         "limit": { "type": "integer", "description": "Max results to return (default 20, max 50)", "default": 20, "minimum": 1, "maximum": 50 }
                     },
-                    "required": ["repo_path", "query"]
+                    "required": ["query"],
+                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
                 }
             },
             {
