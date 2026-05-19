@@ -94,12 +94,25 @@ rsry run
 
 The dispatch + reconciler surface is currently broken (see banner above). The **bead/task surface is fully functional today** — `rsry bead *` CLI subcommands, the MCP server (`rsry serve --transport stdio`), and the Linear sync all work independently of the broken dispatch path.
 
-If you just want issue tracking — backed by Dolt, queryable via MCP, optionally synced to Linear — you can use rosary today as a pure task tracker:
+If you just want issue tracking — backed by Dolt, queryable via MCP, optionally synced to Linear — you can use rosary today as a pure task tracker. Two install paths:
+
+**macOS** (full install — codesigns binary + sets up an HTTP MCP launchd service):
 
 ```bash
 task build
-task install                                 # codesigns + installs to ~/.local/bin
+task install                                 # macOS-specific: codesigns + launchd; binary lands at ~/.local/bin/rsry
+```
 
+**Linux / Windows / any platform** (build + copy; skips the macOS-only codesign + launchd steps):
+
+```bash
+cargo build --release
+mkdir -p ~/.local/bin && cp target/release/rsry ~/.local/bin/rsry   # or any directory on $PATH
+```
+
+Then on any platform:
+
+```bash
 # Register your repos for tracking (no dispatch loop will run)
 rsry enable ~/code/my-app
 
@@ -119,7 +132,7 @@ rsry serve --transport http --port 8383      # also receives Linear webhooks
 
 The dispatch loop (`rsry run`) is the only piece that doesn't work today. Everything else is stable.
 
-Future: an explicit `--no-default-features --features task-tracker-only` build that compiles out the dispatch + reconciler modules entirely is tracked under [rosary-1284f3](https://github.com/agentic-research/rosary/issues?q=rosary-1284f3) and related beads — until that lands, the full binary works fine; the dispatch code is just dormant.
+Future: an explicit `--no-default-features --features task-tracker-only` build that compiles the dispatch + reconciler modules out entirely (for a smaller cross-platform binary) is tracked under [rosary-ef101c](https://github.com/agentic-research/rosary/issues?q=rosary-ef101c) — until that lands, the full binary works fine on any platform; the dispatch code is just dormant.
 
 ## MCP server
 
