@@ -146,7 +146,9 @@ pub(crate) async fn call_tool(
         "rsry_dispatch_record" => tool_dispatch_record(args, backend).await,
         "rsry_dispatch_history" => tool_dispatch_history(args, backend).await,
         "rsry_decade_list" => tool_decade_list(args, backend).await,
+        "rsry_decade_create" => tool_decade_create(args, backend).await,
         "rsry_thread_list" => tool_thread_list(args, backend).await,
+        "rsry_thread_create" => tool_thread_create(args, backend).await,
         "rsry_thread_assign" => tool_thread_assign(args, backend).await,
         "rsry_thread_reparent" => tool_thread_reparent(args, backend).await,
         "rsry_repo_register" => tool_repo_register(args, backend, user_scope).await,
@@ -751,6 +753,35 @@ async fn tool_bead_comment_delete(
     }))
 }
 
+/// Infer the cross-repo target from a `depends_on` bead id and the calling
+/// `repo_path`. Returns `Some("repo/bead-id")` when the bead id's prefix
+/// (everything before the last `-<6hex>` suffix or the canonical hub-name)
+/// names a repo other than the calling one — meaning the dep is cross-repo
+/// even though the caller didn't pass `cross_repo` explicitly.
+///
+/// Returns None when:
+/// - the bead id is malformed (no recognizable prefix),
+/// - the inferred prefix matches the calling repo (so the dep is same-repo),
+/// - the bead id doesn't look like the canonical `<repo>-<hex>` shape.
+///
+/// rosary-98ee93: lets callers express cross-repo deps using only the
+/// canonical bead id without needing to remember the `cross_repo` arg
+/// shape. Explicit `cross_repo` still takes precedence when provided.
+fn infer_cross_repo_target(repo_path: &str, depends_on: &str) -> Option<String> {
+    // Bead IDs follow `<repo>-<6hex>` (e.g. `signet-9605a3`). Repo names may
+    // contain `-` themselves (e.g. `ley-line-open`), so split on the LAST
+    // `-` and check whether the suffix is a 6-char hex tag.
+    let (prefix, suffix) = depends_on.rsplit_once('-')?;
+    if prefix.is_empty() || suffix.len() != 6 || !suffix.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let calling_repo = repo_name_from_path(repo_path);
+    if prefix == calling_repo {
+        return None;
+    }
+    Some(format!("{prefix}/{depends_on}"))
+}
+
 async fn tool_bead_link(
     args: &Value,
     pool: &RepoPool,
@@ -758,25 +789,41 @@ async fn tool_bead_link(
 ) -> Result<Value> {
     let repo_path = args["repo_path"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("repo_path required"))?;
+        .ok_or_else(|| anyhow::anyhow!("repo_path required (accepted params: repo_path, id, depends_on, [remove], [cross_repo])"))?;
+    // Accept `id` (canonical). When the caller passes the common-but-wrong
+    // shorthand `from_id`/`to_id`/`link_type`, the error names both
+    // canonical params so the caller doesn't have to guess (rosary-98b11d).
     let id = args["id"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("id required"))?;
+        .ok_or_else(|| anyhow::anyhow!(
+            "id required — got args without `id`. Expected canonical params: `id` (the dependent bead) + `depends_on` (the prerequisite). \
+             If you tried `from_id`/`to_id`/`link_type`, those aren't accepted; use `id`/`depends_on` instead."
+        ))?;
     let depends_on = args["depends_on"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("depends_on required"))?;
+        .ok_or_else(|| anyhow::anyhow!(
+            "depends_on required — got `id` but no `depends_on`. \
+             For cross-repo deps, you may set `depends_on` to either `<bead-id>` (auto-routed by id prefix) or pass `cross_repo` as `<repo>/<bead-id>` explicitly."
+        ))?;
     let remove = args
         .get("remove")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    // cross_repo: "other-repo/bead-id" — writes to backend LinkageStore instead of per-repo Dolt
-    let cross_repo_target = args.get("cross_repo").and_then(|v| v.as_str());
+    // cross_repo: "other-repo/bead-id" — writes to backend LinkageStore instead of per-repo Dolt.
+    // Auto-detect (rosary-98ee93): if `depends_on` carries a `<repo>-<id>` prefix that doesn't
+    // match the calling repo_path's repo, route through LinkageStore without requiring the
+    // caller to remember the explicit `cross_repo` argument shape.
+    let cross_repo_target: Option<String> = args
+        .get("cross_repo")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| infer_cross_repo_target(repo_path, depends_on));
 
     if id == depends_on {
         anyhow::bail!("a bead cannot depend on itself ({id})");
     }
 
-    if let Some(target) = cross_repo_target {
+    if let Some(target) = cross_repo_target.as_deref() {
         // Cross-repo dep: parse "repo/bead-id" and write to backend LinkageStore.
         let (to_repo, to_bead) = target
             .split_once('/')
@@ -1775,6 +1822,138 @@ async fn tool_dispatch_history(args: &Value, backend: Option<&dyn BackendStore>)
 // Hierarchy tools (decades, threads, bead membership)
 // ---------------------------------------------------------------------------
 
+/// `rsry_decade_create` — dedicated MCP tool for creating decades.
+///
+/// `tool_thread_assign` already auto-creates decades as a side effect,
+/// but agents that want to populate the BDR hierarchy explicitly (file
+/// N beads → group into M threads → roll up into 1 decade in one
+/// session) need an idempotent dedicated entry point that returns the
+/// created record. rosary-992e79.
+///
+/// Idempotency rule: re-creating with the same title + source_path is
+/// a no-op success (`action: "existed"`). Conflict (same id, different
+/// title) errors loudly so agents can't accidentally stomp curated
+/// decade names.
+async fn tool_decade_create(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
+    use crate::store::DecadeRecord;
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+
+    let id = args["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("id required (decade slug)"))?;
+    let title = args["title"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("title required"))?;
+    let source_path = args
+        .get("source_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let status = args
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("active");
+
+    if let Some(existing) = backend.get_decade(id).await? {
+        if existing.title == title && existing.source_path == source_path {
+            return Ok(json!({
+                "id": existing.id,
+                "title": existing.title,
+                "source_path": existing.source_path,
+                "status": existing.status,
+                "action": "existed",
+            }));
+        }
+        anyhow::bail!(
+            "decade `{id}` already exists with a conflicting title (`{}` vs requested `{title}`); refusing silent overwrite",
+            existing.title
+        );
+    }
+
+    let decade = DecadeRecord {
+        id: id.to_string(),
+        title: title.to_string(),
+        source_path: source_path.to_string(),
+        status: status.to_string(),
+    };
+    backend.upsert_decade(&decade).await?;
+    Ok(json!({
+        "id": decade.id,
+        "title": decade.title,
+        "source_path": decade.source_path,
+        "status": decade.status,
+        "action": "created",
+    }))
+}
+
+/// `rsry_thread_create` — dedicated MCP tool for creating threads under
+/// a named decade. Refuses to land an orphan thread if the parent
+/// decade doesn't exist (unlike `thread_assign`, which auto-creates an
+/// `ungrouped` decade as a fall-through). rosary-992e79.
+async fn tool_thread_create(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
+    use crate::store::ThreadRecord;
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+
+    let decade_id = args["decade_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("decade_id required (parent decade)"))?;
+    let id = args["id"].as_str().ok_or_else(|| {
+        anyhow::anyhow!("id required (thread slug, conventionally `<decade>/<name>`)")
+    })?;
+    let name = args["name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("name required (human-readable thread title)"))?;
+
+    if backend.get_decade(decade_id).await?.is_none() {
+        anyhow::bail!(
+            "parent decade `{decade_id}` does not exist; create it first via rsry_decade_create"
+        );
+    }
+
+    let existing = backend
+        .list_threads(decade_id)
+        .await?
+        .into_iter()
+        .find(|t| t.id == id);
+    if let Some(existing) = existing {
+        if existing.name == name && existing.decade_id == decade_id {
+            return Ok(json!({
+                "id": existing.id,
+                "name": existing.name,
+                "decade_id": existing.decade_id,
+                "feature_branch": existing.feature_branch,
+                "action": "existed",
+            }));
+        }
+        anyhow::bail!(
+            "thread `{id}` already exists under decade `{decade_id}` with a conflicting name (`{}` vs requested `{name}`)",
+            existing.name
+        );
+    }
+
+    let prefix = crate::config::load_global()
+        .ok()
+        .and_then(|c| c.github)
+        .map(|g| g.agent_branch_prefix)
+        .unwrap_or_else(|| "rosary".to_string());
+    let feature_branch = crate::workspace::thread_branch_name(&prefix, name);
+
+    let thread = ThreadRecord {
+        id: id.to_string(),
+        name: name.to_string(),
+        decade_id: decade_id.to_string(),
+        feature_branch: Some(feature_branch.clone()),
+    };
+    backend.upsert_thread(&thread).await?;
+
+    Ok(json!({
+        "id": thread.id,
+        "name": thread.name,
+        "decade_id": thread.decade_id,
+        "feature_branch": feature_branch,
+        "action": "created",
+    }))
+}
+
 async fn tool_decade_list(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
     let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
     let status = args.get("status").and_then(|v| v.as_str());
@@ -2200,6 +2379,7 @@ mod tests {
 #[cfg(test)]
 mod input_validation_tests {
     use super::*;
+    use crate::store::LinkageStore;
     use serde_json::json;
 
     fn empty_pool() -> crate::pool::RepoPool {
@@ -2343,5 +2523,248 @@ mod input_validation_tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("cannot depend on itself"), "{err}");
+    }
+
+    /// rosary-98b11d: when the caller passes the common-but-wrong
+    /// shorthand `{from_id, to_id, link_type}`, the error must name
+    /// the canonical parameters (`id`, `depends_on`) so the caller
+    /// doesn't have to guess three times to discover the real names.
+    #[tokio::test]
+    async fn link_error_names_canonical_params_on_missing_id() {
+        let args = json!({
+            "repo_path": FAKE_REPO,
+            "from_id": "a-1",
+            "to_id": "b-1",
+            "link_type": "blocks"
+        });
+        let err = tool_bead_link(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("id") && msg.contains("depends_on"),
+            "error must name both 'id' and 'depends_on'; got: {msg}"
+        );
+    }
+
+    /// Sibling: caller passed `id` correctly but used a wrong-name
+    /// for the target. The `depends_on required` error must still
+    /// surface the canonical name so callers don't loop on a second
+    /// schema-discovery cycle.
+    #[tokio::test]
+    async fn link_error_names_canonical_params_on_missing_depends_on() {
+        let args = json!({
+            "repo_path": FAKE_REPO,
+            "id": "a-1",
+            "to_id": "b-1"
+        });
+        let err = tool_bead_link(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("depends_on"),
+            "error must name 'depends_on'; got: {msg}"
+        );
+    }
+
+    /// rosary-98ee93: when `depends_on` carries a `<repo>-<6hex>` prefix
+    /// matching a repo other than the calling `repo_path`, the handler
+    /// must auto-route through LinkageStore. Callers shouldn't have to
+    /// remember the explicit `cross_repo` argument shape — the canonical
+    /// bead-id namespace already encodes the target repo (per
+    /// `generate_bead_id`'s `<repo>-<6hex>` convention).
+    #[tokio::test]
+    async fn link_auto_routes_cross_repo_via_depends_on_prefix() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        let args = json!({
+            "repo_path": "/Users/test/cloister",
+            "id": "cloister-963a5c",
+            "depends_on": "signet-9605a3",
+        });
+        let result = tool_bead_link(&args, &empty_pool(), Some(&store)).await;
+        assert!(
+            result.is_ok(),
+            "auto-routed cross-repo link must succeed via LinkageStore; got: {result:?}"
+        );
+        let deps = store
+            .dependencies_of(&crate::store::WorkRef {
+                repo: "cloister".into(),
+                scope: String::new(),
+                bead_id: "cloister-963a5c".into(),
+            })
+            .await
+            .expect("query dependencies_of");
+        assert!(
+            deps.iter().any(|d| d.to.bead_id == "signet-9605a3"),
+            "cross-repo dep must be present in LinkageStore; got: {deps:?}"
+        );
+    }
+
+    /// Same-repo deps (where `depends_on`'s repo prefix matches the
+    /// calling `repo_path`) must NOT route through LinkageStore — they
+    /// stay on the per-repo Dolt path. Otherwise we'd silently divert
+    /// every same-repo link to the cross-repo store and confuse the
+    /// existing `add_dependency` semantics.
+    #[tokio::test]
+    async fn link_same_repo_does_not_auto_route_to_linkage_store() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        // Both beads in the same repo (`cloister`). Should NOT touch
+        // LinkageStore. With no Dolt pool wired here, the same-repo
+        // path will Err — that's expected and proves auto-route did
+        // not engage (otherwise it'd succeed via the store).
+        let args = json!({
+            "repo_path": "/Users/test/cloister",
+            "id": "cloister-963a5c",
+            "depends_on": "cloister-aaaaaa",
+        });
+        let _ = tool_bead_link(&args, &empty_pool(), Some(&store)).await;
+        let deps = store
+            .dependencies_of(&crate::store::WorkRef {
+                repo: "cloister".into(),
+                scope: String::new(),
+                bead_id: "cloister-963a5c".into(),
+            })
+            .await
+            .expect("query dependencies_of");
+        assert!(
+            deps.is_empty(),
+            "same-repo links must NOT route through LinkageStore; got: {deps:?}"
+        );
+    }
+
+    // ---- tool_decade_create / tool_thread_create (rosary-992e79) ----------
+
+    /// rosary-992e79: dedicated `rsry_decade_create` returns the created
+    /// decade's metadata (not just a confirmation), so callers can chain
+    /// "create decade → create thread under it → file beads" in one
+    /// session without a separate read step.
+    #[tokio::test]
+    async fn decade_create_returns_created_metadata() {
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        let args = json!({
+            "id": "substrate-idl",
+            "title": "Substrate IDL Decade",
+            "source_path": "docs/design/substrate-idl.md",
+        });
+        let result = tool_decade_create(&args, Some(&store))
+            .await
+            .expect("decade_create must succeed");
+        assert_eq!(result["id"], "substrate-idl");
+        assert_eq!(result["title"], "Substrate IDL Decade");
+        assert_eq!(result["source_path"], "docs/design/substrate-idl.md");
+        assert_eq!(result["status"], "active");
+        assert_eq!(result["action"], "created");
+    }
+
+    /// Idempotency: re-creating with the same title + source_path is a
+    /// no-op success, not an error. Lets agents safely retry without a
+    /// pre-existence check.
+    #[tokio::test]
+    async fn decade_create_is_idempotent_on_identical_payload() {
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        let args = json!({ "id": "d-1", "title": "First", "source_path": "x.md" });
+        tool_decade_create(&args, Some(&store))
+            .await
+            .expect("first");
+        let again = tool_decade_create(&args, Some(&store))
+            .await
+            .expect("re-create with identical payload must succeed");
+        assert_eq!(again["action"], "existed");
+    }
+
+    /// Conflict: re-creating with the same id but a DIFFERENT title
+    /// must error — silent overwrite would let agents stomp curated
+    /// decade names. The bead's acceptance criteria pin this contract.
+    #[tokio::test]
+    async fn decade_create_errors_on_conflicting_title() {
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        let args1 = json!({ "id": "d-1", "title": "First" });
+        tool_decade_create(&args1, Some(&store))
+            .await
+            .expect("first");
+        let args2 = json!({ "id": "d-1", "title": "Second" });
+        let err = tool_decade_create(&args2, Some(&store)).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("d-1") && msg.contains("conflict"),
+            "error must name the conflicting id; got: {msg}"
+        );
+    }
+
+    /// rosary-992e79: `rsry_thread_create` returns the created thread's
+    /// metadata including the derived feature_branch (matches the
+    /// existing thread_assign branch-naming convention).
+    #[tokio::test]
+    async fn thread_create_returns_created_metadata() {
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        tool_decade_create(
+            &json!({ "id": "d-1", "title": "Test Decade" }),
+            Some(&store),
+        )
+        .await
+        .expect("create parent decade");
+
+        let args = json!({
+            "decade_id": "d-1",
+            "id": "d-1/substrate",
+            "name": "Substrate work",
+        });
+        let result = tool_thread_create(&args, Some(&store))
+            .await
+            .expect("thread_create must succeed");
+        assert_eq!(result["id"], "d-1/substrate");
+        assert_eq!(result["name"], "Substrate work");
+        assert_eq!(result["decade_id"], "d-1");
+        assert_eq!(result["action"], "created");
+    }
+
+    /// thread_create must refuse when the parent decade doesn't exist.
+    /// `thread_assign` auto-creates an `ungrouped` decade as a
+    /// fall-through, but the explicit create-by-id flow must surface
+    /// missing parents loudly so agents don't accidentally orphan
+    /// threads under stub decades.
+    #[tokio::test]
+    async fn thread_create_errors_when_parent_decade_missing() {
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        let args = json!({
+            "decade_id": "does-not-exist",
+            "id": "orphan",
+            "name": "Orphan thread",
+        });
+        let err = tool_thread_create(&args, Some(&store)).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does-not-exist"),
+            "error must name the missing parent decade; got: {msg}"
+        );
+    }
+
+    /// Idempotency for thread_create: same (decade_id, id, name) is a
+    /// no-op success — agents can safely retry.
+    #[tokio::test]
+    async fn thread_create_is_idempotent_on_identical_payload() {
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        tool_decade_create(&json!({ "id": "d-1", "title": "D" }), Some(&store))
+            .await
+            .expect("create parent");
+        let args = json!({ "decade_id": "d-1", "id": "d-1/t", "name": "T" });
+        tool_thread_create(&args, Some(&store))
+            .await
+            .expect("first");
+        let again = tool_thread_create(&args, Some(&store))
+            .await
+            .expect("re-create with identical payload must succeed");
+        assert_eq!(again["action"], "existed");
     }
 }
