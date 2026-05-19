@@ -39,6 +39,34 @@
 use std::fmt;
 use std::str::FromStr;
 
+// ── Canonical encoding constants ──────────────────────────────────────
+//
+// Centralized here so the four places that touch these strings —
+// `ScopeId::work_ref`, `WorkRef::scope_id`, `Display`, `FromStr` —
+// stay in lock-step. Changing one side of the bridge without the
+// other would silently break round-tripping.
+
+/// Reserved repo-field value identifying [`ScopeId::Global`] when
+/// encoded into a [`WorkRef`](crate::store::WorkRef).
+pub(crate) const GLOBAL_REPO: &str = "global";
+
+/// Prefix on the repo-field value identifying [`ScopeId::External`]
+/// when encoded into a [`WorkRef`](crate::store::WorkRef). The remainder
+/// after the prefix is the caller-supplied URI.
+pub(crate) const EXTERNAL_PREFIX: &str = "external:";
+
+/// Prefix used in the canonical [`ScopeId::Display`] / [`FromStr`]
+/// string form for [`ScopeId::Repo`] (e.g. `"repo:rosary"`).
+pub(crate) const REPO_DISPLAY_PREFIX: &str = "repo:";
+
+/// Storage limit for encoded repo-field values, derived from
+/// `cross_repo_deps.from_repo VARCHAR(128)` and the matching Dolt /
+/// SQLite columns elsewhere (see `src/store_dolt.rs`, `src/store_sqlite.rs`).
+/// `ScopeId::work_ref` refuses to silently produce a value longer than
+/// this so we never get write failures or surprising truncation when
+/// the bridge lands in [`crate::store::LinkageStore`].
+pub(crate) const REPO_FIELD_MAX_BYTES: usize = 128;
+
 /// Where a bead lives. Replaces the `repo_path: &str` parameter pattern
 /// across the rosary surface for use cases that aren't naturally a local
 /// git checkout (cross-repo deps, external sources, global queues).
@@ -80,6 +108,33 @@ impl fmt::Display for ScopeParseError {
 
 impl std::error::Error for ScopeParseError {}
 
+/// Errors encoding a [`ScopeId`] into a [`WorkRef`](crate::store::WorkRef).
+/// The only failure mode today is exceeding [`REPO_FIELD_MAX_BYTES`] —
+/// the storage column width that the [`crate::store::LinkageStore`]
+/// schema enforces.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ScopeEncodeError {
+    /// Encoded repo-field value would exceed the storage column width.
+    /// Carries the encoded value's actual length so callers (and
+    /// reviewers reading test failures) can see by how much.
+    RepoFieldTooLong { encoded_len: usize, limit: usize },
+}
+
+impl fmt::Display for ScopeEncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RepoFieldTooLong { encoded_len, limit } => {
+                write!(
+                    f,
+                    "encoded scope repo-field is {encoded_len} bytes, exceeds storage limit of {limit} bytes"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ScopeEncodeError {}
+
 impl ScopeId {
     /// If this scope is a `Repo`, return the repo name. Otherwise None.
     /// Use to gate repo-only code paths (e.g. local Dolt store lookup)
@@ -89,6 +144,48 @@ impl ScopeId {
             Self::Repo(name) => Some(name),
             _ => None,
         }
+    }
+
+    /// Build a [`WorkRef`](crate::store::WorkRef) for `bead_id` under this
+    /// scope. Bridges new `ScopeId`-thinking code to the existing repo-keyed
+    /// `LinkageStore` surface without changing the on-disk schema.
+    ///
+    /// Mapping (until rosary-b5da2f PR 4 lands a richer schema):
+    /// - `Repo(name)`  → `WorkRef { repo: name, scope: "", bead_id }`
+    /// - `External(u)` → `WorkRef { repo: format!("external:{u}"), scope: "", bead_id }`
+    /// - `Global`      → `WorkRef { repo: "global", scope: "", bead_id }`
+    ///
+    /// The `External` / `Global` variants occupy a reserved namespace
+    /// (`external:...` / `global`) that won't collide with a legitimate
+    /// repo name; this is what lets the existing `WorkRef`-keyed
+    /// `LinkageStore` table store cross-scope links without a migration.
+    ///
+    /// Errors with [`ScopeEncodeError::RepoFieldTooLong`] when the
+    /// encoded repo-field value would exceed [`REPO_FIELD_MAX_BYTES`]
+    /// (the storage column width that `cross_repo_deps.from_repo` and
+    /// related columns enforce). Surfacing this here prevents silent
+    /// truncation or write failures when the bridge feeds
+    /// [`crate::store::LinkageStore`].
+    pub fn work_ref(
+        &self,
+        bead_id: impl Into<String>,
+    ) -> Result<crate::store::WorkRef, ScopeEncodeError> {
+        let repo = match self {
+            Self::Repo(name) => name.clone(),
+            Self::External(uri) => format!("{EXTERNAL_PREFIX}{uri}"),
+            Self::Global => GLOBAL_REPO.to_string(),
+        };
+        if repo.len() > REPO_FIELD_MAX_BYTES {
+            return Err(ScopeEncodeError::RepoFieldTooLong {
+                encoded_len: repo.len(),
+                limit: REPO_FIELD_MAX_BYTES,
+            });
+        }
+        Ok(crate::store::WorkRef {
+            repo,
+            scope: String::new(),
+            bead_id: bead_id.into(),
+        })
     }
 
     /// Build a `Repo` scope from a filesystem path by taking the basename.
@@ -111,12 +208,38 @@ impl ScopeId {
     }
 }
 
+impl crate::store::WorkRef {
+    /// Recover the [`ScopeId`] that produced this `WorkRef`'s `repo`
+    /// field. Inverse of [`ScopeId::work_ref`] on the round-trip:
+    /// `Repo(name).work_ref(b).unwrap().scope_id() == Repo(name)`.
+    ///
+    /// Reserved namespaces (constants live at the top of the module so
+    /// the encode + decode paths stay in lock-step):
+    /// - `repo == GLOBAL_REPO` → `ScopeId::Global`
+    /// - `repo` starting with `EXTERNAL_PREFIX` → `ScopeId::External(rest)`
+    /// - anything else → `ScopeId::Repo(repo.clone())`
+    ///
+    /// The `WorkRef.scope` field (monorepo team scoping) is preserved on
+    /// the `WorkRef` but is NOT carried into the `ScopeId` — `ScopeId`
+    /// is the "where does this bead live" axis; `WorkRef.scope` is the
+    /// orthogonal "what team owns it" axis.
+    pub fn scope_id(&self) -> ScopeId {
+        if self.repo == GLOBAL_REPO {
+            ScopeId::Global
+        } else if let Some(uri) = self.repo.strip_prefix(EXTERNAL_PREFIX) {
+            ScopeId::External(uri.to_string())
+        } else {
+            ScopeId::Repo(self.repo.clone())
+        }
+    }
+}
+
 impl fmt::Display for ScopeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Repo(name) => write!(f, "repo:{name}"),
-            Self::External(uri) => write!(f, "external:{uri}"),
-            Self::Global => write!(f, "global"),
+            Self::Repo(name) => write!(f, "{REPO_DISPLAY_PREFIX}{name}"),
+            Self::External(uri) => write!(f, "{EXTERNAL_PREFIX}{uri}"),
+            Self::Global => write!(f, "{GLOBAL_REPO}"),
         }
     }
 }
@@ -129,16 +252,16 @@ impl FromStr for ScopeId {
         if trimmed.is_empty() {
             return Err(ScopeParseError::Empty);
         }
-        if trimmed == "global" {
+        if trimmed == GLOBAL_REPO {
             return Ok(Self::Global);
         }
-        if let Some(rest) = trimmed.strip_prefix("repo:") {
+        if let Some(rest) = trimmed.strip_prefix(REPO_DISPLAY_PREFIX) {
             if rest.is_empty() {
                 return Err(ScopeParseError::EmptyAfterPrefix("repo"));
             }
             return Ok(Self::Repo(rest.to_string()));
         }
-        if let Some(rest) = trimmed.strip_prefix("external:") {
+        if let Some(rest) = trimmed.strip_prefix(EXTERNAL_PREFIX) {
             if rest.is_empty() {
                 return Err(ScopeParseError::EmptyAfterPrefix("external"));
             }
@@ -369,5 +492,211 @@ mod tests {
         // trait bound so anyhow / thiserror integration stays clean.
         fn assert_error<E: std::error::Error>(_: &E) {}
         assert_error(&ScopeParseError::Empty);
+    }
+
+    // ── WorkRef ↔ ScopeId bridge (PR 2 of rosary-b5da2f) ─────────────
+
+    use crate::store::WorkRef;
+
+    #[test]
+    fn work_ref_for_repo_uses_bare_name_as_repo_field() {
+        // For `Repo`, the WorkRef.repo field is the bare name —
+        // unchanged from existing LinkageStore call sites. This is what
+        // lets the bridge land without a schema migration.
+        let wr = ScopeId::Repo("rosary".into())
+            .work_ref("rosary-abc123")
+            .expect("repo name fits in storage column");
+        assert_eq!(wr.repo, "rosary");
+        assert_eq!(wr.scope, "");
+        assert_eq!(wr.bead_id, "rosary-abc123");
+    }
+
+    #[test]
+    fn work_ref_for_external_uses_reserved_prefix() {
+        // External uses an `external:` prefix so the same LinkageStore
+        // table can hold both repo and external rows without colliding
+        // with any real repo name.
+        let wr = ScopeId::External("zen://inbox/pr/42".into())
+            .work_ref("zen-pr-42")
+            .expect("short external uri fits");
+        assert_eq!(wr.repo, "external:zen://inbox/pr/42");
+        assert_eq!(wr.bead_id, "zen-pr-42");
+    }
+
+    #[test]
+    fn work_ref_for_global_uses_reserved_repo_string() {
+        let wr = ScopeId::Global
+            .work_ref("triage-001")
+            .expect("global never overflows");
+        assert_eq!(wr.repo, "global");
+        assert_eq!(wr.bead_id, "triage-001");
+    }
+
+    /// Repo names that exceed the storage column width (VARCHAR(128) in
+    /// `cross_repo_deps.from_repo` and related Dolt columns) must
+    /// surface a clean error instead of writing silently-truncatable
+    /// strings into LinkageStore. Copilot's #210 finding pins this
+    /// contract — a real-world `External("https://github.com/.../...")`
+    /// can easily exceed the limit.
+    #[test]
+    fn work_ref_errors_when_external_uri_overflows_storage() {
+        // 200 chars of `a` + the 9-byte `external:` prefix → 209 bytes.
+        let long_uri = "a".repeat(200);
+        let err = ScopeId::External(long_uri)
+            .work_ref("bead-1")
+            .expect_err("external uri exceeds VARCHAR(128) — must surface");
+        match err {
+            ScopeEncodeError::RepoFieldTooLong { encoded_len, limit } => {
+                assert_eq!(encoded_len, 209, "encoded len = uri + `external:` prefix");
+                assert_eq!(limit, REPO_FIELD_MAX_BYTES);
+                assert_eq!(limit, 128);
+            }
+        }
+    }
+
+    #[test]
+    fn work_ref_errors_when_repo_name_overflows_storage() {
+        // Repo names can technically be any length; the storage limit
+        // is what's load-bearing. A 200-char repo name must also error.
+        let long_repo = "r".repeat(200);
+        let err = ScopeId::Repo(long_repo)
+            .work_ref("bead-1")
+            .expect_err("repo name exceeds VARCHAR(128) — must surface");
+        match err {
+            ScopeEncodeError::RepoFieldTooLong { encoded_len, .. } => {
+                assert_eq!(encoded_len, 200);
+            }
+        }
+    }
+
+    #[test]
+    fn work_ref_accepts_external_uri_at_exactly_the_limit() {
+        // Boundary case: uri len + prefix len == REPO_FIELD_MAX_BYTES.
+        // Must succeed (the constant is an inclusive upper bound).
+        let uri = "x".repeat(REPO_FIELD_MAX_BYTES - EXTERNAL_PREFIX.len());
+        let wr = ScopeId::External(uri.clone())
+            .work_ref("bead-1")
+            .expect("uri at exact limit must fit");
+        assert_eq!(wr.repo.len(), REPO_FIELD_MAX_BYTES);
+        assert_eq!(wr.repo, format!("{EXTERNAL_PREFIX}{uri}"));
+    }
+
+    #[test]
+    fn workref_scope_id_recognizes_global_reserved_string() {
+        let wr = WorkRef {
+            repo: "global".into(),
+            scope: String::new(),
+            bead_id: "x".into(),
+        };
+        assert_eq!(wr.scope_id(), ScopeId::Global);
+    }
+
+    #[test]
+    fn workref_scope_id_recognizes_external_prefix() {
+        let wr = WorkRef {
+            repo: "external:zen://inbox".into(),
+            scope: String::new(),
+            bead_id: "x".into(),
+        };
+        assert_eq!(wr.scope_id(), ScopeId::External("zen://inbox".into()));
+    }
+
+    #[test]
+    fn workref_scope_id_falls_through_to_repo() {
+        let wr = WorkRef {
+            repo: "rosary".into(),
+            scope: String::new(),
+            bead_id: "x".into(),
+        };
+        assert_eq!(wr.scope_id(), ScopeId::Repo("rosary".into()));
+    }
+
+    #[test]
+    fn workref_scope_id_preserves_hyphenated_repo_names() {
+        // ley-line, ley-line-open, rosary-stringer — repos with hyphens
+        // must round-trip cleanly.
+        let wr = WorkRef {
+            repo: "ley-line-open".into(),
+            scope: String::new(),
+            bead_id: "x".into(),
+        };
+        assert_eq!(wr.scope_id(), ScopeId::Repo("ley-line-open".into()));
+    }
+
+    #[test]
+    fn workref_scope_id_ignores_workref_scope_field() {
+        // WorkRef.scope (monorepo team) is orthogonal to ScopeId — even
+        // when set, it must not change the ScopeId recovery.
+        let wr = WorkRef {
+            repo: "monorepo".into(),
+            scope: "auth/identity".into(),
+            bead_id: "x".into(),
+        };
+        assert_eq!(wr.scope_id(), ScopeId::Repo("monorepo".into()));
+    }
+
+    #[test]
+    fn workref_roundtrip_repo() {
+        let original = ScopeId::Repo("signet".into());
+        let recovered = original.work_ref("signet-9605a3").unwrap().scope_id();
+        assert_eq!(recovered, original);
+    }
+
+    #[test]
+    fn workref_roundtrip_external() {
+        let original = ScopeId::External("zen://inbox/pr/42".into());
+        let recovered = original.work_ref("zen-pr-42").unwrap().scope_id();
+        assert_eq!(recovered, original);
+    }
+
+    #[test]
+    fn workref_roundtrip_global() {
+        let original = ScopeId::Global;
+        let recovered = original.work_ref("triage-001").unwrap().scope_id();
+        assert_eq!(recovered, original);
+    }
+
+    /// Centralized constants pin: changing any of these in isolation
+    /// would silently break the bridge. The Display + FromStr +
+    /// work_ref + scope_id paths all use the same constants — this
+    /// test fails the build if anyone accidentally inlines a literal.
+    #[test]
+    fn reserved_namespace_constants_are_canonical() {
+        assert_eq!(GLOBAL_REPO, "global");
+        assert_eq!(EXTERNAL_PREFIX, "external:");
+        assert_eq!(REPO_DISPLAY_PREFIX, "repo:");
+        // Constants flow into the encode path:
+        assert_eq!(ScopeId::Global.to_string(), GLOBAL_REPO);
+        assert!(
+            ScopeId::External("x".into())
+                .to_string()
+                .starts_with(EXTERNAL_PREFIX)
+        );
+        assert!(
+            ScopeId::Repo("x".into())
+                .to_string()
+                .starts_with(REPO_DISPLAY_PREFIX)
+        );
+    }
+
+    // ── ScopeEncodeError display + Error trait ────────────────────────
+
+    #[test]
+    fn encode_error_repo_field_too_long_display() {
+        let e = ScopeEncodeError::RepoFieldTooLong {
+            encoded_len: 200,
+            limit: 128,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("200") && msg.contains("128"), "got: {msg}");
+    }
+
+    #[test]
+    fn encode_error_is_std_error() {
+        fn assert_error<E: std::error::Error>(_: &E) {}
+        assert_error(&ScopeEncodeError::RepoFieldTooLong {
+            encoded_len: 0,
+            limit: 0,
+        });
     }
 }
