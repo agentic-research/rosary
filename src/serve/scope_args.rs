@@ -15,7 +15,7 @@
 //! plumbing. No handler is converted yet; this PR is the boundary
 //! parser only, ready to be wired in incrementally.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
 
 use crate::scope::ScopeId;
@@ -42,9 +42,14 @@ use crate::scope::ScopeId;
 /// ```
 pub fn resolve_scope(args: &Value) -> Result<ScopeId> {
     if let Some(scope_arg) = args.get("scope").and_then(|v| v.as_str()) {
+        // Use Context::with_context (preserves the underlying ScopeParseError
+        // as the cause chain) rather than `anyhow::anyhow!("scope: {e}")`
+        // (which flattens the cause to a string and loses the source for
+        // downcasting / backtrace inspection). The Display still starts
+        // with `scope:` so the operator-facing message is identical.
         return scope_arg
             .parse::<ScopeId>()
-            .map_err(|e| anyhow::anyhow!("scope: {e}"));
+            .with_context(|| "scope".to_string());
     }
     if let Some(repo_path) = args.get("repo_path").and_then(|v| v.as_str()) {
         return Ok(ScopeId::from_repo_path(repo_path));
@@ -166,11 +171,22 @@ mod tests {
     fn errors_when_scope_arg_is_empty_string() {
         let args = json!({ "scope": "" });
         let err = resolve_scope(&args).unwrap_err();
-        // Error is prefixed with `scope:` so the operator can see
-        // which arg was rejected (vs `repo_path:` or a generic msg).
+        // Chain-rendered message (`{:#}`) starts with `scope:` so the
+        // operator can see which arg was rejected. Uses anyhow's
+        // alternate format so the underlying `ScopeParseError` is
+        // preserved as a source in the cause chain — that's load-bearing
+        // for downcasting + backtrace inspection (Copilot #211 finding).
+        let rendered = format!("{err:#}");
         assert!(
-            err.to_string().starts_with("scope:"),
-            "error must be prefixed with `scope:`; got: {err}"
+            rendered.starts_with("scope:"),
+            "chain-rendered error must be prefixed with `scope:`; got: {rendered}"
+        );
+        // Source chain must be preserved — `ScopeParseError::Empty` is
+        // the underlying cause.
+        let source = err.chain().nth(1).expect("source chain must be preserved");
+        assert!(
+            source.to_string().contains("empty"),
+            "source must surface the empty-scope reason; got: {source}"
         );
     }
 
@@ -178,7 +194,7 @@ mod tests {
     fn errors_when_scope_arg_is_whitespace_only() {
         let args = json!({ "scope": "   \n" });
         let err = resolve_scope(&args).unwrap_err();
-        assert!(err.to_string().starts_with("scope:"));
+        assert!(format!("{err:#}").starts_with("scope:"));
     }
 
     #[test]
@@ -187,9 +203,40 @@ mod tests {
         // the underlying ScopeParseError, not silently fall through.
         let args = json!({ "scope": "repo:" });
         let err = resolve_scope(&args).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.starts_with("scope:"), "got: {msg}");
-        assert!(msg.contains("repo"), "got: {msg}");
+        let rendered = format!("{err:#}");
+        assert!(rendered.starts_with("scope:"), "got: {rendered}");
+        assert!(rendered.contains("repo"), "got: {rendered}");
+    }
+
+    /// Pins the Copilot-#211 contract: parse failures must preserve
+    /// the underlying `ScopeParseError` as a source error so that
+    /// downstream code can downcast, inspect, or backtrace through
+    /// the cause chain rather than seeing only a flat string.
+    #[test]
+    fn parse_failure_preserves_underlying_scope_parse_error_in_chain() {
+        use crate::scope::ScopeParseError;
+
+        let args = json!({ "scope": "" });
+        let err = resolve_scope(&args).unwrap_err();
+
+        // The chain must contain a `ScopeParseError` (specifically the
+        // `Empty` variant for this input). Walk the chain looking for
+        // a downcast match.
+        let found_scope_parse_error = err
+            .chain()
+            .any(|e| e.downcast_ref::<ScopeParseError>().is_some());
+        assert!(
+            found_scope_parse_error,
+            "ScopeParseError must be preserved as a source in the chain; \
+             flat `anyhow!(\"scope: {{e}}\")` would have lost it"
+        );
+
+        // And the specific variant: Empty (not EmptyAfterPrefix).
+        let parse_err = err
+            .chain()
+            .find_map(|e| e.downcast_ref::<ScopeParseError>())
+            .expect("checked above");
+        assert_eq!(parse_err, &ScopeParseError::Empty);
     }
 
     // ── type-permissive parsing ───────────────────────────────────────
