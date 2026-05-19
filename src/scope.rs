@@ -91,6 +91,32 @@ impl ScopeId {
         }
     }
 
+    /// Build a [`WorkRef`](crate::store::WorkRef) for `bead_id` under this
+    /// scope. Bridges new `ScopeId`-thinking code to the existing repo-keyed
+    /// `LinkageStore` surface without changing the on-disk schema.
+    ///
+    /// Mapping (until rosary-b5da2f PR 4 lands a richer schema):
+    /// - `Repo(name)`  → `WorkRef { repo: name, scope: "", bead_id }`
+    /// - `External(u)` → `WorkRef { repo: format!("external:{u}"), scope: "", bead_id }`
+    /// - `Global`      → `WorkRef { repo: "global", scope: "", bead_id }`
+    ///
+    /// The `External` / `Global` variants occupy a reserved namespace
+    /// (`external:...` / `global`) that won't collide with a legitimate
+    /// repo name; this is what lets the existing `WorkRef`-keyed
+    /// `LinkageStore` table store cross-scope links without a migration.
+    pub fn work_ref(&self, bead_id: impl Into<String>) -> crate::store::WorkRef {
+        let repo = match self {
+            Self::Repo(name) => name.clone(),
+            Self::External(uri) => format!("external:{uri}"),
+            Self::Global => "global".to_string(),
+        };
+        crate::store::WorkRef {
+            repo,
+            scope: String::new(),
+            bead_id: bead_id.into(),
+        }
+    }
+
     /// Build a `Repo` scope from a filesystem path by taking the basename.
     /// This is the back-compat helper for the existing `repo_path: &str`
     /// MCP arg shape — when the caller passes `~/remotes/art/rosary`, the
@@ -108,6 +134,31 @@ impl ScopeId {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "unknown".to_string());
         Self::Repo(name)
+    }
+}
+
+impl crate::store::WorkRef {
+    /// Recover the [`ScopeId`] that produced this `WorkRef`'s `repo`
+    /// field. Inverse of [`ScopeId::work_ref`] on the round-trip:
+    /// `Repo(name).work_ref(b).scope_id() == Repo(name)`.
+    ///
+    /// Reserved namespaces:
+    /// - `repo == "global"` → `ScopeId::Global`
+    /// - `repo` starting with `"external:"` → `ScopeId::External(rest)`
+    /// - anything else → `ScopeId::Repo(repo.clone())`
+    ///
+    /// The `WorkRef.scope` field (monorepo team scoping) is preserved on
+    /// the `WorkRef` but is NOT carried into the `ScopeId` — `ScopeId`
+    /// is the "where does this bead live" axis; `WorkRef.scope` is the
+    /// orthogonal "what team owns it" axis.
+    pub fn scope_id(&self) -> ScopeId {
+        if self.repo == "global" {
+            ScopeId::Global
+        } else if let Some(uri) = self.repo.strip_prefix("external:") {
+            ScopeId::External(uri.to_string())
+        } else {
+            ScopeId::Repo(self.repo.clone())
+        }
     }
 }
 
@@ -369,5 +420,112 @@ mod tests {
         // trait bound so anyhow / thiserror integration stays clean.
         fn assert_error<E: std::error::Error>(_: &E) {}
         assert_error(&ScopeParseError::Empty);
+    }
+
+    // ── WorkRef ↔ ScopeId bridge (PR 2 of rosary-b5da2f) ─────────────
+
+    use crate::store::WorkRef;
+
+    #[test]
+    fn work_ref_for_repo_uses_bare_name_as_repo_field() {
+        // For `Repo`, the WorkRef.repo field is the bare name —
+        // unchanged from existing LinkageStore call sites. This is what
+        // lets the bridge land without a schema migration.
+        let wr = ScopeId::Repo("rosary".into()).work_ref("rosary-abc123");
+        assert_eq!(wr.repo, "rosary");
+        assert_eq!(wr.scope, "");
+        assert_eq!(wr.bead_id, "rosary-abc123");
+    }
+
+    #[test]
+    fn work_ref_for_external_uses_reserved_prefix() {
+        // External uses an `external:` prefix so the same LinkageStore
+        // table can hold both repo and external rows without colliding
+        // with any real repo name.
+        let wr = ScopeId::External("zen://inbox/pr/42".into()).work_ref("zen-pr-42");
+        assert_eq!(wr.repo, "external:zen://inbox/pr/42");
+        assert_eq!(wr.bead_id, "zen-pr-42");
+    }
+
+    #[test]
+    fn work_ref_for_global_uses_reserved_repo_string() {
+        let wr = ScopeId::Global.work_ref("triage-001");
+        assert_eq!(wr.repo, "global");
+        assert_eq!(wr.bead_id, "triage-001");
+    }
+
+    #[test]
+    fn workref_scope_id_recognizes_global_reserved_string() {
+        let wr = WorkRef {
+            repo: "global".into(),
+            scope: String::new(),
+            bead_id: "x".into(),
+        };
+        assert_eq!(wr.scope_id(), ScopeId::Global);
+    }
+
+    #[test]
+    fn workref_scope_id_recognizes_external_prefix() {
+        let wr = WorkRef {
+            repo: "external:zen://inbox".into(),
+            scope: String::new(),
+            bead_id: "x".into(),
+        };
+        assert_eq!(wr.scope_id(), ScopeId::External("zen://inbox".into()));
+    }
+
+    #[test]
+    fn workref_scope_id_falls_through_to_repo() {
+        let wr = WorkRef {
+            repo: "rosary".into(),
+            scope: String::new(),
+            bead_id: "x".into(),
+        };
+        assert_eq!(wr.scope_id(), ScopeId::Repo("rosary".into()));
+    }
+
+    #[test]
+    fn workref_scope_id_preserves_hyphenated_repo_names() {
+        // ley-line, ley-line-open, rosary-stringer — repos with hyphens
+        // must round-trip cleanly.
+        let wr = WorkRef {
+            repo: "ley-line-open".into(),
+            scope: String::new(),
+            bead_id: "x".into(),
+        };
+        assert_eq!(wr.scope_id(), ScopeId::Repo("ley-line-open".into()));
+    }
+
+    #[test]
+    fn workref_scope_id_ignores_workref_scope_field() {
+        // WorkRef.scope (monorepo team) is orthogonal to ScopeId — even
+        // when set, it must not change the ScopeId recovery.
+        let wr = WorkRef {
+            repo: "monorepo".into(),
+            scope: "auth/identity".into(),
+            bead_id: "x".into(),
+        };
+        assert_eq!(wr.scope_id(), ScopeId::Repo("monorepo".into()));
+    }
+
+    #[test]
+    fn workref_roundtrip_repo() {
+        let original = ScopeId::Repo("signet".into());
+        let recovered = original.work_ref("signet-9605a3").scope_id();
+        assert_eq!(recovered, original);
+    }
+
+    #[test]
+    fn workref_roundtrip_external() {
+        let original = ScopeId::External("zen://inbox/pr/42".into());
+        let recovered = original.work_ref("zen-pr-42").scope_id();
+        assert_eq!(recovered, original);
+    }
+
+    #[test]
+    fn workref_roundtrip_global() {
+        let original = ScopeId::Global;
+        let recovered = original.work_ref("triage-001").scope_id();
+        assert_eq!(recovered, original);
     }
 }
