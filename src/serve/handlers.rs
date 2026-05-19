@@ -651,7 +651,9 @@ async fn tool_bead_update(
     };
 
     if update.is_empty() {
-        anyhow::bail!("no fields to update — provide at least one field besides repo_path and id");
+        anyhow::bail!(
+            "no fields to update — provide at least one field besides scope/repo_path and id"
+        );
     }
 
     let (_scope, client_ref) = resolve_repo_client(args, pool).await?;
@@ -682,7 +684,14 @@ async fn tool_bead_close(
     // Unregister the session so rsry_active stops showing it.
     // Best-effort — session may not exist if bead was closed manually.
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {
-        let _ = registry.unregister(id, scope.as_repo_name().unwrap_or(""));
+        // `resolve_repo_client` guarantees Repo(_) here; `expect`
+        // preserves that invariant explicitly. Silently falling back
+        // to "" would register under the empty key and hide invariant
+        // breaks (Copilot #214 finding).
+        let repo = scope
+            .as_repo_name()
+            .expect("Repo-only scope verified by resolve_repo_client");
+        let _ = registry.unregister(id, repo);
     }
 
     Ok(json!({ "id": id, "status": "closed" }))
@@ -712,7 +721,12 @@ async fn tool_bead_comment(
 
     // Update session registry so rsry_active shows last activity
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {
-        let _ = registry.touch(id, scope.as_repo_name().unwrap_or(""), body);
+        // `resolve_repo_client` guarantees Repo(_); see parallel
+        // comment in `tool_bead_close` (Copilot #214 finding).
+        let repo = scope
+            .as_repo_name()
+            .expect("Repo-only scope verified by resolve_repo_client");
+        let _ = registry.touch(id, repo, body);
     }
 
     Ok(json!({ "id": id, "comment_added": true }))
