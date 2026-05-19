@@ -175,17 +175,18 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_bead_link",
-                "description": "Add or remove a dependency between beads. Use to express 'A depends on B' (A is blocked until B completes). Example: rsry_bead_link(repo_path='/path/to/cloister', id='cloister-963a5c', depends_on='cloister-aaaaaa'). For cross-repo deps, set depends_on to '<repo>-<6hex>' (e.g. 'signet-9605a3') — handler auto-routes via LinkageStore when the prefix names a different repo than repo_path's repo. Use explicit cross_repo='<repo>/<bead-id>' to override the auto-detection.",
+                "description": "Add or remove a dependency between beads. Use to express 'A depends on B' (A is blocked until B completes). Example: rsry_bead_link(scope='repo:cloister', id='cloister-963a5c', depends_on='cloister-aaaaaa'). For cross-repo deps, set depends_on to '<repo>-<6hex>' (e.g. 'signet-9605a3') — handler auto-routes via LinkageStore when the prefix names a different repo. Use explicit cross_repo='<repo>/<bead-id>' to override. Scope forms: 'repo:<name>' (canonical), 'external:<uri>' (zen inbox, cloister bundles), 'global' (org-level beads). Either `scope` or `repo_path` is required.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
-                        "id": { "type": "string", "description": "Bead ID that depends on another (must live in repo_path's repo)" },
+                        "scope": { "type": "string", "description": "Canonical scope: 'repo:<name>' | 'external:<uri>' | 'global'. Bare names like 'rosary' also parse as Repo. Takes priority over repo_path." },
+                        "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory. Use `scope` for new code." },
+                        "id": { "type": "string", "description": "Bead ID that depends on another (must live in the resolved scope)" },
                         "depends_on": { "type": "string", "description": "Bead ID of the prerequisite. Same-repo by default; if '<repo>-<id>' prefix names a different repo, the dep auto-routes via LinkageStore." },
-                        "cross_repo": { "type": "string", "description": "Explicit cross-repo target as '<repo>/<bead-id>'. Overrides auto-detection." },
+                        "cross_repo": { "type": "string", "description": "Explicit cross-repo target as '<repo>/<bead-id>'. Overrides auto-detection. Required for External/Global scopes that have no bead-id prefix to auto-detect from." },
                         "remove": { "type": "boolean", "description": "If true, removes the dependency instead of adding", "default": false }
                     },
-                    "required": ["repo_path", "id", "depends_on"]
+                    "required": ["id", "depends_on"]
                 }
             },
             {
