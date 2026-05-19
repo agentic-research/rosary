@@ -2,6 +2,8 @@
 
 > **Experimental software.** APIs, schemas, and behaviors change without notice. Use at your own risk. Contributions welcome — expect rough edges.
 
+> **⚠️ Dispatch surface is currently broken.** Recent Claude Code harness changes regressed the `claude -p` subprocess invocation path used by `rsry_dispatch` and the reconciler's hub-to-spoke sync (see [rosary-a53b91](https://github.com/agentic-research/rosary/issues?q=rosary-a53b91) + [rosary-403a1a](https://github.com/agentic-research/rosary/issues?q=rosary-403a1a)). **The bead/task-tracking surface (CLI + MCP) is unaffected** — see "[Use rosary as a task tracker only](#use-rosary-as-a-task-tracker-only)" below if that's all you need. The architectural fix is a tmux-per-agent spawn substrate ([rosary-75555d](https://github.com/agentic-research/rosary/issues?q=rosary-75555d), pre-scoped into 6 children); contributions welcome.
+
 Autonomous work orchestrator for AI agents across multiple code repos. Local-first, open source.
 
 Rosary structures work as **[beads](https://github.com/steveyegge/beads)** — small, trackable units stored in each repo via [Dolt](https://www.dolthub.com/). A reconciliation loop scans for ready beads, dispatches AI agents (Claude, Gemini) to execute them in isolated workspaces, verifies the results, and syncs status to [Linear](https://linear.app) for human review.
@@ -88,9 +90,53 @@ rsry run
 
 > Use `task build` / `task test` instead of raw `cargo` — the Taskfile sets `PKG_CONFIG_PATH` for the fuse-t dependency via ley-line.
 
+### Use rosary as a task tracker only
+
+The dispatch + reconciler surface is currently broken (see banner above). The **bead/task surface is fully functional today** — `rsry bead *` CLI subcommands, the MCP server (`rsry serve --transport stdio`), and the Linear sync all work independently of the broken dispatch path.
+
+If you just want issue tracking — backed by Dolt, queryable via MCP, optionally synced to Linear — you can use rosary today as a pure task tracker. Two install paths:
+
+**macOS** (full install — codesigns binary + sets up an HTTP MCP launchd service):
+
+```bash
+task build
+task install                                 # macOS-specific: codesigns + launchd; binary lands at ~/.local/bin/rsry
+```
+
+**Linux / Windows / any platform** (build + copy; skips the macOS-only codesign + launchd steps):
+
+```bash
+cargo build --release
+mkdir -p ~/.local/bin && cp target/release/rsry ~/.local/bin/rsry   # or any directory on $PATH
+```
+
+Then on any platform:
+
+```bash
+# Register your repos for tracking (no dispatch loop will run)
+rsry enable ~/code/my-app
+
+# Create / search / update / close beads via CLI
+rsry bead create "Refactor auth module" --priority 1 --type task --files src/auth.rs
+rsry bead list
+rsry bead search "auth"
+rsry bead close rsry-abc123 --force          # `--force` skips the test-command verification
+
+# Or wire rosary as an MCP server in your AI client (Claude Code, etc.)
+rsry serve --transport stdio                 # exposes 33 bead/thread/decade tools
+
+# Optionally sync to Linear for human review (read+write, bidirectional)
+rsry sync                                    # one-shot
+rsry serve --transport http --port 8383      # also receives Linear webhooks
+```
+
+The dispatch loop (`rsry run`) is the only piece that doesn't work today. Everything else is stable.
+
+Future: an explicit `--no-default-features --features task-tracker-only` build that compiles the dispatch + reconciler modules out entirely (for a smaller cross-platform binary) is tracked under [rosary-ef101c](https://github.com/agentic-research/rosary/issues?q=rosary-ef101c) — until that lands, the full binary works fine on any platform; the dispatch code is just dormant.
+
 ## MCP server
 
-Rosary exposes 31 tools as MCP. Any AI agent or human with an MCP client can scan beads, dispatch work, manage threads, and track progress.
+Rosary exposes 33 tools as MCP. Any AI agent or human with an MCP client can scan beads, dispatch work, manage threads, and track progress.
 
 ```bash
 # Add to Claude Code (one-time)
