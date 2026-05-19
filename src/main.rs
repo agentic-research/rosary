@@ -53,6 +53,11 @@ mod reconcile;
 mod repo_cache;
 mod scan_assay;
 mod scanner;
+// `ScopeId` for rosary-b5da2f scope abstraction. Pure type + parsing in
+// PR 1; threaded through stores + MCP handlers in later PRs. Allow
+// dead_code while the call sites are still on `repo_path: &str`.
+#[allow(dead_code)]
+mod scope;
 mod secrets;
 mod serve;
 mod session;
