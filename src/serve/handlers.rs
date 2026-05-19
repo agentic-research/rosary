@@ -837,12 +837,28 @@ async fn tool_bead_link(
         let (to_repo, to_bead) = target
             .split_once('/')
             .ok_or_else(|| anyhow::anyhow!("cross_repo must be 'repo-name/bead-id'"))?;
+        // Parse `to_repo` as a ScopeId so reserved-namespace strings
+        // (`"global"`, `"external:..."`) are rejected — they could
+        // otherwise create rows in the reserved namespace via the
+        // wrong-side arg, breaking the invariant that Global/External
+        // rows are only produced via the matching `ScopeId` variant
+        // (Copilot #212 finding).
+        let to_scope: crate::scope::ScopeId = to_repo
+            .parse()
+            .with_context(|| format!("parse cross_repo target repo `{to_repo}` as ScopeId"))?;
+        if to_scope.as_repo_name().is_none() {
+            anyhow::bail!(
+                "cross_repo target repo `{to_repo}` is in a reserved namespace ({to_scope}); \
+                 cross_repo is repo-to-repo only. For External/Global targets, use the \
+                 `scope` arg on the matching side."
+            );
+        }
         // Build the `from` WorkRef via the ScopeId bridge so External / Global
         // scopes encode correctly into the LinkageStore schema.
         let from_wr = scope
             .work_ref(id)
             .with_context(|| format!("encode from-scope for bead `{id}`"))?;
-        let to_wr = crate::scope::ScopeId::Repo(to_repo.to_string())
+        let to_wr = to_scope
             .work_ref(to_bead)
             .with_context(|| format!("encode cross_repo target `{target}`"))?;
         let dep = CrossRepoDep {
@@ -2741,6 +2757,56 @@ mod input_validation_tests {
         assert!(
             deps.iter().any(|d| d.to.bead_id == "signet-9605a3"),
             "Global → signet dep must land; got: {deps:?}"
+        );
+    }
+
+    /// Copilot #212 finding: `cross_repo` target must NOT silently
+    /// accept reserved-namespace strings (`"global"`, `"external:..."`)
+    /// as if they were repo names — that would create rows in the
+    /// reserved namespace via the wrong-side arg, breaking the
+    /// round-trip invariant where Global-scope rows can only be
+    /// produced via `ScopeId::Global`.
+    #[tokio::test]
+    async fn link_rejects_global_namespace_in_cross_repo_target() {
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        let args = json!({
+            "scope": "repo:cloister",
+            "id": "cloister-963a5c",
+            "depends_on": "signet-9605a3",
+            "cross_repo": "global/some-bead",   // RESERVED — must reject
+        });
+        let err = tool_bead_link(&args, &empty_pool(), Some(&store))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("global") || msg.contains("reserved"),
+            "error must name the reserved namespace; got: {msg}"
+        );
+    }
+
+    /// Copilot #212 finding: same guard for the `external:` reserved
+    /// prefix in cross_repo. Parsing `"external:foo"` as `ScopeId`
+    /// produces `External(_)`, not `Repo(_)` — and cross_repo is a
+    /// repo-to-repo edge today.
+    #[tokio::test]
+    async fn link_rejects_external_namespace_in_cross_repo_target() {
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        let args = json!({
+            "scope": "repo:cloister",
+            "id": "cloister-963a5c",
+            "depends_on": "signet-9605a3",
+            "cross_repo": "external:zen://foo/some-bead",
+        });
+        let err = tool_bead_link(&args, &empty_pool(), Some(&store))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("external") || msg.contains("reserved"),
+            "error must name the reserved namespace; got: {msg}"
         );
     }
 
