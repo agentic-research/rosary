@@ -453,7 +453,7 @@ pub trait BackendExport: BackendStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
@@ -477,7 +477,9 @@ mod tests {
     }
 
     /// In-memory implementation of all three store traits for testing.
-    struct InMemoryStore {
+    /// Exported `pub(crate)` so sibling test modules (handlers tests,
+    /// reconcile tests) can use it without duplicating the trait impls.
+    pub(crate) struct InMemoryStore {
         decades: Mutex<Vec<DecadeRecord>>,
         threads: Mutex<Vec<ThreadRecord>>,
         /// (thread_id, beads)
@@ -489,7 +491,7 @@ mod tests {
     }
 
     impl InMemoryStore {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             Self {
                 decades: Mutex::new(Vec::new()),
                 threads: Mutex::new(Vec::new()),
@@ -716,6 +718,24 @@ mod tests {
         async fn find_by_linear_id(&self, linear_id: &str) -> Result<Option<LinearLink>> {
             let links = self.linear_links.lock().unwrap();
             Ok(links.iter().find(|l| l.linear_id == linear_id).cloned())
+        }
+    }
+
+    /// Minimal UserRepoStore impl so InMemoryStore satisfies the
+    /// `BackendStore` blanket impl. The tests that exercise registered
+    /// repos use other fixtures; these stubs keep the type system happy
+    /// for sibling test modules (e.g. serve/handlers tests) that need
+    /// to pass `&InMemoryStore` as `&dyn BackendStore`.
+    #[async_trait]
+    impl UserRepoStore for InMemoryStore {
+        async fn register_repo(&self, _repo: &UserRepo) -> Result<()> {
+            Ok(())
+        }
+        async fn list_user_repos(&self, _user_id: &str) -> Result<Vec<UserRepo>> {
+            Ok(Vec::new())
+        }
+        async fn unregister_repo(&self, _user_id: &str, _repo_name: &str) -> Result<()> {
+            Ok(())
         }
     }
 

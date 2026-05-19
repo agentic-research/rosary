@@ -175,13 +175,14 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_bead_link",
-                "description": "Add or remove a dependency between beads. Use to express 'A depends on B' (A is blocked until B completes).",
+                "description": "Add or remove a dependency between beads. Use to express 'A depends on B' (A is blocked until B completes). Example: rsry_bead_link(repo_path='/path/to/cloister', id='cloister-963a5c', depends_on='cloister-aaaaaa'). For cross-repo deps, set depends_on to '<repo>-<6hex>' (e.g. 'signet-9605a3') — handler auto-routes via LinkageStore when the prefix names a different repo than repo_path's repo. Use explicit cross_repo='<repo>/<bead-id>' to override the auto-detection.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "repo_path": { "type": "string", "description": "Path to repo with .beads/ directory" },
-                        "id": { "type": "string", "description": "Bead ID that depends on another" },
-                        "depends_on": { "type": "string", "description": "Bead ID that must complete first" },
+                        "id": { "type": "string", "description": "Bead ID that depends on another (must live in repo_path's repo)" },
+                        "depends_on": { "type": "string", "description": "Bead ID of the prerequisite. Same-repo by default; if '<repo>-<id>' prefix names a different repo, the dep auto-routes via LinkageStore." },
+                        "cross_repo": { "type": "string", "description": "Explicit cross-repo target as '<repo>/<bead-id>'. Overrides auto-detection." },
                         "remove": { "type": "boolean", "description": "If true, removes the dependency instead of adding", "default": false }
                     },
                     "required": ["repo_path", "id", "depends_on"]
@@ -362,6 +363,20 @@ pub(crate) fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "rsry_decade_create",
+                "description": "Create a decade (ADR-level grouping). Idempotent: re-creating with the same title + source_path returns `action: \"existed\"`. Conflicts (same id, different title) error rather than silently overwrite. Returns the created/existing decade's metadata so callers can chain decade → thread → bead without an intermediate read step.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Decade slug (kebab-case, e.g. 'substrate-idl')" },
+                        "title": { "type": "string", "description": "Human-readable decade title" },
+                        "source_path": { "type": "string", "description": "Optional path to ADR / design doc that motivates the decade" },
+                        "status": { "type": "string", "description": "Decade status (default 'active'). One of: proposed, active, completed, superseded.", "default": "active" }
+                    },
+                    "required": ["id", "title"]
+                }
+            },
+            {
                 "name": "rsry_thread_list",
                 "description": "List threads within a decade, or find the thread a bead belongs to.",
                 "inputSchema": {
@@ -375,8 +390,21 @@ pub(crate) fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "rsry_thread_create",
+                "description": "Create a thread under a named decade. Refuses to land an orphan thread when the parent decade is missing (use rsry_decade_create first). Idempotent on identical payload. Returns the created/existing thread's metadata including the derived feature_branch.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "decade_id": { "type": "string", "description": "Parent decade ID (must already exist; create via rsry_decade_create)" },
+                        "id": { "type": "string", "description": "Thread slug (conventionally '<decade-id>/<name>', e.g. 'substrate-idl/schema-bridge')" },
+                        "name": { "type": "string", "description": "Human-readable thread title" }
+                    },
+                    "required": ["decade_id", "id", "name"]
+                }
+            },
+            {
                 "name": "rsry_thread_assign",
-                "description": "Assign a bead to a thread. Creates the thread if it doesn't exist. Use to build ordered progressions of related beads.",
+                "description": "Assign a bead to a thread. Creates the thread if it doesn't exist (auto-creates an 'ungrouped' decade if no parent given). For explicit decade/thread setup with metadata returns, prefer rsry_decade_create + rsry_thread_create first.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
