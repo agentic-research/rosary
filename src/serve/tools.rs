@@ -502,6 +502,20 @@ pub(crate) fn tool_definitions() -> Value {
                     },
                     "required": ["beads"]
                 }
+            },
+            {
+                "name": "rsry_ticket_load",
+                "description": "Consolidate Linear ticket context (issue body, comments, linked GitHub URL, Zendesk URL, existing tracking bead) into one response. Phase 0 of the Linear-escalation-triage workflow (rosary-5d7141). Replaces 4-5 manual lookups per ticket. Requires LINEAR_API_KEY in env or [linear].api_key in ~/.rsry/config.toml.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "ticket_id": {
+                            "type": "string",
+                            "description": "Linear identifier (e.g. 'CUS-495') or full URL ('https://linear.app/team/issue/CUS-495')"
+                        }
+                    },
+                    "required": ["ticket_id"]
+                }
             }
         ]
     })
@@ -579,6 +593,24 @@ mod tests {
         let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
         assert!(required_names.contains(&"thread_id"));
         assert!(required_names.contains(&"decade_id"));
+    }
+
+    /// rosary-5dc9b0: `rsry_ticket_load` is registered + lists `ticket_id` as
+    /// required. Pins the MCP contract for the Linear-escalation-triage tool.
+    #[test]
+    fn ticket_load_tool_is_registered() {
+        let defs = tool_definitions();
+        let tools = defs["tools"].as_array().unwrap();
+        let ticket_load = tools
+            .iter()
+            .find(|t| t["name"] == "rsry_ticket_load")
+            .expect("rsry_ticket_load must be in tool definitions");
+        let required = ticket_load["inputSchema"]["required"].as_array().unwrap();
+        let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            required_names.contains(&"ticket_id"),
+            "rsry_ticket_load must require ticket_id; got: {required_names:?}"
+        );
     }
 
     #[test]
