@@ -116,45 +116,7 @@ pub async fn plan(ticket: &str) -> Result<()> {
     };
 
     let client = build_client(&api_key)?;
-    let identifier = parse_issue_identifier(ticket);
-
-    // Use the issues filter to look up by team key + number.
-    let query = r#"
-        query IssueByIdentifier($filter: IssueFilter!) {
-            issues(filter: $filter, first: 1) {
-                nodes {
-                    id
-                    identifier
-                    title
-                    description
-                    priority
-                    state { name }
-                    labels { nodes { name } }
-                }
-            }
-        }
-    "#;
-
-    // Split identifier (e.g., "ART-123") into team key and number
-    let parts: Vec<&str> = identifier.splitn(2, '-').collect();
-    let filter = if parts.len() == 2 {
-        if let Ok(num) = parts[1].parse::<i64>() {
-            json!({
-                "team": { "key": { "eq": parts[0] } },
-                "number": { "eq": num }
-            })
-        } else {
-            json!({ "identifier": { "eq": identifier } })
-        }
-    } else {
-        json!({ "identifier": { "eq": identifier } })
-    };
-
-    let resp = graphql(&client, query, json!({ "filter": filter })).await?;
-
-    let issue = resp
-        .pointer("/data/issues/nodes/0")
-        .context("issue not found — check that the identifier is correct")?;
+    let issue = get_ticket(&client, ticket).await?;
 
     let title = issue["title"].as_str().unwrap_or("(untitled)");
     let ident = issue["identifier"].as_str().unwrap_or("???");
@@ -189,6 +151,96 @@ pub async fn plan(ticket: &str) -> Result<()> {
     println!("(bead decomposition not yet implemented — coming soon)");
 
     Ok(())
+}
+
+/// Build a Linear-authed reqwest client from env / config, if a key is set.
+/// Returns None if the key is absent — callers convert this to a friendly
+/// "Linear not configured" error message instead of crashing.
+pub(crate) fn try_client() -> Option<reqwest::Client> {
+    let api_key = get_api_key()?;
+    build_client(&api_key).ok()
+}
+
+/// Fetch a single Linear issue by identifier (`ART-123` form or full URL).
+/// Returns the issue node JSON. Shared by `plan()` and the `rsry_ticket_load`
+/// MCP tool (rosary-5dc9b0).
+pub(crate) async fn get_ticket(client: &reqwest::Client, ticket: &str) -> Result<Value> {
+    let identifier = parse_issue_identifier(ticket);
+
+    // Issue node includes the internal `id` so callers can chain a comments
+    // lookup (`get_ticket_comments`) without a second identifier round-trip.
+    let query = r#"
+        query IssueByIdentifier($filter: IssueFilter!) {
+            issues(filter: $filter, first: 1) {
+                nodes {
+                    id
+                    identifier
+                    title
+                    description
+                    priority
+                    state { name }
+                    assignee { name email }
+                    labels { nodes { name } }
+                }
+            }
+        }
+    "#;
+
+    // Split identifier (e.g., "ART-123") into team key and number for the
+    // strict filter; otherwise fall back to identifier-eq lookup.
+    let parts: Vec<&str> = identifier.splitn(2, '-').collect();
+    let filter = if parts.len() == 2 {
+        if let Ok(num) = parts[1].parse::<i64>() {
+            json!({
+                "team": { "key": { "eq": parts[0] } },
+                "number": { "eq": num }
+            })
+        } else {
+            json!({ "identifier": { "eq": identifier } })
+        }
+    } else {
+        json!({ "identifier": { "eq": identifier } })
+    };
+
+    let resp = graphql(client, query, json!({ "filter": filter })).await?;
+
+    let issue = resp
+        .pointer("/data/issues/nodes/0")
+        .context("issue not found — check that the identifier is correct")?
+        .clone();
+    Ok(issue)
+}
+
+/// Fetch all comments on a Linear issue by its internal id (from `get_ticket`).
+/// Returns an empty list on success-with-no-comments; an error on auth /
+/// transport failures. Up to 50 comments — Phase 1 paginates if needed.
+pub(crate) async fn get_ticket_comments(
+    client: &reqwest::Client,
+    issue_id: &str,
+) -> Result<Vec<Value>> {
+    let query = r#"
+        query IssueComments($id: String!) {
+            issue(id: $id) {
+                comments(first: 50) {
+                    nodes {
+                        id
+                        body
+                        createdAt
+                        user { name email }
+                    }
+                }
+            }
+        }
+    "#;
+
+    let resp = graphql(client, query, json!({ "id": issue_id })).await?;
+
+    let nodes = resp
+        .pointer("/data/issue/comments/nodes")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(nodes)
 }
 
 /// Look up a team's internal ID by its key (e.g., "ART").

@@ -225,6 +225,7 @@ pub(crate) async fn call_tool(
         "rsry_repo_register" => tool_repo_register(args, backend, user_scope).await,
         "rsry_repo_list" => tool_repo_list(backend, user_scope).await,
         "rsry_bead_import" => tool_bead_import(args, config_path, pool, user_scope).await,
+        "rsry_ticket_load" => tool_ticket_load(args, pool).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
 }
@@ -2415,12 +2416,122 @@ async fn tool_repo_list(
 }
 
 // ---------------------------------------------------------------------------
+// rsry_ticket_load — Phase 0 of rosary-5d7141 (rosary-5dc9b0)
+// ---------------------------------------------------------------------------
+
+/// Consolidate Linear + (linked GH/Zendesk URLs) + existing-bead context for
+/// a single ticket into one MCP response. Replaces the 4-5 manual lookups the
+/// user performs per escalation. See `serve::ticket_load` for the pure-fn
+/// helpers; this orchestrator does the Linear I/O and stitches the pieces.
+async fn tool_ticket_load(args: &Value, pool: &RepoPool) -> Result<Value> {
+    use super::ticket_load::{
+        assemble_context, extract_github_link, extract_zendesk_link, find_triage_bead,
+    };
+
+    let ticket_id = args
+        .get("ticket_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("ticket_id is required (e.g. \"CUS-495\")"))?;
+
+    let Some(client) = crate::linear::try_client() else {
+        anyhow::bail!(
+            "Linear not configured — set LINEAR_API_KEY or [linear].api_key in ~/.rsry/config.toml"
+        );
+    };
+
+    let linear_issue = crate::linear::get_ticket(&client, ticket_id)
+        .await
+        .with_context(|| format!("fetching Linear ticket {ticket_id}"))?;
+
+    // Linear's `id` is the internal UUID required for the comments query.
+    // Propagate comments-fetch errors instead of swallowing them — a transient
+    // Linear/GraphQL failure here would otherwise produce a successful-looking
+    // response with an empty `comments` array, which is indistinguishable from
+    // "the ticket has no comments" and silently degrades URL discovery + bead
+    // matching that depend on comment text. (Copilot review on PR #215.)
+    let comments = match linear_issue["id"].as_str() {
+        Some(internal_id) => crate::linear::get_ticket_comments(&client, internal_id)
+            .await
+            .with_context(|| format!("fetching comments for Linear ticket {ticket_id}"))?,
+        None => Vec::new(),
+    };
+
+    // Concatenate body + comments for URL extraction so a GH link anywhere in
+    // the conversation is discoverable, not just in the ticket body.
+    let body_text = linear_issue["description"].as_str().unwrap_or("");
+    let combined_text: String = std::iter::once(body_text.to_string())
+        .chain(
+            comments
+                .iter()
+                .filter_map(|c| c["body"].as_str().map(String::from)),
+        )
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let linked_github = extract_github_link(&combined_text).map(|url| {
+        // Phase 0: URL only. The body + state fields wait on a follow-up bead
+        // (fetching GH issue bodies via `gh api` adds a new I/O dep).
+        json!({ "url": url, "body": null, "state": null })
+    });
+    let linked_zendesk = extract_zendesk_link(&combined_text);
+    // Bead lookup uses the canonical Linear identifier (`CUS-495`) returned by
+    // `get_ticket`, NOT the raw caller-supplied `ticket_id` — which may be a
+    // full URL. Existing beads consistently reference the identifier form, so
+    // this normalization is what makes URL-shaped inputs match real beads.
+    // (Copilot review on PR #215.)
+    let lookup_id = linear_issue["identifier"].as_str().unwrap_or(ticket_id);
+    let existing_bead = find_triage_bead(pool, lookup_id).await;
+
+    Ok(assemble_context(
+        linear_issue,
+        comments,
+        linked_github,
+        linked_zendesk,
+        existing_bead,
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- tool_ticket_load (rosary-5dc9b0) ---------------------------------
+
+    /// Caller must supply `ticket_id`; the error message names the missing arg
+    /// so future MCP clients learn the right shape from one rejection.
+    #[tokio::test]
+    async fn ticket_load_rejects_missing_ticket_id() {
+        let args = json!({});
+        let err = tool_ticket_load(&args, &crate::pool::RepoPool::empty())
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ticket_id"),
+            "error must name the missing field; got: {msg}"
+        );
+    }
+
+    /// Whitespace-only ticket_id is rejected — same validation surface as a
+    /// missing field so the error UX stays consistent.
+    #[tokio::test]
+    async fn ticket_load_rejects_blank_ticket_id() {
+        let args = json!({ "ticket_id": "   " });
+        let err = tool_ticket_load(&args, &crate::pool::RepoPool::empty())
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ticket_id"),
+            "error must name the rejected field; got: {msg}"
+        );
+    }
 
     #[tokio::test]
     async fn pipeline_upsert_errors_without_backend() {
