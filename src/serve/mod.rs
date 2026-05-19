@@ -15,11 +15,9 @@ mod handlers;
 mod ipc;
 mod landing;
 // `scope_args` — boundary parser for `scope` vs `repo_path` MCP arg pair.
-// Step 3 of the rosary-b5da2f scope-abstraction series. Not yet consumed
-// by handlers; landed standalone so each handler can adopt it incrementally
-// in follow-up PRs. Allow dead_code while migration is in flight.
-#[allow(dead_code)]
-mod scope_args;
+// Step 3 of the rosary-b5da2f scope-abstraction series. Consumed by
+// `tool_bead_link` as of PR 4; other handlers adopt incrementally.
+pub(crate) mod scope_args;
 mod tools;
 mod webhook;
 

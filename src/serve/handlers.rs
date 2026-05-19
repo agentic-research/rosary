@@ -753,20 +753,29 @@ async fn tool_bead_comment_delete(
     }))
 }
 
-/// Infer the cross-repo target from a `depends_on` bead id and the calling
-/// `repo_path`. Returns `Some("repo/bead-id")` when the bead id matches
-/// the canonical `<repo>-<6hex>` shape and the `<repo>` prefix names a
-/// repo other than the calling one — meaning the dep is cross-repo even
-/// though the caller didn't pass `cross_repo` explicitly.
+/// Infer the cross-repo target from a `depends_on` bead id and the
+/// calling repo name. Returns `Some("repo/bead-id")` when the bead id
+/// matches the canonical `<repo>-<6hex>` shape and the `<repo>` prefix
+/// names a repo other than the calling one — meaning the dep is
+/// cross-repo even though the caller didn't pass `cross_repo`
+/// explicitly.
 ///
 /// Returns None when:
 /// - the bead id is malformed (no recognizable `<repo>-<6hex>` shape),
-/// - the inferred prefix matches the calling repo (so the dep is same-repo).
+/// - the inferred prefix matches the calling repo (so the dep is same-repo),
+/// - no calling repo name is available (e.g. `External` / `Global` scope —
+///   auto-routing has nothing to compare against).
 ///
 /// rosary-98ee93: lets callers express cross-repo deps using only the
 /// canonical bead id without needing to remember the `cross_repo` arg
 /// shape. Explicit `cross_repo` still takes precedence when provided.
-fn infer_cross_repo_target(repo_path: &str, depends_on: &str) -> Option<String> {
+///
+/// rosary-b5da2f PR 4: takes the calling repo name directly (was:
+/// `repo_path: &str` + internal `repo_name_from_path` call). The new
+/// signature works for any `ScopeId` — Repo callers pass the name;
+/// External/Global callers pass None (via `ScopeId::as_repo_name`).
+fn infer_cross_repo_target(calling_repo: Option<&str>, depends_on: &str) -> Option<String> {
+    let calling_repo = calling_repo?;
     // Bead IDs follow `<repo>-<6hex>` (e.g. `signet-9605a3`). Repo names may
     // contain `-` themselves (e.g. `ley-line-open`), so split on the LAST
     // `-` and check whether the suffix is a 6-char hex tag.
@@ -774,9 +783,6 @@ fn infer_cross_repo_target(repo_path: &str, depends_on: &str) -> Option<String> 
     if prefix.is_empty() || suffix.len() != 6 || !suffix.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
-    let calling_repo = repo_name_from_path(repo_path);
-    // Compare as `String == &str` (stdlib `PartialEq<&str> for String`) to
-    // make the type direction explicit for readers.
     if calling_repo == prefix {
         return None;
     }
@@ -788,9 +794,10 @@ async fn tool_bead_link(
     pool: &RepoPool,
     backend: Option<&dyn BackendStore>,
 ) -> Result<Value> {
-    let repo_path = args["repo_path"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("repo_path required (accepted params: repo_path, id, depends_on, [remove], [cross_repo])"))?;
+    use crate::serve::scope_args::resolve_scope;
+    // rosary-b5da2f PR 4: accept canonical `scope` arg alongside `repo_path`.
+    // resolve_scope handles the precedence + error for "neither provided".
+    let scope = resolve_scope(args)?;
     // Accept `id` (canonical). When the caller passes the common-but-wrong
     // shorthand `from_id`/`to_id`/`link_type`, the error names both
     // canonical params so the caller doesn't have to guess (rosary-98b11d).
@@ -812,13 +819,14 @@ async fn tool_bead_link(
         .unwrap_or(false);
     // cross_repo: "other-repo/bead-id" — writes to backend LinkageStore instead of per-repo Dolt.
     // Auto-detect (rosary-98ee93): if `depends_on` carries a `<repo>-<id>` prefix that doesn't
-    // match the calling repo_path's repo, route through LinkageStore without requiring the
-    // caller to remember the explicit `cross_repo` argument shape.
+    // match the calling repo name, route through LinkageStore without requiring the
+    // caller to remember the explicit `cross_repo` argument shape. Auto-detect only
+    // engages when scope is `Repo(_)`; External/Global have no bare-name prefix.
     let cross_repo_target: Option<String> = args
         .get("cross_repo")
         .and_then(|v| v.as_str())
         .map(str::to_string)
-        .or_else(|| infer_cross_repo_target(repo_path, depends_on));
+        .or_else(|| infer_cross_repo_target(scope.as_repo_name(), depends_on));
 
     if id == depends_on {
         anyhow::bail!("a bead cannot depend on itself ({id})");
@@ -829,18 +837,33 @@ async fn tool_bead_link(
         let (to_repo, to_bead) = target
             .split_once('/')
             .ok_or_else(|| anyhow::anyhow!("cross_repo must be 'repo-name/bead-id'"))?;
-        let from_repo = repo_name_from_path(repo_path);
+        // Parse `to_repo` as a ScopeId so reserved-namespace strings
+        // (`"global"`, `"external:..."`) are rejected — they could
+        // otherwise create rows in the reserved namespace via the
+        // wrong-side arg, breaking the invariant that Global/External
+        // rows are only produced via the matching `ScopeId` variant
+        // (Copilot #212 finding).
+        let to_scope: crate::scope::ScopeId = to_repo
+            .parse()
+            .with_context(|| format!("parse cross_repo target repo `{to_repo}` as ScopeId"))?;
+        if to_scope.as_repo_name().is_none() {
+            anyhow::bail!(
+                "cross_repo target repo `{to_repo}` is in a reserved namespace ({to_scope}); \
+                 cross_repo is repo-to-repo only. For External/Global targets, use the \
+                 `scope` arg on the matching side."
+            );
+        }
+        // Build the `from` WorkRef via the ScopeId bridge so External / Global
+        // scopes encode correctly into the LinkageStore schema.
+        let from_wr = scope
+            .work_ref(id)
+            .with_context(|| format!("encode from-scope for bead `{id}`"))?;
+        let to_wr = to_scope
+            .work_ref(to_bead)
+            .with_context(|| format!("encode cross_repo target `{target}`"))?;
         let dep = CrossRepoDep {
-            from: WorkRef {
-                repo: from_repo.clone(),
-                scope: String::new(),
-                bead_id: id.to_string(),
-            },
-            to: WorkRef {
-                repo: to_repo.to_string(),
-                scope: String::new(),
-                bead_id: to_bead.to_string(),
-            },
+            from: from_wr,
+            to: to_wr,
             dep_type: "blocks".to_string(),
             evidence_tier: EvidenceTier::Asserted,
             source: "human".to_string(),
@@ -861,15 +884,43 @@ async fn tool_bead_link(
             }))
         }
     } else {
-        // Same-repo dep: write to per-repo Dolt via BeadStore.
-        let client_ref = get_client(repo_path, pool).await?;
-        let client = client_ref.as_store();
-        if remove {
-            client.remove_dependency(id, depends_on).await?;
-            Ok(json!({ "id": id, "depends_on": depends_on, "action": "removed" }))
-        } else {
-            client.add_dependency(id, depends_on).await?;
-            Ok(json!({ "id": id, "depends_on": depends_on, "action": "added" }))
+        // Same-repo dep: needs a per-repo Dolt store. Only `Repo` scope has one;
+        // External / Global have no backing per-repo store and must route via
+        // `cross_repo` instead (rosary-b5da2f PR 4).
+        match scope.as_repo_name() {
+            Some(_repo_name) => {
+                // Prefer the explicit `repo_path` arg (existing call sites).
+                // Fall back to a pool lookup by repo name when only `scope`
+                // was provided — full path resolution from name lives in a
+                // later PR.
+                let repo_path = args
+                    .get("repo_path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "same-repo dep requires `repo_path` (path lookup from scope name is a follow-up; pass `repo_path` for now or use `cross_repo` for cross-scope deps)"
+                        )
+                    })?;
+                let client_ref = get_client(repo_path, pool).await?;
+                let client = client_ref.as_store();
+                if remove {
+                    client.remove_dependency(id, depends_on).await?;
+                    Ok(json!({ "id": id, "depends_on": depends_on, "action": "removed" }))
+                } else {
+                    client.add_dependency(id, depends_on).await?;
+                    Ok(json!({ "id": id, "depends_on": depends_on, "action": "added" }))
+                }
+            }
+            None => {
+                // External / Global scope has no per-repo Dolt store; same-repo
+                // semantics don't apply. Point the caller at the LinkageStore
+                // path via `cross_repo`.
+                anyhow::bail!(
+                    "same-repo deps are not supported from {scope} scope — \
+                     {scope} has no per-repo Dolt store. Pass `cross_repo` to \
+                     write the dep through LinkageStore instead."
+                );
+            }
         }
     }
 }
@@ -2634,6 +2685,157 @@ mod input_validation_tests {
         assert!(
             deps.iter().any(|d| d.to.bead_id == "signet-9605a3"),
             "cross-repo dep must be present in LinkageStore; got: {deps:?}"
+        );
+    }
+
+    /// rosary-b5da2f PR 4: `tool_bead_link` accepts a canonical `scope`
+    /// arg in place of `repo_path`. This is the first MCP handler
+    /// converted to use the new `resolve_scope` boundary parser. The
+    /// LinkageStore write path must accept `scope: "repo:cloister"`
+    /// equivalently to `repo_path: "/Users/.../cloister"`.
+    #[tokio::test]
+    async fn link_accepts_scope_arg_in_place_of_repo_path() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        // No `repo_path`; only `scope` in canonical form.
+        let args = json!({
+            "scope": "repo:cloister",
+            "id": "cloister-963a5c",
+            "depends_on": "signet-9605a3",
+        });
+        let result = tool_bead_link(&args, &empty_pool(), Some(&store)).await;
+        assert!(
+            result.is_ok(),
+            "scope arg must work in place of repo_path for cross-repo deps; got: {result:?}"
+        );
+        let deps = store
+            .dependencies_of(&crate::store::WorkRef {
+                repo: "cloister".into(),
+                scope: String::new(),
+                bead_id: "cloister-963a5c".into(),
+            })
+            .await
+            .expect("query dependencies_of");
+        assert!(
+            deps.iter().any(|d| d.to.bead_id == "signet-9605a3"),
+            "cross-repo dep must land in LinkageStore when scope was used; got: {deps:?}"
+        );
+    }
+
+    /// rosary-b5da2f PR 4: `Global` scope can write cross-repo deps via
+    /// the LinkageStore bridge — meta-beads (the future incoming triage
+    /// queue per `rosary-1db9c9`) need to express deps without a
+    /// per-repo backing store. The `from.repo` field stores the
+    /// reserved `"global"` namespace (per `ScopeId::work_ref`).
+    #[tokio::test]
+    async fn link_from_global_scope_routes_via_linkage_store() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        let args = json!({
+            "scope": "global",
+            "id": "global-meta-001",
+            "depends_on": "signet-9605a3",
+            // Explicit cross_repo because Global has no bead-id prefix
+            // to auto-detect from.
+            "cross_repo": "signet/signet-9605a3",
+        });
+        let result = tool_bead_link(&args, &empty_pool(), Some(&store)).await;
+        assert!(
+            result.is_ok(),
+            "Global scope must support cross-repo deps via cross_repo; got: {result:?}"
+        );
+        let deps = store
+            .dependencies_of(&crate::store::WorkRef {
+                repo: "global".into(),
+                scope: String::new(),
+                bead_id: "global-meta-001".into(),
+            })
+            .await
+            .expect("query dependencies_of from global scope");
+        assert!(
+            deps.iter().any(|d| d.to.bead_id == "signet-9605a3"),
+            "Global → signet dep must land; got: {deps:?}"
+        );
+    }
+
+    /// Copilot #212 finding: `cross_repo` target must NOT silently
+    /// accept reserved-namespace strings (`"global"`, `"external:..."`)
+    /// as if they were repo names — that would create rows in the
+    /// reserved namespace via the wrong-side arg, breaking the
+    /// round-trip invariant where Global-scope rows can only be
+    /// produced via `ScopeId::Global`.
+    #[tokio::test]
+    async fn link_rejects_global_namespace_in_cross_repo_target() {
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        let args = json!({
+            "scope": "repo:cloister",
+            "id": "cloister-963a5c",
+            "depends_on": "signet-9605a3",
+            "cross_repo": "global/some-bead",   // RESERVED — must reject
+        });
+        let err = tool_bead_link(&args, &empty_pool(), Some(&store))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("global") || msg.contains("reserved"),
+            "error must name the reserved namespace; got: {msg}"
+        );
+    }
+
+    /// Copilot #212 finding: same guard for the `external:` reserved
+    /// prefix in cross_repo. Parsing `"external:foo"` as `ScopeId`
+    /// produces `External(_)`, not `Repo(_)` — and cross_repo is a
+    /// repo-to-repo edge today.
+    #[tokio::test]
+    async fn link_rejects_external_namespace_in_cross_repo_target() {
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        let args = json!({
+            "scope": "repo:cloister",
+            "id": "cloister-963a5c",
+            "depends_on": "signet-9605a3",
+            "cross_repo": "external:zen://foo/some-bead",
+        });
+        let err = tool_bead_link(&args, &empty_pool(), Some(&store))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("external") || msg.contains("reserved"),
+            "error must name the reserved namespace; got: {msg}"
+        );
+    }
+
+    /// rosary-b5da2f PR 4: same-repo deps (no `cross_repo`, no
+    /// `depends_on` prefix match) from `External` or `Global` scope
+    /// don't make sense — they have no per-repo Dolt store. Must
+    /// error with an actionable message pointing the caller at the
+    /// `cross_repo` arg.
+    #[tokio::test]
+    async fn link_errors_on_same_repo_dep_from_global_scope() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        let args = json!({
+            "scope": "global",
+            "id": "global-001",
+            "depends_on": "global-002",   // Looks same-scope; no auto-route.
+        });
+        let err = tool_bead_link(&args, &empty_pool(), Some(&store))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("global") || msg.contains("Global"),
+            "error must surface that Global scope can't do same-scope deps; got: {msg}"
+        );
+        assert!(
+            msg.contains("cross_repo") || msg.contains("LinkageStore"),
+            "error must point at cross_repo arg as the alternative; got: {msg}"
         );
     }
 
