@@ -5,7 +5,7 @@ description: >
   that should be tracked — a bug, idea, task, or observation. Synthesizes a
   bead title and description from the user's input and surrounding conversation.
   Dedup-checks against existing beads before creating.
-allowed-tools: "mcp__rsry__rsry_bead_search,mcp__rsry__rsry_bead_create,mcp__rsry__rsry_bead_comment"
+allowed-tools: "mcp__rsry__rsry_bead_search,mcp__rsry__rsry_bead_create,mcp__rsry__rsry_bead_comment,mcp__rsry__rsry_bead_link"
 argument-hint: "<what to file>"
 version: "0.2.0"
 author: "ART Ecosystem"

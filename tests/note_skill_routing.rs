@@ -80,11 +80,22 @@ fn skill_md_examples_show_target_repo_selection() {
     // The example set must demonstrate at least one repo-specific
     // case (so the route-by-scope rule is grounded) and at least one
     // meta-routed-to-rosary case (so the fallback is grounded).
+    //
+    // Both halves of the assertion are deliberate: if the repo-specific
+    // half passed but the rosary/meta half wasn't checked, an edit could
+    // silently remove the meta examples and weaken the skill without
+    // failing the test (Copilot's #206 finding).
     let body = skill_md();
     let lower = body.to_lowercase();
-    // A repo-specific example must mention a non-rosary target.
+
     let mentions_spoke_repo = [
-        "notme.bot", "notme/", "cloister", "signet", "mache", "crumb", "ley-line",
+        "notme.bot",
+        "notme/",
+        "cloister",
+        "signet",
+        "mache",
+        "crumb",
+        "ley-line",
     ]
     .iter()
     .any(|repo| lower.contains(repo));
@@ -93,5 +104,17 @@ fn skill_md_examples_show_target_repo_selection() {
         "SKILL.md examples must include at least one repo-specific case \
          (notme.bot, cloister, signet, mache, etc.) so the route-by-scope \
          rule is demonstrated"
+    );
+
+    // At least one example must route to rosary as the meta home. The
+    // signal: an example line targets `repo_path: ~/remotes/art/rosary`.
+    // Anchoring on the lowercased canonical path avoids matching the
+    // generic "rosary is the central hub" doc prose elsewhere.
+    let mentions_rosary_routed_example = lower.contains("repo_path: ~/remotes/art/rosary");
+    assert!(
+        mentions_rosary_routed_example,
+        "SKILL.md examples must include at least one rosary/meta routing case \
+         (e.g. an example whose target repo is ~/remotes/art/rosary) so the \
+         meta-fallback rule is grounded — not just stated in the rubric"
     );
 }
