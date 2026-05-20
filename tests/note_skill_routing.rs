@@ -1,9 +1,11 @@
 //! Regression guards for the `/note` skill's repo-routing guidance.
 //!
 //! The `/note` skill used to hardcode `~/remotes/art/rosary` as the
-//! universal target, relying on the (now-broken) reconciler hub-to-spoke
-//! sync (rosary-403a1a) to fan beads out to per-repo Dolt stores. Beads
-//! filed via the skill ended up stuck in rosary's hub.
+//! universal target, presuming a reconciler hub-to-spoke sync that was
+//! never built (rosary-403a1a — closed as obsolete; the fan-out via
+//! file scopes was aspirational). Beads filed under that directive
+//! ended up stuck in rosary's hub and never reached the actual target
+//! repo's `.beads/`.
 //!
 //! rosary-406b68: the skill must derive the target repo from the user's
 //! input (file paths, repo names) and fall back to rosary ONLY for
@@ -27,9 +29,10 @@ fn skill_md() -> String {
 #[test]
 fn skill_md_does_not_hardcode_rosary_hub_for_all_calls() {
     // The old directive — `Always use repo_path: ~/remotes/art/rosary`
-    // — relied on the (broken) reconciler hub-to-spoke sync. New beads
-    // filed under it land in rosary's Dolt and never reach the spoke,
-    // confusing rsry_list_beads in the actual target repo.
+    // — presumed a reconciler hub-to-spoke sync that was never built
+    // (rosary-403a1a, closed). Beads filed under it land in rosary's
+    // Dolt and never reach the spoke, confusing rsry_list_beads in the
+    // actual target repo.
     let body = skill_md();
     let lower = body.to_lowercase();
     assert!(
