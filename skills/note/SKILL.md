@@ -19,7 +19,7 @@ File a bead from mid-conversation context. The user says something worth trackin
 
 **The bead lives in the repo whose code it concerns.** Derive `repo_path` from the file scopes / repo names in the user's input — don't default to rosary.
 
-The old "always use rosary as the hub" rule relied on a reconciler hub-to-spoke sync that is currently broken (`rosary-403a1a`); beads filed under it get stuck in rosary's Dolt and never reach the actual target repo's `.beads/`. Route to the right repo at write time instead.
+The old "always use rosary as the hub" rule presumed a reconciler hub-to-spoke sync that was never built (the fan-out via file scopes was aspirational; see `rosary-403a1a` for the closed history). The scope-abstraction saga (`rosary-b5da2f`) made route-at-write-time the canonical pattern instead, and that's what this skill follows.
 
 ### Decision rubric
 
