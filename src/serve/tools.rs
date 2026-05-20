@@ -87,12 +87,7 @@ pub(crate) fn tool_definitions() -> Value {
                         "test_files": { "type": "array", "items": { "type": "string" }, "description": "Test files to validate the change. Also checked for overlap — two beads sharing a test file will be serialized, not parallelized." },
                         "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Bead IDs this bead depends on (blocked until they complete). Creates entries in the dependencies table." }
                     },
-                    "required": ["title"],
-                    "anyOf": [
-                        { "required": ["scope"] },
-                        { "required": ["repo_path"] }
-                    ]
-                }
+                    "required": ["title"]                }
             },
             {
                 "name": "rsry_bead_update",
@@ -111,9 +106,7 @@ pub(crate) fn tool_definitions() -> Value {
                         "files": { "type": "array", "items": { "type": "string" }, "description": "Updated source files list. These scope parallel dispatch — see has_file_overlap() (epic.rs:386-393). Verify against actual code before setting; inaccurate scopes cause agent collisions or missed overlap detection." },
                         "test_files": { "type": "array", "items": { "type": "string" }, "description": "Updated test files list. Also checked for overlap at dispatch time (reconcile.rs:372-380)." }
                     },
-                    "required": ["id"],
-                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
-                }
+                    "required": ["id"]                }
             },
             {
                 "name": "rsry_bead_close",
@@ -125,9 +118,7 @@ pub(crate) fn tool_definitions() -> Value {
                         "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory" },
                         "id": { "type": "string", "description": "Bead ID to close" }
                     },
-                    "required": ["id"],
-                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
-                }
+                    "required": ["id"]                }
             },
             {
                 "name": "rsry_bead_comment",
@@ -140,9 +131,7 @@ pub(crate) fn tool_definitions() -> Value {
                         "id": { "type": "string", "description": "Bead ID" },
                         "body": { "type": "string", "description": "Comment text" }
                     },
-                    "required": ["id", "body"],
-                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
-                }
+                    "required": ["id", "body"]                }
             },
             {
                 "name": "rsry_bead_comment_list",
@@ -155,9 +144,7 @@ pub(crate) fn tool_definitions() -> Value {
                         "id": { "type": "string", "description": "Bead ID" },
                         "include_deleted": { "type": "boolean", "description": "If true, include soft-deleted comments", "default": false }
                     },
-                    "required": ["id"],
-                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
-                }
+                    "required": ["id"]                }
             },
             {
                 "name": "rsry_bead_comment_update",
@@ -171,9 +158,7 @@ pub(crate) fn tool_definitions() -> Value {
                         "body": { "type": "string", "description": "New comment text" },
                         "reason": { "type": "string", "description": "Optional reason for the edit (recorded in edit_reason)" }
                     },
-                    "required": ["comment_id", "body"],
-                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
-                }
+                    "required": ["comment_id", "body"]                }
             },
             {
                 "name": "rsry_bead_comment_delete",
@@ -186,9 +171,7 @@ pub(crate) fn tool_definitions() -> Value {
                         "comment_id": { "type": "string", "description": "Stable comment id (from rsry_bead_comment_list). Opaque string — Dolt produces UUIDs, SQLite produces stringified integers." },
                         "reason": { "type": "string", "description": "Optional reason for the deletion. Persisted in the dedicated `delete_reason` column (independent of `edit_reason`) so it is preserved even when the comment was previously edited." }
                     },
-                    "required": ["comment_id"],
-                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
-                }
+                    "required": ["comment_id"]                }
             },
             {
                 "name": "rsry_bead_link",
@@ -203,12 +186,7 @@ pub(crate) fn tool_definitions() -> Value {
                         "cross_repo": { "type": "string", "description": "Explicit cross-repo target as '<repo>/<bead-id>'. Overrides auto-detection. Repo-only — reserved namespaces (global, external:) are rejected." },
                         "remove": { "type": "boolean", "description": "If true, removes the dependency instead of adding", "default": false }
                     },
-                    "required": ["id", "depends_on"],
-                    "anyOf": [
-                        { "required": ["scope"] },
-                        { "required": ["repo_path"] }
-                    ]
-                }
+                    "required": ["id", "depends_on"]                }
             },
             {
                 "name": "rsry_bead_search",
@@ -221,9 +199,7 @@ pub(crate) fn tool_definitions() -> Value {
                         "query": { "type": "string", "description": "Search query" },
                         "limit": { "type": "integer", "description": "Max results to return (default 20, max 50)", "default": 20, "minimum": 1, "maximum": 50 }
                     },
-                    "required": ["query"],
-                    "anyOf": [{ "required": ["scope"] }, { "required": ["repo_path"] }]
-                }
+                    "required": ["query"]                }
             },
             {
                 "name": "rsry_dispatch",
@@ -611,6 +587,32 @@ mod tests {
             required_names.contains(&"ticket_id"),
             "rsry_ticket_load must require ticket_id; got: {required_names:?}"
         );
+    }
+
+    /// Claude's API rejects any tool whose `input_schema` uses `oneOf`,
+    /// `allOf`, or `anyOf` at the TOP LEVEL of the schema with HTTP 400:
+    /// `input_schema does not support oneOf, allOf, or anyOf at the top
+    /// level`. One such tool taints the entire `tools/list` payload — Claude
+    /// Code disconnects and the user has to `/mcp disable rsry` to keep
+    /// working. Pin the constraint here so we never reintroduce it
+    /// accidentally (rosary-b5da2f saga shipped this in #214; fixed in the
+    /// hot-fix that follows).
+    #[test]
+    fn no_top_level_schema_alternation() {
+        let defs = tool_definitions();
+        let tools = defs["tools"].as_array().unwrap();
+        for tool in tools {
+            let name = tool["name"].as_str().unwrap();
+            let schema = &tool["inputSchema"];
+            for keyword in &["anyOf", "oneOf", "allOf"] {
+                assert!(
+                    schema.get(keyword).is_none(),
+                    "tool `{name}` uses top-level `{keyword}` in inputSchema — \
+                     Claude API rejects this; move the constraint into a \
+                     runtime check inside the handler"
+                );
+            }
+        }
     }
 
     #[test]
