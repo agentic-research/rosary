@@ -317,6 +317,56 @@ pub fn bead_list(beads: &[Bead]) {
     println!("{}", format!("{} bead(s)", beads.len()).dimmed());
 }
 
+/// Pretty-print as JSON for `rsry bead list --json` (rosary-e1c759).
+pub fn bead_list_json(beads: &[Bead]) {
+    // Spelled out (not just `to_string_pretty`) so callers can rely on the
+    // shape: top-level object with `count` and `beads`. Matches `rsry status
+    // --json` shape so both CLI JSON outputs read the same way.
+    let payload = serde_json::json!({
+        "count": beads.len(),
+        "beads": beads,
+    });
+    match serde_json::to_string_pretty(&payload) {
+        Ok(s) => println!("{s}"),
+        Err(e) => eprintln!("[bead list --json] serialize failed: {e}"),
+    }
+}
+
+/// Filter beads by status / priority / issue_type + cap to `limit`. Pure
+/// function — testable in isolation. Used by `rsry bead list` (rosary-e1c759)
+/// and meant to be reused by other CLI surfaces that need the same shape.
+///
+/// Empty filter vectors mean "no filter on this dimension." `statuses` accepts
+/// the canonical Bead.status strings plus two virtual names: `"ready"` (uses
+/// `Bead::is_ready()`) and `"blocked"` (uses `Bead::is_blocked()`, which
+/// captures both the literal `status == "blocked"` and `status == "open" &&
+/// has unresolved deps`).
+pub fn filter_beads(
+    beads: Vec<Bead>,
+    statuses: &[String],
+    priorities: &[u8],
+    issue_types: &[String],
+    limit: usize,
+) -> Vec<Bead> {
+    let cap = limit.min(200);
+    beads
+        .into_iter()
+        .filter(|b| {
+            if statuses.is_empty() {
+                return true;
+            }
+            statuses.iter().any(|s| match s.as_str() {
+                "ready" => b.is_ready(),
+                "blocked" => b.is_blocked(),
+                other => b.status == other,
+            })
+        })
+        .filter(|b| priorities.is_empty() || priorities.contains(&b.priority))
+        .filter(|b| issue_types.is_empty() || issue_types.iter().any(|t| t == &b.issue_type))
+        .take(cap)
+        .collect()
+}
+
 pub fn bead_search_results(beads: &[Bead], query: &str) {
     if beads.is_empty() {
         println!("  {}", format!("No beads matching '{query}'").dimmed());
@@ -439,5 +489,176 @@ mod tests {
             let badge = priority_badge(p);
             assert!(!badge.is_empty());
         }
+    }
+
+    // ---- filter_beads (rosary-e1c759) -----------------------------------
+
+    /// Build a minimal Bead for filter tests. All other fields are unused by
+    /// the filter — the dimensions under test are `status`, `priority`,
+    /// `issue_type`, and the dependency_count (which feeds `is_blocked`).
+    fn fb(id: &str, status: &str, priority: u8, issue_type: &str) -> Bead {
+        Bead {
+            id: id.to_string(),
+            title: format!("Title for {id}"),
+            description: String::new(),
+            status: status.to_string(),
+            priority,
+            issue_type: issue_type.to_string(),
+            owner: None,
+            repo: "rosary".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            dependency_count: 0,
+            dependent_count: 0,
+            comment_count: 0,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
+            external_ref: None,
+            files: Vec::new(),
+            test_files: Vec::new(),
+            created_by: None,
+            scope: String::new(),
+            derived_from: vec![],
+        }
+    }
+
+    /// Empty filters + generous limit = identity (modulo the cap).
+    #[test]
+    fn filter_beads_no_filters_returns_all() {
+        let beads = vec![fb("a", "open", 1, "task"), fb("b", "closed", 2, "bug")];
+        let out = filter_beads(beads, &[], &[], &[], 50);
+        assert_eq!(out.len(), 2);
+    }
+
+    /// Single status filter selects only matching beads.
+    #[test]
+    fn filter_beads_status_single() {
+        let beads = vec![
+            fb("a", "open", 1, "task"),
+            fb("b", "closed", 1, "task"),
+            fb("c", "open", 1, "task"),
+        ];
+        let out = filter_beads(beads, &["open".to_string()], &[], &[], 50);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|b| b.status == "open"));
+    }
+
+    /// Multiple statuses act as OR.
+    #[test]
+    fn filter_beads_status_multi_or() {
+        let beads = vec![
+            fb("a", "open", 1, "task"),
+            fb("b", "closed", 1, "task"),
+            fb("c", "blocked", 1, "task"),
+        ];
+        let out = filter_beads(
+            beads,
+            &["open".to_string(), "closed".to_string()],
+            &[],
+            &[],
+            50,
+        );
+        assert_eq!(out.len(), 2);
+    }
+
+    /// Virtual `"ready"` status uses Bead::is_ready (status=open + no deps).
+    /// A literal status check would miss this — the virtual name is the whole
+    /// point of accepting it.
+    #[test]
+    fn filter_beads_status_ready_uses_predicate() {
+        let mut ready = fb("a", "open", 1, "task");
+        ready.dependency_count = 0;
+        let mut not_ready = fb("b", "open", 1, "task");
+        not_ready.dependency_count = 3; // open but blocked by deps
+        let out = filter_beads(vec![ready, not_ready], &["ready".to_string()], &[], &[], 50);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "a");
+    }
+
+    /// Virtual `"blocked"` catches both literal-blocked AND open-with-deps.
+    #[test]
+    fn filter_beads_status_blocked_uses_predicate() {
+        let literal_blocked = fb("a", "blocked", 1, "task");
+        let mut open_with_deps = fb("b", "open", 1, "task");
+        open_with_deps.dependency_count = 2;
+        let neither = fb("c", "open", 1, "task");
+        let out = filter_beads(
+            vec![literal_blocked, open_with_deps, neither],
+            &["blocked".to_string()],
+            &[],
+            &[],
+            50,
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().any(|b| b.id == "a"));
+        assert!(out.iter().any(|b| b.id == "b"));
+    }
+
+    /// Priority filter narrows the result; multiple priorities OR.
+    #[test]
+    fn filter_beads_priority_multi() {
+        let beads = vec![
+            fb("p0", "open", 0, "task"),
+            fb("p1", "open", 1, "task"),
+            fb("p2", "open", 2, "task"),
+            fb("p3", "open", 3, "task"),
+        ];
+        let out = filter_beads(beads, &[], &[0, 1], &[], 50);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().any(|b| b.priority == 0));
+        assert!(out.iter().any(|b| b.priority == 1));
+    }
+
+    /// Issue type filter; multiple types OR.
+    #[test]
+    fn filter_beads_issue_type_multi() {
+        let beads = vec![
+            fb("a", "open", 1, "bug"),
+            fb("b", "open", 1, "feature"),
+            fb("c", "open", 1, "task"),
+        ];
+        let out = filter_beads(
+            beads,
+            &[],
+            &[],
+            &["bug".to_string(), "feature".to_string()],
+            50,
+        );
+        assert_eq!(out.len(), 2);
+    }
+
+    /// Filters compose as AND across dimensions, OR within a dimension.
+    #[test]
+    fn filter_beads_combined_dimensions_and() {
+        let beads = vec![
+            fb("a", "open", 0, "bug"),     // matches: status=open, prio=0, type=bug
+            fb("b", "open", 1, "bug"),     // fails priority
+            fb("c", "closed", 0, "bug"),   // fails status
+            fb("d", "open", 0, "feature"), // fails type
+        ];
+        let out = filter_beads(beads, &["open".to_string()], &[0], &["bug".to_string()], 50);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "a");
+    }
+
+    /// `limit` caps the result; cap is min(limit, 200).
+    #[test]
+    fn filter_beads_limit_caps_output() {
+        let beads: Vec<Bead> = (0..10)
+            .map(|i| fb(&format!("b{i}"), "open", 1, "task"))
+            .collect();
+        let out = filter_beads(beads, &[], &[], &[], 3);
+        assert_eq!(out.len(), 3);
+    }
+
+    /// Cap is hard-bounded at 200 even if caller requests more.
+    #[test]
+    fn filter_beads_limit_hard_caps_at_200() {
+        let beads: Vec<Bead> = (0..250)
+            .map(|i| fb(&format!("b{i}"), "open", 1, "task"))
+            .collect();
+        let out = filter_beads(beads, &[], &[], &[], 1000);
+        assert_eq!(out.len(), 200);
     }
 }

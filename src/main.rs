@@ -453,8 +453,37 @@ enum BeadAction {
         #[arg(long)]
         force: bool,
     },
-    /// List open beads
-    List,
+    /// List open beads with optional filters (rosary-e1c759).
+    List {
+        /// Filter by status (open, in_progress, blocked, ready, done, closed).
+        /// Repeat or comma-separate for OR semantics. `ready` and `blocked`
+        /// use the canonical `Bead::is_ready`/`is_blocked` predicates rather
+        /// than literal string match (so `--status blocked` catches both
+        /// `status="blocked"` and `status="open"` beads with unresolved deps).
+        #[arg(short, long, value_delimiter = ',')]
+        status: Vec<String>,
+        /// Filter by priority (0=P0 highest, 3=P3 lowest). Repeat or
+        /// comma-separate for OR semantics.
+        #[arg(short, long, value_delimiter = ',')]
+        priority: Vec<u8>,
+        /// Filter by issue type (bug, feature, task, chore, epic, design,
+        /// research, review). Repeat or comma-separate for OR semantics.
+        #[arg(short = 't', long, value_delimiter = ',')]
+        issue_type: Vec<String>,
+        /// Shortcut for `--status ready`.
+        #[arg(long, conflicts_with = "blocked")]
+        ready: bool,
+        /// Shortcut for `--status blocked`.
+        #[arg(long)]
+        blocked: bool,
+        /// Max results to return (default 50, hard-capped at 200).
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Emit JSON instead of pretty output (matches `rsry status --json`
+        /// shape: `{ count, beads }`).
+        #[arg(long)]
+        json: bool,
+    },
     /// Reopen a closed bead (sets status to `open`).
     /// Useful for recovering from accidental closures or revisiting work.
     Reopen {
@@ -1344,9 +1373,30 @@ async fn main() -> Result<()> {
                     client.close_bead(&id).await?;
                     cli::bead_closed(&id);
                 }
-                BeadAction::List => {
-                    let beads = client.list_beads(&repo_name).await?;
-                    cli::bead_list(&beads);
+                BeadAction::List {
+                    mut status,
+                    priority,
+                    issue_type,
+                    ready,
+                    blocked,
+                    limit,
+                    json,
+                } => {
+                    // Expand `--ready` / `--blocked` into the unified `status`
+                    // filter set so filter_beads has one input vector to walk.
+                    if ready {
+                        status.push("ready".to_string());
+                    }
+                    if blocked {
+                        status.push("blocked".to_string());
+                    }
+                    let all = client.list_beads(&repo_name).await?;
+                    let filtered = cli::filter_beads(all, &status, &priority, &issue_type, limit);
+                    if json {
+                        cli::bead_list_json(&filtered);
+                    } else {
+                        cli::bead_list(&filtered);
+                    }
                 }
                 BeadAction::Reopen { id } => {
                     client.update_status(&id, "open").await?;
@@ -2613,8 +2663,16 @@ mod tests {
         };
         assert!(matches!(close, BeadAction::Close { .. }));
 
-        let list = BeadAction::List;
-        assert!(matches!(list, BeadAction::List));
+        let list = BeadAction::List {
+            status: vec!["open".to_string()],
+            priority: vec![1],
+            issue_type: vec!["bug".to_string()],
+            ready: false,
+            blocked: false,
+            limit: 25,
+            json: false,
+        };
+        assert!(matches!(list, BeadAction::List { .. }));
 
         let comment = BeadAction::Comment {
             action: BeadCommentAction::Add {
