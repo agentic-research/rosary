@@ -759,3 +759,42 @@ fn bead_review_unknown_id_errors_clearly() {
         "error must explain the missing bead; got: {stderr}",
     );
 }
+
+/// Copilot review on PR #220: `repo_path` passed as a subdirectory must
+/// still resolve to the repo root so `bead.repo` carries the canonical
+/// name (not the subdir's basename) and workspace lookup keys off the
+/// right path. Pins the canonicalize-then-derive contract.
+#[test]
+fn bead_review_subdirectory_repo_path_resolves_to_repo_root() {
+    let sandbox = match CliSandbox::new() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let id = sandbox.create_bead("Subdir-path canonicalization bead");
+
+    let subdir = sandbox.repo_path().join("src");
+    std::fs::create_dir_all(&subdir).expect("create subdir");
+    let subdir_str = subdir.to_str().expect("utf-8 subdir path");
+
+    let stdout = sandbox.run_ok(&["bead", "-r", subdir_str, "review", &id, "--json"]);
+    let panel: serde_json::Value =
+        serde_json::from_str(&stdout).expect("review --json must emit valid JSON");
+
+    let expected_repo = sandbox
+        .repo_path()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("repo dir must have a basename");
+    assert_eq!(
+        panel["bead"]["repo"].as_str(),
+        Some(expected_repo),
+        "bead.repo must reflect the canonical repo name, not the subdir's basename; got: {}",
+        panel["bead"]["repo"]
+    );
+    assert_eq!(
+        panel["bead"]["id"].as_str(),
+        Some(id.as_str()),
+        "bead must still be discoverable when --repo points at a subdir",
+    );
+}

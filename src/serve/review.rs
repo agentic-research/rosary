@@ -127,16 +127,22 @@ pub(crate) fn assemble_review(
 }
 
 /// Parse `git log --oneline` output into `(sha, summary)` pairs. Pure — no
-/// I/O. Splits each line on its FIRST whitespace to keep summaries with
-/// embedded spaces intact.
+/// I/O. Splits each line on its FIRST whitespace character (space, tab,
+/// etc.) to keep summaries with embedded spaces intact. Honors the
+/// whitespace contract noted by Copilot review on PR #220 — tab-separated
+/// downstream output parses correctly.
 pub(crate) fn parse_oneline(stdout: &str) -> Vec<(String, String)> {
     stdout
         .lines()
         .filter_map(|line| {
-            let (sha, summary) = line.split_once(' ')?;
+            let split_at = line.find(char::is_whitespace)?;
+            let sha = &line[..split_at];
             if sha.is_empty() {
                 return None;
             }
+            // Skip the one whitespace char; preserve the rest of the line
+            // as-is so summary punctuation/spacing stays intact.
+            let summary = &line[split_at + 1..];
             Some((sha.to_string(), summary.to_string()))
         })
         .collect()
@@ -473,6 +479,19 @@ mod tests {
         let got = parse_oneline(raw);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, "abc1234");
+    }
+
+    /// The docstring promises "first whitespace" — a tab is whitespace.
+    /// Copilot review on PR #220: `git log --oneline` defaults to a
+    /// space separator but downstream tooling occasionally swaps in a
+    /// tab; the parser must honor its own contract.
+    #[test]
+    fn parse_oneline_splits_on_tab_when_present() {
+        let raw = "abc1234\ttab-separated summary text";
+        let got = parse_oneline(raw);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "abc1234");
+        assert_eq!(got[0].1, "tab-separated summary text");
     }
 
     /// Bead not present in the store → orchestrator surfaces a "not found"

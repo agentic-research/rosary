@@ -2448,7 +2448,14 @@ async fn tool_review(args: &Value) -> Result<Value> {
     let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
         .await
         .with_context(|| format!("connecting to bead store at {}", beads_dir.display()))?;
-    let repo_name = repo_name_from_path(repo_path);
+    // Derive repo_name from the CANONICAL root, not the raw arg. Matches
+    // the CLI's behavior in `main.rs` (Command::Bead) and prevents
+    // `bead.repo == subdir_basename` when callers pass a subdirectory or a
+    // trailing-slash path. (Copilot review on PR #220.)
+    let repo_name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".into());
 
     super::review::collect_review_for_bead(store.as_ref(), &repo_name, &root, bead_id).await
 }
