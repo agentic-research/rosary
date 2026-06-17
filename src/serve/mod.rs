@@ -18,6 +18,10 @@ mod landing;
 // Step 3 of the rosary-b5da2f scope-abstraction series. Consumed by
 // `tool_bead_link` as of PR 4; other handlers adopt incrementally.
 pub(crate) mod scope_args;
+// `review` — Phase 0 of rosary-ccd5a2 (agent-native review substrate).
+// RED phase landed under rosary-cd5d2a — stubbed helpers + tests pin the
+// (bead, evidence, change-set) assembly shape; GREEN wires store reads.
+pub(crate) mod review;
 // `ticket_load` — Phase 0 of rosary-5d7141 (Linear-escalation-triage).
 // RED phase landed under rosary-5dc9b0 — stubbed helpers + 5 failing tests
 // pin the shape; GREEN phase wires Linear/GH/bead fetches through them.
