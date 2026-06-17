@@ -480,6 +480,24 @@ pub(crate) fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "rsry_review",
+                "description": "Compose the agent-native review panel for a bead — bead summary + comments + workspace state + sliced change-set + evidence rollup — into one response. Phase 0 of rosary-ccd5a2 (`rsry review` substrate). Workspace-scoped fields (handoffs, change-set, branch) populate only when a workspace exists on disk for the bead; otherwise the response carries `workspace: null` + empty change-set + zero handoffs.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "bead_id": {
+                            "type": "string",
+                            "description": "Bead identifier (e.g. 'rosary-cd5d2a')"
+                        },
+                        "repo_path": {
+                            "type": "string",
+                            "description": "Path to the repo containing the bead. Required in Phase 0; scope→path resolution lands in a follow-up."
+                        }
+                    },
+                    "required": ["bead_id", "repo_path"]
+                }
+            },
+            {
                 "name": "rsry_ticket_load",
                 "description": "Consolidate Linear ticket context (issue body, comments, linked GitHub URL, Zendesk URL, existing tracking bead) into one response. Phase 0 of the Linear-escalation-triage workflow (rosary-5d7141). Replaces 4-5 manual lookups per ticket. Requires LINEAR_API_KEY in env or [linear].api_key in ~/.rsry/config.toml.",
                 "inputSchema": {

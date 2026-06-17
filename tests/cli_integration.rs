@@ -687,3 +687,75 @@ fn full_bead_lifecycle() {
         "closed bead should not appear in list: {stdout}"
     );
 }
+
+/// `rsry bead review <id> --json` end-to-end against a real CLI sandbox.
+/// Phase 0 of rosary-cd5d2a (`rsry review` substrate, EPIC rosary-ccd5a2):
+/// pins the JSON schema the renderer + downstream tools key on, and proves
+/// the helpers compose correctly when wired through the binary.
+///
+/// With no workspace dispatched, `workspace` must be JSON `null`,
+/// `change_set` empty, and seeded comments must be reflected in
+/// `evidence.comment_count`.
+#[test]
+fn bead_review_json_shape_with_no_workspace() {
+    let sandbox = match CliSandbox::new() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let id = sandbox.create_bead("Review-shape integration bead");
+    sandbox.run_ok(&["bead", "comment", "add", &id, "first note"]);
+    sandbox.run_ok(&["bead", "comment", "add", &id, "second note"]);
+
+    let stdout = sandbox.run_ok(&["bead", "review", &id, "--json"]);
+    let panel: serde_json::Value =
+        serde_json::from_str(&stdout).expect("review --json must emit valid JSON");
+
+    assert_eq!(
+        panel["bead"]["id"].as_str(),
+        Some(id.as_str()),
+        "bead.id must match the queried id; got: {stdout}"
+    );
+    assert_eq!(
+        panel["bead"]["title"].as_str(),
+        Some("Review-shape integration bead"),
+        "bead.title must be present",
+    );
+    assert!(
+        panel["workspace"].is_null(),
+        "workspace must be JSON null when no agent dispatched; got: {}",
+        panel["workspace"],
+    );
+    assert_eq!(
+        panel["change_set"].as_array().map(Vec::len),
+        Some(0),
+        "no workspace → no change_set entries",
+    );
+    assert_eq!(
+        panel["evidence"]["comment_count"].as_u64(),
+        Some(2),
+        "seeded comments must reflect in evidence; got: {}",
+        panel["evidence"],
+    );
+    assert_eq!(
+        panel["evidence"]["handoff_count"].as_u64(),
+        Some(0),
+        "no workspace → no handoffs",
+    );
+}
+
+/// Bead-not-found surfaces an error message naming the missing bead so the
+/// reviewer learns from the rejection, instead of getting an empty panel.
+#[test]
+fn bead_review_unknown_id_errors_clearly() {
+    let sandbox = match CliSandbox::new() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let stderr = sandbox.run_err(&["bead", "review", "rosary-ghost-1", "--json"]);
+    assert!(
+        stderr.contains("not found"),
+        "error must explain the missing bead; got: {stderr}",
+    );
+}

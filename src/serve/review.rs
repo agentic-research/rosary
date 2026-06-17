@@ -1,8 +1,3 @@
-// RED-phase scaffold: helpers + types are intentionally not yet wired through
-// handlers.rs / tools.rs / CLI. GREEN of rosary-cd5d2a removes this allow when
-// `tool_review` lands and the CLI subcommand calls into them.
-#![allow(dead_code)]
-
 //! Phase 0 of rosary-ccd5a2 (`rsry review` agent-native review substrate).
 //!
 //! Shape-proof MVP: prove that the reviewable unit
@@ -17,12 +12,15 @@
 //! mocks. RED phase ships unimplemented bodies so the test set pins the
 //! shape; GREEN phase fills them in.
 
+use std::path::Path;
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::bead::Comment;
 use crate::handoff::Handoff;
+use crate::store::BeadStore;
 
 /// Aggregated evidence summary for the review panel.
 ///
@@ -79,15 +77,24 @@ pub struct GateResult {
 }
 
 /// Pure aggregation — summarize evidence sources into the EvidenceSummary
-/// shape. Tests pin the shape; GREEN fills in the counting logic.
+/// shape. Latest-handoff metadata is picked by `timestamp` max; ties broken
+/// by the last entry in the slice (caller stability).
 pub(crate) fn summarize_evidence(
     handoffs: &[Handoff],
     comments: &[Comment],
     observation_count: usize,
     gate_results: &[GateResult],
 ) -> EvidenceSummary {
-    let _ = (handoffs, comments, observation_count, gate_results);
-    unimplemented!("summarize_evidence: GREEN of rosary-cd5d2a fills this in");
+    let latest = handoffs.iter().max_by_key(|h| h.timestamp);
+    EvidenceSummary {
+        observation_count,
+        gate_count: gate_results.len(),
+        gate_pass_count: gate_results.iter().filter(|g| g.passed).count(),
+        handoff_count: handoffs.len(),
+        latest_handoff_at: latest.map(|h| h.timestamp),
+        latest_handoff_summary: latest.map(|h| h.summary.clone()),
+        comment_count: comments.len(),
+    }
 }
 
 /// Pure transformation — convert raw `(sha, summary)` pairs from
@@ -95,22 +102,141 @@ pub(crate) fn summarize_evidence(
 /// Caller controls ordering (typically most-recent-first); this helper does
 /// NOT sort.
 pub(crate) fn format_change_set(commits: Vec<(String, String)>) -> Vec<ChangeSetEntry> {
-    let _ = commits;
-    unimplemented!("format_change_set: GREEN of rosary-cd5d2a fills this in");
+    commits
+        .into_iter()
+        .map(|(sha, summary)| ChangeSetEntry { sha, summary })
+        .collect()
 }
 
 /// Pure JSON assembly — compose the four review-panel components into the
 /// `rsry review` response shape. Deterministic: same inputs → identical
-/// output. Tests assert this property explicitly so the reviewer sees the
-/// same panel across repeated runs unless the underlying state changed.
+/// output. Workspace is rendered as JSON `null` when absent (not omitted)
+/// so callers can distinguish "checked, no workspace" from "didn't check."
 pub(crate) fn assemble_review(
     bead: Value,
     workspace: Option<WorkspaceInfo>,
     change_set: Vec<ChangeSetEntry>,
     evidence: EvidenceSummary,
 ) -> Value {
-    let _ = (bead, workspace, change_set, evidence);
-    unimplemented!("assemble_review: GREEN of rosary-cd5d2a fills this in");
+    json!({
+        "bead": bead,
+        "workspace": workspace,
+        "change_set": change_set,
+        "evidence": evidence,
+    })
+}
+
+/// Parse `git log --oneline` output into `(sha, summary)` pairs. Pure — no
+/// I/O. Splits each line on its FIRST whitespace to keep summaries with
+/// embedded spaces intact.
+pub(crate) fn parse_oneline(stdout: &str) -> Vec<(String, String)> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let (sha, summary) = line.split_once(' ')?;
+            if sha.is_empty() {
+                return None;
+            }
+            Some((sha.to_string(), summary.to_string()))
+        })
+        .collect()
+}
+
+/// Orchestrator: read bead + comments from the store, detect workspace state,
+/// shell out to git for change-set + branch metadata, compose via the pure
+/// helpers above. Errors when the bead isn't found in the store — caller
+/// renders the error to the reviewer ("no such bead in this repo").
+///
+/// Workspace-scoped fields (handoffs, change-set, branch) are populated only
+/// when an agent workspace actually exists on disk; otherwise the response
+/// carries `workspace: null` + empty change-set + zero handoffs, which the
+/// reviewer reads as "no agent dispatched yet."
+pub(crate) async fn collect_review_for_bead(
+    store: &dyn BeadStore,
+    repo_name: &str,
+    repo_path: &Path,
+    bead_id: &str,
+) -> anyhow::Result<Value> {
+    let bead = store
+        .get_bead(bead_id, repo_name)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("bead {bead_id} not found in repo {repo_name}"))?;
+    let bead_json = serde_json::to_value(&bead)?;
+
+    let comments = store.list_comments(bead_id, false).await?;
+
+    let ws = crate::workspace::Workspace::from_existing(bead_id, repo_name, repo_path);
+    let (workspace_info, raw_commits, handoffs) = if ws.vcs == crate::workspace::VcsKind::None {
+        (None, vec![], vec![])
+    } else {
+        let handoffs = Handoff::read_chain(&ws.work_dir);
+        let (branch, commits) = collect_git_state(&ws.work_dir);
+        let info = WorkspaceInfo {
+            work_dir: ws.work_dir.to_string_lossy().to_string(),
+            branch,
+            commits_ahead: commits.len(),
+        };
+        (Some(info), commits, handoffs)
+    };
+
+    let change_set = format_change_set(raw_commits);
+    let evidence = summarize_evidence(&handoffs, &comments, 0, &[]);
+    Ok(assemble_review(
+        bead_json,
+        workspace_info,
+        change_set,
+        evidence,
+    ))
+}
+
+/// Best-effort git inspection: branch name + commits ahead of `main`.
+/// Returns `(String::new(), vec![])` on any git failure — review still
+/// renders, evidence panel shows zero commits-ahead. Falls back to "last
+/// 20 commits" when `main` doesn't exist (e.g. cloned with a single
+/// branch).
+fn collect_git_state(work_dir: &Path) -> (String, Vec<(String, String)>) {
+    let branch = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(work_dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    let base = std::process::Command::new("git")
+        .args(["merge-base", "HEAD", "main"])
+        .current_dir(work_dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let log_args: Vec<String> = match &base {
+        Some(b) => vec![
+            "log".into(),
+            format!("{b}..HEAD"),
+            "--oneline".into(),
+            "-n".into(),
+            "50".into(),
+        ],
+        None => vec!["log".into(), "--oneline".into(), "-n".into(), "20".into()],
+    };
+
+    let commits = std::process::Command::new("git")
+        .args(&log_args)
+        .current_dir(work_dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| parse_oneline(&s))
+        .unwrap_or_default();
+
+    (branch, commits)
 }
 
 #[cfg(test)]
@@ -317,5 +443,100 @@ mod tests {
         let a = assemble_review(bead1, ws1, cs1, ev1);
         let b = assemble_review(bead2, ws2, cs2, ev2);
         assert_eq!(a, b);
+    }
+
+    /// Empty input → empty output. Caller distinguishes "no commits" from
+    /// "git failed" (the latter is the orchestrator's job, not the parser's).
+    #[test]
+    fn parse_oneline_empty_input_empty_output() {
+        assert!(parse_oneline("").is_empty());
+        assert!(parse_oneline("\n\n").is_empty());
+    }
+
+    /// Each line is split on its FIRST whitespace so commit summaries
+    /// containing further spaces stay intact.
+    #[test]
+    fn parse_oneline_splits_sha_and_summary_at_first_space() {
+        let raw = "abc1234 first commit message\ndef5678 fix(scope): subject line";
+        let got = parse_oneline(raw);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].0, "abc1234");
+        assert_eq!(got[0].1, "first commit message");
+        assert_eq!(got[1].1, "fix(scope): subject line");
+    }
+
+    /// Lines without a space are skipped — protects against malformed git
+    /// output rather than producing entries with empty summaries.
+    #[test]
+    fn parse_oneline_skips_lines_without_separator() {
+        let raw = "abc1234 ok line\nbroken-no-space\n";
+        let got = parse_oneline(raw);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "abc1234");
+    }
+
+    /// Bead not present in the store → orchestrator surfaces a "not found"
+    /// error so the CLI/MCP layer can render it to the reviewer.
+    #[tokio::test]
+    async fn collect_review_for_bead_errors_when_bead_missing() {
+        use crate::bead_sqlite::SqliteBeadStore;
+        let store = SqliteBeadStore::connect(Path::new(":memory:")).unwrap();
+        let nowhere = Path::new("/nonexistent-for-review-test");
+        let err = collect_review_for_bead(&store, "rosary", nowhere, "rosary-ghost")
+            .await
+            .expect_err("missing bead must error");
+        assert!(
+            err.to_string().contains("not found"),
+            "error should name the missing-bead condition; got: {err}"
+        );
+    }
+
+    /// Bead found but no workspace dir on disk → response carries
+    /// `workspace: null`, empty change_set, zero handoffs — but the
+    /// bead's own seeded comment count IS reflected. Pins the
+    /// "compose from whatever exists" semantics.
+    #[tokio::test]
+    async fn collect_review_for_bead_no_workspace_renders_null_with_comments_counted() {
+        use crate::bead_sqlite::SqliteBeadStore;
+        let store = SqliteBeadStore::connect(Path::new(":memory:")).unwrap();
+        store
+            .create_bead("rosary-rev1", "review fixture", "", 1, "feat")
+            .await
+            .unwrap();
+        store
+            .add_comment("rosary-rev1", "first note", "tester")
+            .await
+            .unwrap();
+        store
+            .add_comment("rosary-rev1", "second note", "tester")
+            .await
+            .unwrap();
+
+        let nowhere = Path::new("/nonexistent-for-review-test");
+        let got = collect_review_for_bead(&store, "rosary", nowhere, "rosary-rev1")
+            .await
+            .expect("seeded bead must be retrievable");
+
+        assert!(got["workspace"].is_null(), "workspace must be JSON null");
+        assert_eq!(
+            got["change_set"].as_array().map(Vec::len),
+            Some(0),
+            "no workspace → no change_set"
+        );
+        assert_eq!(
+            got["evidence"]["comment_count"].as_u64(),
+            Some(2),
+            "seeded comments must be counted"
+        );
+        assert_eq!(
+            got["evidence"]["handoff_count"].as_u64(),
+            Some(0),
+            "no workspace → no handoffs"
+        );
+        assert_eq!(
+            got["bead"]["id"].as_str(),
+            Some("rosary-rev1"),
+            "bead summary must be present"
+        );
     }
 }
