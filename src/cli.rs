@@ -391,6 +391,91 @@ pub fn bead_commented(id: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// Review panel output (rosary-cd5d2a — Phase 0 of rosary-ccd5a2)
+// ---------------------------------------------------------------------------
+
+/// Render the `rsry review` panel as human-readable text. Pure formatting on
+/// the assembled JSON value — no I/O, no further fetching. JSON path
+/// (`--json`) bypasses this entirely; the schema is the contract.
+pub fn review_render(panel: &serde_json::Value) {
+    let bead = &panel["bead"];
+    let ev = &panel["evidence"];
+
+    println!(
+        "{:<13} {} {} {} {}",
+        "BEAD",
+        bead["id"].as_str().unwrap_or("?").bold(),
+        format!("P{}", bead["priority"].as_u64().unwrap_or(2)).yellow(),
+        bead["issue_type"].as_str().unwrap_or("?").cyan(),
+        bead["status"].as_str().unwrap_or("?").dimmed(),
+    );
+    println!("{:<13} {}", "TITLE", bead["title"].as_str().unwrap_or(""));
+    println!();
+
+    match panel["workspace"].as_object() {
+        Some(ws) => {
+            println!(
+                "{:<13} {}",
+                "WORKSPACE",
+                ws["work_dir"].as_str().unwrap_or("?"),
+            );
+            let branch = ws["branch"].as_str().unwrap_or("?");
+            let ahead = ws["commits_ahead"].as_u64().unwrap_or(0);
+            println!(
+                "{:<13} {}  {}",
+                "BRANCH",
+                branch,
+                format!(
+                    "({ahead} commit{} ahead)",
+                    if ahead == 1 { "" } else { "s" }
+                )
+                .dimmed(),
+            );
+        }
+        None => println!(
+            "{:<13} {}",
+            "WORKSPACE",
+            "none — no agent dispatched yet".dimmed(),
+        ),
+    }
+    println!();
+
+    println!("{}", "CHANGE-SET".bold());
+    match panel["change_set"].as_array() {
+        Some(commits) if !commits.is_empty() => {
+            for c in commits {
+                println!(
+                    "  ─ {}  {}",
+                    c["sha"].as_str().unwrap_or("?").yellow(),
+                    c["summary"].as_str().unwrap_or(""),
+                );
+            }
+        }
+        _ => println!("  {}", "(no commits on this branch yet)".dimmed()),
+    }
+    println!();
+
+    println!("{}", "EVIDENCE".bold());
+    println!(
+        "  observations  : {}",
+        ev["observation_count"].as_u64().unwrap_or(0),
+    );
+    println!(
+        "  gates         : {}/{}",
+        ev["gate_pass_count"].as_u64().unwrap_or(0),
+        ev["gate_count"].as_u64().unwrap_or(0),
+    );
+    println!(
+        "  handoffs      : {}",
+        ev["handoff_count"].as_u64().unwrap_or(0),
+    );
+    println!(
+        "  comments      : {}",
+        ev["comment_count"].as_u64().unwrap_or(0),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Decompose output
 // ---------------------------------------------------------------------------
 

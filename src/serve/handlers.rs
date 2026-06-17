@@ -225,6 +225,7 @@ pub(crate) async fn call_tool(
         "rsry_repo_register" => tool_repo_register(args, backend, user_scope).await,
         "rsry_repo_list" => tool_repo_list(backend, user_scope).await,
         "rsry_bead_import" => tool_bead_import(args, config_path, pool, user_scope).await,
+        "rsry_review" => tool_review(args).await,
         "rsry_ticket_load" => tool_ticket_load(args, pool).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
@@ -2419,6 +2420,46 @@ async fn tool_repo_list(
 // rsry_ticket_load — Phase 0 of rosary-5d7141 (rosary-5dc9b0)
 // ---------------------------------------------------------------------------
 
+/// Compose the agent-native review panel for a bead (summary, comments,
+/// workspace state, change-set, evidence rollup) into one MCP response.
+/// Phase 0 of rosary-ccd5a2 (`rsry review` substrate). The real composition
+/// lives in `serve::review::collect_review_for_bead`; this thin orchestrator
+/// validates args, resolves the repo's bead store, and forwards.
+async fn tool_review(args: &Value) -> Result<Value> {
+    let bead_id = args
+        .get("bead_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("bead_id is required (e.g. \"rosary-cd5d2a\")"))?;
+    let repo_path = args
+        .get("repo_path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "repo_path is required (Phase 0 — scope→path resolution lands in a follow-up)"
+            )
+        })?;
+
+    let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
+    let beads_dir = crate::resolve_beads_dir(&root);
+    let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
+        .await
+        .with_context(|| format!("connecting to bead store at {}", beads_dir.display()))?;
+    // Derive repo_name from the CANONICAL root, not the raw arg. Matches
+    // the CLI's behavior in `main.rs` (Command::Bead) and prevents
+    // `bead.repo == subdir_basename` when callers pass a subdirectory or a
+    // trailing-slash path. (Copilot review on PR #220.)
+    let repo_name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".into());
+
+    super::review::collect_review_for_bead(store.as_ref(), &repo_name, &root, bead_id).await
+}
+
 /// Consolidate Linear + (linked GH/Zendesk URLs) + existing-bead context for
 /// a single ticket into one MCP response. Replaces the 4-5 manual lookups the
 /// user performs per escalation. See `serve::ticket_load` for the pure-fn
@@ -2500,6 +2541,46 @@ async fn tool_ticket_load(args: &Value, pool: &RepoPool) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- tool_review (rosary-cd5d2a) --------------------------------------
+
+    /// Phase 0 of rosary-ccd5a2. Caller must supply `bead_id`; the error
+    /// message names the missing arg so MCP clients learn the shape from
+    /// one rejection.
+    #[tokio::test]
+    async fn review_rejects_missing_bead_id() {
+        let args = json!({ "repo_path": "/tmp" });
+        let err = tool_review(&args).await.unwrap_err();
+        assert!(
+            err.to_string().contains("bead_id"),
+            "error must name the missing field; got: {err}"
+        );
+    }
+
+    /// Whitespace-only `bead_id` is rejected — same validation surface as
+    /// "missing entirely" so the error UX stays consistent.
+    #[tokio::test]
+    async fn review_rejects_blank_bead_id() {
+        let args = json!({ "bead_id": "   ", "repo_path": "/tmp" });
+        let err = tool_review(&args).await.unwrap_err();
+        assert!(
+            err.to_string().contains("bead_id"),
+            "blank bead_id must hit the same gate; got: {err}"
+        );
+    }
+
+    /// `repo_path` is required in Phase 0 — scope→path resolution is a
+    /// follow-up. The error names the missing arg so the user knows what
+    /// to add.
+    #[tokio::test]
+    async fn review_rejects_missing_repo_path() {
+        let args = json!({ "bead_id": "rosary-cd5d2a" });
+        let err = tool_review(&args).await.unwrap_err();
+        assert!(
+            err.to_string().contains("repo_path"),
+            "error must name the missing field; got: {err}"
+        );
+    }
 
     // ---- tool_ticket_load (rosary-5dc9b0) ---------------------------------
 

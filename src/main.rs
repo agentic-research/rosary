@@ -490,6 +490,16 @@ enum BeadAction {
         /// Bead ID
         id: String,
     },
+    /// Compose the agent-native review panel for a bead — bead summary +
+    /// comments + workspace state + sliced change-set + evidence rollup —
+    /// into one view. Phase 0 of rosary-ccd5a2 (`rsry review` substrate).
+    Review {
+        /// Bead ID
+        id: String,
+        /// Emit JSON instead of pretty text (stable schema for piping).
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage comments on a bead (add/update/delete/list)
     Comment {
         #[command(subcommand)]
@@ -1402,6 +1412,20 @@ async fn main() -> Result<()> {
                     client.update_status(&id, "open").await?;
                     client.log_event(&id, "reopened", "via rsry-cli").await;
                     println!("reopened {id}");
+                }
+                BeadAction::Review { id, json } => {
+                    let panel = serve::review::collect_review_for_bead(
+                        client.as_ref(),
+                        &repo_name,
+                        &repo_root,
+                        &id,
+                    )
+                    .await?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&panel)?);
+                    } else {
+                        cli::review_render(&panel);
+                    }
                 }
                 BeadAction::Comment { action } => match action {
                     BeadCommentAction::Add { id, body } => {
