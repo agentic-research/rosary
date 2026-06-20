@@ -1883,28 +1883,30 @@ mod hooks {
         let dolt_dir = repo_root.join(".beads").join("dolt").join(repo_name);
         if dolt_dir.exists() {
             match check_dolt_remote(&dolt_dir) {
-                DoltRemoteStatus::Configured(_) => {}
+                // The hooks hard-code `dolt push origin main`, so the only
+                // remote that matters is `origin`. A repo can have other
+                // remotes (e.g. `upstream`) yet still push nowhere — treat
+                // "no origin" the same as "no remote" rather than assuming any
+                // remote is good enough.
+                DoltRemoteStatus::Configured(stdout) if has_origin_remote(&stdout) => {}
+                DoltRemoteStatus::Configured(_) => match dolt_share {
+                    Some(share) => provision_origin(&dolt_dir, share),
+                    None => {
+                        eprintln!(
+                            "[hooks] WARNING: dolt remote(s) exist but none named `origin` in {}",
+                            dolt_dir.display()
+                        );
+                        eprintln!(
+                            "[hooks] hooks push to `origin`; set [repo.dolt_share] remote=\"<url>\" in rosary.toml"
+                        );
+                        eprintln!(
+                            "[hooks] or run: cd {} && dolt remote add origin <url>",
+                            dolt_dir.display()
+                        );
+                    }
+                },
                 DoltRemoteStatus::NotConfigured => match dolt_share {
-                    Some(share) => match dolt_remote_add(&dolt_dir, "origin", &share.remote) {
-                        Ok(()) => {
-                            println!(
-                                "[hooks] configured dolt remote origin → {} (in {})",
-                                share.remote,
-                                dolt_dir.display()
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "[hooks] WARNING: `dolt remote add` failed in {}: {e}",
-                                dolt_dir.display()
-                            );
-                            eprintln!(
-                                "[hooks] Try by hand: cd {} && dolt remote add origin {}",
-                                dolt_dir.display(),
-                                share.remote
-                            );
-                        }
-                    },
+                    Some(share) => provision_origin(&dolt_dir, share),
                     None => {
                         eprintln!(
                             "[hooks] WARNING: no dolt remote configured in {}",
@@ -1933,6 +1935,40 @@ mod hooks {
         }
 
         Ok(())
+    }
+
+    /// True if `dolt remote -v` output lists a remote named `origin`. The
+    /// first whitespace-delimited token on each line is the remote name
+    /// (`origin <url>`), matching git's `remote -v` format.
+    pub(crate) fn has_origin_remote(dolt_remote_v: &str) -> bool {
+        dolt_remote_v
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .any(|name| name == "origin")
+    }
+
+    /// Add `origin` → `share.remote` for the bead DB, printing success or a
+    /// non-fatal warning. Never returns an error: a failed provision must not
+    /// abort `hooks install` (the user can still set the remote by hand).
+    fn provision_origin(dolt_dir: &Path, share: &DoltShareConfig) {
+        match dolt_remote_add(dolt_dir, "origin", &share.remote) {
+            Ok(()) => println!(
+                "[hooks] configured dolt remote origin → {} (in {})",
+                share.remote,
+                dolt_dir.display()
+            ),
+            Err(e) => {
+                eprintln!(
+                    "[hooks] WARNING: `dolt remote add` failed in {}: {e}",
+                    dolt_dir.display()
+                );
+                eprintln!(
+                    "[hooks] Try by hand: cd {} && dolt remote add origin {}",
+                    dolt_dir.display(),
+                    share.remote
+                );
+            }
+        }
     }
 
     /// Run `dolt remote add <name> <url>` in `dolt_dir`. Errors if dolt isn't
@@ -2432,6 +2468,21 @@ mod hooks {
                     std::mem::discriminant(&other)
                 ),
             }
+        }
+
+        #[test]
+        fn has_origin_remote_detects_origin_among_others() {
+            // `upstream` present but no `origin`: hooks push to `origin`, so
+            // this must read as "needs provisioning", not "configured".
+            assert!(!has_origin_remote(
+                "upstream\thttps://example.com/up (fetch)\nupstream\thttps://example.com/up (push)\n"
+            ));
+            assert!(has_origin_remote(
+                "upstream\thttps://example.com/up (fetch)\norigin\thttps://example.com/o (push)\n"
+            ));
+            // Bare name form (`dolt remote` without -v) and empty input.
+            assert!(has_origin_remote("origin\n"));
+            assert!(!has_origin_remote(""));
         }
 
         #[test]

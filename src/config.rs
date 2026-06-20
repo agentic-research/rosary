@@ -257,14 +257,12 @@ pub struct DoltShareConfig {
     /// Remote URL. Pass-through to `dolt remote add origin <remote>`.
     /// Accepts whatever Dolt accepts: `dolthub:org/repo`,
     /// `https://doltlab.example.com/org/repo`, a filesystem path for tests, etc.
+    ///
+    /// Branch is intentionally not configurable: the embedded hook templates
+    /// hard-code `dolt push origin main`. A `branch` field here would be
+    /// silently ignored, so it is omitted until the templates are rendered
+    /// from config (or sync moves out of git hooks entirely).
     pub remote: String,
-    /// Branch to push/pull. Default `main` matches the existing hook templates.
-    #[serde(default = "default_dolt_share_branch")]
-    pub branch: String,
-}
-
-fn default_dolt_share_branch() -> String {
-    "main".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
