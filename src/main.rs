@@ -1897,7 +1897,7 @@ mod hooks {
                             dolt_dir.display()
                         );
                         eprintln!(
-                            "[hooks] hooks push to `origin`; set [repo.dolt_share] remote=\"<url>\" in rosary.toml"
+                            "[hooks] hooks push to `origin`; set [repo.dolt_share] remote=\"<url>\" in your rosary config (rosary.toml or ~/.rsry/config.toml)"
                         );
                         eprintln!(
                             "[hooks] or run: cd {} && dolt remote add origin <url>",
@@ -1913,7 +1913,7 @@ mod hooks {
                             dolt_dir.display()
                         );
                         eprintln!(
-                            "[hooks] Either set [repo.dolt_share] remote=\"<url>\" in rosary.toml"
+                            "[hooks] Either set [repo.dolt_share] remote=\"<url>\" in your rosary config (rosary.toml or ~/.rsry/config.toml)"
                         );
                         eprintln!(
                             "[hooks] or run: cd {} && dolt remote add origin <url>",

@@ -238,10 +238,11 @@ pub struct RepoConfig {
     /// so existing configs continue to dispatch without a migration step.
     #[serde(default)]
     pub approval: DispatchApproval,
-    /// Dolt-remote sharing of `.beads/dolt/<name>` across collaborators.
+    /// Dolt-remote sharing of `.beads/dolt/<repo-name>` across collaborators.
     /// Embedded as `[repo.dolt_share]` in TOML. When set, `rsry hooks install`
-    /// configures `dolt remote add origin <remote>` if no remote exists, so
-    /// the bundled `post-push` / `post-merge` hooks have somewhere to push.
+    /// configures `dolt remote add origin <remote>` if no `origin` remote
+    /// exists, so the bundled `post-push` / `post-merge` hooks have somewhere
+    /// to push.
     #[serde(default)]
     pub dolt_share: Option<DoltShareConfig>,
 }
@@ -1224,6 +1225,36 @@ path = "~/remotes/art/mache"
         let deserialized: Config = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.repo[0].name, "test");
         assert_eq!(deserialized.repo[0].path, PathBuf::from("/tmp/test"));
+    }
+
+    #[test]
+    fn parse_repo_dolt_share() {
+        // `[repo.dolt_share]` must parse into Some with the remote read through.
+        let toml = r#"
+[[repo]]
+name = "rosary"
+path = "/tmp/rosary"
+
+[repo.dolt_share]
+remote = "dolthub:org/rosary-beads"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let share = config.repo[0]
+            .dolt_share
+            .as_ref()
+            .expect("dolt_share should be Some");
+        assert_eq!(share.remote, "dolthub:org/rosary-beads");
+
+        // Absent section stays None (default), and a populated config
+        // survives a serialize -> deserialize roundtrip.
+        let bare: Config = toml::from_str("[[repo]]\nname=\"x\"\npath=\"/tmp/x\"\n").unwrap();
+        assert!(bare.repo[0].dolt_share.is_none());
+        let roundtripped: Config =
+            toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
+        assert_eq!(
+            roundtripped.repo[0].dolt_share.as_ref().unwrap().remote,
+            "dolthub:org/rosary-beads"
+        );
     }
 
     #[test]
