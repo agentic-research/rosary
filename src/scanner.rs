@@ -173,6 +173,7 @@ mod tests {
             lang: None,
             self_managed: false,
             approval: crate::config::DispatchApproval::Approved,
+            dolt_share: None,
         }];
         let beads = scan_repos(&repos).await.unwrap();
         assert!(beads.is_empty());
@@ -201,6 +202,7 @@ mod tests {
             lang: None,
             self_managed: false,
             approval: crate::config::DispatchApproval::Approved,
+            dolt_share: None,
         }];
 
         let beads = scan_repos(&repos).await.unwrap();

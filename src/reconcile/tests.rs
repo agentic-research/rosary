@@ -1530,6 +1530,7 @@ fn approval_repo(
         lang: None,
         self_managed: false,
         approval,
+        dolt_share: None,
     }
 }
 

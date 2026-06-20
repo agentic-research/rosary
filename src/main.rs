@@ -1669,7 +1669,23 @@ async fn main() -> Result<()> {
         Command::Hooks { action, repo } => {
             let repo_root = scanner::resolve_repo_path(Path::new(&repo));
             match action {
-                HooksAction::Install => hooks::install(&repo_root)?,
+                HooksAction::Install => {
+                    // Look up the matching [[repo]] entry so we can pass any
+                    // [repo.dolt_share] config through to the installer. We
+                    // tolerate config-load failure here — installing hooks is
+                    // useful even without a config file (the user can still
+                    // set the dolt remote by hand).
+                    let dolt_share = config::load_merged(&config::resolve_config_path())
+                        .ok()
+                        .and_then(|cfg| {
+                            let target = repo_root.canonicalize().ok()?;
+                            cfg.repo.into_iter().find_map(|r| {
+                                let p = scanner::expand_path(&r.path).canonicalize().ok()?;
+                                (p == target).then_some(r.dolt_share)?
+                            })
+                        });
+                    hooks::install(&repo_root, dolt_share.as_ref())?
+                }
                 HooksAction::Status => hooks::status(&repo_root)?,
             }
         }
@@ -1703,6 +1719,7 @@ mod hooks {
     //! so worktrees, submodules (`.git` is a file pointer to the real
     //! gitdir, not a directory), and `core.hooksPath` overrides all route to
     //! the right place.
+    use crate::config::DoltShareConfig;
     use anyhow::{Context, Result};
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -1827,7 +1844,13 @@ mod hooks {
     /// Merge-aware: existing user hooks are preserved. The rsry block is
     /// (re)inserted between markers in each managed hook file. Idempotent —
     /// running install twice produces the same file content the second time.
-    pub fn install(repo_root: &Path) -> Result<()> {
+    ///
+    /// When `dolt_share` is `Some` and the dolt directory has no remote
+    /// configured, `dolt remote add origin <remote>` is run automatically.
+    /// Failures here are warnings — they don't fail the install (the user can
+    /// still set the remote by hand). The hooks themselves silently no-op
+    /// when no remote is set, so installing without a remote is safe.
+    pub fn install(repo_root: &Path, dolt_share: Option<&DoltShareConfig>) -> Result<()> {
         let hooks_dir = resolve_hooks_dir(repo_root)?;
         std::fs::create_dir_all(&hooks_dir)
             .with_context(|| format!("creating {}", hooks_dir.display()))?;
@@ -1853,7 +1876,6 @@ mod hooks {
             println!("[hooks] installed {} → {}", name, dst.display());
         }
 
-        // Warn if Dolt remote is not configured — hooks will silently no-op otherwise.
         let repo_name = repo_root
             .file_name()
             .and_then(|n| n.to_str())
@@ -1862,16 +1884,41 @@ mod hooks {
         if dolt_dir.exists() {
             match check_dolt_remote(&dolt_dir) {
                 DoltRemoteStatus::Configured(_) => {}
-                DoltRemoteStatus::NotConfigured => {
-                    eprintln!(
-                        "[hooks] WARNING: no dolt remote configured in {}",
-                        dolt_dir.display()
-                    );
-                    eprintln!(
-                        "[hooks] Run: cd {} && dolt remote add origin <url>",
-                        dolt_dir.display()
-                    );
-                }
+                DoltRemoteStatus::NotConfigured => match dolt_share {
+                    Some(share) => match dolt_remote_add(&dolt_dir, "origin", &share.remote) {
+                        Ok(()) => {
+                            println!(
+                                "[hooks] configured dolt remote origin → {} (in {})",
+                                share.remote,
+                                dolt_dir.display()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[hooks] WARNING: `dolt remote add` failed in {}: {e}",
+                                dolt_dir.display()
+                            );
+                            eprintln!(
+                                "[hooks] Try by hand: cd {} && dolt remote add origin {}",
+                                dolt_dir.display(),
+                                share.remote
+                            );
+                        }
+                    },
+                    None => {
+                        eprintln!(
+                            "[hooks] WARNING: no dolt remote configured in {}",
+                            dolt_dir.display()
+                        );
+                        eprintln!(
+                            "[hooks] Either set [repo.dolt_share] remote=\"<url>\" in rosary.toml"
+                        );
+                        eprintln!(
+                            "[hooks] or run: cd {} && dolt remote add origin <url>",
+                            dolt_dir.display()
+                        );
+                    }
+                },
                 DoltRemoteStatus::Errored { exit, stderr } => {
                     eprintln!(
                         "[hooks] WARNING: `dolt remote -v` failed in {} (exit {exit}): {}",
@@ -1885,6 +1932,25 @@ mod hooks {
             }
         }
 
+        Ok(())
+    }
+
+    /// Run `dolt remote add <name> <url>` in `dolt_dir`. Errors if dolt isn't
+    /// invokable or exits non-zero, returning stderr so the caller can surface
+    /// what went wrong to the user.
+    fn dolt_remote_add(dolt_dir: &Path, name: &str, url: &str) -> Result<()> {
+        let out = Command::new("dolt")
+            .args(["remote", "add", name, url])
+            .current_dir(dolt_dir)
+            .output()
+            .with_context(|| format!("invoking dolt in {}", dolt_dir.display()))?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "dolt remote add exit {}: {}",
+                out.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
         Ok(())
     }
 
@@ -2203,7 +2269,7 @@ mod hooks {
         fn install_into_fresh_repo() {
             let dir = tempfile::tempdir().unwrap();
             init_repo(dir.path());
-            install(dir.path()).unwrap();
+            install(dir.path(), None).unwrap();
             for (name, block) in HOOKS {
                 let path = dir.path().join(".git").join("hooks").join(name);
                 assert!(path.exists(), "{name} should be installed");
@@ -2238,7 +2304,7 @@ mod hooks {
             )
             .unwrap();
 
-            install(dir.path()).unwrap();
+            install(dir.path(), None).unwrap();
 
             let content = std::fs::read_to_string(&post_push).unwrap();
             assert!(
@@ -2254,11 +2320,11 @@ mod hooks {
         fn install_idempotent_on_reinstall() {
             let dir = tempfile::tempdir().unwrap();
             init_repo(dir.path());
-            install(dir.path()).unwrap();
+            install(dir.path(), None).unwrap();
             let path = dir.path().join(".git").join("hooks").join("post-push");
             let first = std::fs::read_to_string(&path).unwrap();
             // Reinstall — should produce identical bytes (no duplicated block).
-            install(dir.path()).unwrap();
+            install(dir.path(), None).unwrap();
             let second = std::fs::read_to_string(&path).unwrap();
             assert_eq!(first, second, "reinstall should be idempotent");
             assert_eq!(
@@ -2273,14 +2339,14 @@ mod hooks {
             let dir = tempfile::tempdir().unwrap();
             init_repo(dir.path());
             // First install lays down the rsry block.
-            install(dir.path()).unwrap();
+            install(dir.path(), None).unwrap();
             let path = dir.path().join(".git").join("hooks").join("post-push");
             // User appends their own logic AFTER the rsry marker block.
             let original = std::fs::read_to_string(&path).unwrap();
             std::fs::write(&path, format!("{}\necho 'user trailer'\n", original)).unwrap();
 
             // Reinstall — must preserve the user trailer.
-            install(dir.path()).unwrap();
+            install(dir.path(), None).unwrap();
             let after = std::fs::read_to_string(&path).unwrap();
             assert!(
                 after.contains("user trailer"),
@@ -2316,7 +2382,7 @@ mod hooks {
                 .success()
             );
 
-            install(&wt_path).expect("install must succeed in a worktree");
+            install(&wt_path, None).expect("install must succeed in a worktree");
 
             // The hook landed somewhere reachable via resolve_hooks_dir.
             let hooks_dir = resolve_hooks_dir(&wt_path).unwrap();
@@ -2334,7 +2400,7 @@ mod hooks {
             let dir = tempfile::tempdir().unwrap();
             // No git init — install must refuse rather than write into a
             // random directory.
-            let err = install(dir.path()).unwrap_err();
+            let err = install(dir.path(), None).unwrap_err();
             assert!(
                 err.to_string().contains("not a git repo"),
                 "expected error mentioning `not a git repo`, got: {err}",

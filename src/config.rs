@@ -238,6 +238,33 @@ pub struct RepoConfig {
     /// so existing configs continue to dispatch without a migration step.
     #[serde(default)]
     pub approval: DispatchApproval,
+    /// Dolt-remote sharing of `.beads/dolt/<name>` across collaborators.
+    /// Embedded as `[repo.dolt_share]` in TOML. When set, `rsry hooks install`
+    /// configures `dolt remote add origin <remote>` if no remote exists, so
+    /// the bundled `post-push` / `post-merge` hooks have somewhere to push.
+    #[serde(default)]
+    pub dolt_share: Option<DoltShareConfig>,
+}
+
+/// Declarative sharing config for a repo's bead database.
+///
+/// The push/pull machinery itself is already in the embedded
+/// `docs/git-hooks/post-push` and `post-merge` templates. This config exists
+/// so contributors don't have to know the `dolt remote add` incantation —
+/// `rsry hooks install` consults it and provisions the remote on first run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoltShareConfig {
+    /// Remote URL. Pass-through to `dolt remote add origin <remote>`.
+    /// Accepts whatever Dolt accepts: `dolthub:org/repo`,
+    /// `https://doltlab.example.com/org/repo`, a filesystem path for tests, etc.
+    pub remote: String,
+    /// Branch to push/pull. Default `main` matches the existing hook templates.
+    #[serde(default = "default_dolt_share_branch")]
+    pub branch: String,
+}
+
+fn default_dolt_share_branch() -> String {
+    "main".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -739,6 +766,7 @@ pub fn enable_repo(repo_path: &Path) -> Result<RepoConfig> {
         // New entries default to Approved (matches the field default), so
         // existing dispatch behavior is preserved when require_approval is off.
         approval: DispatchApproval::Approved,
+        dolt_share: None,
     };
 
     let mut config = load_global()?;
@@ -1087,6 +1115,7 @@ path = "~/remotes/art/mache"
             lang: None,
             self_managed: false,
             approval: DispatchApproval::Approved,
+            dolt_share: None,
         };
         let config = Config {
             repo: vec![entry],
@@ -1185,6 +1214,7 @@ path = "~/remotes/art/mache"
                 lang: Some("rust".into()),
                 self_managed: false,
                 approval: DispatchApproval::Approved,
+                dolt_share: None,
             }],
             linear: None,
             compute: None,

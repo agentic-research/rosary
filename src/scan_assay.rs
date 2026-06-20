@@ -182,6 +182,7 @@ mod scan_assay_stale {
             lang: None,
             self_managed: false,
             approval: crate::config::DispatchApproval::Approved,
+            dolt_share: None,
         };
 
         let count = run_assay_scan(&[repo], &registry).await.unwrap();
@@ -240,6 +241,7 @@ mod scan_assay_stale {
             lang: None,
             self_managed: false,
             approval: crate::config::DispatchApproval::Approved,
+            dolt_share: None,
         };
 
         let count = run_assay_scan(&[repo], &registry).await.unwrap();
@@ -259,6 +261,7 @@ mod scan_assay_stale {
             lang: None,
             self_managed: false,
             approval: crate::config::DispatchApproval::Approved,
+            dolt_share: None,
         };
         let count = run_assay_scan(&[repo], &registry).await.unwrap();
         assert_eq!(count, 0);

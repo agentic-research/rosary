@@ -390,6 +390,7 @@ impl Reconciler {
                                             lang: Some(lang),
                                             self_managed: false,
                                             approval: crate::config::DispatchApproval::Approved,
+                                            dolt_share: None,
                                         });
                                     }
                                     Err(e) => {
@@ -640,6 +641,7 @@ impl Reconciler {
                             lang: Some(lang),
                             self_managed: false,
                             approval: crate::config::DispatchApproval::Approved,
+                            dolt_share: None,
                         });
                     }
                     Err(_) => still_pending.push(url),
