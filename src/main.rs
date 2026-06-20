@@ -1845,11 +1845,12 @@ mod hooks {
     /// (re)inserted between markers in each managed hook file. Idempotent —
     /// running install twice produces the same file content the second time.
     ///
-    /// When `dolt_share` is `Some` and the dolt directory has no remote
-    /// configured, `dolt remote add origin <remote>` is run automatically.
-    /// Failures here are warnings — they don't fail the install (the user can
-    /// still set the remote by hand). The hooks themselves silently no-op
-    /// when no remote is set, so installing without a remote is safe.
+    /// When `dolt_share` is `Some` and the dolt directory has no `origin`
+    /// remote (none at all, or only non-`origin` remotes), `dolt remote add
+    /// origin <remote>` is run automatically. Failures here are warnings —
+    /// they don't fail the install (the user can still set the remote by
+    /// hand). The hooks themselves silently no-op when no `origin` is set, so
+    /// installing without a remote is safe.
     pub fn install(repo_root: &Path, dolt_share: Option<&DoltShareConfig>) -> Result<()> {
         let hooks_dir = resolve_hooks_dir(repo_root)?;
         std::fs::create_dir_all(&hooks_dir)
@@ -1963,7 +1964,7 @@ mod hooks {
                     dolt_dir.display()
                 );
                 eprintln!(
-                    "[hooks] Try by hand: cd {} && dolt remote add origin {}",
+                    "[hooks] Try by hand: cd {} && dolt remote add origin '{}'",
                     dolt_dir.display(),
                     share.remote
                 );
