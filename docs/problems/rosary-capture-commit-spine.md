@@ -318,15 +318,15 @@ L5 is the lattice signal — it serves both R1 (the triage→promote flow) and R
 
 ## Action items
 
-- [ ] File L1 first — it's the keystone and unblocks the whole R1 branch. Maps onto
-      the existing open bead `rosary-1db9c9` (L1+L2+L3 *implement* it; consider
-      retitling 1db9c9 as the R1 epic and filing L1/L2/L3 as its children).
-- [ ] File L4 and L6 in parallel — both are independent of L1.
-- [ ] Track the non-leaves separately; the shared-client-libs ADR is the gate for
-      that whole thread.
-- [ ] Refresh after L1+L2 land — the triage pass usually reveals second-order
-      requirements (priority heuristics, merge-vs-file rules) not visible until the
-      inbox has real traffic.
+- File L1 first — it's the keystone and unblocks the whole R1 branch. Maps onto
+  the existing open bead `rosary-1db9c9` (L1+L2+L3 *implement* it; consider
+  retitling 1db9c9 as the R1 epic and filing L1/L2/L3 as its children).
+- File L4 and L6 in parallel — both are independent of L1.
+- Track the non-leaves separately; the shared-client-libs ADR is the gate for
+  that whole thread.
+- Refresh after L1+L2 land — the triage pass usually reveals second-order
+  requirements (priority heuristics, merge-vs-file rules) not visible until the
+  inbox has real traffic.
 
 ## Backlog collapse (existing beads this subsumes / relates to)
 
