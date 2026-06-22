@@ -92,13 +92,18 @@ impl Reconciler {
             // scans both, and remote_repos entries are created with
             // approval: Approved so they should pass when the gate is on.
             if self.config.require_approval && target_filter.is_none() {
-                let admits = self
-                    .config
-                    .repo
-                    .iter()
-                    .chain(self.remote_repos.iter())
-                    .find(|r| r.name == bead.repo)
-                    .is_some_and(|r| r.approval.admits());
+                // Global scope (the org-level incoming triage queue, rosary-1db9c9)
+                // has no per-repo RepoConfig and needs no per-repo approval — it's
+                // the user's own queue. Admit it implicitly. (rosary-fa8a39)
+                let is_global = bead.repo == crate::scope::GLOBAL_REPO;
+                let admits = is_global
+                    || self
+                        .config
+                        .repo
+                        .iter()
+                        .chain(self.remote_repos.iter())
+                        .find(|r| r.name == bead.repo)
+                        .is_some_and(|r| r.approval.admits());
                 if !admits {
                     eprintln!(
                         "[approval] {} held — repo '{}' is not approved for dispatch",
