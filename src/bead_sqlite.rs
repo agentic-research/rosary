@@ -597,7 +597,7 @@ impl BeadStore for SqliteBeadStore {
                     params![full_id],
                     |row| row.get::<_, Option<String>>(0),
                 )
-                .ok()
+                .optional()?
                 .flatten()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_else(|| serde_json::json!({}));
@@ -750,7 +750,7 @@ impl BeadStore for SqliteBeadStore {
                 params![full_id],
                 |row| row.get::<_, Option<String>>(0),
             )
-            .ok()
+            .optional()?
             .flatten()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .filter(serde_json::Value::is_object)
