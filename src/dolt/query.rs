@@ -66,7 +66,7 @@ impl DoltClient {
                LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
                          FROM dependencies d
                          LEFT JOIN issues dep_i ON dep_i.id = d.depends_on_id
-                         WHERE dep_i.id IS NULL OR dep_i.status NOT IN ('closed', 'done')
+                         WHERE dep_i.id IS NULL OR (dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic')
                          GROUP BY d.issue_id) deps
                     ON deps.issue_id = i.id
                LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt

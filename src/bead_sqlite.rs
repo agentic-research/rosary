@@ -384,7 +384,7 @@ LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depe
 LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
           FROM dependencies d
           JOIN issues dep_i ON dep_i.id = d.depends_on_id
-          WHERE dep_i.status NOT IN ('closed', 'done')
+          WHERE dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic'
           GROUP BY d.issue_id) deps
      ON deps.issue_id = i.id
 LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
@@ -422,7 +422,7 @@ impl BeadStore for SqliteBeadStore {
                     LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
                               FROM dependencies d
                               JOIN issues dep_i ON dep_i.id = d.depends_on_id
-                              WHERE dep_i.status NOT IN ('closed', 'done')
+                              WHERE dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic'
                               GROUP BY d.issue_id) deps
                          ON deps.issue_id = i.id
                     LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
@@ -455,7 +455,7 @@ impl BeadStore for SqliteBeadStore {
                     (SELECT COUNT(*) FROM dependencies d
                             JOIN issues dep_i ON dep_i.id = d.depends_on_id
                             WHERE d.issue_id = i.id
-                            AND dep_i.status NOT IN ('closed', 'done')) as dependency_count,
+                            AND dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic') as dependency_count,
                     (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
              FROM issues i
              WHERE i.id = ?1",
@@ -817,7 +817,7 @@ impl BeadStore for SqliteBeadStore {
              LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
                        FROM dependencies d
                        LEFT JOIN issues dep_i ON dep_i.id = d.depends_on_id
-                       WHERE dep_i.id IS NULL OR dep_i.status NOT IN ('closed', 'done')
+                       WHERE dep_i.id IS NULL OR (dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic')
                        GROUP BY d.issue_id) deps
                   ON deps.issue_id = i.id
              LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
@@ -883,7 +883,7 @@ impl BeadStore for SqliteBeadStore {
                  LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
                            FROM dependencies d
                            LEFT JOIN issues dep_i ON dep_i.id = d.depends_on_id
-                           WHERE dep_i.id IS NULL OR dep_i.status NOT IN ('closed', 'done')
+                           WHERE dep_i.id IS NULL OR (dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic')
                            GROUP BY d.issue_id) deps
                       ON deps.issue_id = i.id
                  LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
@@ -1385,6 +1385,100 @@ mod tests {
             bead.derived_from,
             vec![prov],
             "update_bead_fields must preserve derived_from provenance"
+        );
+    }
+
+    #[tokio::test]
+    async fn epic_dep_does_not_block_child() {
+        // A child whose only dependency is an EPIC must be ready, not blocked.
+        // Epics are never dispatched (triage skips them) and complete by rollup
+        // AFTER their children — so depending on one is containment, not ordering.
+        // Counting it as a blocking dep deadlocks the child. (rosary-199cc4)
+        let store = test_store();
+        store
+            .create_bead_full(
+                "epic-1",
+                "Epic",
+                "d",
+                1,
+                "epic",
+                "agent",
+                &[],
+                &[],
+                &[],
+                None,
+                "",
+                &[],
+            )
+            .await
+            .unwrap();
+        store
+            .create_bead_full(
+                "child-1",
+                "Child",
+                "d",
+                1,
+                "feature",
+                "agent",
+                &[],
+                &[],
+                &["epic-1".into()],
+                None,
+                "",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let child = store.get_bead("child-1", "repo").await.unwrap().unwrap();
+        assert_eq!(
+            child.dependency_count, 0,
+            "an epic dependency must not count as blocking"
+        );
+        assert!(
+            child.is_ready(),
+            "a child whose only dep is an epic must be ready"
+        );
+
+        // Regression guard: a non-epic open dep STILL blocks (don't over-broaden).
+        store
+            .create_bead_full(
+                "task-dep",
+                "Task",
+                "d",
+                1,
+                "task",
+                "agent",
+                &[],
+                &[],
+                &[],
+                None,
+                "",
+                &[],
+            )
+            .await
+            .unwrap();
+        store
+            .create_bead_full(
+                "child-2",
+                "Child2",
+                "d",
+                1,
+                "feature",
+                "agent",
+                &[],
+                &[],
+                &["task-dep".into()],
+                None,
+                "",
+                &[],
+            )
+            .await
+            .unwrap();
+        let child2 = store.get_bead("child-2", "repo").await.unwrap().unwrap();
+        assert_eq!(
+            child2.dependency_count, 1,
+            "a non-epic open dependency must still block"
         );
     }
 
