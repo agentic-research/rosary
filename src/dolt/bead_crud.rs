@@ -381,12 +381,26 @@ impl DoltClient {
     #[allow(dead_code)] // API surface — used by bead_update and future backfill tools
     pub async fn set_files(&self, id: &str, files: &[String], test_files: &[String]) -> Result<()> {
         let full_id = self.resolve_id(id).await?;
-        let file_json = serde_json::json!({
-            "files": files,
-            "test_files": test_files,
-        });
+        // Read-merge: the notes column also holds derived_from (provenance).
+        // Rewriting it wholesale would clobber provenance, so preserve the
+        // existing object and overwrite only files/test_files. (rosary-027940)
+        let mut notes: serde_json::Value = {
+            let row = query("SELECT notes FROM issues WHERE id = ?")
+                .bind(&full_id)
+                .fetch_optional(&self.pool)
+                .await?;
+            row.and_then(|r| {
+                r.try_get::<String, _>("notes")
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            })
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(|| serde_json::json!({}))
+        };
+        notes["files"] = serde_json::json!(files);
+        notes["test_files"] = serde_json::json!(test_files);
         query("UPDATE issues SET notes = ?, updated_at = NOW() WHERE id = ?")
-            .bind(file_json.to_string())
+            .bind(notes.to_string())
             .bind(&full_id)
             .execute(&self.pool)
             .await
@@ -468,10 +482,14 @@ impl DoltClient {
                         .unwrap_or(serde_json::json!([]))
                 });
 
-            let notes_json = serde_json::json!({
-                "files": files,
-                "test_files": test_files,
-            });
+            // Mutate in place so other notes keys (derived_from) survive. (rosary-027940)
+            let mut notes_json = if existing_notes.is_object() {
+                existing_notes
+            } else {
+                serde_json::json!({})
+            };
+            notes_json["files"] = files;
+            notes_json["test_files"] = test_files;
             set_clauses.push("notes = ?");
             bind_values.push(notes_json.to_string());
             if update.files.is_some() {
