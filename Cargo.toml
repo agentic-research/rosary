@@ -15,6 +15,14 @@ homepage = "https://github.com/agentic-research/rosary"
 name = "rsry"
 path = "src/main.rs"
 
+# Complexity no-creep gate — paired with clippy.toml thresholds. These two
+# lints are off by default (nursery/pedantic); enabling them as `warn` makes
+# the existing `task lint` (`cargo clippy -- -D warnings`) fail on any new
+# function that exceeds the clippy.toml ceilings. Tightening: rosary-626db2.
+[lints.clippy]
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
