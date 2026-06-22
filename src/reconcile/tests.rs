@@ -1644,6 +1644,36 @@ async fn triage_target_filter_bypasses_approval_gate() {
 }
 
 #[tokio::test]
+async fn triage_admits_global_scope_bead_when_gate_active() {
+    // A Global-scoped bead (repo == GLOBAL_REPO) is the org-level incoming
+    // triage queue (rosary-1db9c9) — it has no per-repo home and no registered
+    // RepoConfig. The approval gate would otherwise hold it (no repo named
+    // "global" is registered/approved), but Global scope is the user's own
+    // queue and needs no per-repo approval, so it must pass triage. (rosary-fa8a39)
+    let mut bead = make_test_bead("global-1");
+    bead.repo = crate::scope::GLOBAL_REPO.to_string();
+    let mut r = Reconciler::new(ReconcilerConfig {
+        require_approval: true,
+        triage_threshold: 0.0,
+        repo: vec![approval_repo(
+            "test-repo",
+            crate::config::DispatchApproval::Approved,
+        )],
+        ..Default::default()
+    })
+    .await;
+    let triaged = r.triage(
+        &[bead],
+        &std::collections::HashMap::new(),
+        &std::collections::HashSet::new(),
+    );
+    assert_eq!(
+        triaged, 1,
+        "Global-scope bead must pass the approval gate — it is the user's own org-level queue"
+    );
+}
+
+#[tokio::test]
 async fn triage_approval_gate_sees_remote_repos_too() {
     // Beads can come from runtime-registered remote_repos, not just
     // statically configured config.repo. The gate must check both.
