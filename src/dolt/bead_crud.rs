@@ -47,7 +47,7 @@ impl DoltClient {
                LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
                          FROM dependencies d
                          JOIN issues dep_i ON dep_i.id = d.depends_on_id
-                         WHERE dep_i.status NOT IN ('closed', 'done')
+                         WHERE dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic'
                          GROUP BY d.issue_id) deps
                     ON deps.issue_id = i.id
                LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
@@ -119,7 +119,7 @@ impl DoltClient {
                        LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
                                  FROM dependencies d
                                  JOIN issues dep_i ON dep_i.id = d.depends_on_id
-                                 WHERE dep_i.status NOT IN ('closed', 'done')
+                                 WHERE dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic'
                                  GROUP BY d.issue_id) deps
                             ON deps.issue_id = i.id
                        LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
@@ -185,7 +185,7 @@ impl DoltClient {
                       (SELECT COUNT(*) FROM dependencies d
                               JOIN issues dep_i ON dep_i.id = d.depends_on_id
                               WHERE d.issue_id = i.id
-                              AND dep_i.status NOT IN ('closed', 'done')) as dependency_count,
+                              AND dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic') as dependency_count,
                       (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
                FROM issues i
                WHERE id = ?"#,
