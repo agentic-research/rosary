@@ -614,6 +614,10 @@ impl Reconciler {
     }
 
     /// Execute one full iteration of the reconciliation loop.
+    // Grandfathered (272 lines, cognitive complexity 51): the
+    // scan→triage→dispatch→verify→report sequence. Refactor + remove these
+    // allows under rosary-626db2.
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub async fn iterate(&mut self) -> Result<IterationSummary> {
         let mut summary = IterationSummary::default();
 

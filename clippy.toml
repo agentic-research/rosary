@@ -1,0 +1,24 @@
+# Code-quality gate thresholds — bead rosary-626db2 (tightening follow-up).
+# These ride the existing `task lint` clippy pass (`-D warnings`), so any new
+# complexity creep fails CI with no extra tooling. Ported from the lectio
+# regime (lectio-0a65b7).
+#
+# The values below are INITIAL ceilings chosen to stop further creep, not a
+# clean-tree target — three current offenders are grandfathered with
+# `#[allow(clippy::too_many_lines)]` pointing back at rosary-626db2. Lower
+# these as offenders are refactored.
+
+# Function length. Default clippy is 100; the tree's max is 888 (the CLI
+# command dispatch in main.rs). 250 is a real ceiling that grandfathers only
+# the three largest functions for now.
+too-many-lines-threshold = 250
+
+# Cognitive complexity (nursery lint, enabled via [lints.clippy]). Default is
+# 25; the tree's max today is 51 (reconciler `iterate()`, grandfathered with
+# an `#[allow]`). 50 blocks anything new from getting worse.
+cognitive-complexity-threshold = 50
+
+# Already enforced by clippy::all under `-D warnings`; pinned here for
+# visibility and to lock the no-creep contract at their defaults.
+too-many-arguments-threshold = 7
+type-complexity-threshold = 250

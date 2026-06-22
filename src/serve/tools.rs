@@ -2,6 +2,10 @@
 
 use serde_json::{Value, json};
 
+// Grandfathered (510 lines): one big JSON literal of every tool's schema —
+// inherently long, low-complexity. Refactor + remove this allow under
+// rosary-626db2.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn tool_definitions() -> Value {
     json!({
         "tools": [

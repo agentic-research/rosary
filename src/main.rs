@@ -745,6 +745,9 @@ fn filter_repos(
 }
 
 #[tokio::main]
+// Grandfathered (888 lines): top-level CLI command dispatch. Refactor +
+// remove this allow under rosary-626db2.
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
