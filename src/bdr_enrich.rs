@@ -50,10 +50,19 @@ pub async fn extract_atoms_with_llm(markdown: &str, model: &str) -> Result<Vec<A
 
     let prompt = format!("{SYSTEM_PROMPT}\n\nExtract BDR atoms from this document:\n\n{markdown}");
 
-    let output = tokio::process::Command::new("claude")
-        .args(["-p", &prompt, "--model", model_id, "--allowedTools", ""])
+    let mut cmd = tokio::process::Command::new("claude");
+    cmd.args(["-p", &prompt, "--model", model_id, "--allowedTools", ""])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // Inject auth/endpoint so extraction authenticates in daemon contexts too
+    // (rosary-b1495c). No work_dir here — resolve against the current dir.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if let Ok(env) = crate::dispatch::providers::resolve_launch_env(&cwd) {
+        for (k, v) in &env.vars {
+            cmd.env(k, v);
+        }
+    }
+    let output = cmd
         .output()
         .await
         .context("spawning claude subprocess for BDR extraction")?;

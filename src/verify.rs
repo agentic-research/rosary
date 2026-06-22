@@ -309,13 +309,19 @@ impl VerifyTier for ReviewCheck {
              Then briefly explain your reasoning."
         );
 
-        let output = match std::process::Command::new("claude")
-            .args(["-p", &prompt, "--allowedTools", "Read,Glob,Grep"])
+        let mut cmd = std::process::Command::new("claude");
+        cmd.args(["-p", &prompt, "--allowedTools", "Read,Glob,Grep"])
             .current_dir(work_dir)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-        {
+            .stderr(std::process::Stdio::piped());
+        // Inject auth/endpoint so the review agent authenticates in daemon
+        // contexts too (rosary-b1495c). Best-effort: keep the soft-fail below.
+        if let Ok(env) = crate::dispatch::providers::resolve_launch_env(work_dir) {
+            for (k, v) in &env.vars {
+                cmd.env(k, v);
+            }
+        }
+        let output = match cmd.output() {
             Ok(o) => o,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 eprintln!("[verify] warning: 'claude' not found, skipping review");

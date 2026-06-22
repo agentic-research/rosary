@@ -97,9 +97,12 @@ impl AgentProvider for ClaudeProvider {
             work_dir.display()
         );
 
-        // Resolve OAuth token for launchd context where Keychain OAuth
-        // isn't available. Check env vars, then .envrc in the repo root.
-        let auth_token = resolve_auth_token(work_dir);
+        // Resolve auth + endpoint env for launchd/rig contexts where Keychain
+        // OAuth isn't reachable. Best-effort: on no-creds we still spawn (the
+        // child may use Keychain in interactive/nested contexts) but warn
+        // loudly — a credential-less daemon context is the rosary-b1495c
+        // "Not logged in" failure.
+        let launch_env = resolve_launch_env(work_dir);
 
         let mut cmd = tokio::process::Command::new(&self.binary);
         let mut base_args = vec![
@@ -126,9 +129,22 @@ impl AgentProvider for ClaudeProvider {
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::from(err_file));
 
-        if let Some(ref token) = auth_token {
-            cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
-            eprintln!("[spawn] passing CLAUDE_CODE_OAUTH_TOKEN to agent");
+        match &launch_env {
+            Ok(env) => {
+                for (k, v) in &env.vars {
+                    cmd.env(k, v);
+                }
+                let keys: Vec<&str> = env.vars.iter().map(|(k, _)| k.as_str()).collect();
+                eprintln!("[spawn] injected agent auth/env: {}", keys.join(", "));
+            }
+            Err(AuthError::NoCredentials) => {
+                eprintln!(
+                    "[spawn] WARNING: no claude credentials in env/.envrc/config — relying on \
+                     ambient Keychain auth. If this is a rig/launchd daemon the agent will die \
+                     'Not logged in': run `claude setup-token` and export CLAUDE_CODE_OAUTH_TOKEN \
+                     (rosary-b1495c)."
+                );
+            }
         }
 
         let child = cmd
@@ -452,6 +468,134 @@ pub(crate) fn resolve_auth_token(work_dir: &Path) -> Option<String> {
     None
 }
 
+/// Auth + endpoint environment to inject into a spawned agent CLI so it
+/// authenticates identically regardless of how the parent was launched —
+/// interactive CLI, a rig/OTP daemon with a stripped env, or nested inside
+/// another claude-code session. The dispatch "Not logged in" failures
+/// (rosary-b1495c) are credential-propagation bugs, not TTY bugs: a spawned
+/// `claude` in a credential-less env fails ~84ms in. This is the single
+/// source of truth every spawn site (`spawn_agent`, `bdr_enrich`, `verify`)
+/// must apply to the child env.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct AgentLaunchEnv {
+    /// (key, value) env pairs to set on the child process.
+    pub vars: Vec<(String, String)>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AuthError {
+    /// No usable credential found in env, `.envrc`, or global config.
+    /// Spawning anyway just produces a doomed "Not logged in" subprocess,
+    /// so callers must fail loud instead (rosary-b1495c).
+    NoCredentials,
+}
+
+/// Pure resolver: given an env lookup and the contents of candidate `.envrc`
+/// files (highest priority first), produce the env to inject — or fail loud.
+/// Kept side-effect-free (no `std::env`, no fs) so it is unit-testable.
+pub(crate) fn resolve_launch_env_from(
+    getenv: impl Fn(&str) -> Option<String>,
+    envrc_contents: &[String],
+) -> Result<AgentLaunchEnv, AuthError> {
+    // A credential is any of these (ANTHROPIC_AUTH_TOKEN covers the
+    // model-gateway / local-model case where there's no OAuth token).
+    const CRED_KEYS: [&str; 3] = [
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+    ];
+    // Endpoint/config keys: forwarded when present but not credentials on
+    // their own. ANTHROPIC_BASE_URL is the model-swap hook (Qwen/Kimi/local
+    // via an Anthropic-compatible gateway).
+    const PASSTHROUGH_KEYS: [&str; 1] = ["ANTHROPIC_BASE_URL"];
+
+    // env takes priority; .envrc fills only what env lacks (direnv pattern).
+    let lookup = |key: &str| -> Option<String> {
+        getenv(key)
+            .filter(|v| !v.is_empty())
+            .or_else(|| envrc_value(envrc_contents, key))
+    };
+
+    let mut vars = Vec::new();
+    let mut has_cred = false;
+    for key in CRED_KEYS {
+        if let Some(val) = lookup(key) {
+            vars.push((key.to_string(), val));
+            has_cred = true;
+        }
+    }
+    if !has_cred {
+        return Err(AuthError::NoCredentials);
+    }
+    for key in PASSTHROUGH_KEYS {
+        if let Some(val) = lookup(key) {
+            vars.push((key.to_string(), val));
+        }
+    }
+    Ok(AgentLaunchEnv { vars })
+}
+
+/// Parse `export KEY=value` from `.envrc` contents (highest priority first),
+/// stripping surrounding quotes. Returns the first non-empty match.
+fn envrc_value(envrc_contents: &[String], key: &str) -> Option<String> {
+    let prefix = format!("export {key}=");
+    for content in envrc_contents {
+        for line in content.lines() {
+            if let Some(val) = line.trim().strip_prefix(&prefix) {
+                let val = val.trim().trim_matches('"').trim_matches('\'');
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Impure entry point spawn sites use: gather the live process env + repo
+/// `.envrc` files + global config, then resolve via [`resolve_launch_env_from`].
+/// `Err(NoCredentials)` means "nothing to inject" — callers should still
+/// proceed (the child may authenticate via macOS Keychain in interactive /
+/// nested-claude-code contexts) but emit a loud warning, since a credential-
+/// less *daemon* context (rig/launchd) is exactly the rosary-b1495c failure.
+pub(crate) fn resolve_launch_env(work_dir: &Path) -> Result<AgentLaunchEnv, AuthError> {
+    let envrc = collect_envrc(work_dir);
+    match resolve_launch_env_from(|k| std::env::var(k).ok(), &envrc) {
+        Ok(env) => Ok(env),
+        Err(AuthError::NoCredentials) => {
+            // Global config fallback: dispatch.anthropic_api_key (wasteland / hosted rigs).
+            if let Ok(cfg) = crate::config::load_global()
+                && let Some(key) = cfg.dispatch.and_then(|d| d.anthropic_api_key)
+                && !key.is_empty()
+            {
+                return Ok(AgentLaunchEnv {
+                    vars: vec![("ANTHROPIC_API_KEY".to_string(), key)],
+                });
+            }
+            Err(AuthError::NoCredentials)
+        }
+    }
+}
+
+/// Read `.envrc` from `work_dir` and the git repo root (for worktrees).
+fn collect_envrc(work_dir: &Path) -> Vec<String> {
+    let mut paths = vec![work_dir.join(".envrc")];
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(work_dir)
+        .output()
+    {
+        let git_common = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Some(repo_root) = std::path::Path::new(&git_common).parent() {
+            paths.push(repo_root.join(".envrc"));
+        }
+    }
+    paths
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .collect()
+}
+
 /// Resolve a provider by name string, with optional binary path overrides from config.
 pub fn provider_by_name(
     name: &str,
@@ -492,6 +636,77 @@ pub fn provider_by_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Agent launch-env resolution (rosary-b1495c) ---
+
+    #[test]
+    fn launch_env_signals_no_credentials_when_absent() {
+        // rig/OTP daemon context: stripped env, no .envrc creds. Old code
+        // returned a silent None; the resolver now returns a loud Err so the
+        // spawn site can warn about the impending "Not logged in" instead of
+        // silently producing a dead agent.
+        let empty_env = |_: &str| None;
+        let result = resolve_launch_env_from(empty_env, &[]);
+        assert_eq!(result, Err(AuthError::NoCredentials));
+    }
+
+    #[test]
+    fn launch_env_forwards_oauth_token_from_env() {
+        let env = |k: &str| (k == "CLAUDE_CODE_OAUTH_TOKEN").then(|| "tok-123".to_string());
+        let resolved = resolve_launch_env_from(env, &[]).expect("token present");
+        assert!(
+            resolved
+                .vars
+                .contains(&("CLAUDE_CODE_OAUTH_TOKEN".to_string(), "tok-123".to_string())),
+            "child env must carry the OAuth token, got {:?}",
+            resolved.vars
+        );
+    }
+
+    #[test]
+    fn launch_env_forwards_model_gateway_endpoint() {
+        // Qwen/Kimi/local via Anthropic-compatible gateway: BASE_URL is not a
+        // credential by itself, but must be forwarded alongside AUTH_TOKEN so
+        // dispatched agents target the non-Anthropic endpoint.
+        let env = |k: &str| match k {
+            "ANTHROPIC_BASE_URL" => Some("https://api.moonshot.ai/anthropic".to_string()),
+            "ANTHROPIC_AUTH_TOKEN" => Some("sk-moon".to_string()),
+            _ => None,
+        };
+        let resolved = resolve_launch_env_from(env, &[]).expect("auth token present");
+        assert!(
+            resolved.vars.contains(&(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://api.moonshot.ai/anthropic".to_string()
+            )),
+            "endpoint must be forwarded for model-swap, got {:?}",
+            resolved.vars
+        );
+        assert!(
+            resolved
+                .vars
+                .contains(&("ANTHROPIC_AUTH_TOKEN".to_string(), "sk-moon".to_string())),
+            "gateway auth token must be forwarded, got {:?}",
+            resolved.vars
+        );
+    }
+
+    #[test]
+    fn launch_env_falls_back_to_envrc_when_env_empty() {
+        // direnv pattern: rig/daemon has no creds in its stripped env, but the
+        // repo's .envrc carries them. Mirrors resolve_auth_token's fallback.
+        let empty_env = |_: &str| None;
+        let envrc = vec!["export CLAUDE_CODE_OAUTH_TOKEN='envrc-tok'\n# comment\n".to_string()];
+        let resolved = resolve_launch_env_from(empty_env, &envrc).expect("envrc token");
+        assert!(
+            resolved.vars.contains(&(
+                "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
+                "envrc-tok".to_string()
+            )),
+            "must resolve token from .envrc, got {:?}",
+            resolved.vars
+        );
+    }
 
     #[test]
     fn claude_build_command_produces_dash_p_invocation() {
