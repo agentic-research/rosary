@@ -597,7 +597,7 @@ impl BeadStore for SqliteBeadStore {
                     params![full_id],
                     |row| row.get::<_, Option<String>>(0),
                 )
-                .ok()
+                .optional()?
                 .flatten()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_else(|| serde_json::json!({}));
@@ -622,7 +622,14 @@ impl BeadStore for SqliteBeadStore {
                         .cloned()
                         .unwrap_or(serde_json::json!([]))
                 });
-            let notes_json = serde_json::json!({ "files": files, "test_files": test_files_val });
+            // Mutate in place so other notes keys (derived_from) survive. (rosary-027940)
+            let mut notes_json = if existing_notes.is_object() {
+                existing_notes
+            } else {
+                serde_json::json!({})
+            };
+            notes_json["files"] = files;
+            notes_json["test_files"] = test_files_val;
             conn.execute(
                 "UPDATE issues SET notes = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![notes_json.to_string(), full_id],
@@ -732,12 +739,27 @@ impl BeadStore for SqliteBeadStore {
     }
 
     async fn set_files(&self, id: &str, files: &[String], test_files: &[String]) -> Result<()> {
-        let file_json = serde_json::json!({ "files": files, "test_files": test_files });
         let conn = self.conn.lock().unwrap();
         let full_id = Self::resolve_id(&conn, id)?;
+        // Read-merge: the notes column also holds derived_from (provenance).
+        // Rewriting it wholesale would clobber provenance, so preserve the
+        // existing object and overwrite only files/test_files. (rosary-027940)
+        let mut notes = conn
+            .query_row(
+                "SELECT notes FROM issues WHERE id = ?1",
+                params![full_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(|| serde_json::json!({}));
+        notes["files"] = serde_json::json!(files);
+        notes["test_files"] = serde_json::json!(test_files);
         conn.execute(
             "UPDATE issues SET notes = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![file_json.to_string(), full_id],
+            params![notes.to_string(), full_id],
         )?;
         Ok(())
     }
@@ -1276,6 +1298,94 @@ mod tests {
 
         let deps = store.get_dependencies("main-1").await.unwrap();
         assert_eq!(deps, vec!["dep-1"]);
+    }
+
+    #[tokio::test]
+    async fn set_files_preserves_derived_from() {
+        // set_files must not clobber provenance. It previously overwrote the
+        // entire notes JSON with {files, test_files}, silently dropping
+        // derived_from — provenance data loss. (rosary-027940)
+        let store = test_store();
+        let prov = bdr::provenance::ProvenanceRef::Session {
+            transcript_path: "/tmp/session.jsonl".into(),
+            summary: Some("origin session".into()),
+        };
+        store
+            .create_bead_full(
+                "b1",
+                "T",
+                "d",
+                1,
+                "feature",
+                "agent",
+                &["a.rs".into()],
+                &[],
+                &[],
+                None,
+                "",
+                std::slice::from_ref(&prov),
+            )
+            .await
+            .unwrap();
+
+        // Sanity: provenance round-trips through create + get.
+        let b = store.get_bead("b1", "repo").await.unwrap().unwrap();
+        assert_eq!(b.derived_from, vec![prov.clone()]);
+
+        // set_files updates files but MUST preserve derived_from.
+        store
+            .set_files("b1", &["a.rs".into(), "b.rs".into()], &[])
+            .await
+            .unwrap();
+
+        let b2 = store.get_bead("b1", "repo").await.unwrap().unwrap();
+        assert_eq!(b2.files, vec!["a.rs", "b.rs"], "files should update");
+        assert_eq!(
+            b2.derived_from,
+            vec![prov],
+            "set_files must preserve derived_from provenance"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_bead_fields_preserves_derived_from() {
+        // update_bead_fields rewrites the notes JSON when files change. It must
+        // preserve derived_from — same clobber root as set_files. (rosary-027940)
+        let store = test_store();
+        let prov = bdr::provenance::ProvenanceRef::Adr {
+            id: "ADR-007".into(),
+        };
+        store
+            .create_bead_full(
+                "u1",
+                "T",
+                "d",
+                2,
+                "feature",
+                "agent",
+                &["x.rs".into()],
+                &[],
+                &[],
+                None,
+                "",
+                std::slice::from_ref(&prov),
+            )
+            .await
+            .unwrap();
+
+        let update = BeadUpdate {
+            files: Some(vec!["x.rs".into(), "y.rs".into()]),
+            ..Default::default()
+        };
+        store.update_bead_fields("u1", &update).await.unwrap();
+
+        let bead = store.get_bead("u1", "repo").await.unwrap().unwrap();
+        assert_eq!(bead.files, vec!["x.rs", "y.rs"], "files should update");
+        assert_eq!(
+            bead.derived_from,
+            vec![prov],
+            "update_bead_fields must preserve derived_from provenance"
+        );
     }
 
     #[tokio::test]
