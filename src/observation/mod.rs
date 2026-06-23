@@ -49,6 +49,7 @@ pub mod log;
 pub mod log_sqlite;
 pub mod quarantine;
 pub mod registry;
+pub mod resolve;
 pub mod tree_fold;
 
 #[cfg(test)]
