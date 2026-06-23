@@ -108,28 +108,35 @@ pub fn fold(log: &ObservationLog) -> Result<BTreeMap<WorkRef, DerivedView>> {
             .iter()
             .filter(|o| o.work_item == work && o.field == FieldName::Status)
             .collect();
-        let mut status_per_source: BTreeMap<Source, String> = BTreeMap::new();
+        // Within a source: LWW by (observed_at, payload_hash) — a strict
+        // total order over elements, so the winner is order-independent.
+        // (Was iteration-order "last wins", which ignored observed_at and
+        // could surface a stale status — rosary-a38fca.) Tracks the winning
+        // (observed_at, payload_hash, value) per source.
+        let mut status_per_source: BTreeMap<
+            Source,
+            (chrono::DateTime<chrono::Utc>, String, String),
+        > = BTreeMap::new();
         for o in &status_obs {
-            // Within a source: LWW by observed_at (tiebreak source.name
-            // is moot here since we're scoped to one source — fall back
-            // to "later wins, fresh-arrival wins on exact tie").
-            let entry = status_per_source.entry(o.source.clone());
             let new_val = match &o.value {
                 FieldValue::String(s) => s.clone(),
                 FieldValue::OptString(Some(s)) => s.clone(),
                 _ => continue, // unrecognized status shape — skip
             };
-            entry
-                .and_modify(|existing| {
-                    if existing != &new_val {
-                        *existing = new_val.clone();
+            status_per_source
+                .entry(o.source.clone())
+                .and_modify(|(ts, ph, val)| {
+                    if (o.observed_at, o.payload_hash.as_str()) > (*ts, ph.as_str()) {
+                        *ts = o.observed_at;
+                        *ph = o.payload_hash.clone();
+                        *val = new_val.clone();
                     }
                 })
-                .or_insert(new_val);
+                .or_insert((o.observed_at, o.payload_hash.clone(), new_val));
         }
         let per_source_pairs: Vec<(String, Source)> = status_per_source
             .into_iter()
-            .map(|(src, val)| (val, src))
+            .map(|(src, (_ts, _ph, val))| (val, src))
             .collect();
         let status = join_per_source(&per_source_pairs)?;
 
@@ -228,6 +235,39 @@ mod tests {
         let r1 = fold(&log1).unwrap();
         let r2 = fold(&log2).unwrap();
         assert_eq!(r1, r2, "fold must be invariant under insertion order");
+    }
+
+    /// rosary-a38fca: within ONE source, the status pre-fold must resolve by
+    /// latest `observed_at`, not by log/key iteration order. Here the OLDER
+    /// value ("Open"@1000) carries the later-sorting event id ("e2"), so an
+    /// iteration-order ("last wins") resolver would wrongly surface it.
+    #[test]
+    fn status_prefold_is_lww_by_observed_at_not_iteration_order() {
+        let w = workref("b1");
+        let mut log = ObservationLog::new();
+        log.insert(obs(
+            &w,
+            "bead",
+            "e1",
+            FieldName::Status,
+            FieldValue::String("Done".to_string()),
+            at(2000), // newer
+        ));
+        log.insert(obs(
+            &w,
+            "bead",
+            "e2",
+            FieldName::Status,
+            FieldValue::String("Open".to_string()),
+            at(1000), // older, but sorts last by event id
+        ));
+        let view = fold(&log).unwrap();
+        let view = view.get(&w).unwrap();
+        assert_eq!(
+            view.status,
+            FlatLattice::Single("Done".to_string()),
+            "status pre-fold must surface the latest-observed value, not the last in key order"
+        );
     }
 
     /// ADR-0010 invariant 10: cross_source_status_conflict_is_top.

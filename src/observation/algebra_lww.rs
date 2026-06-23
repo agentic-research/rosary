@@ -107,21 +107,25 @@ impl FieldAlgebra for LwwRegisterAlgebra {
     }
 
     fn fold(&self, obs: &[&Observation]) -> Result<FieldValue> {
-        // Find the LWW winner: max by (observed_at, source.as_str()).
-        // The pair gives a total order so the fold is deterministic
-        // regardless of input order (ADR-0010 invariant 9). On exact
-        // tie of both, slice index doesn't matter — we keep the first.
+        // Find the LWW winner: max by (observed_at, source, payload_hash).
+        // payload_hash is required for a STRICT total order over the elements:
+        // two distinct values can share (observed_at, source) (one source
+        // emitting two values in the same instant), and without payload_hash
+        // the tie would resolve by slice order → cross-machine divergence
+        // (rosary-a38fca). payload_hash is content-addressed over the value,
+        // so equal hash ⇒ equal value ⇒ the keep-first branch is safe.
         let mut winner: Option<&&Observation> = None;
         for o in obs {
             self.type_check(&o.value)?;
-            winner = match winner {
-                None => Some(o),
-                Some(w) => {
-                    let cmp =
-                        (o.observed_at, o.source.as_str()).cmp(&(w.observed_at, w.source.as_str()));
-                    if cmp.is_gt() { Some(o) } else { Some(w) }
-                }
-            };
+            winner =
+                match winner {
+                    None => Some(o),
+                    Some(w) => {
+                        let cmp = (o.observed_at, o.source.as_str(), o.payload_hash.as_str())
+                            .cmp(&(w.observed_at, w.source.as_str(), w.payload_hash.as_str()));
+                        if cmp.is_gt() { Some(o) } else { Some(w) }
+                    }
+                };
         }
         match winner {
             None => Ok(self.empty()),
@@ -170,6 +174,24 @@ mod tests {
         let r2 = alg.fold(&[&b, &a]).unwrap();
         assert_eq!(r1, r2, "tiebreak must be order-independent");
         assert_eq!(r1, FieldValue::OptString(Some("bob".to_string())));
+    }
+
+    /// rosary-a38fca: two DISTINCT values from the SAME source at the SAME
+    /// observed_at. `(observed_at, source)` is then equal, so it is NOT a
+    /// total order over the elements — resolution must fall through to
+    /// payload_hash, not to slice order.
+    #[test]
+    fn lww_tiebreak_same_source_same_ts_is_total() {
+        let alg = LwwRegisterAlgebra::new(FieldName::Assignee);
+        let t = at(1000);
+        let a = obs_assignee("alice", "github", t); // payload_hash "github-alice"
+        let b = obs_assignee("bob", "github", t); // payload_hash "github-bob"
+        let r1 = alg.fold(&[&a, &b]).unwrap();
+        let r2 = alg.fold(&[&b, &a]).unwrap();
+        assert_eq!(
+            r1, r2,
+            "same (observed_at, source), distinct values → must be order-independent via payload_hash"
+        );
     }
 
     /// ADR-0010 invariant 5: lww_unset_explicit. `pr_url=None` requires
