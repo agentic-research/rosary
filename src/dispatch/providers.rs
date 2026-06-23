@@ -499,18 +499,6 @@ pub(crate) fn resolve_launch_env_from(
     getenv: impl Fn(&str) -> Option<String>,
     envrc_contents: &[String],
 ) -> Result<AgentLaunchEnv, AuthError> {
-    // A credential is any of these (ANTHROPIC_AUTH_TOKEN covers the
-    // model-gateway / local-model case where there's no OAuth token).
-    const CRED_KEYS: [&str; 3] = [
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
-    ];
-    // Endpoint/config keys: forwarded when present but not credentials on
-    // their own. ANTHROPIC_BASE_URL is the model-swap hook (Qwen/Kimi/local
-    // via an Anthropic-compatible gateway).
-    const PASSTHROUGH_KEYS: [&str; 1] = ["ANTHROPIC_BASE_URL"];
-
     // env takes priority; .envrc fills only what env lacks (direnv pattern).
     let lookup = |key: &str| -> Option<String> {
         getenv(key)
@@ -518,21 +506,38 @@ pub(crate) fn resolve_launch_env_from(
             .or_else(|| envrc_value(envrc_contents, key))
     };
 
-    let mut vars = Vec::new();
-    let mut has_cred = false;
-    for key in CRED_KEYS {
-        if let Some(val) = lookup(key) {
-            vars.push((key.to_string(), val));
-            has_cred = true;
-        }
-    }
-    if !has_cred {
+    // Exactly ONE credential is selected and injected — injecting all present
+    // creds causes ambiguous auth selection by the claude CLI and leaks more
+    // secrets to the child than needed (PR #226 review). When a non-default
+    // endpoint is set (gateway / model-swap), the first-party OAuth token
+    // doesn't apply, so gateway creds take priority over it.
+    let gateway = lookup("ANTHROPIC_BASE_URL");
+    let cred_priority: &[&str] = if gateway.is_some() {
+        &[
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ]
+    } else {
+        &[
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+        ]
+    };
+
+    let Some((cred_key, cred_val)) = cred_priority
+        .iter()
+        .find_map(|k| lookup(k).map(|v| (k.to_string(), v)))
+    else {
         return Err(AuthError::NoCredentials);
-    }
-    for key in PASSTHROUGH_KEYS {
-        if let Some(val) = lookup(key) {
-            vars.push((key.to_string(), val));
-        }
+    };
+
+    // ANTHROPIC_BASE_URL is the model-swap hook (Qwen/Kimi/local via an
+    // Anthropic-compatible gateway): forwarded when present, not a credential.
+    let mut vars = vec![(cred_key, cred_val)];
+    if let Some(url) = gateway {
+        vars.push(("ANTHROPIC_BASE_URL".to_string(), url));
     }
     Ok(AgentLaunchEnv { vars })
 }
@@ -730,6 +735,58 @@ mod tests {
                 "https://gw.example/anthropic".to_string()
             )),
             "endpoint passthrough must survive when cred is lower-priority, got {:?}",
+            resolved.vars
+        );
+    }
+
+    #[test]
+    fn launch_env_selects_single_credential_by_priority() {
+        // Multiple creds present, default endpoint: inject exactly ONE
+        // (highest priority = OAuth), not all — avoids ambiguous CLI auth
+        // selection and over-propagation of secrets (PR #226 review).
+        let env = |k: &str| match k {
+            "CLAUDE_CODE_OAUTH_TOKEN" => Some("oauth-tok".to_string()),
+            "ANTHROPIC_API_KEY" => Some("api-key".to_string()),
+            "ANTHROPIC_AUTH_TOKEN" => Some("auth-tok".to_string()),
+            _ => None,
+        };
+        let resolved = resolve_launch_env_from(env, &[]).expect("creds present");
+        let cred_keys: Vec<&str> = resolved
+            .vars
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .filter(|k| *k != "ANTHROPIC_BASE_URL")
+            .collect();
+        assert_eq!(
+            cred_keys,
+            vec!["CLAUDE_CODE_OAUTH_TOKEN"],
+            "exactly one credential (highest priority) must be injected, got {:?}",
+            resolved.vars
+        );
+    }
+
+    #[test]
+    fn launch_env_gateway_endpoint_outranks_oauth_token() {
+        // Transition case: Max OAuth token AND a Kimi/Qwen gateway both set.
+        // A first-party OAuth token can't auth against a third-party gateway,
+        // so the gateway credential must win — and OAuth must not leak.
+        let env = |k: &str| match k {
+            "ANTHROPIC_BASE_URL" => Some("https://api.moonshot.ai/anthropic".to_string()),
+            "ANTHROPIC_AUTH_TOKEN" => Some("sk-moon".to_string()),
+            "CLAUDE_CODE_OAUTH_TOKEN" => Some("oauth-tok".to_string()),
+            _ => None,
+        };
+        let resolved = resolve_launch_env_from(env, &[]).expect("creds present");
+        let cred_keys: Vec<&str> = resolved
+            .vars
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .filter(|k| *k != "ANTHROPIC_BASE_URL")
+            .collect();
+        assert_eq!(
+            cred_keys,
+            vec!["ANTHROPIC_AUTH_TOKEN"],
+            "gateway cred must outrank OAuth when a non-default endpoint is set, got {:?}",
             resolved.vars
         );
     }
