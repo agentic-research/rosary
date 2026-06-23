@@ -258,9 +258,10 @@ pub struct Observation {
     /// already checked at the receiver).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cert: Option<SignetCert>,
-    /// BLAKE3 (or any fixed-output hash) over the canonical
-    /// `(source, field, value)` triple. Combined with
-    /// `(source, source_event_id)` to dedup.
+    /// BLAKE3 content hash over the canonical `(source, field, value)` triple
+    /// — produced by [`Observation::compute_payload_hash`] (ecosystem CAS
+    /// format, [`crate::cas`]). Combined with `(source, source_event_id)` to
+    /// dedup.
     pub payload_hash: String,
 }
 
@@ -273,6 +274,26 @@ impl Observation {
             source_event_id: self.source_event_id.clone(),
             payload_hash: self.payload_hash.clone(),
         }
+    }
+
+    /// Canonical producer for [`Observation::payload_hash`]: BLAKE3 (via the
+    /// ecosystem CAS primitive [`crate::cas::content_hash`]) over a versioned,
+    /// deterministic encoding of the `(source, field, value)` triple. Pinning
+    /// the version (`PH_V`) keeps dedup identity stable across releases; bump
+    /// it only with an intentional re-hash migration (rosary-a3ab19).
+    #[allow(dead_code)] // API surface — observers use this when emitting (wiring: rosary-a3ab19)
+    pub fn compute_payload_hash(source: &Source, field: &FieldName, value: &FieldValue) -> String {
+        const PH_V: &str = "ph1";
+        // \x1f (unit separator) between parts. serde_json is deterministic
+        // here: enums serialize tagged, and serde_json::Map is a BTreeMap
+        // (sorted keys) absent the preserve_order feature.
+        let canon = format!(
+            "{PH_V}\u{1f}{}\u{1f}{}\u{1f}{}",
+            source.as_str(),
+            serde_json::to_string(field).unwrap_or_default(),
+            serde_json::to_string(value).unwrap_or_default(),
+        );
+        crate::cas::content_hash(canon.as_bytes())
     }
 }
 
@@ -371,6 +392,38 @@ pub trait FieldAlgebra: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rosary-a3ab19: payload_hash producer is deterministic, BLAKE3-shaped
+    /// (64 hex), and sensitive to each of source/field/value.
+    #[test]
+    fn compute_payload_hash_deterministic_and_sensitive() {
+        let s = Source::new("github");
+        let f = FieldName::Assignee;
+        let v1 = FieldValue::String("alice".to_string());
+        let v2 = FieldValue::String("bob".to_string());
+        let h = Observation::compute_payload_hash(&s, &f, &v1);
+        assert_eq!(
+            h,
+            Observation::compute_payload_hash(&s, &f, &v1),
+            "deterministic"
+        );
+        assert_ne!(
+            h,
+            Observation::compute_payload_hash(&s, &f, &v2),
+            "value-sensitive"
+        );
+        assert_ne!(
+            h,
+            Observation::compute_payload_hash(&Source::new("linear"), &f, &v1),
+            "source-sensitive"
+        );
+        assert_ne!(
+            h,
+            Observation::compute_payload_hash(&s, &FieldName::PrUrl, &v1),
+            "field-sensitive"
+        );
+        assert_eq!(h.len(), 64, "blake3-256 hex");
+    }
 
     fn sample_workref() -> WorkRef {
         WorkRef {
