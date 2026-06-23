@@ -18,7 +18,7 @@
 //!    move); never silently latest-wins.
 
 use super::Observation;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Epistemic authority tier — the resolution rank for conflicts with no
 /// natural lattice order.
@@ -81,10 +81,26 @@ pub fn resolve_by_authority<'a>(claims: &'a [AuthoritativeClaim<'a>]) -> Resolut
         .iter()
         .filter_map(|c| c.undercuts.as_deref())
         .collect();
-    let survivors: Vec<&AuthoritativeClaim> = eligible
+    // 3. DEDUP by payload_hash — a re-delivered identical observation (same
+    //    G-set dedup key) is ONE claim, not two; keep the highest-authority
+    //    instance per hash. This makes resolution order-independent AND
+    //    idempotent: f({a}) == f({a, a}). Without it, a duplicate flips
+    //    Resolved into Escalate at the tie count. (math-friend review 2026-06-22)
+    let mut by_hash: HashMap<&str, &AuthoritativeClaim> = HashMap::new();
+    for c in eligible
         .into_iter()
         .filter(|c| !undercut.contains(c.observation.payload_hash.as_str()))
-        .collect();
+    {
+        by_hash
+            .entry(c.observation.payload_hash.as_str())
+            .and_modify(|kept| {
+                if c.authority > kept.authority {
+                    *kept = c;
+                }
+            })
+            .or_insert(c);
+    }
+    let survivors: Vec<&AuthoritativeClaim> = by_hash.values().copied().collect();
 
     if survivors.is_empty() {
         return Resolution::Escalate {
@@ -93,7 +109,7 @@ pub fn resolve_by_authority<'a>(claims: &'a [AuthoritativeClaim<'a>]) -> Resolut
         };
     }
 
-    // 3. RANK — the highest authority tier wins. Timestamp is NOT a cross-tier
+    // 4. RANK — the highest authority tier wins. Timestamp is NOT a cross-tier
     //    tiebreaker: a lower-tier claim never wins by being more recent.
     let top_tier = survivors
         .iter()
@@ -106,22 +122,27 @@ pub fn resolve_by_authority<'a>(claims: &'a [AuthoritativeClaim<'a>]) -> Resolut
         .filter(|c| c.authority == top_tier)
         .collect();
 
-    // 4. Resolve, or ESCALATE on a genuine same-tier tie — never latest-wins.
+    // 5. Resolve, or ESCALATE on a genuine same-tier tie — never latest-wins.
+    //    Output vecs are sorted by payload_hash so the Resolution value is
+    //    deterministic regardless of input order / hash-map iteration.
     if top.len() == 1 {
         let winner = top[0].observation;
-        let superseded = survivors
+        let mut superseded: Vec<&Observation> = survivors
             .iter()
             .map(|c| c.observation)
             .filter(|o| o.payload_hash != winner.payload_hash)
             .collect();
+        superseded.sort_by(|a, b| a.payload_hash.cmp(&b.payload_hash));
         Resolution::Resolved { winner, superseded }
     } else {
+        let mut candidates: Vec<&Observation> = top.iter().map(|c| c.observation).collect();
+        candidates.sort_by(|a, b| a.payload_hash.cmp(&b.payload_hash));
         Resolution::Escalate {
             reason: format!(
                 "{} claims tie at top authority tier {top_tier:?}",
                 top.len()
             ),
-            candidates: top.iter().map(|c| c.observation).collect(),
+            candidates,
         }
     }
 }
@@ -266,6 +287,32 @@ mod tests {
             Resolution::Resolved { winner, .. } => {
                 panic!("expected Escalate, got Resolved({})", winner.payload_hash)
             }
+        }
+    }
+
+    #[test]
+    fn duplicate_claims_are_idempotent() {
+        // A re-delivered identical claim (same payload_hash = same observation,
+        // per the G-set dedup key) must NOT flip Resolved into Escalate.
+        // f({a}) == f({a, a}). (math-friend review 2026-06-22)
+        let human = obs("postgres", "user", 100, "h1");
+        let single = vec![claim(&human, Authority::HumanCorrection)];
+        let doubled = vec![
+            claim(&human, Authority::HumanCorrection),
+            claim(&human, Authority::HumanCorrection),
+        ];
+        match (
+            resolve_by_authority(&single),
+            resolve_by_authority(&doubled),
+        ) {
+            (Resolution::Resolved { winner: w1, .. }, Resolution::Resolved { winner: w2, .. }) => {
+                assert_eq!(w1.payload_hash, "h1");
+                assert_eq!(
+                    w2.payload_hash, "h1",
+                    "a duplicate identical claim must not escalate — resolution must be idempotent"
+                );
+            }
+            (a, b) => panic!("expected both Resolved(h1); got {a:?} and {b:?}"),
         }
     }
 }

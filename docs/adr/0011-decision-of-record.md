@@ -27,7 +27,7 @@ The single defensible novelty (adversary-confirmed): **bind contradiction resolu
 
 Given the conflicting observations (witnesses of a `⊤`), each lifted to an `AuthoritativeClaim { observation, authority, authenticated, undercuts }`:
 
-1. **GATE** — keep only `authenticated` claims (signet/quarantine-valid). Unauthenticated claims are **excluded, not down-weighted**. (Gate-not-weight: a `[0,1]` authority weight breaks the lattice's idempotence/associativity; a discrete admission gate does not.)
+1. **GATE** — keep only `authenticated` claims (signet/quarantine-valid). Unauthenticated claims are **excluded, not down-weighted**. (Gate-not-weight: the CRDT *join* in `algebra_flat` is what must stay idempotent/associative; the gate sits strictly *after* it and never folds into it — whereas a `[0,1]` weight multiplied into the join would break both laws. Resolution itself is a terminal classifier `Set⟨Claim⟩ → Resolution`, not a lattice operation; it is order-independent and idempotent under `payload_hash` dedup — see *Known limitations*.)
 2. **UNDERCUT** — drop any claim whose `payload_hash` is undercut (with proof) by an eligible claim. Undercut removes a claim **regardless of its rank** — this is what makes resolution *defeasible*, not last-writer-wins-with-a-priority-key.
 3. **RANK** — the highest `Authority` tier among survivors wins. `Authority` is a discrete total order: `AutoIngest < AgentAssertion < Decision < HumanCorrection`. **Timestamp is not a cross-tier tiebreaker** — authority beats recency.
 4. **ESCALATE** — if two or more survivors share the top tier, return `Escalate` (venturi's "flag for human"). **Never silently latest-wins.**
@@ -47,6 +47,15 @@ venturi (detect, CRDT) + sieve (resolve-by-majority) already form a **detect→r
 ## Falsifiable acceptance gate
 
 The thesis earns "decision substrate, not memory tool" only if **authority beats recency** on the adversarial stratum — a human correction wins over a later contradicting auto-ingest, and flipping *only* the timestamp does not flip the winner. Phase 1 proves this as a unit test over `resolve_by_authority`. Phase 2 proves it at corpus scale against a Graphiti-class newest-wins baseline (empirical protocol in the falsification record).
+
+## Known limitations (Phase 1)
+
+The math-friend review (2026-06-22) confirmed the design avoids the H¹ error and is a citeable mechanism, and flagged these — all Phase-1 scope boundaries, not holes in the falsifiable core:
+
+- **Idempotence is in the code, not claimed of a lattice.** `resolve_by_authority` dedups claims by `payload_hash` (the G-set dedup key) before the tie count, so a re-delivered identical claim does not flip `Resolved` into `Escalate` (`duplicate_claims_are_idempotent`). Idempotence/associativity *proper* are properties of the `algebra_flat` join, not of this terminal classifier — the ADR does not claim otherwise.
+- **Undercut is single-round and proof-trusted.** `undercuts` carries a bare `payload_hash`; the proof is **not yet verified** (Phase 2 / signet). So an authenticated low-tier claim can currently defeat a higher-tier one by naming its hash — an authority-inversion that Phase 2 closes by verifying the undercut's proof. There is no reinstatement (a defeated defeater does not revive its target), and mutual undercut removes both → escalate. This is real defeasible *defeat*, **not** a full Nute/Dung argumentation semantics — do not cite it as such.
+- **Authority tier is an input.** Phase 1 takes `authority` as a caller-supplied field; *deriving* the tier from authenticated authorship — the hard, falsifiable part ("is this observation actually a `HumanCorrection`?") — is rosary-197eb0.
+- **The total order is adequate only for the four fixed tiers.** Incomparable authority kinds (e.g. `security-owner` vs `module-owner`) would force a *partial* order with escalate-on-incomparable. Deferred.
 
 ## Consequences
 
