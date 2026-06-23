@@ -50,10 +50,28 @@ pub async fn extract_atoms_with_llm(markdown: &str, model: &str) -> Result<Vec<A
 
     let prompt = format!("{SYSTEM_PROMPT}\n\nExtract BDR atoms from this document:\n\n{markdown}");
 
-    let output = tokio::process::Command::new("claude")
-        .args(["-p", &prompt, "--model", model_id, "--allowedTools", ""])
+    let mut cmd = tokio::process::Command::new("claude");
+    cmd.args(["-p", &prompt, "--model", model_id, "--allowedTools", ""])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // Inject auth/endpoint so extraction authenticates in daemon contexts too
+    // (rosary-b1495c). No work_dir here — resolve against the current dir.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    match crate::dispatch::providers::resolve_launch_env(&cwd) {
+        Ok(env) => {
+            for (k, v) in &env.vars {
+                cmd.env(k, v);
+            }
+        }
+        Err(crate::dispatch::providers::AuthError::NoCredentials) => {
+            eprintln!(
+                "[bdr-enrich] WARNING: no claude credentials in env/.envrc/config — extraction \
+                 may fail headless. Run `claude setup-token` and export CLAUDE_CODE_OAUTH_TOKEN \
+                 (rosary-b1495c)."
+            );
+        }
+    }
+    let output = cmd
         .output()
         .await
         .context("spawning claude subprocess for BDR extraction")?;
@@ -72,7 +90,7 @@ pub fn resolve_model_id(model: &str) -> &str {
     match model {
         "haiku" => "claude-haiku-4-5-20251001",
         "sonnet" => "claude-sonnet-4-6",
-        "opus" => "claude-opus-4-6",
+        "opus" => "claude-opus-4-8",
         other => other, // pass through full IDs unchanged
     }
 }
@@ -192,7 +210,9 @@ mod tests {
     fn resolve_model_id_maps_shorthand() {
         assert_eq!(resolve_model_id("haiku"), "claude-haiku-4-5-20251001");
         assert_eq!(resolve_model_id("sonnet"), "claude-sonnet-4-6");
-        assert_eq!(resolve_model_id("claude-opus-4-6"), "claude-opus-4-6");
+        assert_eq!(resolve_model_id("opus"), "claude-opus-4-8");
+        // Full IDs pass through unchanged.
+        assert_eq!(resolve_model_id("claude-opus-4-8"), "claude-opus-4-8");
     }
 
     #[test]

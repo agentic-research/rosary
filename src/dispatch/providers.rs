@@ -97,9 +97,12 @@ impl AgentProvider for ClaudeProvider {
             work_dir.display()
         );
 
-        // Resolve OAuth token for launchd context where Keychain OAuth
-        // isn't available. Check env vars, then .envrc in the repo root.
-        let auth_token = resolve_auth_token(work_dir);
+        // Resolve auth + endpoint env for launchd/rig contexts where Keychain
+        // OAuth isn't reachable. Best-effort: on no-creds we still spawn (the
+        // child may use Keychain in interactive/nested contexts) but warn
+        // loudly — a credential-less daemon context is the rosary-b1495c
+        // "Not logged in" failure.
+        let launch_env = resolve_launch_env(work_dir);
 
         let mut cmd = tokio::process::Command::new(&self.binary);
         let mut base_args = vec![
@@ -126,9 +129,22 @@ impl AgentProvider for ClaudeProvider {
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::from(err_file));
 
-        if let Some(ref token) = auth_token {
-            cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
-            eprintln!("[spawn] passing CLAUDE_CODE_OAUTH_TOKEN to agent");
+        match &launch_env {
+            Ok(env) => {
+                for (k, v) in &env.vars {
+                    cmd.env(k, v);
+                }
+                let keys: Vec<&str> = env.vars.iter().map(|(k, _)| k.as_str()).collect();
+                eprintln!("[spawn] injected agent auth/env: {}", keys.join(", "));
+            }
+            Err(AuthError::NoCredentials) => {
+                eprintln!(
+                    "[spawn] WARNING: no claude credentials in env/.envrc/config — relying on \
+                     ambient Keychain auth. If this is a rig/launchd daemon the agent will die \
+                     'Not logged in': run `claude setup-token` and export CLAUDE_CODE_OAUTH_TOKEN \
+                     (rosary-b1495c)."
+                );
+            }
         }
 
         let child = cmd
@@ -452,6 +468,138 @@ pub(crate) fn resolve_auth_token(work_dir: &Path) -> Option<String> {
     None
 }
 
+/// Auth + endpoint environment to inject into a spawned agent CLI so it
+/// authenticates identically regardless of how the parent was launched —
+/// interactive CLI, a rig/OTP daemon with a stripped env, or nested inside
+/// another claude-code session. The dispatch "Not logged in" failures
+/// (rosary-b1495c) are credential-propagation bugs, not TTY bugs: a spawned
+/// `claude` in a credential-less env fails ~84ms in. This is the single
+/// source of truth every spawn site (`spawn_agent`, `bdr_enrich`, `verify`)
+/// must apply to the child env.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct AgentLaunchEnv {
+    /// (key, value) env pairs to set on the child process.
+    pub vars: Vec<(String, String)>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AuthError {
+    /// No usable credential found in env, `.envrc`, or global config —
+    /// i.e. nothing to inject. Callers should still *proceed* (interactive
+    /// and nested-claude-code contexts can authenticate via macOS Keychain)
+    /// but warn loudly, since a credential-less daemon context is the
+    /// rosary-b1495c "Not logged in" failure. Not a hard error.
+    NoCredentials,
+}
+
+/// Pure resolver: given an env lookup and the contents of candidate `.envrc`
+/// files (highest priority first), produce the env to inject — or fail loud.
+/// Kept side-effect-free (no `std::env`, no fs) so it is unit-testable.
+pub(crate) fn resolve_launch_env_from(
+    getenv: impl Fn(&str) -> Option<String>,
+    envrc_contents: &[String],
+) -> Result<AgentLaunchEnv, AuthError> {
+    // env takes priority; .envrc fills only what env lacks (direnv pattern).
+    let lookup = |key: &str| -> Option<String> {
+        getenv(key)
+            .filter(|v| !v.is_empty())
+            .or_else(|| envrc_value(envrc_contents, key))
+    };
+
+    // Exactly ONE credential is selected and injected — injecting all present
+    // creds causes ambiguous auth selection by the claude CLI and leaks more
+    // secrets to the child than needed (PR #226 review). When a non-default
+    // endpoint is set (gateway / model-swap), the first-party OAuth token
+    // doesn't apply, so gateway creds take priority over it.
+    let gateway = lookup("ANTHROPIC_BASE_URL");
+    let cred_priority: &[&str] = if gateway.is_some() {
+        &[
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ]
+    } else {
+        &[
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+        ]
+    };
+
+    let Some((cred_key, cred_val)) = cred_priority
+        .iter()
+        .find_map(|k| lookup(k).map(|v| (k.to_string(), v)))
+    else {
+        return Err(AuthError::NoCredentials);
+    };
+
+    // ANTHROPIC_BASE_URL is the model-swap hook (Qwen/Kimi/local via an
+    // Anthropic-compatible gateway): forwarded when present, not a credential.
+    let mut vars = vec![(cred_key, cred_val)];
+    if let Some(url) = gateway {
+        vars.push(("ANTHROPIC_BASE_URL".to_string(), url));
+    }
+    Ok(AgentLaunchEnv { vars })
+}
+
+/// Parse `export KEY=value` from `.envrc` contents (highest priority first),
+/// stripping surrounding quotes. Returns the first non-empty match.
+fn envrc_value(envrc_contents: &[String], key: &str) -> Option<String> {
+    let prefix = format!("export {key}=");
+    for content in envrc_contents {
+        for line in content.lines() {
+            if let Some(val) = line.trim().strip_prefix(&prefix) {
+                let val = val.trim().trim_matches('"').trim_matches('\'');
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Impure entry point spawn sites use: gather the live process env + repo
+/// `.envrc` files + global config, then resolve via [`resolve_launch_env_from`].
+/// `Err(NoCredentials)` means "nothing to inject" — callers should still
+/// proceed (the child may authenticate via macOS Keychain in interactive /
+/// nested-claude-code contexts) but emit a loud warning, since a credential-
+/// less *daemon* context (rig/launchd) is exactly the rosary-b1495c failure.
+pub(crate) fn resolve_launch_env(work_dir: &Path) -> Result<AgentLaunchEnv, AuthError> {
+    let mut envrc = collect_envrc(work_dir);
+    // Global config (dispatch.anthropic_api_key) is the lowest-priority
+    // credential source — after env and real .envrc. Append it as a synthetic
+    // .envrc line so resolution runs through the SAME resolver, which means
+    // endpoint passthrough (ANTHROPIC_BASE_URL from env/.envrc) still applies
+    // when the credential comes from config (PR #226 review).
+    if let Ok(cfg) = crate::config::load_global()
+        && let Some(key) = cfg.dispatch.and_then(|d| d.anthropic_api_key)
+        && !key.is_empty()
+    {
+        envrc.push(format!("export ANTHROPIC_API_KEY={key}"));
+    }
+    resolve_launch_env_from(|k| std::env::var(k).ok(), &envrc)
+}
+
+/// Read `.envrc` from `work_dir` and the git repo root (for worktrees).
+fn collect_envrc(work_dir: &Path) -> Vec<String> {
+    let mut paths = vec![work_dir.join(".envrc")];
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(work_dir)
+        .output()
+    {
+        let git_common = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Some(repo_root) = std::path::Path::new(&git_common).parent() {
+            paths.push(repo_root.join(".envrc"));
+        }
+    }
+    paths
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .collect()
+}
+
 /// Resolve a provider by name string, with optional binary path overrides from config.
 pub fn provider_by_name(
     name: &str,
@@ -492,6 +640,195 @@ pub fn provider_by_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Agent launch-env resolution (rosary-b1495c) ---
+
+    #[test]
+    fn launch_env_signals_no_credentials_when_absent() {
+        // rig/OTP daemon context: stripped env, no .envrc creds. Old code
+        // returned a silent None; the resolver now returns a loud Err so the
+        // spawn site can warn about the impending "Not logged in" instead of
+        // silently producing a dead agent.
+        let empty_env = |_: &str| None;
+        let result = resolve_launch_env_from(empty_env, &[]);
+        assert_eq!(result, Err(AuthError::NoCredentials));
+    }
+
+    #[test]
+    fn launch_env_forwards_oauth_token_from_env() {
+        let env = |k: &str| (k == "CLAUDE_CODE_OAUTH_TOKEN").then(|| "tok-123".to_string());
+        let resolved = resolve_launch_env_from(env, &[]).expect("token present");
+        assert!(
+            resolved
+                .vars
+                .contains(&("CLAUDE_CODE_OAUTH_TOKEN".to_string(), "tok-123".to_string())),
+            "child env must carry the OAuth token, got {:?}",
+            resolved.vars
+        );
+    }
+
+    #[test]
+    fn launch_env_forwards_model_gateway_endpoint() {
+        // Qwen/Kimi/local via Anthropic-compatible gateway: BASE_URL is not a
+        // credential by itself, but must be forwarded alongside AUTH_TOKEN so
+        // dispatched agents target the non-Anthropic endpoint.
+        let env = |k: &str| match k {
+            "ANTHROPIC_BASE_URL" => Some("https://api.moonshot.ai/anthropic".to_string()),
+            "ANTHROPIC_AUTH_TOKEN" => Some("sk-moon".to_string()),
+            _ => None,
+        };
+        let resolved = resolve_launch_env_from(env, &[]).expect("auth token present");
+        assert!(
+            resolved.vars.contains(&(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://api.moonshot.ai/anthropic".to_string()
+            )),
+            "endpoint must be forwarded for model-swap, got {:?}",
+            resolved.vars
+        );
+        assert!(
+            resolved
+                .vars
+                .contains(&("ANTHROPIC_AUTH_TOKEN".to_string(), "sk-moon".to_string())),
+            "gateway auth token must be forwarded, got {:?}",
+            resolved.vars
+        );
+    }
+
+    #[test]
+    fn launch_env_falls_back_to_envrc_when_env_empty() {
+        // direnv pattern: rig/daemon has no creds in its stripped env, but the
+        // repo's .envrc carries them. Mirrors resolve_auth_token's fallback.
+        let empty_env = |_: &str| None;
+        let envrc = vec!["export CLAUDE_CODE_OAUTH_TOKEN='envrc-tok'\n# comment\n".to_string()];
+        let resolved = resolve_launch_env_from(empty_env, &envrc).expect("envrc token");
+        assert!(
+            resolved.vars.contains(&(
+                "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
+                "envrc-tok".to_string()
+            )),
+            "must resolve token from .envrc, got {:?}",
+            resolved.vars
+        );
+    }
+
+    #[test]
+    fn launch_env_keeps_endpoint_passthrough_when_cred_is_lower_priority() {
+        // Regression for PR #226 review: credential only in the lower-priority
+        // source (.envrc — how global-config flows in now), endpoint in env.
+        // BOTH must survive; the old config-fallback branch dropped BASE_URL.
+        let env = |k: &str| {
+            (k == "ANTHROPIC_BASE_URL").then(|| "https://gw.example/anthropic".to_string())
+        };
+        let envrc = vec!["export ANTHROPIC_API_KEY='k-from-envrc'\n".to_string()];
+        let resolved = resolve_launch_env_from(env, &envrc).expect("cred present via envrc");
+        assert!(
+            resolved
+                .vars
+                .contains(&("ANTHROPIC_API_KEY".to_string(), "k-from-envrc".to_string())),
+            "credential from lower-priority source must resolve, got {:?}",
+            resolved.vars
+        );
+        assert!(
+            resolved.vars.contains(&(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://gw.example/anthropic".to_string()
+            )),
+            "endpoint passthrough must survive when cred is lower-priority, got {:?}",
+            resolved.vars
+        );
+    }
+
+    #[test]
+    fn launch_env_selects_single_credential_by_priority() {
+        // Multiple creds present, default endpoint: inject exactly ONE
+        // (highest priority = OAuth), not all — avoids ambiguous CLI auth
+        // selection and over-propagation of secrets (PR #226 review).
+        let env = |k: &str| match k {
+            "CLAUDE_CODE_OAUTH_TOKEN" => Some("oauth-tok".to_string()),
+            "ANTHROPIC_API_KEY" => Some("api-key".to_string()),
+            "ANTHROPIC_AUTH_TOKEN" => Some("auth-tok".to_string()),
+            _ => None,
+        };
+        let resolved = resolve_launch_env_from(env, &[]).expect("creds present");
+        let cred_keys: Vec<&str> = resolved
+            .vars
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .filter(|k| *k != "ANTHROPIC_BASE_URL")
+            .collect();
+        assert_eq!(
+            cred_keys,
+            vec!["CLAUDE_CODE_OAUTH_TOKEN"],
+            "exactly one credential (highest priority) must be injected, got {:?}",
+            resolved.vars
+        );
+    }
+
+    #[test]
+    fn launch_env_gateway_endpoint_outranks_oauth_token() {
+        // Transition case: Max OAuth token AND a Kimi/Qwen gateway both set.
+        // A first-party OAuth token can't auth against a third-party gateway,
+        // so the gateway credential must win — and OAuth must not leak.
+        let env = |k: &str| match k {
+            "ANTHROPIC_BASE_URL" => Some("https://api.moonshot.ai/anthropic".to_string()),
+            "ANTHROPIC_AUTH_TOKEN" => Some("sk-moon".to_string()),
+            "CLAUDE_CODE_OAUTH_TOKEN" => Some("oauth-tok".to_string()),
+            _ => None,
+        };
+        let resolved = resolve_launch_env_from(env, &[]).expect("creds present");
+        let cred_keys: Vec<&str> = resolved
+            .vars
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .filter(|k| *k != "ANTHROPIC_BASE_URL")
+            .collect();
+        assert_eq!(
+            cred_keys,
+            vec!["ANTHROPIC_AUTH_TOKEN"],
+            "gateway cred must outrank OAuth when a non-default endpoint is set, got {:?}",
+            resolved.vars
+        );
+    }
+
+    /// End-to-end smoke test of the REAL spawn path (env injection + args +
+    /// stdin handling) against live auth. Ignored by default: spends tokens
+    /// and requires a logged-in `claude` (Keychain in interactive/nested
+    /// contexts, or CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`). Run:
+    ///   cargo test -- --ignored claude_spawn_agent_end_to_end
+    #[tokio::test]
+    #[ignore]
+    async fn claude_spawn_agent_end_to_end_authenticates_and_completes() {
+        let work = tempfile::tempdir().expect("tempdir");
+        // git init so collect_envrc's `git rev-parse` resolves quietly.
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(work.path())
+            .status()
+            .ok();
+        let provider = ClaudeProvider::default();
+        let perms = PermissionProfile::default();
+        let mut session = provider
+            .spawn_agent(
+                "Reply with exactly the token DISPATCH_OK and nothing else. Do not use any tools.",
+                work.path(),
+                &perms,
+                "You are a terse test agent.",
+            )
+            .expect("spawn_agent should succeed");
+        let ok = session.wait().await.expect("wait should not error");
+        let log = std::fs::read_to_string(work.path().join(STREAM_LOG_FILENAME))
+            .unwrap_or_else(|e| format!("<no stream log: {e}>"));
+        assert!(
+            !log.contains("Not logged in"),
+            "auth must succeed via Max account, got: {log}"
+        );
+        assert!(ok, "agent process should exit 0; stream log: {log}");
+        assert!(
+            log.contains("\"is_error\":false"),
+            "expected a successful result line, got: {log}"
+        );
+    }
 
     #[test]
     fn claude_build_command_produces_dash_p_invocation() {

@@ -746,8 +746,29 @@ pub async fn spawn_detached(
         .stdout(std::process::Stdio::from(log_file))
         .stderr(std::process::Stdio::from(err_file));
 
-    if let Some(token) = providers::resolve_auth_token(work_dir) {
-        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", &token);
+    // Inject auth + endpoint env so the detached agent authenticates in any
+    // launch context — this is the MCP `rsry_dispatch` path. Best-effort: on
+    // no-creds we still spawn (Keychain works in interactive / nested-CC) but
+    // warn loudly, since a credential-less context dies "Not logged in"
+    // (rosary-b1495c). ANTHROPIC_BASE_URL passthrough enables model-swap.
+    match providers::resolve_launch_env(work_dir) {
+        Ok(env) => {
+            for (k, v) in &env.vars {
+                cmd.env(k, v);
+            }
+            let keys: Vec<&str> = env.vars.iter().map(|(k, _)| k.as_str()).collect();
+            eprintln!(
+                "[dispatch-detached] injected agent auth/env: {}",
+                keys.join(", ")
+            );
+        }
+        Err(providers::AuthError::NoCredentials) => {
+            eprintln!(
+                "[dispatch-detached] WARNING: no claude credentials in env/.envrc/config — \
+                 relying on ambient Keychain auth. For headless dispatch run \
+                 `claude setup-token` and export CLAUDE_CODE_OAUTH_TOKEN (rosary-b1495c)."
+            );
+        }
     }
 
     // SAFETY: the closure runs in the child between fork and exec. It must
@@ -881,6 +902,58 @@ mod detached_tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// End-to-end smoke of the REAL MCP dispatch path (`spawn_detached` +
+    /// live `claude`). This is what `rsry_dispatch` invokes. Ignored by
+    /// default (spends tokens, needs a logged-in claude — Keychain or
+    /// CLAUDE_CODE_OAUTH_TOKEN). Run:
+    ///   cargo test -- --ignored detached_claude_dispatch_end_to_end
+    #[tokio::test]
+    #[ignore]
+    async fn detached_claude_dispatch_end_to_end_authenticates() {
+        let dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .ok();
+        let provider = providers::ClaudeProvider::default();
+        let perms = PermissionProfile::ReadOnly;
+        let spawn = spawn_detached(
+            &provider,
+            "Reply with exactly the token DETACHED_OK and nothing else. Do not use any tools.",
+            dir.path(),
+            &perms,
+            "You are a terse test agent.",
+        )
+        .await
+        .expect("spawn_detached should succeed");
+
+        let log = spawn.stream_log.clone();
+        let done = wait_for(
+            || {
+                std::fs::read_to_string(&log)
+                    .map(|s| s.contains("\"type\":\"result\""))
+                    .unwrap_or(false)
+            },
+            Duration::from_secs(120),
+        )
+        .await;
+        let contents = std::fs::read_to_string(&log).unwrap_or_default();
+        kill_and_reap(spawn.pid);
+        assert!(
+            done,
+            "no result line within timeout; stream log: {contents}"
+        );
+        assert!(
+            !contents.contains("Not logged in"),
+            "auth must succeed via Max account; got: {contents}"
+        );
+        assert!(
+            contents.contains("\"is_error\":false"),
+            "expected a successful result; got: {contents}"
+        );
     }
 
     #[tokio::test]
