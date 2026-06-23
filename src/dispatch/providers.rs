@@ -708,6 +708,45 @@ mod tests {
         );
     }
 
+    /// End-to-end smoke test of the REAL spawn path (env injection + args +
+    /// stdin handling) against live auth. Ignored by default: spends tokens
+    /// and requires a logged-in `claude` (Keychain in interactive/nested
+    /// contexts, or CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`). Run:
+    ///   cargo test -- --ignored claude_spawn_agent_end_to_end
+    #[tokio::test]
+    #[ignore]
+    async fn claude_spawn_agent_end_to_end_authenticates_and_completes() {
+        let work = tempfile::tempdir().expect("tempdir");
+        // git init so collect_envrc's `git rev-parse` resolves quietly.
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(work.path())
+            .status()
+            .ok();
+        let provider = ClaudeProvider::default();
+        let perms = PermissionProfile::default();
+        let mut session = provider
+            .spawn_agent(
+                "Reply with exactly the token DISPATCH_OK and nothing else. Do not use any tools.",
+                work.path(),
+                &perms,
+                "You are a terse test agent.",
+            )
+            .expect("spawn_agent should succeed");
+        let ok = session.wait().await.expect("wait should not error");
+        let log = std::fs::read_to_string(work.path().join(STREAM_LOG_FILENAME))
+            .unwrap_or_else(|e| format!("<no stream log: {e}>"));
+        assert!(
+            !log.contains("Not logged in"),
+            "auth must succeed via Max account, got: {log}"
+        );
+        assert!(ok, "agent process should exit 0; stream log: {log}");
+        assert!(
+            log.contains("\"is_error\":false"),
+            "expected a successful result line, got: {log}"
+        );
+    }
+
     #[test]
     fn claude_build_command_produces_dash_p_invocation() {
         let provider = ClaudeProvider::default();
