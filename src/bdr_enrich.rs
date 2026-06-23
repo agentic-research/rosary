@@ -81,7 +81,7 @@ pub fn resolve_model_id(model: &str) -> &str {
     match model {
         "haiku" => "claude-haiku-4-5-20251001",
         "sonnet" => "claude-sonnet-4-6",
-        "opus" => "claude-opus-4-6",
+        "opus" => "claude-opus-4-8",
         other => other, // pass through full IDs unchanged
     }
 }
@@ -201,7 +201,9 @@ mod tests {
     fn resolve_model_id_maps_shorthand() {
         assert_eq!(resolve_model_id("haiku"), "claude-haiku-4-5-20251001");
         assert_eq!(resolve_model_id("sonnet"), "claude-sonnet-4-6");
-        assert_eq!(resolve_model_id("claude-opus-4-6"), "claude-opus-4-6");
+        assert_eq!(resolve_model_id("opus"), "claude-opus-4-8");
+        // Full IDs pass through unchanged.
+        assert_eq!(resolve_model_id("claude-opus-4-8"), "claude-opus-4-8");
     }
 
     #[test]
