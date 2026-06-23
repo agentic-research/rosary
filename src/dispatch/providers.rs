@@ -484,9 +484,11 @@ pub(crate) struct AgentLaunchEnv {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum AuthError {
-    /// No usable credential found in env, `.envrc`, or global config.
-    /// Spawning anyway just produces a doomed "Not logged in" subprocess,
-    /// so callers must fail loud instead (rosary-b1495c).
+    /// No usable credential found in env, `.envrc`, or global config —
+    /// i.e. nothing to inject. Callers should still *proceed* (interactive
+    /// and nested-claude-code contexts can authenticate via macOS Keychain)
+    /// but warn loudly, since a credential-less daemon context is the
+    /// rosary-b1495c "Not logged in" failure. Not a hard error.
     NoCredentials,
 }
 
@@ -559,22 +561,19 @@ fn envrc_value(envrc_contents: &[String], key: &str) -> Option<String> {
 /// nested-claude-code contexts) but emit a loud warning, since a credential-
 /// less *daemon* context (rig/launchd) is exactly the rosary-b1495c failure.
 pub(crate) fn resolve_launch_env(work_dir: &Path) -> Result<AgentLaunchEnv, AuthError> {
-    let envrc = collect_envrc(work_dir);
-    match resolve_launch_env_from(|k| std::env::var(k).ok(), &envrc) {
-        Ok(env) => Ok(env),
-        Err(AuthError::NoCredentials) => {
-            // Global config fallback: dispatch.anthropic_api_key (wasteland / hosted rigs).
-            if let Ok(cfg) = crate::config::load_global()
-                && let Some(key) = cfg.dispatch.and_then(|d| d.anthropic_api_key)
-                && !key.is_empty()
-            {
-                return Ok(AgentLaunchEnv {
-                    vars: vec![("ANTHROPIC_API_KEY".to_string(), key)],
-                });
-            }
-            Err(AuthError::NoCredentials)
-        }
+    let mut envrc = collect_envrc(work_dir);
+    // Global config (dispatch.anthropic_api_key) is the lowest-priority
+    // credential source — after env and real .envrc. Append it as a synthetic
+    // .envrc line so resolution runs through the SAME resolver, which means
+    // endpoint passthrough (ANTHROPIC_BASE_URL from env/.envrc) still applies
+    // when the credential comes from config (PR #226 review).
+    if let Ok(cfg) = crate::config::load_global()
+        && let Some(key) = cfg.dispatch.and_then(|d| d.anthropic_api_key)
+        && !key.is_empty()
+    {
+        envrc.push(format!("export ANTHROPIC_API_KEY={key}"));
     }
+    resolve_launch_env_from(|k| std::env::var(k).ok(), &envrc)
 }
 
 /// Read `.envrc` from `work_dir` and the git repo root (for worktrees).
@@ -704,6 +703,33 @@ mod tests {
                 "envrc-tok".to_string()
             )),
             "must resolve token from .envrc, got {:?}",
+            resolved.vars
+        );
+    }
+
+    #[test]
+    fn launch_env_keeps_endpoint_passthrough_when_cred_is_lower_priority() {
+        // Regression for PR #226 review: credential only in the lower-priority
+        // source (.envrc — how global-config flows in now), endpoint in env.
+        // BOTH must survive; the old config-fallback branch dropped BASE_URL.
+        let env = |k: &str| {
+            (k == "ANTHROPIC_BASE_URL").then(|| "https://gw.example/anthropic".to_string())
+        };
+        let envrc = vec!["export ANTHROPIC_API_KEY='k-from-envrc'\n".to_string()];
+        let resolved = resolve_launch_env_from(env, &envrc).expect("cred present via envrc");
+        assert!(
+            resolved
+                .vars
+                .contains(&("ANTHROPIC_API_KEY".to_string(), "k-from-envrc".to_string())),
+            "credential from lower-priority source must resolve, got {:?}",
+            resolved.vars
+        );
+        assert!(
+            resolved.vars.contains(&(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://gw.example/anthropic".to_string()
+            )),
+            "endpoint passthrough must survive when cred is lower-priority, got {:?}",
             resolved.vars
         );
     }

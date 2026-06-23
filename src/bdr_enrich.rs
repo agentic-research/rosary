@@ -57,9 +57,18 @@ pub async fn extract_atoms_with_llm(markdown: &str, model: &str) -> Result<Vec<A
     // Inject auth/endpoint so extraction authenticates in daemon contexts too
     // (rosary-b1495c). No work_dir here — resolve against the current dir.
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    if let Ok(env) = crate::dispatch::providers::resolve_launch_env(&cwd) {
-        for (k, v) in &env.vars {
-            cmd.env(k, v);
+    match crate::dispatch::providers::resolve_launch_env(&cwd) {
+        Ok(env) => {
+            for (k, v) in &env.vars {
+                cmd.env(k, v);
+            }
+        }
+        Err(crate::dispatch::providers::AuthError::NoCredentials) => {
+            eprintln!(
+                "[bdr-enrich] WARNING: no claude credentials in env/.envrc/config — extraction \
+                 may fail headless. Run `claude setup-token` and export CLAUDE_CODE_OAUTH_TOKEN \
+                 (rosary-b1495c)."
+            );
         }
     }
     let output = cmd
