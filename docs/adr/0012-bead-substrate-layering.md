@@ -120,15 +120,46 @@ sanitizer stays useful for any rosary-owned (non-bead, lattice) IDs.
 - **C — keep reading bd's store directly (status quo).** Rejected: the bug.
 - **D — keep Dolt but move sync into hooks differently.** Subsumed by D3.
 
-## Open question (flagged for review)
+### D8 — Load-bearing invariants (from the theoretical-foundations review, 2026-06-23)
 
-**Thread #5 — syntactic vs semantic merge for the observation lattice (D6).**
-Whether rosary's multi-source observations genuinely require app-level
-join-semilattice merge (per-field LWW-register / OR-set / chain-max / flat
-lattice), and whether those algebras are provably commutative/associative/
-idempotent and compose correctly *on top of* Dolt's syntactic merge without the
-two fighting. This is the load-bearing correctness question and is sent to the
-theoretical-foundations review.
+The layering in D6 is sound **only while these hold** — make them explicit and
+enforced, not incidental:
+
+1. **Observations are write-once.** The `observations` table is append-only,
+   content-addressed on `(source, source_event_id, payload_hash)`, never
+   `UPDATE`d. This is *why* Dolt's syntactic cell-merge of the log and the
+   lattice's semantic G-set join **coincide** (both are set-union on new rows,
+   no-op on existing) — the thing that makes the two layers not fight.
+2. **Dolt merges only the append-only log, never the derived projection.** If
+   Dolt ever 3-way-merges the materialized view, it can fabricate a state no
+   source emitted. The projection is derived and disposable; only the log syncs.
+3. **Compaction must be join-preserving.** Retention/compaction may not delete
+   observations that change the fold (the chain-max, the LWW winner, live G-set
+   members); it must first write a synthetic *dominating snapshot* observation.
+4. **Pin/version the `payload_hash` canonicalization** — changing it changes
+   dedup identity and double-counts on replay.
+
+## Theoretical review outcome (Thread #5 — resolved)
+
+The theoretical-foundations review (2026-06-23) **validates the architecture**:
+the per-field algebras (chain-max, LWW-register, G-set, flat-lattice) are genuine
+join-semilattices, the cross-field composition converges (pointwise product), and
+the lattice-on-top-of-Dolt layering is coherent *given D8*. The lattice is
+justified — it computes a semantic join (cross-source set-union, monotone
+chain-max) that Dolt's syntactic cell-merge cannot. The framing is honest (the
+ADRs already disavow the decorative overclaims).
+
+Two real correctness defects were found in the *existing* `src/observation/`
+implementation (independent of this ADR) and filed as beads:
+- **LWW tie-break is not strict-total** (`algebra_lww.rs`) — distinct values
+  sharing `(observed_at, source)` resolve by first-seen → cross-machine
+  divergence. Fix: extend the key with `payload_hash`.
+- **Status pre-fold ignores `observed_at`** (`fold.rs`) — comment claims
+  "LWW by observed_at" but resolves by iteration order → can surface stale
+  status. Fix: resolve within-source by `observed_at` LWW.
+
+Plus minor: rename G-set vs "OR-set"; the invariant-14 partition test is
+tautological (fix or downgrade); the D8 invariants above.
 
 ## References
 
