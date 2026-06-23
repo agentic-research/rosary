@@ -575,13 +575,46 @@ enum BeadCommentAction {
     },
 }
 
+/// Normalize a raw repo-derived string into a safe bead-ID prefix.
+///
+/// Guarantees the result is non-empty and contains only `[a-z0-9_-]` with no
+/// leading/trailing separators — so `generate_bead_id` can never emit a
+/// malformed ID like `.-a9910e` (rosary-3f8515: an empty/`.`/path-like repo
+/// name used to pass straight through). Falls back to `bead` when nothing
+/// usable remains.
+pub fn sanitize_prefix(input: &str) -> String {
+    // Use the last non-empty path segment so a path-like repo id ("/a/b/foo")
+    // becomes "foo", not a hyphen-mangled whole path.
+    let base = input.rsplit('/').find(|s| !s.is_empty()).unwrap_or("");
+    let mut out = String::new();
+    let mut prev_sep = false;
+    for c in base.chars() {
+        let lc = c.to_ascii_lowercase();
+        if lc.is_ascii_alphanumeric() || lc == '_' {
+            out.push(lc);
+            prev_sep = false;
+        } else if !out.is_empty() && !prev_sep {
+            // collapse any run of invalid chars (incl. '.', space, unicode) to one '-'
+            out.push('-');
+            prev_sep = true;
+        }
+    }
+    let trimmed = out.trim_matches(|c| c == '-' || c == '_');
+    if trimmed.is_empty() {
+        "bead".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Generate a bead ID: `{prefix}-{lower 6 hex chars of millis}` (~16M values before collision).
+/// The prefix is sanitized first so callers can pass raw repo names/paths safely.
 pub fn generate_bead_id(prefix: &str) -> String {
     let millis = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    format!("{prefix}-{:06x}", millis & 0xffffff)
+    format!("{}-{:06x}", sanitize_prefix(prefix), millis & 0xffffff)
 }
 
 /// Capture git username from `git config user.name` at bead creation time.
@@ -2737,5 +2770,49 @@ mod tests {
         let id2 = generate_bead_id("mache");
         assert!(id1.starts_with("rosary-"));
         assert!(id2.starts_with("mache-"));
+    }
+
+    // --- rosary-3f8515: prefix sanitization (no more malformed `.-` IDs) ---
+
+    #[test]
+    fn sanitize_prefix_falls_back_when_unusable() {
+        // The exact bug: empty / "." / whitespace prefixes produced `.-xxxxxx`
+        // and `-xxxxxx` IDs. They must normalize to a safe fallback instead.
+        assert_eq!(sanitize_prefix(""), "bead");
+        assert_eq!(sanitize_prefix("."), "bead");
+        assert_eq!(sanitize_prefix("   "), "bead");
+        assert_eq!(sanitize_prefix("///"), "bead");
+    }
+
+    #[test]
+    fn sanitize_prefix_normalizes_case_and_junk() {
+        assert_eq!(sanitize_prefix("Rosary"), "rosary"); // lowercase
+        assert_eq!(sanitize_prefix("ley-line"), "ley-line"); // hyphens kept (valid prefix)
+        assert_eq!(sanitize_prefix("My Repo!"), "my-repo"); // junk → single hyphen, trimmed
+        assert_eq!(sanitize_prefix("foo.bar"), "foo-bar"); // dots → hyphen
+        assert_eq!(sanitize_prefix("-x_"), "x"); // leading/trailing separators trimmed
+    }
+
+    #[test]
+    fn sanitize_prefix_takes_path_basename() {
+        // Callers sometimes pass a path-like repo identifier; use the last
+        // non-empty segment, not the whole path (which would inject hyphens).
+        assert_eq!(sanitize_prefix("/Users/me/the-firm"), "the-firm");
+        assert_eq!(sanitize_prefix("/Users/me/the-firm/"), "the-firm");
+    }
+
+    #[test]
+    fn generate_bead_id_never_malformed_for_bad_prefix() {
+        // End-to-end: even a garbage prefix yields a well-formed ID.
+        for bad in ["", ".", "  ", "/Users/x/"] {
+            let id = generate_bead_id(bad);
+            assert!(
+                !id.starts_with('-') && !id.starts_with('.'),
+                "malformed id from prefix {bad:?}: {id}"
+            );
+            let (pfx, suffix) = id.rsplit_once('-').expect("id has a separator");
+            assert!(!pfx.is_empty(), "empty prefix in {id}");
+            assert_eq!(suffix.len(), 6, "suffix should be 6 hex: {id}");
+        }
     }
 }
