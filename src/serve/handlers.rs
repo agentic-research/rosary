@@ -516,7 +516,13 @@ async fn tool_bead_create(
     let repo_name = scope
         .as_repo_name()
         .expect("Repo-only scope verified by resolve_repo_client");
-    let id = crate::generate_bead_id(repo_name);
+    // rosary-3fcd02: route prefix selection through the resolver (the single
+    // chokepoint). explicit=None until RepoConfig.bead_prefix is plumbed to
+    // this MCP path (needs a config-load decision); git_remote also pending.
+    // Behaviour today == sanitized repo name.
+    let id = crate::generate_bead_id(&crate::resolve_bead_prefix(
+        None, repo_name, None, repo_name,
+    ));
 
     // Wire dependencies if provided
     let depends_on: Vec<String> = args

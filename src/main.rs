@@ -583,6 +583,13 @@ enum BeadCommentAction {
 /// name used to pass straight through). Falls back to `bead` when nothing
 /// usable remains.
 pub fn sanitize_prefix(input: &str) -> String {
+    try_sanitize_prefix(input).unwrap_or_else(|| "bead".to_string())
+}
+
+/// Fallible core of [`sanitize_prefix`]: returns the cleaned prefix, or `None`
+/// when `input` yields nothing usable (empty / `.` / whitespace / path-only).
+/// Used by [`resolve_bead_prefix`] to fall through candidate sources.
+fn try_sanitize_prefix(input: &str) -> Option<String> {
     // Use the last non-empty path segment so a path-like repo id ("/a/b/foo")
     // becomes "foo", not a hyphen-mangled whole path.
     let base = input.rsplit('/').find(|s| !s.is_empty()).unwrap_or("");
@@ -601,10 +608,32 @@ pub fn sanitize_prefix(input: &str) -> String {
     }
     let trimmed = out.trim_matches(|c| c == '-' || c == '_');
     if trimmed.is_empty() {
-        "bead".to_string()
+        None
     } else {
-        trimmed.to_string()
+        Some(trimmed.to_string())
     }
+}
+
+/// Resolve a repo's bead-ID prefix SOURCE by precedence (rosary-3fcd02):
+/// explicit config `bead_prefix` → repo name → git remote name → dir basename.
+/// Returns the first candidate that sanitizes to something usable, already
+/// cleaned; falls back to `bead` if none do. Pair with `generate_bead_id`,
+/// which sanitizes again (idempotent), so callers can pass raw values.
+pub fn resolve_bead_prefix(
+    explicit: Option<&str>,
+    repo_name: &str,
+    git_remote: Option<&str>,
+    dir_basename: &str,
+) -> String {
+    [
+        explicit.unwrap_or(""),
+        repo_name,
+        git_remote.unwrap_or(""),
+        dir_basename,
+    ]
+    .into_iter()
+    .find_map(try_sanitize_prefix)
+    .unwrap_or_else(|| "bead".to_string())
 }
 
 /// Generate a bead ID: `{prefix}-{lower 6 hex chars of millis}` (~16M values before collision).
@@ -2799,6 +2828,42 @@ mod tests {
         // non-empty segment, not the whole path (which would inject hyphens).
         assert_eq!(sanitize_prefix("/Users/me/the-firm"), "the-firm");
         assert_eq!(sanitize_prefix("/Users/me/the-firm/"), "the-firm");
+    }
+
+    #[test]
+    fn resolve_bead_prefix_precedence_and_fallthrough() {
+        // explicit config prefix wins
+        assert_eq!(
+            resolve_bead_prefix(Some("explicit"), "name", Some("remote"), "base"),
+            "explicit"
+        );
+        // explicit junk → fall to repo name
+        assert_eq!(
+            resolve_bead_prefix(Some("."), "name", Some("remote"), "base"),
+            "name"
+        );
+        // no explicit → repo name
+        assert_eq!(
+            resolve_bead_prefix(None, "name", Some("remote"), "base"),
+            "name"
+        );
+        // empty/junk name → git remote (the "default = remote name" path)
+        assert_eq!(
+            resolve_bead_prefix(None, "", Some("remote"), "base"),
+            "remote"
+        );
+        // name + remote both junk → dir basename
+        assert_eq!(
+            resolve_bead_prefix(Some(""), ".", Some("  "), "base"),
+            "base"
+        );
+        // nothing usable anywhere → safe fallback
+        assert_eq!(resolve_bead_prefix(None, "", None, ""), "bead");
+        // chosen source is sanitized
+        assert_eq!(
+            resolve_bead_prefix(Some("My Repo!"), "x", None, "y"),
+            "my-repo"
+        );
     }
 
     #[test]
