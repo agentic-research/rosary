@@ -328,6 +328,25 @@ impl HierarchyStore for SqliteBackend {
         Ok(())
     }
 
+    async fn get_thread(&self, id: &str) -> Result<Option<ThreadRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT id, name, decade_id, feature_branch FROM threads WHERE id = ?1")?;
+        let row = stmt.query_row(params![id], |row| {
+            Ok(ThreadRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                decade_id: row.get(2)?,
+                feature_branch: row.get(3)?,
+            })
+        });
+        match row {
+            Ok(t) => Ok(Some(t)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     async fn list_threads(&self, decade_id: &str) -> Result<Vec<ThreadRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

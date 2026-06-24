@@ -2191,35 +2191,41 @@ async fn tool_thread_assign(args: &Value, backend: Option<&dyn BackendStore>) ->
         .and_then(|v| v.as_str())
         .unwrap_or("ungrouped");
 
-    // Auto-create decade if it doesn't exist
-    use crate::store::DecadeRecord;
-    if backend.get_decade(decade_id).await?.is_none() {
+    // Only create the thread when it's genuinely new. thread_assign assigns a
+    // BEAD — it must NEVER re-upsert an existing thread, which would clobber the
+    // decade_id a prior thread_create set (decade_id here defaults to
+    // "ungrouped" when the caller doesn't re-pass it). (rosary-427446)
+    if backend.get_thread(thread_id).await?.is_none() {
+        use crate::store::DecadeRecord;
+        // Auto-create the parent decade if it doesn't exist.
+        if backend.get_decade(decade_id).await?.is_none() {
+            backend
+                .upsert_decade(&DecadeRecord {
+                    id: decade_id.to_string(),
+                    title: decade_id.to_string(),
+                    source_path: String::new(),
+                    status: "active".to_string(),
+                })
+                .await?;
+        }
+
+        // Derive feature branch from config prefix + thread name.
+        let prefix = crate::config::load_global()
+            .ok()
+            .and_then(|c| c.github)
+            .map(|g| g.agent_branch_prefix)
+            .unwrap_or_else(|| "rosary".to_string());
+        let feature_branch = crate::workspace::thread_branch_name(&prefix, thread_name);
+
         backend
-            .upsert_decade(&DecadeRecord {
-                id: decade_id.to_string(),
-                title: decade_id.to_string(),
-                source_path: String::new(),
-                status: "active".to_string(),
+            .upsert_thread(&ThreadRecord {
+                id: thread_id.to_string(),
+                name: thread_name.to_string(),
+                decade_id: decade_id.to_string(),
+                feature_branch: Some(feature_branch),
             })
             .await?;
     }
-
-    // Derive feature branch from config prefix + thread name.
-    let prefix = crate::config::load_global()
-        .ok()
-        .and_then(|c| c.github)
-        .map(|g| g.agent_branch_prefix)
-        .unwrap_or_else(|| "rosary".to_string());
-    let feature_branch = crate::workspace::thread_branch_name(&prefix, thread_name);
-
-    backend
-        .upsert_thread(&ThreadRecord {
-            id: thread_id.to_string(),
-            name: thread_name.to_string(),
-            decade_id: decade_id.to_string(),
-            feature_branch: Some(feature_branch.clone()),
-        })
-        .await?;
 
     let bead_ref = WorkRef {
         repo: repo.to_string(),
@@ -3551,6 +3557,47 @@ mod input_validation_tests {
         assert_eq!(result["name"], "Substrate work");
         assert_eq!(result["decade_id"], "d-1");
         assert_eq!(result["action"], "created");
+    }
+
+    #[tokio::test]
+    async fn thread_assign_does_not_clobber_existing_thread_decade() {
+        // thread_assign assigns a BEAD; it must not redefine the thread.
+        // Assigning a bead to an existing thread WITHOUT re-passing decade_id
+        // previously upserted the thread with decade_id="ungrouped", clobbering
+        // its real decade (the mache session hit this: thread_create under
+        // mache-pure-go-arena, then assign → threads moved to ungrouped, so
+        // list_threads(decade) returned empty). (rosary-427446)
+        use crate::store::HierarchyStore;
+        use crate::store::tests::InMemoryStore;
+        let store = InMemoryStore::new();
+        tool_decade_create(&json!({ "id": "d-x", "title": "X" }), Some(&store))
+            .await
+            .unwrap();
+        tool_thread_create(
+            &json!({ "decade_id": "d-x", "id": "d-x/t1", "name": "T1" }),
+            Some(&store),
+        )
+        .await
+        .unwrap();
+
+        // Assign a bead WITHOUT decade_id — the normal flow after a create.
+        tool_thread_assign(
+            &json!({ "thread_id": "d-x/t1", "bead_id": "rosary-1", "repo": "rosary" }),
+            Some(&store),
+        )
+        .await
+        .unwrap();
+
+        let under_dx = store.list_threads("d-x").await.unwrap();
+        assert!(
+            under_dx.iter().any(|t| t.id == "d-x/t1"),
+            "thread_assign must not clobber the thread's decade_id"
+        );
+        let under_ungrouped = store.list_threads("ungrouped").await.unwrap();
+        assert!(
+            !under_ungrouped.iter().any(|t| t.id == "d-x/t1"),
+            "thread must not be moved to ungrouped by assign"
+        );
     }
 
     /// thread_create must refuse when the parent decade doesn't exist.

@@ -190,6 +190,11 @@ pub trait HierarchyStore: Send + Sync {
     async fn list_decades(&self, status: Option<&str>) -> Result<Vec<DecadeRecord>>;
 
     async fn upsert_thread(&self, thread: &ThreadRecord) -> Result<()>;
+    /// Fetch a single thread by id, or `None` if it doesn't exist. Used to
+    /// distinguish "create a new thread" from "the thread already exists" so
+    /// callers (e.g. thread_assign) don't clobber an existing thread's
+    /// decade_id via a blind upsert.
+    async fn get_thread(&self, id: &str) -> Result<Option<ThreadRecord>>;
     async fn list_threads(&self, decade_id: &str) -> Result<Vec<ThreadRecord>>;
 
     async fn add_bead_to_thread(&self, thread_id: &str, bead: &WorkRef) -> Result<()>;
@@ -537,6 +542,11 @@ pub(crate) mod tests {
                 threads.push(thread.clone());
             }
             Ok(())
+        }
+
+        async fn get_thread(&self, id: &str) -> Result<Option<ThreadRecord>> {
+            let threads = self.threads.lock().unwrap();
+            Ok(threads.iter().find(|t| t.id == id).cloned())
         }
 
         async fn list_threads(&self, decade_id: &str) -> Result<Vec<ThreadRecord>> {
