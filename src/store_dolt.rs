@@ -356,6 +356,20 @@ impl HierarchyStore for DoltBackend {
         Ok(())
     }
 
+    async fn get_thread(&self, id: &str) -> Result<Option<ThreadRecord>> {
+        let row = query("SELECT id, name, decade_id, feature_branch FROM threads WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .with_context(|| format!("getting thread {id}"))?;
+        Ok(row.map(|r| ThreadRecord {
+            id: r.get("id"),
+            name: r.get("name"),
+            decade_id: r.get("decade_id"),
+            feature_branch: r.try_get("feature_branch").ok(),
+        }))
+    }
+
     async fn list_threads(&self, decade_id: &str) -> Result<Vec<ThreadRecord>> {
         let rows = query(
             "SELECT id, name, decade_id, feature_branch FROM threads WHERE decade_id = ? ORDER BY id",
