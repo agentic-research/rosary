@@ -120,20 +120,25 @@ fn bead_from_row(row: &rusqlite::Row<'_>, repo_name: &str) -> rusqlite::Result<B
 ///
 /// Detect a bead backend rsry cannot read, so a registered repo never
 /// *silently* reports 0 beads (rosary-21e2d4 — the lectio failure mode).
-/// Returns a loud diagnostic when `.beads/` holds a store rsry doesn't speak
-/// — today: a bd embedded-Dolt store (`embeddeddolt/`) with no server-mode
-/// `dolt/` layout, which rsry can't read (needs `bd init --server`).
+/// Returns a loud diagnostic only when `.beads/` holds *solely* a store rsry
+/// doesn't speak — a bd embedded-Dolt store (`embeddeddolt/`) with no server-mode
+/// `dolt/` and no SQLite `beads.db` fallback. If a `beads.db` is present, rsry
+/// reads that (ADR-0014) and stays quiet (rosary-65c2ff).
 pub(crate) fn unreadable_backend_warning(beads_dir: &Path) -> Option<String> {
     // Server-mode Dolt (`dolt/`) is readable over MySQL — not a concern.
     if beads_dir.join("dolt").is_dir() {
         return None;
     }
-    // bd embedded Dolt: real data rsry can't read without a server.
-    if beads_dir.join("embeddeddolt").is_dir() {
+    // bd embedded Dolt: data rsry can't read. But if a SQLite `beads.db` is
+    // present, THAT is the store rsry actually reads (ADR-0014) — embeddeddolt
+    // is unused, so this is not a "0 beads / cannot read" situation. Only warn
+    // when embeddeddolt is the *only* store and there's no beads.db fallback.
+    if beads_dir.join("embeddeddolt").is_dir() && !beads_dir.join("beads.db").exists() {
         return Some(format!(
-            "{} has a bd embedded-Dolt store (.beads/embeddeddolt) that rsry cannot read — \
-             it needs server mode. Run `bd init --server` (ADR-0012). Reporting 0 beads for \
-             this repo is almost certainly WRONG.",
+            "{} has only a bd embedded-Dolt store (.beads/embeddeddolt) that rsry cannot read, \
+             and no `beads.db` to fall back to — this repo will report 0 beads. Export it to a \
+             store rsry reads: a SQLite `.beads/beads.db`, or `bd init --server` for Dolt server \
+             mode (ADR-0014).",
             beads_dir.display()
         ));
     }
@@ -1266,6 +1271,21 @@ mod tests {
         assert!(
             unreadable_backend_warning(&bare).is_none(),
             "bare/uninitialized .beads is a normal bootstrap, not unreadable"
+        );
+    }
+
+    /// rosary-65c2ff: an `embeddeddolt/` dir co-existing with a readable
+    /// `beads.db` is NOT a "cannot read / 0 beads" situation — rsry reads the
+    /// SQLite `beads.db` (ADR-0014), so the scary warning must be suppressed.
+    #[test]
+    fn no_warning_when_beads_db_present_alongside_embeddeddolt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let beads = tmp.path().join(".beads");
+        std::fs::create_dir_all(beads.join("embeddeddolt")).unwrap();
+        std::fs::write(beads.join("beads.db"), b"sqlite-data").unwrap();
+        assert!(
+            unreadable_backend_warning(&beads).is_none(),
+            "beads.db present → rsry reads it; no unreadable warning"
         );
     }
 
