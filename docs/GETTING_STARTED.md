@@ -26,8 +26,9 @@ brew install jj fuse-t
 # ART tools (mache provides structural code intel; rosary uses it via MCP)
 brew tap agentic-research/tap
 brew install mache
-# Note: the `bd` (beads) CLI is NOT required. Rosary talks directly to the
-# per-repo Dolt server over MySQL — no CLI shelling — so installing `beads`
+# Note: the `bd` (beads) CLI is NOT required and is never invoked. Rosary reads
+# beads in-process — directly against a local SQLite `.beads/beads.db`, or over
+# MySQL to a per-repo Dolt server when `.beads/dolt/` exists. Installing `beads`
 # is unnecessary unless you want it for ad-hoc scripts outside rosary.
 
 # Claude Code (the AI pair-programming CLI)
@@ -307,7 +308,7 @@ recorded as applied on the first read. If you still see this warning, your
 
 **`rsry status` shows nothing**: Your repos aren't registered or don't have `.beads/` directories. Check `~/.rsry/config.toml` and run `rsry enable <path>` in each repo.
 
-**Dolt connection errors**: Each `.beads/` directory runs its own Dolt SQL server. Check `dolt sql-server` is available in your PATH and that the port file (`.beads/dolt-server.port`) isn't stale.
+**Dolt connection errors**: Only `.beads/` directories that contain a `dolt/` subdir run a Dolt SQL server; a `.beads/` with just `beads.db` uses SQLite directly (no server, no port file). For Dolt-mode repos, check `dolt sql-server` is on your PATH and that the port file (`.beads/dolt-server.port`) isn't stale.
 
 **Agent dispatch fails immediately**: Check that `claude` CLI is in your PATH (the conductor uses `claude -p` for dispatch). The Rust reconciler uses the configured `[dispatch] provider`.
 

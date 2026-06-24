@@ -4,7 +4,7 @@ Rust-based agent orchestration and work tracking. Backbone of the ART (Agentic R
 
 ## What Rosary Does
 
-1. **Scans** repositories for work items (beads) stored in `.beads/` (Dolt)
+1. **Scans** repositories for work items (beads) stored in `.beads/` (a SQLite `beads.db`, or a Dolt server when `.beads/dolt/` exists) — read in-process, no `bd` CLI
 1. **Dispatches** agents to execute work — see `agents/` directory
 1. **Reconciles** state via a k8s-controller-style loop: scan → triage → dispatch → verify
 1. **Syncs** bidirectionally with Linear (beads are source of truth, Linear is UI)
@@ -52,11 +52,13 @@ task all            # fmt + check + lint + test
 | src/serve/github_webhook.rs | GitHub merge webhook → advance bead + unblock dependents                    |
 | src/reconcile/mod.rs        | Reconciliation loop: scan → triage → dispatch → verify                      |
 | src/bead.rs                 | Bead model, BeadState enum, Comment struct (audit-trail), Linear type mapping |
+| src/bead_sqlite.rs          | `connect_bead_store` — the single entry point for ALL bead I/O; `SqliteBeadStore` reads `.beads/beads.db` directly (rusqlite) when there's no `.beads/dolt/` |
+| src/bead_dolt.rs            | `DoltBeadStore` — `BeadStore` over the Dolt MySQL client (used when `.beads/dolt/` exists) |
 | src/dispatch/mod.rs         | Agent dispatch, pipeline mapping, execution                                 |
 | src/dispatch/providers.rs   | AgentProvider trait — claude / gemini / plugin-kind="dispatch" backends     |
 | src/dispatch/sweep.rs       | Orphan-dispatch detection — self-heals stuck `Dispatched` beads (rosary-67c43d) |
 | src/epic.rs                 | Semantic clustering, dedup, file overlap detection                          |
-| src/dolt.rs                 | Dolt database client (per-repo beads)                                       |
+| src/dolt.rs                 | Dolt client (per-repo beads, server mode) — used only when `.beads/dolt/` exists |
 | src/store_dolt.rs           | Dolt backend for orchestrator state (pipeline, dispatches, cross-repo deps) |
 | src/store.rs                | Backend-agnostic store traits (HierarchyStore, DispatchStore, LinkageStore) |
 | src/observation/mod.rs      | ADR-0010 substrate: Observation, FieldName, FieldAlgebra, Observer trait    |
@@ -109,7 +111,7 @@ Pipeline mapping: issue_type → agent sequence (dispatch.rs `agent_pipeline()`)
 
 ## Beads (Issue Tracking)
 
-Beads are the distributed work tracking system. Each repo has `.beads/` with a Dolt database.
+Beads are the distributed work tracking system. Each repo has `.beads/` with either a Dolt database (`.beads/dolt/`, server mode) or a SQLite `beads.db` (the default for single-user/local repos). Rosary reads/writes both in-process via `connect_bead_store` (`src/bead_sqlite.rs`) — it never invokes the `bd` CLI. See [ADR-0014](docs/adr/0014-decouple-rosary-from-bd.md).
 
 ```bash
 # MCP tools (via rsry serve) — 31 tools
@@ -173,6 +175,10 @@ File overlap is also re-checked in Phase 4 (dispatch loop) to catch beads queued
 | 0008 | Proposed | Agent hierarchy dispatch model (dev/feature/orchestrator tiers)         |
 | 0009 | Accepted | Cross-repo linkage — stratified acyclicity + modal evidence             |
 | 0010 | Accepted | Observation lattice — G-set + per-field fold (substrate)                |
+| 0011 | Accepted | Decision-of-record — authenticated-authority conflict resolution        |
+| 0012 | Accepted | Personal/root bead substrate (storage/sync/tamper)                      |
+| 0013 | Superseded | Bead substrate — adopt bd/Dolt as shared store (superseded by 0014)   |
+| 0014 | Accepted | Decouple rosary from bd — speak the bead format, own the store          |
 
 ## BDR Hierarchy (Decade → Thread → Bead)
 

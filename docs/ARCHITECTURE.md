@@ -268,9 +268,17 @@ flowchart LR
 
 Language-aware: Rust gets `cargo check/test/clippy`, Go gets `go vet/test/golangci-lint`.
 
-## Dolt Connection Model
+## Bead Connection Model
 
-Two tiers of Dolt databases:
+`RepoPool` dispatches per-repo to one of two bead-store backends via
+`connect_bead_store` (`src/bead_sqlite.rs`): a `DoltBeadStore` (MySQL wire to a
+per-repo `dolt sql-server`) when `.beads/dolt/` exists, otherwise a
+`SqliteBeadStore` reading `.beads/beads.db` directly — no server, no Dolt, no
+`bd` CLI. The diagram below shows the Dolt-mode tier; SQLite-mode repos hang off
+`RepoPool` the same way but resolve to a local `beads.db` file. See
+[ADR-0014](adr/0014-decouple-rosary-from-bd.md).
+
+Two tiers of Dolt databases (Dolt mode):
 
 ```mermaid
 graph TB
