@@ -1,6 +1,11 @@
 //! OR-set algebra for [`crate::observation::FieldName::Comment`] and
 //! [`crate::observation::FieldName::Label`].
 //!
+//! NOTE (rosary-a3ab19): strictly this is an **add-only G-set** today — there
+//! is no remove/tombstone yet (see the add-only note below). Both are lawful
+//! join-semilattices; the "OR-set" name anticipates the remove semantics that
+//! will arrive with tombstones keyed by `(source, source_event_id)`.
+//!
 //! Bead `obs-algebra-orset` (rosary-97a010). ADR-0010 invariants 6-7.
 //!
 //! Each observation contributes one element to the set; identity is

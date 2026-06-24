@@ -357,10 +357,16 @@ mod tests {
         assert!(derived.is_empty());
     }
 
-    /// ADR-0010 invariant 14: convergence_under_partition.
-    /// `fold(O₁ ∪ O₂) = merge(fold(O₁), fold(O₂))` — folding two
-    /// halves separately and combining the per-source results gives
-    /// the same answer as folding the combined log directly.
+    /// ADR-0010 invariant 14 (PARTIAL — rosary-a3ab19): this verifies the
+    /// *set-level* property `fold(O₁ ∪ O₂) = fold(union(O₁, O₂))`, i.e. the
+    /// fold is a pure function of the observation SET (order/partition of
+    /// insertion is irrelevant — the log is a G-set, per-field algebras are
+    /// commutative+idempotent). It does NOT verify the stronger *view-level*
+    /// property `fold(O₁ ∪ O₂) = merge(fold(O₁), fold(O₂))`, because there is
+    /// no `merge(DerivedView, DerivedView)` yet (a folded view drops the
+    /// algebras needed to re-join partial per-source folds). Implementing that
+    /// merge + its test is tracked in rosary-a3ab19. (Set-level determinism is
+    /// also covered by `reorder_invariance`.)
     #[test]
     fn convergence_under_partition() {
         let w = workref("b1");

@@ -71,6 +71,12 @@ impl SqliteObservationLog {
         // `{"other":"x"}`. Either form roundtrips cleanly via
         // serde_json::from_str on read.
 
+        // WRITE-ONCE (ADR-0012 D8): observations are append-only and
+        // content-addressed on the dedup key — NEVER UPDATEd. This is what
+        // makes Dolt's syntactic cell-merge of the log coincide with the
+        // lattice's G-set join (both = set-union on new rows, no-op on
+        // existing). Do not add an UPDATE path here; mutate via a NEW
+        // observation, not in place.
         let conn = self.conn.lock().unwrap();
         let n = conn
             .execute(
