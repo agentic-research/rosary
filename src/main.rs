@@ -20,6 +20,7 @@ mod bead;
 mod bead_dolt;
 mod bead_sqlite;
 mod capture;
+mod cas;
 mod cli;
 mod config;
 mod decompose;

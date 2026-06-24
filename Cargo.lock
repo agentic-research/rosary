@@ -3266,6 +3266,7 @@ dependencies = [
  "axum",
  "base64",
  "bdr",
+ "blake3",
  "capnp",
  "capnp-futures",
  "capnpc",
