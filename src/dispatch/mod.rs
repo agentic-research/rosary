@@ -745,12 +745,25 @@ pub async fn spawn_detached(
     permissions: &PermissionProfile,
     system_prompt: &str,
 ) -> Result<DetachedSpawn> {
-    let (binary, args) = provider.build_command(prompt, permissions, system_prompt);
+    let (binary, mut args) = provider.build_command(prompt, permissions, system_prompt);
     anyhow::ensure!(
         !binary.is_empty(),
         "{} does not support build_command(); detached spawn from the MCP path is not supported for this provider",
         provider.name(),
     );
+
+    // Expose rsry/mache MCP to the agent so its granted tools connect during
+    // the run (rosary-563b3f). Local detached path only — the compute/container
+    // path (build_command without this) can't reach localhost services.
+    if let Some(path) = providers::write_agent_mcp_config(work_dir) {
+        args.push("--mcp-config".to_string());
+        args.push(path.to_string_lossy().into_owned());
+        args.push("--strict-mcp-config".to_string());
+        // Override a per-project `disabledMcpServers` (in ~/.claude.json) that
+        // would otherwise suppress the injected servers by name (rosary-563b3f).
+        args.push("--settings".to_string());
+        args.push(providers::AGENT_SETTINGS_OVERRIDE.to_string());
+    }
 
     let log_path = work_dir.join(STREAM_LOG_FILENAME);
     let err_path = work_dir.join(".rsry-stderr.log");

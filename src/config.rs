@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -351,6 +351,13 @@ pub struct DispatchConfig {
     /// Toggle with `rsry approve <repo>` / `rsry reject <repo>`.
     #[serde(default)]
     pub require_approval: bool,
+    /// MCP servers exposed to DISPATCHED agents (rosary-563b3f) so their
+    /// granted `mcp__rsry__*` / `mcp__mache__*` tools actually connect during a
+    /// run. Map of server name → HTTP MCP URL. Defaults to the local rsry +
+    /// mache HTTP services; override here (e.g. point at a cloister gateway).
+    /// Empty disables injecting `--mcp-config`.
+    #[serde(default = "default_agent_mcp")]
+    pub agent_mcp: BTreeMap<String, String>,
 }
 
 fn default_dispatch_provider() -> String {
@@ -359,6 +366,15 @@ fn default_dispatch_provider() -> String {
 
 fn default_max_concurrent() -> usize {
     3
+}
+
+/// Default MCP servers for dispatched agents: the local rsry + mache HTTP
+/// services (rosary-563b3f). Swap for a cloister-gateway URL via config.
+pub(crate) fn default_agent_mcp() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("rsry".to_string(), "http://localhost:8383/mcp".to_string()),
+        ("mache".to_string(), "http://localhost:7532/mcp".to_string()),
+    ])
 }
 
 /// Orchestration mode and behavior.
