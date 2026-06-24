@@ -104,6 +104,21 @@ impl PermissionProfile {
 /// Filename for the agent stdout stream log within a workspace.
 pub const STREAM_LOG_FILENAME: &str = ".rsry-stream.jsonl";
 
+/// True if the agent's stream-json result reports an auth failure
+/// ("Not logged in"). A credential-less agent exits ~instantly having done no
+/// work; dispatch must fail LOUD on this rather than treat the exit as normal
+/// (rosary-562b2e; the credential-propagation class from rosary-b1495c).
+fn stream_result_auth_failed(stream_log: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(stream_log) else {
+        return false;
+    };
+    // The stream-json result line carries `"type":"result"`; on auth failure
+    // the CLI sets `"result":"Not logged in · Please run /login"`.
+    content
+        .lines()
+        .any(|line| line.contains("\"type\":\"result\"") && line.contains("Not logged in"))
+}
+
 /// Handle to a running agent session.
 pub struct AgentHandle {
     #[allow(dead_code)]
@@ -476,6 +491,22 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
     .await?;
     let success = handle.wait().await?;
 
+    // Fail loud on credential failure: a "Not logged in" agent exits without
+    // doing any work. Treat it as a hard dispatch failure (not a normal exit
+    // the pipeline then mis-infers), unstick the bead, and surface the fix
+    // (rosary-562b2e / rosary-b1495c).
+    if stream_result_auth_failed(&handle.work_dir.join(STREAM_LOG_FILENAME)) {
+        eprintln!(
+            "[dispatch] {bead_id} agent FAILED authentication ('Not logged in') — no work done. \
+             Set CLAUDE_CODE_OAUTH_TOKEN / run `claude setup-token` (rosary-b1495c)."
+        );
+        let _ = client.update_status(bead_id, "open").await; // unstick: retryable
+        anyhow::bail!(
+            "dispatch {bead_id}: agent not authenticated ('Not logged in') — see {}",
+            handle.work_dir.join(STREAM_LOG_FILENAME).display()
+        );
+    }
+
     // The pipeline is authoritative for lifecycle transitions — not the agent.
     // If the agent already transitioned the bead (via MCP tools), respect that.
     // If it's still Dispatched after exit, the pipeline infers the next state
@@ -831,6 +862,36 @@ pub async fn spawn_detached(
 mod detached_tests {
     use super::*;
     use std::time::Duration;
+
+    /// rosary-562b2e: an auth-failure result line is detected; a normal
+    /// success result and a missing log are not.
+    #[test]
+    fn stream_result_auth_failed_detects_not_logged_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("s.jsonl");
+        std::fs::write(
+            &log,
+            "{\"type\":\"result\",\"is_error\":false,\"result\":\"done\"}\n",
+        )
+        .unwrap();
+        assert!(
+            !stream_result_auth_failed(&log),
+            "success result is not a failure"
+        );
+        std::fs::write(
+            &log,
+            "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\"Not logged in · Please run /login\"}\n",
+        )
+        .unwrap();
+        assert!(
+            stream_result_auth_failed(&log),
+            "'Not logged in' result must be detected"
+        );
+        assert!(
+            !stream_result_auth_failed(&dir.path().join("missing.jsonl")),
+            "missing log is not a failure"
+        );
+    }
 
     /// Minimal test provider that exposes a shell command via
     /// `build_command`. Avoids needing a real `claude` binary in tests.
