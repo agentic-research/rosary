@@ -381,10 +381,24 @@ impl AgentProvider for AcpNativeProvider {
             self.binary,
             work_dir.display()
         );
-        let auth_token = resolve_auth_token(work_dir);
-        if auth_token.is_some() {
-            eprintln!("[spawn] passing auth token to ACP agent");
-        }
+        // Inject auth + endpoint env via the shared resolver (single
+        // credential by priority + ANTHROPIC_BASE_URL passthrough), same as
+        // the claude paths; warn loudly on no-creds (rosary-b1495c / 5582ae).
+        let launch_vars: Vec<(String, String)> = match resolve_launch_env(work_dir) {
+            Ok(env) => {
+                let keys: Vec<&str> = env.vars.iter().map(|(k, _)| k.as_str()).collect();
+                eprintln!("[spawn] injected ACP agent auth/env: {}", keys.join(", "));
+                env.vars
+            }
+            Err(AuthError::NoCredentials) => {
+                eprintln!(
+                    "[spawn] WARNING: no claude credentials in env/.envrc/config for ACP agent — \
+                     relying on ambient Keychain. For headless, run `claude setup-token` and \
+                     export CLAUDE_CODE_OAUTH_TOKEN (rosary-b1495c)."
+                );
+                Vec::new()
+            }
+        };
         let session = crate::acp::spawn_acp_session(
             &self.binary,
             prompt,
@@ -392,7 +406,7 @@ impl AgentProvider for AcpNativeProvider {
             *permissions,
             system_prompt,
             &log_path,
-            auth_token.as_deref(),
+            &launch_vars,
         )?;
         Ok(Box::new(session))
     }
@@ -406,66 +420,6 @@ impl AgentProvider for AcpNativeProvider {
             binary: self.binary.clone(),
         })
     }
-}
-
-/// Resolve auth token for agent spawning. Launchd services can't access
-/// Keychain OAuth, so we read CLAUDE_CODE_OAUTH_TOKEN from env or .envrc.
-///
-/// Priority:
-/// 1. `CLAUDE_CODE_OAUTH_TOKEN` env var
-/// 2. `ANTHROPIC_API_KEY` env var
-/// 3. `.envrc` in work_dir
-/// 4. `.envrc` in git repo root (for worktrees)
-/// 5. `dispatch.anthropic_api_key` in `~/.rsry/config.toml` (wasteland / hosted rigs)
-pub(crate) fn resolve_auth_token(work_dir: &Path) -> Option<String> {
-    // 1. Env vars (set by direnv, shell profile, or launchd plist)
-    if let Ok(token) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN") {
-        return Some(token);
-    }
-    if let Ok(token) = std::env::var("ANTHROPIC_API_KEY") {
-        return Some(token);
-    }
-
-    // 2-4. Read from .envrc (direnv pattern) — check work_dir and git origin
-    let mut paths = vec![work_dir.join(".envrc")];
-    if let Ok(output) = std::process::Command::new("git")
-        .args(["rev-parse", "--git-common-dir"])
-        .current_dir(work_dir)
-        .output()
-    {
-        let git_common = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if let Some(repo_root) = std::path::Path::new(&git_common).parent() {
-            paths.push(repo_root.join(".envrc"));
-        }
-    }
-
-    for path in &paths {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            for line in content.lines() {
-                if let Some(val) = line
-                    .strip_prefix("export CLAUDE_CODE_OAUTH_TOKEN=")
-                    .or_else(|| line.strip_prefix("export ANTHROPIC_API_KEY="))
-                {
-                    let val = val.trim().trim_matches('"').trim_matches('\'');
-                    if !val.is_empty() {
-                        return Some(val.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    // 5. Global config fallback — dispatch.anthropic_api_key in ~/.rsry/config.toml.
-    // Used by wasteland rigs and hosted services where no per-repo .envrc exists.
-    // Uses load_global() so $RSRY_CONFIG env var doesn't redirect to a project config.
-    if let Ok(cfg) = crate::config::load_global()
-        && let Some(key) = cfg.dispatch.and_then(|d| d.anthropic_api_key)
-        && !key.is_empty()
-    {
-        return Some(key);
-    }
-
-    None
 }
 
 /// Auth + endpoint environment to inject into a spawned agent CLI so it
