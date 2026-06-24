@@ -113,6 +113,33 @@ fn bead_from_row(row: &rusqlite::Row<'_>, repo_name: &str) -> rusqlite::Result<B
 ///      creates a shadow store that diverges silently. Fail loudly instead —
 ///      `DoltClient::connect` already auto-starts the server if it's not running.
 ///   2. No `dolt/` → repo is not yet initialized; use SQLite for bootstrapping.
+///
+/// Before bootstrapping SQLite, [`unreadable_backend_warning`] screams if the
+/// repo actually has a bd store rsry can't read (embedded Dolt), so a
+/// registered repo never silently reports 0 beads (rosary-21e2d4).
+///
+/// Detect a bead backend rsry cannot read, so a registered repo never
+/// *silently* reports 0 beads (rosary-21e2d4 — the lectio failure mode).
+/// Returns a loud diagnostic when `.beads/` holds a store rsry doesn't speak
+/// — today: a bd embedded-Dolt store (`embeddeddolt/`) with no server-mode
+/// `dolt/` layout, which rsry can't read (needs `bd init --server`).
+pub(crate) fn unreadable_backend_warning(beads_dir: &Path) -> Option<String> {
+    // Server-mode Dolt (`dolt/`) is readable over MySQL — not a concern.
+    if beads_dir.join("dolt").is_dir() {
+        return None;
+    }
+    // bd embedded Dolt: real data rsry can't read without a server.
+    if beads_dir.join("embeddeddolt").is_dir() {
+        return Some(format!(
+            "{} has a bd embedded-Dolt store (.beads/embeddeddolt) that rsry cannot read — \
+             it needs server mode. Run `bd init --server` (ADR-0012). Reporting 0 beads for \
+             this repo is almost certainly WRONG.",
+            beads_dir.display()
+        ));
+    }
+    None
+}
+
 pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> {
     let dolt_dir = beads_dir.join("dolt");
     if dolt_dir.exists() {
@@ -146,6 +173,11 @@ pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> 
     }
 
     // No dolt/ dir — repo not yet initialized. SQLite for bootstrapping only.
+    // Fail loud if this is actually an unreadable bd store (embedded Dolt),
+    // so we don't silently report 0 beads for a populated repo (rosary-21e2d4).
+    if let Some(warning) = unreadable_backend_warning(beads_dir) {
+        eprintln!("[bead] WARNING: {warning}");
+    }
     let sqlite_path = beads_dir.join("beads.db");
     let store = SqliteBeadStore::connect(&sqlite_path)?;
     Ok(Box::new(store))
@@ -1199,6 +1231,43 @@ impl BeadStore for SqliteBeadStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rosary-21e2d4: a bd embedded-Dolt store (no server-mode `dolt/`) must
+    /// produce a loud warning, not a silent fall-through to empty SQLite.
+    #[test]
+    fn warns_on_embedded_dolt_backend() {
+        let tmp = tempfile::tempdir().unwrap();
+        let beads = tmp.path().join(".beads");
+        std::fs::create_dir_all(beads.join("embeddeddolt")).unwrap();
+        let w = unreadable_backend_warning(&beads);
+        assert!(w.is_some(), "embedded-Dolt store must warn, got None");
+        assert!(
+            w.unwrap().contains("embeddeddolt"),
+            "warning should name the embedded store"
+        );
+    }
+
+    /// Server-mode (`dolt/`) is readable → no warning.
+    #[test]
+    fn no_warning_for_server_mode_or_bare() {
+        let tmp = tempfile::tempdir().unwrap();
+        let beads = tmp.path().join(".beads");
+        std::fs::create_dir_all(beads.join("dolt")).unwrap();
+        // even if an embeddeddolt dir co-exists, server mode is readable
+        std::fs::create_dir_all(beads.join("embeddeddolt")).unwrap();
+        assert!(
+            unreadable_backend_warning(&beads).is_none(),
+            "server mode is readable"
+        );
+
+        let tmp2 = tempfile::tempdir().unwrap();
+        let bare = tmp2.path().join(".beads");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert!(
+            unreadable_backend_warning(&bare).is_none(),
+            "bare/uninitialized .beads is a normal bootstrap, not unreadable"
+        );
+    }
 
     fn test_store() -> SqliteBeadStore {
         SqliteBeadStore::connect(Path::new(":memory:")).unwrap()
