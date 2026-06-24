@@ -516,6 +516,16 @@ enum BeadAction {
         /// Filter by status (open, blocked, all). Default: open
         #[arg(short, long, default_value = "open")]
         status: String,
+        /// Emit the full-fidelity bead JSON contract as JSONL (one bead per
+        /// line, incl. dependencies + comments) — the format `bd init
+        /// --from-jsonl` ingests. Use this for ecosystem interop / Dolt import
+        /// / lossless backup (ADR-0014). Without it, the legacy lossy
+        /// rosary↔rosary JSON array is emitted.
+        #[arg(long)]
+        jsonl: bool,
+        /// Write to this file instead of stdout.
+        #[arg(short, long)]
+        output: Option<String>,
     },
     /// Import beads from a JSON file or stdin
     Import {
@@ -1583,15 +1593,30 @@ async fn main() -> Result<()> {
                     let beads = client.search_beads(&query, &repo_name, 50).await?;
                     cli::bead_search_results(&beads, &query);
                 }
-                BeadAction::Export { status } => {
+                BeadAction::Export {
+                    status,
+                    jsonl,
+                    output,
+                } => {
                     let beads = client.list_beads(&repo_name).await?;
                     let filtered: Vec<_> = match status.as_str() {
                         "all" => beads,
                         "blocked" => beads.into_iter().filter(|b| b.is_blocked()).collect(),
                         s => beads.into_iter().filter(|b| b.status == s).collect(),
                     };
-                    let export = import::export_beads_json(&filtered);
-                    println!("{}", serde_json::to_string_pretty(&export)?);
+                    let out = if jsonl {
+                        import::export_beads_contract_jsonl(&*client, &filtered).await?
+                    } else {
+                        serde_json::to_string_pretty(&import::export_beads_json(&filtered))?
+                    };
+                    match output {
+                        Some(path) => {
+                            std::fs::write(&path, &out)
+                                .with_context(|| format!("writing export to {path}"))?;
+                            eprintln!("exported {} beads to {path}", filtered.len());
+                        }
+                        None => println!("{out}"),
+                    }
                 }
                 BeadAction::Import { file } => {
                     let beads_json = import::read_beads_json(file)?;
