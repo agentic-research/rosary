@@ -430,6 +430,31 @@ WHERE i.status NOT IN ('closed', 'done')
 ORDER BY i.priority ASC, i.created_at DESC
 ";
 
+// Same as LIST_BEADS_SQL but WITHOUT the active-status filter — full
+// enumeration (incl. closed/done) for export/backup/migration (rosary-91e712).
+// Keep in sync with LIST_BEADS_SQL; the only difference is the absent
+// `WHERE i.status NOT IN ('closed','done')` line.
+const LIST_ALL_BEADS_SQL: &str = "
+SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
+       i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+       i.created_by, i.scope,
+       COALESCE(dep.cnt, 0) as dep_count,
+       COALESCE(deps.cnt, 0) as dependency_count,
+       COALESCE(cmt.cnt, 0) as comment_count
+FROM issues i
+LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
+     ON dep.depends_on_id = i.id
+LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
+          FROM dependencies d
+          JOIN issues dep_i ON dep_i.id = d.depends_on_id
+          WHERE dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic'
+          GROUP BY d.issue_id) deps
+     ON deps.issue_id = i.id
+LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
+     ON cmt.issue_id = i.id
+ORDER BY i.priority ASC, i.created_at DESC
+";
+
 #[async_trait]
 impl BeadStore for SqliteBeadStore {
     async fn list_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
@@ -439,6 +464,17 @@ impl BeadStore for SqliteBeadStore {
             .query_map([], |row| bead_from_row(row, repo_name))?
             .filter_map(|r| r.ok())
             .collect();
+        Ok(beads)
+    }
+
+    async fn list_all_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(LIST_ALL_BEADS_SQL)?;
+        // Fail loud: export/backup must never silently drop a malformed row
+        // (rosary-91e712). Unlike list_beads (triage), we propagate parse errors.
+        let beads = stmt
+            .query_map([], |row| bead_from_row(row, repo_name))?
+            .collect::<rusqlite::Result<Vec<Bead>>>()?;
         Ok(beads)
     }
 
@@ -1353,6 +1389,28 @@ mod tests {
         let beads = store.list_beads("repo").await.unwrap();
         assert_eq!(beads.len(), 1);
         assert_eq!(beads[0].id, "a");
+    }
+
+    /// rosary-91e712: list_all_beads includes closed (full enumeration for
+    /// export/backup), unlike list_beads which excludes them.
+    #[tokio::test]
+    async fn list_all_beads_includes_closed() {
+        let store = test_store();
+        store.create_bead("a", "Open", "", 1, "task").await.unwrap();
+        store
+            .create_bead("b", "Closed", "", 2, "task")
+            .await
+            .unwrap();
+        store.close_bead("b").await.unwrap();
+
+        let active = store.list_beads("repo").await.unwrap();
+        assert_eq!(active.len(), 1, "list_beads excludes closed");
+
+        let all = store.list_all_beads("repo").await.unwrap();
+        assert_eq!(all.len(), 2, "list_all_beads includes closed");
+        let mut ids: Vec<_> = all.iter().map(|b| b.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["a", "b"]);
     }
 
     #[tokio::test]

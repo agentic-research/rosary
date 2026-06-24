@@ -59,40 +59,76 @@ impl DoltClient {
         .await
         .context("querying issues")?;
 
-        let beads = rows
+        Ok(rows
             .iter()
-            .map(|row| {
-                let (files, test_files) = Self::parse_files_from_notes(row);
-                Bead {
-                    id: row.get("id"),
-                    title: row.get("title"),
-                    description: row.try_get("description").unwrap_or_default(),
-                    status: row.get("status"),
-                    priority: row.try_get::<i32, _>("priority").unwrap_or(2) as u8,
-                    issue_type: row
-                        .try_get("issue_type")
-                        .unwrap_or_else(|_| "task".to_string()),
-                    owner: row.try_get("assignee").ok(),
-                    repo: repo_name.to_string(),
-                    created_at: row.try_get("created_at").unwrap_or_default(),
-                    updated_at: row.try_get("updated_at").unwrap_or_default(),
-                    dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0) as u32,
-                    dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
-                    comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0) as u32,
-                    branch: None,
-                    pr_url: None,
-                    jj_change_id: None,
-                    external_ref: row.try_get("external_ref").ok(),
-                    files,
-                    test_files,
-                    created_by: row.try_get("created_by").ok(),
-                    scope: row.try_get("scope").unwrap_or_default(),
-                    derived_from: Self::parse_derived_from_notes(row),
-                }
-            })
-            .collect();
+            .map(|row| Self::bead_from_row(row, repo_name))
+            .collect())
+    }
 
-        Ok(beads)
+    /// Map a LIST_BEADS-shaped query row to a `Bead`. Shared by [`list_beads`]
+    /// (active only) and [`list_all_beads`] (full enumeration, rosary-91e712).
+    fn bead_from_row(row: &sqlx_mysql::MySqlRow, repo_name: &str) -> Bead {
+        let (files, test_files) = Self::parse_files_from_notes(row);
+        Bead {
+            id: row.get("id"),
+            title: row.get("title"),
+            description: row.try_get("description").unwrap_or_default(),
+            status: row.get("status"),
+            priority: row.try_get::<i32, _>("priority").unwrap_or(2) as u8,
+            issue_type: row
+                .try_get("issue_type")
+                .unwrap_or_else(|_| "task".to_string()),
+            owner: row.try_get("assignee").ok(),
+            repo: repo_name.to_string(),
+            created_at: row.try_get("created_at").unwrap_or_default(),
+            updated_at: row.try_get("updated_at").unwrap_or_default(),
+            dependency_count: row.try_get::<i64, _>("dependency_count").unwrap_or(0) as u32,
+            dependent_count: row.try_get::<i64, _>("dep_count").unwrap_or(0) as u32,
+            comment_count: row.try_get::<i64, _>("comment_count").unwrap_or(0) as u32,
+            branch: None,
+            pr_url: None,
+            jj_change_id: None,
+            external_ref: row.try_get("external_ref").ok(),
+            files,
+            test_files,
+            created_by: row.try_get("created_by").ok(),
+            scope: row.try_get("scope").unwrap_or_default(),
+            derived_from: Self::parse_derived_from_notes(row),
+        }
+    }
+
+    /// ALL beads incl. closed/done — full enumeration for export/backup/migration
+    /// (rosary-91e712). Same query as [`list_beads`] minus the active-status
+    /// filter (`WHERE i.status NOT IN ('closed','done')`).
+    pub async fn list_all_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
+        let rows = query(
+            r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
+                      i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
+                      i.created_by, i.scope,
+                      COALESCE(dep.cnt, 0) as dep_count,
+                      COALESCE(deps.cnt, 0) as dependency_count,
+                      COALESCE(cmt.cnt, 0) as comment_count
+               FROM issues i
+               LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
+                    ON dep.depends_on_id = i.id
+               LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
+                         FROM dependencies d
+                         JOIN issues dep_i ON dep_i.id = d.depends_on_id
+                         WHERE dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic'
+                         GROUP BY d.issue_id) deps
+                    ON deps.issue_id = i.id
+               LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
+                    ON cmt.issue_id = i.id
+               ORDER BY i.priority ASC, i.created_at DESC"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("querying all issues")?;
+
+        Ok(rows
+            .iter()
+            .map(|row| Self::bead_from_row(row, repo_name))
+            .collect())
     }
 
     /// List beads filtered by user_id (multi-tenant).
