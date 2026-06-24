@@ -104,6 +104,12 @@ impl AgentProvider for ClaudeProvider {
         // "Not logged in" failure.
         let launch_env = resolve_launch_env(work_dir);
 
+        // MCP servers for the agent so its granted mcp__rsry__*/mcp__mache__*
+        // tools connect during the run (rosary-563b3f). String must outlive
+        // base_args (which borrows &str).
+        let mcp_cfg = write_agent_mcp_config(work_dir);
+        let mcp_cfg_str = mcp_cfg.as_ref().map(|p| p.to_string_lossy().into_owned());
+
         let mut cmd = tokio::process::Command::new(&self.binary);
         let mut base_args = vec![
             "-p",
@@ -117,6 +123,17 @@ impl AgentProvider for ClaudeProvider {
         ];
         if let Some(ref m) = self.model {
             base_args.extend_from_slice(&["--model", m.as_str()]);
+        }
+        if let Some(ref s) = mcp_cfg_str {
+            base_args.extend_from_slice(&[
+                "--mcp-config",
+                s,
+                "--strict-mcp-config",
+                // Override a per-project `disabledMcpServers` that would otherwise
+                // suppress the injected servers by name (rosary-563b3f).
+                "--settings",
+                AGENT_SETTINGS_OVERRIDE,
+            ]);
         }
         cmd.args(base_args)
             .current_dir(work_dir)
@@ -554,6 +571,60 @@ fn collect_envrc(work_dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// MCP servers to expose to dispatched agents (rosary-563b3f), from
+/// `[dispatch] agent_mcp` (name → HTTP URL); defaults to local rsry + mache.
+fn agent_mcp_servers() -> std::collections::BTreeMap<String, String> {
+    crate::config::load_global()
+        .ok()
+        .and_then(|c| c.dispatch.map(|d| d.agent_mcp))
+        .unwrap_or_else(crate::config::default_agent_mcp)
+}
+
+/// Claude settings overlay passed via `--settings` at every dispatch spawn that
+/// injects MCP config (rosary-563b3f). Without it, a per-project
+/// `disabledMcpServers` entry in the user's `~/.claude.json` (e.g. the human
+/// disabling `rsry`/`lectio` in interactive rosary sessions to avoid
+/// self-recursion) silently wins over `--mcp-config --strict-mcp-config` — the
+/// disable matches by server *name* — leaving the dispatched agent with zero
+/// `mcp__rsry__*` tools. A dispatched agent runs in a worktree whose git root is
+/// the host repo, so it inherits that repo's project settings. Verified
+/// empirically: from a rosary worktree the `rsry` server only connects with this
+/// flag; `--strict-mcp-config`, `disabledMcpServers:[]`, and
+/// `enabledMcpjsonServers:[rsry]` all failed to override the disable, while
+/// `enableAllProjectMcpServers` succeeds.
+pub(crate) const AGENT_SETTINGS_OVERRIDE: &str = r#"{"enableAllProjectMcpServers":true}"#;
+
+/// Build the claude `--mcp-config` JSON declaring the given HTTP MCP servers.
+fn agent_mcp_config_json(servers: &std::collections::BTreeMap<String, String>) -> String {
+    let entries: Vec<String> = servers
+        .iter()
+        .map(|(name, url)| format!(r#""{name}":{{"type":"http","url":"{url}"}}"#))
+        .collect();
+    format!(r#"{{"mcpServers":{{{}}}}}"#, entries.join(","))
+}
+
+/// Write the dispatched-agent MCP config into `work_dir`, returning its path
+/// (or `None` if no servers are configured / write failed). Spawn sites pass
+/// `--mcp-config <path> --strict-mcp-config` so the agent's granted rsry/mache
+/// tools actually connect during the run (rosary-563b3f).
+pub(crate) fn write_agent_mcp_config(work_dir: &Path) -> Option<std::path::PathBuf> {
+    let servers = agent_mcp_servers();
+    if servers.is_empty() {
+        return None;
+    }
+    let path = work_dir.join(".rsry-mcp.json");
+    match std::fs::write(&path, agent_mcp_config_json(&servers)) {
+        Ok(()) => Some(path),
+        Err(e) => {
+            eprintln!(
+                "[spawn] could not write agent MCP config {}: {e}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
 /// Resolve a provider by name string, with optional binary path overrides from config.
 pub fn provider_by_name(
     name: &str,
@@ -594,6 +665,36 @@ pub fn provider_by_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rosary-563b3f: the agent MCP config is valid JSON with HTTP servers.
+    #[test]
+    fn agent_mcp_config_json_is_valid_http_shaped() {
+        let servers = std::collections::BTreeMap::from([
+            ("rsry".to_string(), "http://localhost:8383/mcp".to_string()),
+            ("mache".to_string(), "http://localhost:7532/mcp".to_string()),
+        ]);
+        let v: serde_json::Value =
+            serde_json::from_str(&agent_mcp_config_json(&servers)).expect("valid json");
+        assert_eq!(v["mcpServers"]["rsry"]["type"], "http");
+        assert_eq!(v["mcpServers"]["rsry"]["url"], "http://localhost:8383/mcp");
+        assert_eq!(v["mcpServers"]["mache"]["url"], "http://localhost:7532/mcp");
+    }
+
+    /// rosary-563b3f: the settings overlay re-enables project MCP servers that a
+    /// per-project `disabledMcpServers` would otherwise suppress by name.
+    #[test]
+    fn agent_settings_override_enables_project_mcp_servers() {
+        let v: serde_json::Value =
+            serde_json::from_str(AGENT_SETTINGS_OVERRIDE).expect("valid json");
+        assert_eq!(v["enableAllProjectMcpServers"], true);
+    }
+
+    #[test]
+    fn default_agent_mcp_has_rsry_and_mache() {
+        let d = crate::config::default_agent_mcp();
+        assert!(d.contains_key("rsry"), "default must include rsry");
+        assert!(d.contains_key("mache"), "default must include mache");
+    }
 
     // --- Agent launch-env resolution (rosary-b1495c) ---
 
