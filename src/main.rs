@@ -1598,7 +1598,10 @@ async fn main() -> Result<()> {
                     jsonl,
                     output,
                 } => {
-                    let beads = client.list_beads(&repo_name).await?;
+                    // Full enumeration (incl. closed) so export/backup is
+                    // lossless — list_beads would silently drop closed beads
+                    // (rosary-91e712).
+                    let beads = client.list_all_beads(&repo_name).await?;
                     let filtered: Vec<_> = match status.as_str() {
                         "all" => beads,
                         "blocked" => beads.into_iter().filter(|b| b.is_blocked()).collect(),

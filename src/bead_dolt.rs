@@ -26,6 +26,10 @@ impl BeadStore for DoltBeadStore {
         self.client.list_beads(repo_name).await
     }
 
+    async fn list_all_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
+        self.client.list_all_beads(repo_name).await
+    }
+
     async fn list_beads_scoped(&self, repo_name: &str, user_id: Option<&str>) -> Result<Vec<Bead>> {
         self.client.list_beads_scoped(repo_name, user_id).await
     }

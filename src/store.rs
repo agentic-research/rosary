@@ -270,7 +270,12 @@ pub trait UserRepoStore: Send + Sync {
 #[async_trait]
 pub trait BeadStore: Send + Sync {
     // ── CRUD ──
+    /// Active beads only (excludes `closed`/`done`) — for triage/dispatch.
     async fn list_beads(&self, repo_name: &str) -> Result<Vec<crate::bead::Bead>>;
+    /// ALL beads including closed/done — for export, backup, migration (full
+    /// enumeration). No status filter, and must NOT silently drop rows
+    /// (fail loud on a malformed row rather than lose data). See rosary-91e712.
+    async fn list_all_beads(&self, repo_name: &str) -> Result<Vec<crate::bead::Bead>>;
     async fn list_beads_scoped(
         &self,
         repo_name: &str,
