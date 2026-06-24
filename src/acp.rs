@@ -153,7 +153,7 @@ pub fn spawn_acp_session(
     permissions: PermissionProfile,
     system_prompt: &str,
     log_path: &Path,
-    auth_token: Option<&str>,
+    launch_vars: &[(String, String)],
 ) -> Result<AcpSession> {
     let binary = binary.to_string();
     // Thread system_prompt into the prompt (ACP sends prompt as content blocks,
@@ -188,8 +188,8 @@ pub fn spawn_acp_session(
         .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .env_remove("CLAUDECODE")
         .env_remove("CLAUDE_CODE_ENTRYPOINT");
-    if let Some(token) = auth_token {
-        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+    for (k, v) in launch_vars {
+        cmd.env(k, v);
     }
     let mut child = cmd
         .spawn()
@@ -646,7 +646,7 @@ mod tests {
             PermissionProfile::ReadOnly,
             "",
             std::path::Path::new("/dev/null"),
-            None,
+            &[],
         );
         assert!(result.is_err());
     }
@@ -660,7 +660,7 @@ mod tests {
             PermissionProfile::ReadOnly,
             "",
             std::path::Path::new("/dev/null"),
-            None,
+            &[],
         )
         .unwrap();
 
@@ -679,7 +679,7 @@ mod tests {
             PermissionProfile::ReadOnly,
             "",
             std::path::Path::new("/dev/null"),
-            None,
+            &[],
         ) {
             session.kill().ok();
         }
