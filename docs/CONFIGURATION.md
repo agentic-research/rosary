@@ -206,9 +206,11 @@ token_env = "CF_API_TOKEN"
 | `~/.rsry/plugins/*.toml`              | Global plugin discovery                        |
 | `~/.rsry/dolt/rosary/`                | Backend state DB (decades, threads, pipelines) |
 | `~/.rsry/worktrees/{repo}/{bead-id}/` | Agent worktree isolation                       |
-| `{repo}/.beads/`                      | Per-repo bead database (Dolt)                  |
-| `{repo}/.beads/dolt-server.port`      | Dolt server port                               |
-| `{repo}/.beads/metadata.json`         | Database name + settings                       |
+| `{repo}/.beads/`                      | Per-repo bead store directory                   |
+| `{repo}/.beads/beads.db`              | SQLite bead store (used when no `dolt/` subdir) |
+| `{repo}/.beads/dolt/`                 | Dolt bead store (server mode)                   |
+| `{repo}/.beads/dolt-server.port`      | Dolt server port (Dolt mode only)              |
+| `{repo}/.beads/metadata.json`         | Database name + settings (Dolt mode)           |
 | `{repo}/.rosary/plugins/*.toml`       | Per-repo plugin discovery                      |
 | `{repo}/notes/<scope>/.recipients`    | age recipients allowed to decrypt that scope   |
 | `{repo}/notes/<scope>/*.age`          | Encrypted notes (rotated via `rsry notes rotate`) |

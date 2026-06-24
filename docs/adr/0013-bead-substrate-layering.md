@@ -1,9 +1,19 @@
-# ADR-0012: Bead Substrate — Adopt bd/Dolt as Shared Store, rosary On Top
+# ADR-0013: Bead Substrate — Adopt bd/Dolt as Shared Store, rosary On Top (SUPERSEDED)
 
-**Status:** Proposed (supersedes the earlier "drop Dolt / NDJSON log" draft of this ADR)
-**Date:** 2026-06-23
+**Status:** Superseded by [ADR-0014](0014-decouple-rosary-from-bd.md)
+**Date:** 2026-06-23 (superseded 2026-06-24)
 **Depends on:** ADR-0010 (observation lattice)
-**Relates to / revises:** rosary-133346 (NDJSON-substrate eval — conclusion revised below), rosary-e4d471 (this ADR), rosary-b1495c (dispatch auth), rosary-3f8515 / rosary-3fcd02 (bead-ID prefix)
+**Relates to / revises:** rosary-133346 (NDJSON-substrate eval), rosary-b1495c (dispatch auth), rosary-3f8515 / rosary-3fcd02 (bead-ID prefix)
+
+> **⚠️ SUPERSEDED (2026-06-24).** This ADR proposed coupling rosary's bead storage
+> to `bd` (drive `bd … --json`, treat bd/Dolt as the owning substrate). The
+> operator decided **not to couple** — beads are a useful *primitive*, but rosary
+> should *speak* the bead format without *depending* on `bd` or Dolt. See
+> **[ADR-0014: Decouple rosary from bd](0014-decouple-rosary-from-bd.md)** for the
+> adopted decision. This file is retained for history and for the still-valid
+> research it captured (DoltLite exists; the jj incompatibility was git *hooks*,
+> not Dolt; server mode works for assay). Renumbered 0012 → 0013 to resolve a
+> collision with [ADR-0012 (personal/root bead substrate)](0012-personal-bead-substrate.md).
 
 ## Context
 

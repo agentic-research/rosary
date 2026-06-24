@@ -6,7 +6,7 @@
 
 Autonomous work orchestrator for AI agents across multiple code repos. Local-first, open source.
 
-Rosary structures work as **[beads](https://github.com/steveyegge/beads)** — small, trackable units stored in each repo via [Dolt](https://www.dolthub.com/). A reconciliation loop scans for ready beads, dispatches AI agents (Claude, Gemini) to execute them in isolated workspaces, verifies the results, and syncs status to [Linear](https://linear.app) for human review.
+Rosary structures work as **[beads](https://github.com/steveyegge/beads)** — small, trackable units stored in each repo (a local SQLite `beads.db`, or a per-repo [Dolt](https://www.dolthub.com/) server where concurrent access is needed). A reconciliation loop scans for ready beads, dispatches AI agents (Claude, Gemini) to execute them in isolated workspaces, verifies the results, and syncs status to [Linear](https://linear.app) for human review.
 
 The human reviews 5-10 feature PRs a day. The agents handle the atoms.
 
@@ -39,7 +39,7 @@ stateDiagram-v2
 
 ## Issue tracking with beads
 
-Work items live in each repo as beads — an AI-native issue tracker backed by Dolt (version-controlled SQL). Rosary reads and writes beads directly over MySQL, no CLI shelling.
+Work items live in each repo as beads — an AI-native issue tracker. Rosary reads and writes beads in-process via its own stores: over the MySQL wire to a per-repo [Dolt](https://www.dolthub.com/) server when `.beads/dolt/` exists, otherwise directly against a local SQLite `beads.db`. The `bd` CLI is **not** required or invoked either way (see [ADR-0014](docs/adr/0014-decouple-rosary-from-bd.md)).
 
 Beads are organized into **threads** (ordered progressions of related work) and **decades** (ADR-level groupings) via the BDR harmony lattice.
 
