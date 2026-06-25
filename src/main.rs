@@ -529,11 +529,14 @@ enum BeadAction {
         /// Filter by status (open, blocked, all). Default: open
         #[arg(short, long, default_value = "open")]
         status: String,
-        /// Emit the full-fidelity bead JSON contract as JSONL (one bead per
-        /// line, incl. dependencies + comments) — the format `bd init
-        /// --from-jsonl` ingests. Use this for ecosystem interop / Dolt import
-        /// / lossless backup (ADR-0014). Without it, the legacy lossy
-        /// rosary↔rosary JSON array is emitted.
+        /// Emit the bead JSON contract as JSONL (one bead per line, incl.
+        /// dependencies + comments, carrying `schema_version`) — the format
+        /// `bd init --from-jsonl` ingests. Use this for ecosystem interop /
+        /// migration (ADR-0014). It is NOT a backup: like bd's own
+        /// `issues.jsonl`, it carries bead *content* only, not VCS state
+        /// (Dolt branches/history). For a restorable backup, copy
+        /// `.beads/beads.db` (SQLite repos) or use `dolt backup` (server mode).
+        /// Without `--jsonl`, the legacy lossy rosary↔rosary JSON array is emitted.
         #[arg(long)]
         jsonl: bool,
         /// Write to this file instead of stdout.

@@ -38,6 +38,12 @@ pub fn export_beads_json(beads: &[crate::bead::Bead]) -> Vec<Value> {
         .collect()
 }
 
+/// Version of the bead JSON contract emitted by [`bead_to_contract_value`].
+/// Per ADR-0014 D2, the contract carries an integer `schema_version` and
+/// evolves under additive-change discipline. Bump only on additive changes;
+/// importers tolerate older/missing values and warn on newer ones.
+pub const BEAD_CONTRACT_SCHEMA_VERSION: i64 = 1;
+
 /// Map a bead (plus its dependency ids and comments) to the documented bead
 /// JSON contract — the same shape `bd export` emits and `bd init --from-jsonl`
 /// ingests. This is rosary's "speak beads" interop surface (ADR-0014 D2):
@@ -57,6 +63,7 @@ pub fn bead_to_contract_value(
 ) -> Value {
     serde_json::json!({
         // --- documented bead JSON contract ---
+        "schema_version": BEAD_CONTRACT_SCHEMA_VERSION,
         "id": bead.id,
         "title": bead.title,
         "description": bead.description,
@@ -177,6 +184,41 @@ pub async fn import_bead(
     Ok(Some(id))
 }
 
+/// Tolerant `schema_version` check over a batch (ADR-0014 additive discipline).
+/// Returns `Some(warning)` when the batch needs operator attention, else `None`:
+/// missing / current / older versions import silently; a **newer** integer
+/// version warns (may carry fields we don't read yet); a **present-but-
+/// unparseable** version (float, string, null) also warns, since a malformed
+/// producer shouldn't fail silently. Pure + returns the message so it's unit-
+/// testable without capturing stderr.
+pub fn schema_version_warning(beads: &[Value]) -> Option<String> {
+    let mut max_int: Option<i64> = None;
+    let mut saw_unparseable = false;
+    for b in beads {
+        match b.get("schema_version") {
+            None => {}
+            Some(v) => match v.as_i64() {
+                Some(n) => max_int = Some(max_int.map_or(n, |m| m.max(n))),
+                None => saw_unparseable = true,
+            },
+        }
+    }
+    if let Some(n) = max_int.filter(|n| *n > BEAD_CONTRACT_SCHEMA_VERSION) {
+        return Some(format!(
+            "input schema_version {n} is newer than supported {BEAD_CONTRACT_SCHEMA_VERSION}; \
+             importing known fields only — upgrade rsry if data looks incomplete"
+        ));
+    }
+    if saw_unparseable {
+        return Some(
+            "input has a non-integer schema_version; treating those records as unversioned \
+             and importing known fields only"
+                .to_string(),
+        );
+    }
+    None
+}
+
 /// Import a batch of beads into a single repo. Returns counts + created IDs.
 pub async fn import_beads(
     beads: &[Value],
@@ -188,6 +230,10 @@ pub async fn import_beads(
         skipped: 0,
         ids: Vec::new(),
     };
+
+    if let Some(warning) = schema_version_warning(beads) {
+        eprintln!("[import] warning: {warning}");
+    }
 
     for bead in beads {
         match import_bead(bead, client, repo_name).await? {
@@ -251,6 +297,62 @@ mod tests {
         assert_eq!(v["comments"][0]["author"], "alice");
         // rosary-specific extras ride alongside for lossless round-trip.
         assert_eq!(v["repo"], "rosary");
+        // ADR-0014 D2: the contract is versioned with an integer schema_version.
+        assert_eq!(v["schema_version"], BEAD_CONTRACT_SCHEMA_VERSION);
+    }
+
+    /// ADR-0014 additive-change discipline: import tolerates a record whose
+    /// `schema_version` is newer than we support (warns, imports known fields)
+    /// and one with the field absent (legacy / pre-versioning).
+    #[tokio::test]
+    async fn import_tolerates_newer_and_missing_schema_version() {
+        // Separate stores so the time-based id generator can't collide on two
+        // creates in the same millisecond — keeps the test about version skew.
+        let newer_store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+        let legacy_store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+
+        // Newer than supported, with an unknown field — must import (known
+        // fields only) without erroring.
+        let newer = serde_json::json!({
+            "schema_version": BEAD_CONTRACT_SCHEMA_VERSION + 99,
+            "title": "from the future",
+            "issue_type": "task",
+            "future_field": "ignored",
+        });
+        // No version field at all (legacy / pre-versioning) — must import.
+        let legacy = serde_json::json!({ "title": "no version field", "issue_type": "task" });
+
+        let r1 = import_beads(std::slice::from_ref(&newer), &newer_store, "rosary")
+            .await
+            .unwrap();
+        let r2 = import_beads(std::slice::from_ref(&legacy), &legacy_store, "rosary")
+            .await
+            .unwrap();
+        assert_eq!(r1.imported, 1, "newer-version record imports");
+        assert_eq!(r2.imported, 1, "missing-version record imports");
+    }
+
+    #[test]
+    fn schema_version_warning_fires_only_when_needed() {
+        // current / missing / older → no warning
+        assert!(
+            schema_version_warning(&[
+                serde_json::json!({"schema_version": BEAD_CONTRACT_SCHEMA_VERSION})
+            ])
+            .is_none()
+        );
+        assert!(schema_version_warning(&[serde_json::json!({"title": "x"})]).is_none());
+        // newer integer → warns, message names the version
+        let w = schema_version_warning(&[
+            serde_json::json!({"schema_version": BEAD_CONTRACT_SCHEMA_VERSION + 5}),
+        ])
+        .expect("newer version must warn");
+        assert!(w.contains(&(BEAD_CONTRACT_SCHEMA_VERSION + 5).to_string()));
+        // present-but-unparseable (string / float) → warns
+        assert!(schema_version_warning(&[serde_json::json!({"schema_version": "2"})]).is_some());
+        assert!(schema_version_warning(&[serde_json::json!({"schema_version": 2.5})]).is_some());
     }
 
     /// Contrast: the legacy export drops id/timestamps/deps/comments — this test
