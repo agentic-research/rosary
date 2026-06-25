@@ -25,9 +25,11 @@ pub enum Backend {
     Dolt,
 }
 
-/// Detect the backend for a `.beads/` directory.
+/// Detect the backend for a `.beads/` directory. Uses the exact same
+/// discriminant as [`crate::bead_sqlite::connect_bead_store`] — `dolt/`
+/// present (via `exists()`) ⇒ Dolt — so the two never disagree.
 pub fn detect_backend(beads_dir: &Path) -> Backend {
-    if beads_dir.join("dolt").is_dir() {
+    if beads_dir.join("dolt").exists() {
         Backend::Dolt
     } else {
         Backend::Sqlite
@@ -90,6 +92,11 @@ pub fn backup(beads_dir: &Path, dest: &Path) -> Result<BackupOutcome> {
 }
 
 /// Restore a SQLite bead store in `beads_dir` from a backup at `src`.
+///
+/// `src` is expected to be a file produced by [`backup`] (a `VACUUM INTO`
+/// snapshot with no side WAL). It is copied as a single file; if you hand it a
+/// *live* WAL-mode `beads.db` instead, any committed-but-uncheckpointed WAL
+/// beside it is not carried over — back up properly rather than copying a live db.
 ///
 /// Refuses to overwrite a live `beads.db` unless `force` is set. Validates that
 /// `src` is a readable bead store before clobbering anything, and clears any
@@ -187,6 +194,54 @@ mod tests {
             .block_on(async { store.get_bead("rosary-aaaaaa", "rosary").await.unwrap() });
         assert!(bead.is_some(), "restored store has the backed-up bead");
         assert_eq!(bead.unwrap().title, "keep me");
+    }
+
+    /// The load-bearing claim (module doc): `VACUUM INTO` captures data that is
+    /// committed but still sitting in the WAL (not yet checkpointed into the
+    /// main db file). Keep the writer connection OPEN with autocheckpoint off so
+    /// the row never folds into beads.db, then back up and confirm it's present.
+    #[test]
+    fn backup_captures_committed_but_uncheckpointed_wal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let beads = tmp.path().join(".beads");
+        std::fs::create_dir_all(&beads).unwrap();
+        let db = beads.join("beads.db");
+
+        let writer = rusqlite::Connection::open(&db).unwrap();
+        writer
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+            .unwrap();
+        writer
+            .execute("CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT)", [])
+            .unwrap();
+        writer
+            .execute(
+                "INSERT INTO issues (id, title) VALUES ('rosary-wal01', 'in the wal')",
+                [],
+            )
+            .unwrap();
+        assert!(
+            beads.join("beads.db-wal").exists(),
+            "committed write should be sitting in the WAL, not the main db"
+        );
+
+        // Back up while the writer is still open (no on-close checkpoint).
+        let dest = tmp.path().join("snap.db");
+        backup(&beads, &dest).unwrap();
+
+        let rdr = rusqlite::Connection::open(&dest).unwrap();
+        let title: String = rdr
+            .query_row(
+                "SELECT title FROM issues WHERE id='rosary-wal01'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            title, "in the wal",
+            "VACUUM INTO must capture committed-but-uncheckpointed WAL data"
+        );
+        drop(writer);
     }
 
     #[test]
