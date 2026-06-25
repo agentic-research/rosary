@@ -50,6 +50,12 @@ pub fn export_beads_json(beads: &[crate::bead::Bead]) -> Vec<Value> {
 /// rosary-specific fields (repo/files/test_files/scope/external_ref/branch/
 /// pr_url) ride alongside the contract fields for lossless rosary round-trip;
 /// `bd` ignores keys it doesn't recognize.
+/// Version of the bead JSON contract emitted by [`bead_to_contract_value`].
+/// Per ADR-0014 D2, the contract carries an integer `schema_version` and
+/// evolves under additive-change discipline. Bump only on additive changes;
+/// importers tolerate older/missing values and warn on newer ones.
+pub const BEAD_CONTRACT_SCHEMA_VERSION: i64 = 1;
+
 pub fn bead_to_contract_value(
     bead: &crate::bead::Bead,
     deps: &[String],
@@ -57,6 +63,7 @@ pub fn bead_to_contract_value(
 ) -> Value {
     serde_json::json!({
         // --- documented bead JSON contract ---
+        "schema_version": BEAD_CONTRACT_SCHEMA_VERSION,
         "id": bead.id,
         "title": bead.title,
         "description": bead.description,
@@ -189,6 +196,22 @@ pub async fn import_beads(
         ids: Vec::new(),
     };
 
+    // Tolerant version check (ADR-0014 additive-change discipline): missing /
+    // older `schema_version` imports fine; a newer one may carry fields we
+    // don't understand yet, so warn once but still proceed (additive forward-
+    // compat — we only read known keys).
+    if let Some(max_seen) = beads
+        .iter()
+        .filter_map(|b| b.get("schema_version").and_then(Value::as_i64))
+        .max()
+        && max_seen > BEAD_CONTRACT_SCHEMA_VERSION
+    {
+        eprintln!(
+            "[import] warning: input schema_version {max_seen} is newer than supported {BEAD_CONTRACT_SCHEMA_VERSION}; \
+             importing known fields only — upgrade rsry if data looks incomplete"
+        );
+    }
+
     for bead in beads {
         match import_bead(bead, client, repo_name).await? {
             Some(id) => {
@@ -251,6 +274,41 @@ mod tests {
         assert_eq!(v["comments"][0]["author"], "alice");
         // rosary-specific extras ride alongside for lossless round-trip.
         assert_eq!(v["repo"], "rosary");
+        // ADR-0014 D2: the contract is versioned with an integer schema_version.
+        assert_eq!(v["schema_version"], BEAD_CONTRACT_SCHEMA_VERSION);
+    }
+
+    /// ADR-0014 additive-change discipline: import tolerates a record whose
+    /// `schema_version` is newer than we support (warns, imports known fields)
+    /// and one with the field absent (legacy / pre-versioning).
+    #[tokio::test]
+    async fn import_tolerates_newer_and_missing_schema_version() {
+        // Separate stores so the time-based id generator can't collide on two
+        // creates in the same millisecond — keeps the test about version skew.
+        let newer_store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+        let legacy_store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+
+        // Newer than supported, with an unknown field — must import (known
+        // fields only) without erroring.
+        let newer = serde_json::json!({
+            "schema_version": BEAD_CONTRACT_SCHEMA_VERSION + 99,
+            "title": "from the future",
+            "issue_type": "task",
+            "future_field": "ignored",
+        });
+        // No version field at all (legacy / pre-versioning) — must import.
+        let legacy = serde_json::json!({ "title": "no version field", "issue_type": "task" });
+
+        let r1 = import_beads(std::slice::from_ref(&newer), &newer_store, "rosary")
+            .await
+            .unwrap();
+        let r2 = import_beads(std::slice::from_ref(&legacy), &legacy_store, "rosary")
+            .await
+            .unwrap();
+        assert_eq!(r1.imported, 1, "newer-version record imports");
+        assert_eq!(r2.imported, 1, "missing-version record imports");
     }
 
     /// Contrast: the legacy export drops id/timestamps/deps/comments — this test
