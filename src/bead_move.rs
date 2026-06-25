@@ -27,7 +27,8 @@ pub struct MoveOutcome {
     pub new_id: String,
     /// Status carried over from the source bead.
     pub status: String,
-    /// Number of comments copied from source to destination.
+    /// Number of *live* comments copied from source to destination
+    /// (soft-deleted comments are not carried over).
     pub comments_copied: usize,
     /// Ids the moved bead depended on. These edges lived in the source store
     /// and become **cross-repo** after the move — surfaced, never silently
@@ -60,10 +61,18 @@ pub async fn move_bead(
         .await?
         .with_context(|| format!("bead {bead_id} not found in {source_repo}"))?;
 
-    // 2. Guard against re-moving an already-relocated bead.
-    if let Some(prior) = source.get_latest_event(&bead.id, "moved_to").await? {
+    // 2. Guard against re-moving an already-relocated bead. The `moved_to`
+    // *event* is best-effort (`log_event` may warn and drop), so it can't be
+    // the sole idempotency signal — instead scan for the durable tombstone
+    // *comment* (`add_comment` errors propagate, so a successful prior move
+    // always left one). Fetched once here and reused for the comment copy.
+    let source_comments = source.list_comments(&bead.id, true).await?;
+    if source_comments
+        .iter()
+        .any(|c| c.author == "rsry-move" && c.text.starts_with("moved →"))
+    {
         anyhow::bail!(
-            "bead {} was already moved ({prior}); refusing to move again",
+            "bead {} was already moved (tombstone comment present); refusing to move again",
             bead.id
         );
     }
@@ -75,7 +84,16 @@ pub async fn move_bead(
     });
 
     // 4. Create the relocated bead in the destination store.
-    let owner = bead.owner.clone().unwrap_or_default();
+    // Fall back to the type's default agent when owner is unset OR empty —
+    // `create_bead_full` persists assignee non-NULL, and an empty string reads
+    // back as `Some("")`, which the reconciler's auto-assign treats as "already
+    // assigned" and skips. Matches how `rsry bead create` sets the owner.
+    let owner = bead
+        .owner
+        .as_deref()
+        .filter(|o| !o.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| crate::dispatch::default_agent(&bead.issue_type).to_string());
     dest.create_bead_full(
         new_id,
         &bead.title,
@@ -108,9 +126,15 @@ pub async fn move_bead(
         dest.set_external_ref(new_id, ext).await?;
     }
 
-    // 7. Copy comments (including audit/edit history rows), oldest-first.
-    let comments = source.list_comments(&bead.id, true).await?;
-    for c in &comments {
+    // 7. Copy live comments only, oldest-first. Soft-deleted comments are
+    // intentionally NOT resurrected (re-adding via `add_comment` would expose
+    // deliberately-deleted text and can't preserve edited_at/original_text/
+    // delete_reason anyway). Provenance of the deletion stays in the source.
+    let live_comments: Vec<_> = source_comments
+        .iter()
+        .filter(|c| c.deleted_at.is_none())
+        .collect();
+    for c in &live_comments {
         dest.add_comment(new_id, &c.text, &c.author).await?;
     }
 
@@ -150,7 +174,7 @@ pub async fn move_bead(
     Ok(MoveOutcome {
         new_id: new_id.to_string(),
         status: bead.status,
-        comments_copied: comments.len(),
+        comments_copied: live_comments.len(),
         dangling_dependencies,
         orphaned_dependents,
     })
@@ -284,6 +308,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcome.dangling_dependencies, vec!["mache-p".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn move_does_not_resurrect_deleted_comments() {
+        let src = store();
+        let dst = store();
+        src.create_bead("mache-z1", "t", "b", 2, "task")
+            .await
+            .unwrap();
+        src.add_comment("mache-z1", "live note", "bob")
+            .await
+            .unwrap();
+        src.add_comment("mache-z1", "secret deleted", "bob")
+            .await
+            .unwrap();
+        let del_id = src
+            .list_comments("mache-z1", false)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.text == "secret deleted")
+            .unwrap()
+            .id;
+        src.delete_comment(&del_id, Some("oops")).await.unwrap();
+
+        let outcome = move_bead(&src, "mache", &dst, "llo", "mache-z1", "llo-999999")
+            .await
+            .unwrap();
+        assert_eq!(outcome.comments_copied, 1, "only the live comment copies");
+        let dcomments = dst.list_comments("llo-999999", true).await.unwrap();
+        assert!(dcomments.iter().any(|c| c.text == "live note"));
+        assert!(
+            !dcomments.iter().any(|c| c.text == "secret deleted"),
+            "soft-deleted comment must not be resurrected in the destination"
+        );
     }
 
     #[tokio::test]
