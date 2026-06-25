@@ -38,6 +38,12 @@ pub fn export_beads_json(beads: &[crate::bead::Bead]) -> Vec<Value> {
         .collect()
 }
 
+/// Version of the bead JSON contract emitted by [`bead_to_contract_value`].
+/// Per ADR-0014 D2, the contract carries an integer `schema_version` and
+/// evolves under additive-change discipline. Bump only on additive changes;
+/// importers tolerate older/missing values and warn on newer ones.
+pub const BEAD_CONTRACT_SCHEMA_VERSION: i64 = 1;
+
 /// Map a bead (plus its dependency ids and comments) to the documented bead
 /// JSON contract — the same shape `bd export` emits and `bd init --from-jsonl`
 /// ingests. This is rosary's "speak beads" interop surface (ADR-0014 D2):
@@ -50,12 +56,6 @@ pub fn export_beads_json(beads: &[crate::bead::Bead]) -> Vec<Value> {
 /// rosary-specific fields (repo/files/test_files/scope/external_ref/branch/
 /// pr_url) ride alongside the contract fields for lossless rosary round-trip;
 /// `bd` ignores keys it doesn't recognize.
-/// Version of the bead JSON contract emitted by [`bead_to_contract_value`].
-/// Per ADR-0014 D2, the contract carries an integer `schema_version` and
-/// evolves under additive-change discipline. Bump only on additive changes;
-/// importers tolerate older/missing values and warn on newer ones.
-pub const BEAD_CONTRACT_SCHEMA_VERSION: i64 = 1;
-
 pub fn bead_to_contract_value(
     bead: &crate::bead::Bead,
     deps: &[String],
@@ -184,6 +184,41 @@ pub async fn import_bead(
     Ok(Some(id))
 }
 
+/// Tolerant `schema_version` check over a batch (ADR-0014 additive discipline).
+/// Returns `Some(warning)` when the batch needs operator attention, else `None`:
+/// missing / current / older versions import silently; a **newer** integer
+/// version warns (may carry fields we don't read yet); a **present-but-
+/// unparseable** version (float, string, null) also warns, since a malformed
+/// producer shouldn't fail silently. Pure + returns the message so it's unit-
+/// testable without capturing stderr.
+pub fn schema_version_warning(beads: &[Value]) -> Option<String> {
+    let mut max_int: Option<i64> = None;
+    let mut saw_unparseable = false;
+    for b in beads {
+        match b.get("schema_version") {
+            None => {}
+            Some(v) => match v.as_i64() {
+                Some(n) => max_int = Some(max_int.map_or(n, |m| m.max(n))),
+                None => saw_unparseable = true,
+            },
+        }
+    }
+    if let Some(n) = max_int.filter(|n| *n > BEAD_CONTRACT_SCHEMA_VERSION) {
+        return Some(format!(
+            "input schema_version {n} is newer than supported {BEAD_CONTRACT_SCHEMA_VERSION}; \
+             importing known fields only — upgrade rsry if data looks incomplete"
+        ));
+    }
+    if saw_unparseable {
+        return Some(
+            "input has a non-integer schema_version; treating those records as unversioned \
+             and importing known fields only"
+                .to_string(),
+        );
+    }
+    None
+}
+
 /// Import a batch of beads into a single repo. Returns counts + created IDs.
 pub async fn import_beads(
     beads: &[Value],
@@ -196,20 +231,8 @@ pub async fn import_beads(
         ids: Vec::new(),
     };
 
-    // Tolerant version check (ADR-0014 additive-change discipline): missing /
-    // older `schema_version` imports fine; a newer one may carry fields we
-    // don't understand yet, so warn once but still proceed (additive forward-
-    // compat — we only read known keys).
-    if let Some(max_seen) = beads
-        .iter()
-        .filter_map(|b| b.get("schema_version").and_then(Value::as_i64))
-        .max()
-        && max_seen > BEAD_CONTRACT_SCHEMA_VERSION
-    {
-        eprintln!(
-            "[import] warning: input schema_version {max_seen} is newer than supported {BEAD_CONTRACT_SCHEMA_VERSION}; \
-             importing known fields only — upgrade rsry if data looks incomplete"
-        );
+    if let Some(warning) = schema_version_warning(beads) {
+        eprintln!("[import] warning: {warning}");
     }
 
     for bead in beads {
@@ -309,6 +332,27 @@ mod tests {
             .unwrap();
         assert_eq!(r1.imported, 1, "newer-version record imports");
         assert_eq!(r2.imported, 1, "missing-version record imports");
+    }
+
+    #[test]
+    fn schema_version_warning_fires_only_when_needed() {
+        // current / missing / older → no warning
+        assert!(
+            schema_version_warning(&[
+                serde_json::json!({"schema_version": BEAD_CONTRACT_SCHEMA_VERSION})
+            ])
+            .is_none()
+        );
+        assert!(schema_version_warning(&[serde_json::json!({"title": "x"})]).is_none());
+        // newer integer → warns, message names the version
+        let w = schema_version_warning(&[
+            serde_json::json!({"schema_version": BEAD_CONTRACT_SCHEMA_VERSION + 5}),
+        ])
+        .expect("newer version must warn");
+        assert!(w.contains(&(BEAD_CONTRACT_SCHEMA_VERSION + 5).to_string()));
+        // present-but-unparseable (string / float) → warns
+        assert!(schema_version_warning(&[serde_json::json!({"schema_version": "2"})]).is_some());
+        assert!(schema_version_warning(&[serde_json::json!({"schema_version": 2.5})]).is_some());
     }
 
     /// Contrast: the legacy export drops id/timestamps/deps/comments — this test
