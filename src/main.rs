@@ -18,6 +18,7 @@ mod backend;
 mod bdr_enrich;
 mod bead;
 mod bead_dolt;
+mod bead_move;
 mod bead_sqlite;
 mod capture;
 mod cas;
@@ -453,6 +454,18 @@ enum BeadAction {
         /// Skip the verifiable-test-command check (for legacy/non-impl beads)
         #[arg(long)]
         force: bool,
+    },
+    /// Move a bead to another repo's store (cross-repo relocation; never uses bd).
+    ///
+    /// Reads the bead from the source store (`--repo`, default cwd), re-creates
+    /// it in `<dest>`'s store with a dest-prefixed id carrying provenance +
+    /// comments + status forward, then tombstones the source (closed, with a
+    /// `moved →` comment). See ADR-0014 + docs/problems/rosary-capture-commit-spine.md.
+    Move {
+        /// Bead ID to move (short or full)
+        id: String,
+        /// Destination repo path containing `.beads/`
+        dest: String,
     },
     /// List open beads with optional filters (rosary-e1c759).
     List {
@@ -1458,6 +1471,37 @@ async fn main() -> Result<()> {
                     }
                     client.close_bead(&id).await?;
                     cli::bead_closed(&id);
+                }
+                BeadAction::Move { id, dest } => {
+                    let dest_root = scanner::resolve_repo_path(Path::new(&dest));
+                    let dest_dir = resolve_beads_dir(&dest_root);
+                    let dest_client = bead_sqlite::connect_bead_store(&dest_dir).await?;
+                    let dest_name = dest_root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| dest.clone());
+                    let new_id = generate_bead_id(&dest_name);
+                    let outcome = bead_move::move_bead(
+                        client.as_ref(),
+                        &repo_name,
+                        dest_client.as_ref(),
+                        &dest_name,
+                        &id,
+                        &new_id,
+                    )
+                    .await?;
+                    println!(
+                        "moved {id} → {} ({dest_name}) [status={}, {} comment(s) copied]",
+                        outcome.new_id, outcome.status, outcome.comments_copied
+                    );
+                    if !outcome.dangling_dependencies.is_empty()
+                        || !outcome.orphaned_dependents.is_empty()
+                    {
+                        eprintln!(
+                            "⚠ cross-repo dependency edges to re-link: depends_on={:?} dependents={:?}",
+                            outcome.dangling_dependencies, outcome.orphaned_dependents
+                        );
+                    }
                 }
                 BeadAction::List {
                     mut status,
