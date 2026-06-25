@@ -136,6 +136,7 @@ rsry scan                                    # scan all repos for beads
 rsry scan --assay                            # run assay.scan plugins → P3 chore beads for stale refs
 rsry status [--json]                         # aggregated counts; CLI text + JSON outputs agree (#192)
 rsry bead create / list / search / close / reopen   # `close` requires a test command in description (or --force)
+rsry bead move <id> <dest-repo>              # cross-repo relocation (no bd): provenance+comments fwd, source tombstoned (ADR-0014)
 rsry bead comment add <id> <body>            # append a comment (rosary-a96b06)
 rsry bead comment list <id> [--include-deleted]
 rsry bead comment update <id> <comment_id> --body <text> [--reason <why>]
