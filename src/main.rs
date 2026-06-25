@@ -17,6 +17,7 @@ mod acp;
 mod backend;
 mod bdr_enrich;
 mod bead;
+mod bead_backup;
 mod bead_dolt;
 mod bead_move;
 mod bead_sqlite;
@@ -466,6 +467,23 @@ enum BeadAction {
         id: String,
         /// Destination repo path containing `.beads/`
         dest: String,
+    },
+    /// Back up the repo's bead store to a file (restorable, full-fidelity).
+    ///
+    /// Distinct from `export --jsonl` (interop only). SQLite repos get a
+    /// consistent `VACUUM INTO` snapshot; Dolt server-mode repos are pointed at
+    /// Dolt's own backup (full history is Dolt's job). See ADR-0014.
+    Backup {
+        /// Destination file for the backup (must not already exist)
+        output: String,
+    },
+    /// Restore the repo's SQLite bead store from a backup file.
+    Restore {
+        /// Backup file to restore from
+        input: String,
+        /// Overwrite an existing `.beads/beads.db`
+        #[arg(long)]
+        force: bool,
     },
     /// List open beads with optional filters (rosary-e1c759).
     List {
@@ -1417,6 +1435,28 @@ async fn main() -> Result<()> {
         Command::Bead { action, repo } => {
             let repo_root = scanner::resolve_repo_path(Path::new(&repo));
             let beads_dir = resolve_beads_dir(&repo_root);
+
+            // Backup/restore operate at the file level and must run BEFORE the
+            // store is opened — connect_bead_store would create an empty
+            // beads.db, defeating restore's overwrite guard. Handle + return.
+            match &action {
+                BeadAction::Backup { output } => {
+                    let out = bead_backup::backup(&beads_dir, Path::new(output))?;
+                    println!(
+                        "backed up {} bead store → {}",
+                        out.backend,
+                        out.path.display()
+                    );
+                    return Ok(());
+                }
+                BeadAction::Restore { input, force } => {
+                    bead_backup::restore(&beads_dir, Path::new(input), *force)?;
+                    println!("restored bead store from {input}");
+                    return Ok(());
+                }
+                _ => {}
+            }
+
             let client = bead_sqlite::connect_bead_store(&beads_dir).await?;
             let repo_name = repo_root
                 .file_name()
@@ -1505,6 +1545,10 @@ async fn main() -> Result<()> {
                             outcome.dangling_dependencies, outcome.orphaned_dependents
                         );
                     }
+                }
+                // Backup/Restore are handled before the store is opened (above).
+                BeadAction::Backup { .. } | BeadAction::Restore { .. } => {
+                    unreachable!("backup/restore handled before connect_bead_store")
                 }
                 BeadAction::List {
                     mut status,
