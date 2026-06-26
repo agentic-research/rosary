@@ -1586,6 +1586,7 @@ async fn main() -> Result<()> {
                         &repo_name,
                         &repo_root,
                         &id,
+                        vec![],
                     )
                     .await?;
                     if json {

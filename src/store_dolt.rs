@@ -189,6 +189,20 @@ impl DoltBackend {
                 INDEX idx_bead (repo, bead_id),
                 INDEX idx_active (completed_at)
             )",
+            "CREATE TABLE IF NOT EXISTS agent_run_events (
+                id VARCHAR(128) PRIMARY KEY,
+                dispatch_id VARCHAR(128) NOT NULL,
+                repo VARCHAR(128) NOT NULL,
+                bead_id VARCHAR(128) NOT NULL,
+                scope VARCHAR(255) NOT NULL DEFAULT '',
+                session_ref_provider VARCHAR(32),
+                session_ref_id VARCHAR(256),
+                event_type VARCHAR(64) NOT NULL,
+                summary TEXT NOT NULL,
+                payload_json LONGTEXT NOT NULL,
+                created_at DATETIME NOT NULL,
+                INDEX idx_agent_run_events_work (repo, scope, bead_id, created_at)
+            )",
             "CREATE TABLE IF NOT EXISTS cross_repo_deps (
                 from_repo VARCHAR(128) NOT NULL,
                 from_bead VARCHAR(128) NOT NULL,
@@ -643,6 +657,54 @@ impl DispatchStore for DoltBackend {
 
         Ok(rows.iter().map(row_to_dispatch_record).collect())
     }
+
+    async fn record_agent_run_event(&self, event: &AgentRunEvent) -> Result<()> {
+        let payload_json = serde_json::to_string(&event.payload)?;
+        query(
+            "INSERT INTO agent_run_events
+                (id, dispatch_id, repo, bead_id, scope, session_ref_provider, session_ref_id, event_type, summary, payload_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE id = id",
+        )
+        .bind(&event.id)
+        .bind(&event.dispatch_id)
+        .bind(&event.bead_ref.repo)
+        .bind(&event.bead_ref.bead_id)
+        .bind(&event.bead_ref.scope)
+        .bind(event.session_ref.as_ref().map(|r| r.provider.as_str()))
+        .bind(event.session_ref.as_ref().map(|r| r.id.as_str()))
+        .bind(&event.event_type)
+        .bind(&event.summary)
+        .bind(payload_json)
+        .bind(event.created_at.naive_utc())
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("recording agent run event {}", event.id))?;
+        Ok(())
+    }
+
+    async fn agent_run_events_for_bead(&self, bead: &WorkRef) -> Result<Vec<AgentRunEvent>> {
+        let rows = query(
+            "SELECT id, dispatch_id, repo, bead_id, scope, session_ref_provider, session_ref_id,
+                    event_type, summary, payload_json, created_at
+             FROM agent_run_events
+             WHERE repo = ? AND bead_id = ? AND scope = ?
+             ORDER BY created_at ASC, id ASC",
+        )
+        .bind(&bead.repo)
+        .bind(&bead.bead_id)
+        .bind(&bead.scope)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| {
+            format!(
+                "listing agent run events for {}/{}",
+                bead.repo, bead.bead_id
+            )
+        })?;
+
+        rows.iter().map(row_to_agent_run_event).collect()
+    }
 }
 
 // ── LinkageStore ────────────────────────────────────────
@@ -918,6 +980,41 @@ fn row_to_dispatch_record(r: &sqlx_mysql::MySqlRow) -> DispatchRecord {
         workspace_path: r.try_get("workspace_path").ok().flatten(),
         chain_hash: r.try_get("chain_hash").ok().flatten(),
     }
+}
+
+fn row_to_agent_run_event(r: &sqlx_mysql::MySqlRow) -> Result<AgentRunEvent> {
+    let created_naive: chrono::NaiveDateTime = r
+        .try_get("created_at")
+        .context("reading agent_run_events.created_at")?;
+    let payload_json: String = r
+        .try_get("payload_json")
+        .context("reading agent_run_events.payload_json")?;
+    let payload =
+        serde_json::from_str(&payload_json).context("parsing agent_run_events payload")?;
+
+    Ok(AgentRunEvent {
+        id: r.get("id"),
+        dispatch_id: r.get("dispatch_id"),
+        bead_ref: WorkRef {
+            repo: r.get("repo"),
+            scope: r.try_get("scope").unwrap_or_default(),
+            bead_id: r.get("bead_id"),
+        },
+        session_ref: {
+            let provider: Option<String> = r.try_get("session_ref_provider").ok().flatten();
+            let id: Option<String> = r.try_get("session_ref_id").ok().flatten();
+            provider
+                .zip(id)
+                .map(|(provider, id)| AgentSessionRef { provider, id })
+        },
+        event_type: r.get("event_type"),
+        summary: r.get("summary"),
+        payload,
+        created_at: chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+            created_naive,
+            chrono::Utc,
+        ),
+    })
 }
 
 fn row_to_cross_repo_dep(r: &sqlx_mysql::MySqlRow) -> CrossRepoDep {

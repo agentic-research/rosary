@@ -101,6 +101,27 @@ pub struct DispatchRecord {
     pub chain_hash: Option<String>,
 }
 
+/// Append-only event emitted by an agent run.
+///
+/// These are intentionally finer-grained than [`DispatchRecord`]: a dispatch
+/// can produce many events before it completes, and those partial observations
+/// must survive interruption or timeout.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentRunEvent {
+    /// Producer-assigned event id. Stable for idempotent replay.
+    pub id: String,
+    pub dispatch_id: String,
+    pub bead_ref: WorkRef,
+    pub session_ref: Option<AgentSessionRef>,
+    /// e.g. spawned, heartbeat, review_finding, verification, interrupted.
+    pub event_type: String,
+    /// Short human-readable summary for review panels.
+    pub summary: String,
+    /// Structured provider/tool-specific details.
+    pub payload: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Modal evidence tier for cross-repo dependency edges (ADR-0009).
 ///
 /// `Asserted` and `Derived` block dispatch. `Conjectured` annotates only.
@@ -229,6 +250,9 @@ pub trait DispatchStore: Send + Sync {
         session_ref: &AgentSessionRef,
     ) -> Result<()>;
     async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>>;
+
+    async fn record_agent_run_event(&self, event: &AgentRunEvent) -> Result<()>;
+    async fn agent_run_events_for_bead(&self, bead: &WorkRef) -> Result<Vec<AgentRunEvent>>;
 }
 
 /// Cross-repo dependencies and Linear linkage.
@@ -506,6 +530,7 @@ pub(crate) mod tests {
         thread_members: Mutex<Vec<(String, WorkRef)>>,
         pipelines: Mutex<Vec<PipelineState>>,
         dispatches: Mutex<Vec<DispatchRecord>>,
+        agent_run_events: Mutex<Vec<AgentRunEvent>>,
         deps: Mutex<Vec<CrossRepoDep>>,
         linear_links: Mutex<Vec<LinearLink>>,
     }
@@ -518,6 +543,7 @@ pub(crate) mod tests {
                 thread_members: Mutex::new(Vec::new()),
                 pipelines: Mutex::new(Vec::new()),
                 dispatches: Mutex::new(Vec::new()),
+                agent_run_events: Mutex::new(Vec::new()),
                 deps: Mutex::new(Vec::new()),
                 linear_links: Mutex::new(Vec::new()),
             }
@@ -677,6 +703,23 @@ pub(crate) mod tests {
             Ok(dispatches
                 .iter()
                 .filter(|d| d.completed_at.is_none())
+                .cloned()
+                .collect())
+        }
+
+        async fn record_agent_run_event(&self, event: &AgentRunEvent) -> Result<()> {
+            let mut events = self.agent_run_events.lock().unwrap();
+            if !events.iter().any(|e| e.id == event.id) {
+                events.push(event.clone());
+            }
+            Ok(())
+        }
+
+        async fn agent_run_events_for_bead(&self, bead: &WorkRef) -> Result<Vec<AgentRunEvent>> {
+            let events = self.agent_run_events.lock().unwrap();
+            Ok(events
+                .iter()
+                .filter(|e| &e.bead_ref == bead)
                 .cloned()
                 .collect())
         }
@@ -1093,6 +1136,53 @@ pub(crate) mod tests {
             Some(crate::dispatch::AgentSessionRef::new("codex", "thread-456"))
         );
         assert!(active[0].session_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_run_events_append_and_list_for_bead() {
+        let store = InMemoryStore::new();
+        let bead = WorkRef {
+            repo: "rosary".into(),
+            bead_id: "rosary-run".into(),
+            scope: String::new(),
+        };
+
+        store
+            .record_agent_run_event(&AgentRunEvent {
+                id: "evt-1".into(),
+                dispatch_id: "dispatch-1".into(),
+                bead_ref: bead.clone(),
+                session_ref: Some(crate::dispatch::AgentSessionRef::new("codex", "thread-123")),
+                event_type: "review_started".into(),
+                summary: "fresh-eyes review started".into(),
+                payload: serde_json::json!({ "pr": 249 }),
+                created_at: Utc::now(),
+            })
+            .await
+            .unwrap();
+        store
+            .record_agent_run_event(&AgentRunEvent {
+                id: "evt-2".into(),
+                dispatch_id: "dispatch-1".into(),
+                bead_ref: bead.clone(),
+                session_ref: Some(crate::dispatch::AgentSessionRef::new("codex", "thread-123")),
+                event_type: "review_finding".into(),
+                summary: "malformed session_ref should be rejected".into(),
+                payload: serde_json::json!({ "severity": "should-fix" }),
+                created_at: Utc::now(),
+            })
+            .await
+            .unwrap();
+
+        let events = store.agent_run_events_for_bead(&bead).await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, "evt-1");
+        assert_eq!(events[1].event_type, "review_finding");
+        assert_eq!(
+            events[1].session_ref,
+            Some(crate::dispatch::AgentSessionRef::new("codex", "thread-123"))
+        );
+        assert_eq!(events[1].payload["severity"], "should-fix");
     }
 
     #[tokio::test]

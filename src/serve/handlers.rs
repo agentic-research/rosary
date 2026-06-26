@@ -7,7 +7,8 @@ use crate::config;
 use crate::dispatch::AgentSessionRef;
 use crate::pool::RepoPool;
 use crate::store::{
-    BackendStore, BeadStore, CrossRepoDep, DispatchRecord, EvidenceTier, PipelineState, WorkRef,
+    AgentRunEvent, BackendStore, BeadStore, CrossRepoDep, DispatchRecord, EvidenceTier,
+    PipelineState, WorkRef,
 };
 
 /// Default result limit for bead search (keeps MCP responses bounded).
@@ -217,6 +218,8 @@ pub(crate) async fn call_tool(
         "rsry_pipeline_query" => tool_pipeline_query(args, backend).await,
         "rsry_dispatch_record" => tool_dispatch_record(args, backend).await,
         "rsry_dispatch_history" => tool_dispatch_history(args, backend).await,
+        "rsry_agent_run_event_record" => tool_agent_run_event_record(args, backend).await,
+        "rsry_agent_run_events" => tool_agent_run_events(args, backend).await,
         "rsry_decade_list" => tool_decade_list(args, backend).await,
         "rsry_decade_create" => tool_decade_create(args, backend).await,
         "rsry_thread_list" => tool_thread_list(args, backend).await,
@@ -226,7 +229,7 @@ pub(crate) async fn call_tool(
         "rsry_repo_register" => tool_repo_register(args, backend, user_scope).await,
         "rsry_repo_list" => tool_repo_list(backend, user_scope).await,
         "rsry_bead_import" => tool_bead_import(args, config_path, pool, user_scope).await,
-        "rsry_review" => tool_review(args).await,
+        "rsry_review" => tool_review(args, backend).await,
         "rsry_ticket_load" => tool_ticket_load(args, pool).await,
         _ => anyhow::bail!("Unknown tool: {name}"),
     }
@@ -1891,23 +1894,7 @@ async fn tool_dispatch_record(args: &Value, backend: Option<&dyn BackendStore>) 
         .get("session_id")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let session_ref = match args.get("session_ref") {
-        None | Some(Value::Null) => None,
-        Some(v) => {
-            let obj = v
-                .as_object()
-                .ok_or_else(|| anyhow::anyhow!("session_ref must be an object, got {:?}", v))?;
-            let provider = obj
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("session_ref.provider required"))?;
-            let id = obj
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("session_ref.id required"))?;
-            Some(AgentSessionRef::new(provider, id))
-        }
-    };
+    let session_ref = parse_session_ref_arg(args)?;
 
     let record = DispatchRecord {
         id: id.to_string(),
@@ -1972,6 +1959,112 @@ async fn tool_dispatch_history(args: &Value, backend: Option<&dyn BackendStore>)
         .collect();
 
     Ok(json!({ "count": items.len(), "dispatches": items }))
+}
+
+fn parse_session_ref_arg(args: &Value) -> Result<Option<AgentSessionRef>> {
+    match args.get("session_ref") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let obj = v
+                .as_object()
+                .ok_or_else(|| anyhow::anyhow!("session_ref must be an object, got {:?}", v))?;
+            let provider = obj
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("session_ref.provider required"))?;
+            let id = obj
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("session_ref.id required"))?;
+            Ok(Some(AgentSessionRef::new(provider, id)))
+        }
+    }
+}
+
+fn parse_agent_event_payload(args: &Value) -> Result<Value> {
+    match args.get("payload") {
+        None | Some(Value::Null) => Ok(json!({})),
+        Some(v) if v.is_object() => Ok(v.clone()),
+        Some(v) => anyhow::bail!("payload must be an object, got {:?}", v),
+    }
+}
+
+fn parse_agent_event_created_at(args: &Value) -> Result<chrono::DateTime<chrono::Utc>> {
+    match args.get("created_at") {
+        None | Some(Value::Null) => Ok(chrono::Utc::now()),
+        Some(v) => {
+            let raw = v
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("created_at must be an RFC3339 string"))?;
+            chrono::DateTime::parse_from_rfc3339(raw)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .with_context(|| format!("parsing created_at `{raw}` as RFC3339"))
+        }
+    }
+}
+
+async fn tool_agent_run_event_record(
+    args: &Value,
+    backend: Option<&dyn BackendStore>,
+) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+
+    let id = args["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("id required"))?;
+    let dispatch_id = args["dispatch_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("dispatch_id required"))?;
+    let repo = args["repo"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo required"))?;
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+    let event_type = args["event_type"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("event_type required"))?;
+    let summary = args["summary"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("summary required"))?;
+
+    let event = AgentRunEvent {
+        id: id.to_string(),
+        dispatch_id: dispatch_id.to_string(),
+        bead_ref: WorkRef {
+            repo: repo.to_string(),
+            scope: scope.to_string(),
+            bead_id: bead_id.to_string(),
+        },
+        session_ref: parse_session_ref_arg(args)?,
+        event_type: event_type.to_string(),
+        summary: summary.to_string(),
+        payload: parse_agent_event_payload(args)?,
+        created_at: parse_agent_event_created_at(args)?,
+    };
+
+    backend.record_agent_run_event(&event).await?;
+    Ok(json!({ "id": id, "bead_id": bead_id, "recorded": true }))
+}
+
+async fn tool_agent_run_events(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+    let repo = args["repo"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo required"))?;
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+
+    let bead = WorkRef {
+        repo: repo.to_string(),
+        scope: scope.to_string(),
+        bead_id: bead_id.to_string(),
+    };
+    let events = backend.agent_run_events_for_bead(&bead).await?;
+    Ok(json!({ "count": events.len(), "events": events }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2465,7 +2558,7 @@ async fn tool_repo_list(
 /// Phase 0 of rosary-ccd5a2 (`rsry review` substrate). The real composition
 /// lives in `serve::review::collect_review_for_bead`; this thin orchestrator
 /// validates args, resolves the repo's bead store, and forwards.
-async fn tool_review(args: &Value) -> Result<Value> {
+async fn tool_review(args: &Value, backend: Option<&dyn BackendStore>) -> Result<Value> {
     let bead_id = args
         .get("bead_id")
         .and_then(|v| v.as_str())
@@ -2497,7 +2590,26 @@ async fn tool_review(args: &Value) -> Result<Value> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".into());
 
-    super::review::collect_review_for_bead(store.as_ref(), &repo_name, &root, bead_id).await
+    let agent_run_events = match backend {
+        Some(backend) => {
+            let bead = WorkRef {
+                repo: repo_name.clone(),
+                bead_id: bead_id.to_string(),
+                scope: String::new(),
+            };
+            backend.agent_run_events_for_bead(&bead).await?
+        }
+        None => vec![],
+    };
+
+    super::review::collect_review_for_bead(
+        store.as_ref(),
+        &repo_name,
+        &root,
+        bead_id,
+        agent_run_events,
+    )
+    .await
 }
 
 /// Consolidate Linear + (linked GH/Zendesk URLs) + existing-bead context for
@@ -2590,7 +2702,7 @@ mod tests {
     #[tokio::test]
     async fn review_rejects_missing_bead_id() {
         let args = json!({ "repo_path": "/tmp" });
-        let err = tool_review(&args).await.unwrap_err();
+        let err = tool_review(&args, None).await.unwrap_err();
         assert!(
             err.to_string().contains("bead_id"),
             "error must name the missing field; got: {err}"
@@ -2602,7 +2714,7 @@ mod tests {
     #[tokio::test]
     async fn review_rejects_blank_bead_id() {
         let args = json!({ "bead_id": "   ", "repo_path": "/tmp" });
-        let err = tool_review(&args).await.unwrap_err();
+        let err = tool_review(&args, None).await.unwrap_err();
         assert!(
             err.to_string().contains("bead_id"),
             "blank bead_id must hit the same gate; got: {err}"
@@ -2615,7 +2727,7 @@ mod tests {
     #[tokio::test]
     async fn review_rejects_missing_repo_path() {
         let args = json!({ "bead_id": "rosary-cd5d2a" });
-        let err = tool_review(&args).await.unwrap_err();
+        let err = tool_review(&args, None).await.unwrap_err();
         assert!(
             err.to_string().contains("repo_path"),
             "error must name the missing field; got: {err}"
@@ -3819,6 +3931,69 @@ mod input_validation_tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_run_event_record_and_list_roundtrip_partial_review() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        tool_agent_run_event_record(
+            &json!({
+                "id": "evt-1",
+                "dispatch_id": "dispatch-1",
+                "repo": "rosary",
+                "bead_id": "rosary-run",
+                "event_type": "review_finding",
+                "summary": "malformed session_ref should be rejected",
+                "payload": { "severity": "should-fix" },
+                "session_ref": {
+                    "provider": "codex",
+                    "id": "thread-123"
+                }
+            }),
+            Some(&store),
+        )
+        .await
+        .expect("record event");
+
+        let got = tool_agent_run_events(
+            &json!({ "repo": "rosary", "bead_id": "rosary-run" }),
+            Some(&store),
+        )
+        .await
+        .expect("list events");
+
+        assert_eq!(got["count"], 1);
+        assert_eq!(got["events"][0]["event_type"], "review_finding");
+        assert_eq!(got["events"][0]["session_ref"]["provider"], "codex");
+        assert_eq!(got["events"][0]["payload"]["severity"], "should-fix");
+    }
+
+    #[tokio::test]
+    async fn agent_run_event_record_rejects_malformed_payload() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        let err = tool_agent_run_event_record(
+            &json!({
+                "id": "evt-1",
+                "dispatch_id": "dispatch-1",
+                "repo": "rosary",
+                "bead_id": "rosary-run",
+                "event_type": "review_finding",
+                "summary": "bad payload",
+                "payload": "not-object"
+            }),
+            Some(&store),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("payload"),
+            "error must name payload; got: {err}"
         );
     }
 }

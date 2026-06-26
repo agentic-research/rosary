@@ -189,6 +189,22 @@ CREATE TABLE IF NOT EXISTS dispatches (
     chain_hash TEXT
 );
 
+CREATE TABLE IF NOT EXISTS agent_run_events (
+    id TEXT PRIMARY KEY,
+    dispatch_id TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    bead_id TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT '',
+    session_ref_provider TEXT,
+    session_ref_id TEXT,
+    event_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_run_events_work
+    ON agent_run_events(repo, scope, bead_id, created_at);
+
 CREATE TABLE IF NOT EXISTS dependencies (
     from_repo TEXT NOT NULL,
     from_bead TEXT NOT NULL,
@@ -557,6 +573,47 @@ impl DispatchStore for SqliteBackend {
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
+
+    async fn record_agent_run_event(&self, event: &AgentRunEvent) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let payload_json = serde_json::to_string(&event.payload)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO agent_run_events
+             (id, dispatch_id, repo, bead_id, scope, session_ref_provider, session_ref_id, event_type, summary, payload_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                event.id,
+                event.dispatch_id,
+                event.bead_ref.repo,
+                event.bead_ref.bead_id,
+                event.bead_ref.scope,
+                event.session_ref.as_ref().map(|r| r.provider.as_str()),
+                event.session_ref.as_ref().map(|r| r.id.as_str()),
+                event.event_type,
+                event.summary,
+                payload_json,
+                event.created_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    async fn agent_run_events_for_bead(&self, bead: &WorkRef) -> Result<Vec<AgentRunEvent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, dispatch_id, repo, bead_id, scope, session_ref_provider, session_ref_id,
+                    event_type, summary, payload_json, created_at
+             FROM agent_run_events
+             WHERE repo = ?1 AND bead_id = ?2 AND scope = ?3
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map(
+            params![bead.repo, bead.bead_id, bead.scope],
+            row_to_agent_run_event,
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
 }
 
 // ── LinkageStore ────────────────────────────────────────
@@ -922,6 +979,40 @@ fn row_to_dispatch(row: &rusqlite::Row) -> rusqlite::Result<DispatchRecord> {
         },
         workspace_path: row.get(12)?,
         chain_hash: row.get(13)?,
+    })
+}
+
+fn row_to_agent_run_event(row: &rusqlite::Row) -> rusqlite::Result<AgentRunEvent> {
+    let payload_json: String = row.get(9)?;
+    let payload = serde_json::from_str(&payload_json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let created_str: String = row.get(10)?;
+    let created_at = DateTime::parse_from_rfc3339(&created_str)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+
+    Ok(AgentRunEvent {
+        id: row.get(0)?,
+        dispatch_id: row.get(1)?,
+        bead_ref: WorkRef {
+            repo: row.get(2)?,
+            bead_id: row.get(3)?,
+            scope: row.get(4)?,
+        },
+        session_ref: {
+            let provider: Option<String> = row.get(5)?;
+            let id: Option<String> = row.get(6)?;
+            provider
+                .zip(id)
+                .map(|(provider, id)| AgentSessionRef { provider, id })
+        },
+        event_type: row.get(7)?,
+        summary: row.get(8)?,
+        payload,
+        created_at,
     })
 }
 
@@ -1504,6 +1595,43 @@ mod tests {
             Some(AgentSessionRef::new("codex", "thread-456"))
         );
         assert!(active[0].session_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_run_events_roundtrip() {
+        let (store, _dir) = temp_backend();
+        let bead = WorkRef {
+            repo: "rosary".into(),
+            bead_id: "rsry-events".into(),
+            scope: String::new(),
+        };
+        let ts = DateTime::parse_from_rfc3339("2026-06-26T18:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        store
+            .record_agent_run_event(&AgentRunEvent {
+                id: "evt-sqlite-1".into(),
+                dispatch_id: "dispatch-sqlite-1".into(),
+                bead_ref: bead.clone(),
+                session_ref: Some(AgentSessionRef::new("codex", "thread-sqlite")),
+                event_type: "review_finding".into(),
+                summary: "partial review survived interruption".into(),
+                payload: serde_json::json!({ "severity": "should-fix" }),
+                created_at: ts,
+            })
+            .await
+            .unwrap();
+
+        let events = store.agent_run_events_for_bead(&bead).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "evt-sqlite-1");
+        assert_eq!(
+            events[0].session_ref,
+            Some(AgentSessionRef::new("codex", "thread-sqlite"))
+        );
+        assert_eq!(events[0].payload["severity"], "should-fix");
+        assert_eq!(events[0].created_at, ts);
     }
 
     #[tokio::test]

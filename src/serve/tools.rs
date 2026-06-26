@@ -366,6 +366,47 @@ pub(crate) fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "rsry_agent_run_event_record",
+                "description": "Append an event emitted by an agent run. Used by providers, review workers, and pipeline phases to persist partial progress before completion or interruption.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Stable producer-assigned event id for idempotent replay" },
+                        "dispatch_id": { "type": "string", "description": "Dispatch id that produced this event" },
+                        "repo": { "type": "string", "description": "Repo name" },
+                        "bead_id": { "type": "string", "description": "Bead ID" },
+                        "scope": { "type": "string", "description": "Optional bead scope; defaults to empty repo scope" },
+                        "session_ref": {
+                            "type": "object",
+                            "description": "Provider-native session identity, when available",
+                            "properties": {
+                                "provider": { "type": "string" },
+                                "id": { "type": "string" }
+                            },
+                            "required": ["provider", "id"]
+                        },
+                        "event_type": { "type": "string", "description": "Event kind, e.g. spawned, heartbeat, review_finding, verification, interrupted, completed" },
+                        "summary": { "type": "string", "description": "Short human-readable summary for review panels" },
+                        "payload": { "type": "object", "description": "Structured event details; must be an object", "additionalProperties": true },
+                        "created_at": { "type": "string", "description": "Optional RFC3339 timestamp; defaults to server time" }
+                    },
+                    "required": ["id", "dispatch_id", "repo", "bead_id", "event_type", "summary"]
+                }
+            },
+            {
+                "name": "rsry_agent_run_events",
+                "description": "List append-only events emitted for a bead, ordered by creation time. Review and orchestration clients use this to recover partial work from stalled or interrupted agents.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo": { "type": "string", "description": "Repo name" },
+                        "bead_id": { "type": "string", "description": "Bead ID" },
+                        "scope": { "type": "string", "description": "Optional bead scope; defaults to empty repo scope" }
+                    },
+                    "required": ["repo", "bead_id"]
+                }
+            },
+            {
                 "name": "rsry_decade_list",
                 "description": "List decades (ADR-level organizing primitives). Optionally filter by status (proposed, active, completed, superseded).",
                 "inputSchema": {
@@ -619,6 +660,35 @@ mod tests {
             required_names.contains(&"ticket_id"),
             "rsry_ticket_load must require ticket_id; got: {required_names:?}"
         );
+    }
+
+    #[test]
+    fn agent_run_event_tools_are_registered() {
+        let defs = tool_definitions();
+        let tools = defs["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"rsry_agent_run_event_record"));
+        assert!(names.contains(&"rsry_agent_run_events"));
+
+        let record = tools
+            .iter()
+            .find(|t| t["name"] == "rsry_agent_run_event_record")
+            .unwrap();
+        let required = record["inputSchema"]["required"].as_array().unwrap();
+        let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+        for field in [
+            "id",
+            "dispatch_id",
+            "repo",
+            "bead_id",
+            "event_type",
+            "summary",
+        ] {
+            assert!(
+                required_names.contains(&field),
+                "rsry_agent_run_event_record must require {field}"
+            );
+        }
     }
 
     /// Claude's API rejects any tool whose `input_schema` uses `oneOf`,
