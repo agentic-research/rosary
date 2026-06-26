@@ -14,6 +14,7 @@ use sqlx_mysql::MySqlPool;
 use std::path::{Path, PathBuf};
 
 use crate::config::BackendConfig;
+use crate::dispatch::AgentSessionRef;
 use crate::store::*;
 
 /// Dolt-backed orchestrator state store.
@@ -181,6 +182,8 @@ impl DoltBackend {
                 outcome VARCHAR(32),
                 work_dir VARCHAR(1024),
                 session_id VARCHAR(256),
+                session_ref_provider VARCHAR(32),
+                session_ref_id VARCHAR(256),
                 workspace_path VARCHAR(1024),
                 chain_hash VARCHAR(64),
                 INDEX idx_bead (repo, bead_id),
@@ -231,6 +234,16 @@ impl DoltBackend {
                 "dispatches",
                 "chain_hash",
                 "ALTER TABLE dispatches ADD COLUMN chain_hash VARCHAR(64)",
+            ),
+            (
+                "dispatches",
+                "session_ref_provider",
+                "ALTER TABLE dispatches ADD COLUMN session_ref_provider VARCHAR(32)",
+            ),
+            (
+                "dispatches",
+                "session_ref_id",
+                "ALTER TABLE dispatches ADD COLUMN session_ref_id VARCHAR(256)",
             ),
             (
                 "thread_members",
@@ -531,8 +544,8 @@ impl DispatchStore for DoltBackend {
 
     async fn record_dispatch(&self, record: &DispatchRecord) -> Result<()> {
         query(
-            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, work_dir, session_id, workspace_path, chain_hash)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, work_dir, session_id, session_ref_provider, session_ref_id, workspace_path, chain_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&record.id)
         .bind(&record.bead_ref.repo)
@@ -542,6 +555,8 @@ impl DispatchStore for DoltBackend {
         .bind(record.started_at.naive_utc())
         .bind(&record.work_dir)
         .bind(&record.session_id)
+        .bind(record.session_ref.as_ref().map(|r| r.provider.as_str()))
+        .bind(record.session_ref.as_ref().map(|r| r.id.as_str()))
         .bind(&record.workspace_path)
         .bind(&record.chain_hash)
         .execute(&self.pool)
@@ -570,13 +585,31 @@ impl DispatchStore for DoltBackend {
         Ok(())
     }
 
+    async fn update_dispatch_session_ref(
+        &self,
+        id: &str,
+        session_ref: &AgentSessionRef,
+    ) -> Result<()> {
+        query("UPDATE dispatches SET session_ref_provider = ?, session_ref_id = ? WHERE id = ?")
+            .bind(&session_ref.provider)
+            .bind(&session_ref.id)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("updating session_ref for dispatch {id}"))?;
+        Ok(())
+    }
+
     async fn upsert_dispatch(&self, record: &DispatchRecord) -> Result<()> {
         query(
-            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path, chain_hash)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, session_ref_provider, session_ref_id, workspace_path, chain_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
                  completed_at = VALUES(completed_at), outcome = VALUES(outcome),
-                 session_id = VALUES(session_id), workspace_path = VALUES(workspace_path)",
+                 session_id = VALUES(session_id),
+                 session_ref_provider = VALUES(session_ref_provider),
+                 session_ref_id = VALUES(session_ref_id),
+                 workspace_path = VALUES(workspace_path)",
         )
         .bind(&record.id)
         .bind(&record.bead_ref.repo)
@@ -588,6 +621,8 @@ impl DispatchStore for DoltBackend {
         .bind(&record.outcome)
         .bind(&record.work_dir)
         .bind(&record.session_id)
+        .bind(record.session_ref.as_ref().map(|r| r.provider.as_str()))
+        .bind(record.session_ref.as_ref().map(|r| r.id.as_str()))
         .bind(&record.workspace_path)
         .bind(&record.chain_hash)
         .execute(&self.pool)
@@ -599,7 +634,7 @@ impl DispatchStore for DoltBackend {
     async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>> {
         let rows = query(
             "SELECT id, repo, bead_id, agent, provider, started_at,
-                    completed_at, outcome, work_dir, session_id, workspace_path, chain_hash
+                    completed_at, outcome, work_dir, session_id, session_ref_provider, session_ref_id, workspace_path, chain_hash
              FROM dispatches WHERE completed_at IS NULL",
         )
         .fetch_all(&self.pool)
@@ -873,6 +908,13 @@ fn row_to_dispatch_record(r: &sqlx_mysql::MySqlRow) -> DispatchRecord {
         outcome: r.try_get("outcome").ok(),
         work_dir: r.try_get("work_dir").unwrap_or_default(),
         session_id: r.try_get("session_id").ok().flatten(),
+        session_ref: {
+            let provider: Option<String> = r.try_get("session_ref_provider").ok().flatten();
+            let id: Option<String> = r.try_get("session_ref_id").ok().flatten();
+            provider
+                .zip(id)
+                .map(|(provider, id)| AgentSessionRef { provider, id })
+        },
         workspace_path: r.try_get("workspace_path").ok().flatten(),
         chain_hash: r.try_get("chain_hash").ok().flatten(),
     }
@@ -972,7 +1014,7 @@ impl BackendExport for DoltBackend {
     async fn all_dispatches(&self) -> Result<Vec<DispatchRecord>> {
         let rows = query(
             "SELECT id, repo, bead_id, agent, provider, started_at,
-                    completed_at, outcome, work_dir, session_id, workspace_path, chain_hash
+                    completed_at, outcome, work_dir, session_id, session_ref_provider, session_ref_id, workspace_path, chain_hash
              FROM dispatches ORDER BY started_at ASC",
         )
         .fetch_all(&self.pool)
@@ -1161,6 +1203,7 @@ mod tests {
             outcome: None,
             work_dir: "/tmp/work".into(),
             session_id: Some("test-session-123".into()),
+            session_ref: Some(AgentSessionRef::new("claude", "test-session-123")),
             workspace_path: Some("/tmp/ws/test".into()),
             chain_hash: None,
         };

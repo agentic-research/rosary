@@ -16,6 +16,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::dispatch::AgentSessionRef;
+
 // ── Data types ──────────────────────────────────────────
 
 /// A reference to a bead across repos.
@@ -90,6 +92,8 @@ pub struct DispatchRecord {
     pub work_dir: String,
     /// Claude Code session ID (from --output-format json). Enables --resume.
     pub session_id: Option<String>,
+    /// Provider-native session identity for agents that are not PID-backed.
+    pub session_ref: Option<AgentSessionRef>,
     /// jj workspace path (distinct from work_dir repo root).
     pub workspace_path: Option<String>,
     /// HEAD commit SHA of the target repo at dispatch time (APAS chain integrity).
@@ -216,8 +220,14 @@ pub trait DispatchStore: Send + Sync {
     /// both active and completed dispatches idempotently.
     async fn upsert_dispatch(&self, record: &DispatchRecord) -> Result<()>;
     async fn complete_dispatch(&self, id: &str, outcome: &str) -> Result<()>;
-    /// Update the session_id on a dispatch record (captured after agent starts).
+    /// Update the Claude-compatible session_id on a dispatch record.
     async fn update_dispatch_session(&self, id: &str, session_id: &str) -> Result<()>;
+    /// Update the provider-native session identity on a dispatch record.
+    async fn update_dispatch_session_ref(
+        &self,
+        id: &str,
+        session_ref: &AgentSessionRef,
+    ) -> Result<()>;
     async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>>;
 }
 
@@ -650,6 +660,18 @@ pub(crate) mod tests {
             Ok(())
         }
 
+        async fn update_dispatch_session_ref(
+            &self,
+            id: &str,
+            session_ref: &AgentSessionRef,
+        ) -> Result<()> {
+            let mut dispatches = self.dispatches.lock().unwrap();
+            if let Some(d) = dispatches.iter_mut().find(|d| d.id == id) {
+                d.session_ref = Some(session_ref.clone());
+            }
+            Ok(())
+        }
+
         async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>> {
             let dispatches = self.dispatches.lock().unwrap();
             Ok(dispatches
@@ -943,6 +965,7 @@ pub(crate) mod tests {
             outcome: None,
             work_dir: "/tmp/work".into(),
             session_id: None,
+            session_ref: None,
             workspace_path: None,
             chain_hash: None,
         };
@@ -976,6 +999,7 @@ pub(crate) mod tests {
             outcome: None,
             work_dir: "/tmp/work".into(),
             session_id: None,
+            session_ref: None,
             workspace_path: Some("/tmp/.rsry-workspaces/rsry-002".into()),
             chain_hash: None,
         };
@@ -1001,6 +1025,77 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn dispatch_update_native_session_ref() {
+        let store = InMemoryStore::new();
+        let record = DispatchRecord {
+            id: "d-native".into(),
+            bead_ref: WorkRef {
+                repo: "rosary".into(),
+                bead_id: "rsry-native".into(),
+                scope: String::new(),
+            },
+            agent: "dev-agent".into(),
+            provider: "codex".into(),
+            started_at: Utc::now(),
+            completed_at: None,
+            outcome: None,
+            work_dir: "/tmp/work".into(),
+            session_id: None,
+            session_ref: None,
+            workspace_path: None,
+            chain_hash: None,
+        };
+
+        store.record_dispatch(&record).await.unwrap();
+        store
+            .update_dispatch_session_ref(
+                "d-native",
+                &crate::dispatch::AgentSessionRef::new("codex", "thread-123"),
+            )
+            .await
+            .unwrap();
+
+        let active = store.active_dispatches().await.unwrap();
+        assert_eq!(
+            active[0].session_ref,
+            Some(crate::dispatch::AgentSessionRef::new("codex", "thread-123"))
+        );
+        assert!(active[0].session_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn dispatch_record_preserves_native_session_ref_on_insert() {
+        let store = InMemoryStore::new();
+        let record = DispatchRecord {
+            id: "d-native-insert".into(),
+            bead_ref: WorkRef {
+                repo: "rosary".into(),
+                bead_id: "rsry-native-insert".into(),
+                scope: String::new(),
+            },
+            agent: "dev-agent".into(),
+            provider: "codex".into(),
+            started_at: Utc::now(),
+            completed_at: None,
+            outcome: None,
+            work_dir: "/tmp/work".into(),
+            session_id: None,
+            session_ref: Some(crate::dispatch::AgentSessionRef::new("codex", "thread-456")),
+            workspace_path: None,
+            chain_hash: None,
+        };
+
+        store.record_dispatch(&record).await.unwrap();
+
+        let active = store.active_dispatches().await.unwrap();
+        assert_eq!(
+            active[0].session_ref,
+            Some(crate::dispatch::AgentSessionRef::new("codex", "thread-456"))
+        );
+        assert!(active[0].session_id.is_none());
+    }
+
+    #[tokio::test]
     async fn upsert_dispatch_idempotent() {
         let store = InMemoryStore::new();
         let record = DispatchRecord {
@@ -1017,6 +1112,7 @@ pub(crate) mod tests {
             outcome: None,
             work_dir: "/tmp/work".into(),
             session_id: None,
+            session_ref: None,
             workspace_path: None,
             chain_hash: None,
         };

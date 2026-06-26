@@ -363,6 +363,7 @@ mod tests {
                 outcome: None,
                 work_dir: "/tmp/work".into(),
                 session_id: None,
+                session_ref: None,
                 workspace_path: None,
                 chain_hash: None,
             })
@@ -471,6 +472,7 @@ mod tests {
                 outcome: None,
                 work_dir: "/tmp/work".into(),
                 session_id: None,
+                session_ref: None,
                 workspace_path: None,
                 chain_hash: None,
             })

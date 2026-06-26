@@ -337,8 +337,18 @@ pub(crate) fn tool_definitions() -> Value {
                         "repo": { "type": "string", "description": "Repo name" },
                         "bead_id": { "type": "string", "description": "Bead ID" },
                         "agent": { "type": "string", "description": "Agent name" },
-                        "provider": { "type": "string", "description": "Provider (claude, gemini, acp)" },
-                        "work_dir": { "type": "string", "description": "Working directory" }
+                        "provider": { "type": "string", "description": "Agent provider name" },
+                        "work_dir": { "type": "string", "description": "Working directory" },
+                        "session_id": { "type": "string", "description": "Legacy Claude-compatible session ID, when available" },
+                        "session_ref": {
+                            "type": "object",
+                            "description": "Provider-native session identity for non-PID/native providers",
+                            "properties": {
+                                "provider": { "type": "string" },
+                                "id": { "type": "string" }
+                            },
+                            "required": ["provider", "id"]
+                        }
                     },
                     "required": ["id", "repo", "bead_id", "agent", "provider", "work_dir"]
                 }

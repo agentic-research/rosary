@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use crate::config;
+use crate::dispatch::AgentSessionRef;
 use crate::pool::RepoPool;
 use crate::store::{
     BackendStore, BeadStore, CrossRepoDep, DispatchRecord, EvidenceTier, PipelineState, WorkRef,
@@ -1886,6 +1887,27 @@ async fn tool_dispatch_record(args: &Value, backend: Option<&dyn BackendStore>) 
     let work_dir = args["work_dir"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("work_dir required"))?;
+    let session_id = args
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let session_ref = match args.get("session_ref") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let obj = v
+                .as_object()
+                .ok_or_else(|| anyhow::anyhow!("session_ref must be an object, got {:?}", v))?;
+            let provider = obj
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("session_ref.provider required"))?;
+            let id = obj
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("session_ref.id required"))?;
+            Some(AgentSessionRef::new(provider, id))
+        }
+    };
 
     let record = DispatchRecord {
         id: id.to_string(),
@@ -1900,7 +1922,8 @@ async fn tool_dispatch_record(args: &Value, backend: Option<&dyn BackendStore>) 
         completed_at: None,
         outcome: None,
         work_dir: work_dir.to_string(),
-        session_id: None,
+        session_id,
+        session_ref,
         workspace_path: None,
         chain_hash: None,
     };
@@ -1939,6 +1962,11 @@ async fn tool_dispatch_history(args: &Value, backend: Option<&dyn BackendStore>)
                 "completed_at": d.completed_at.map(|t| t.to_rfc3339()),
                 "outcome": d.outcome,
                 "work_dir": d.work_dir,
+                "session_id": d.session_id,
+                "session_ref": d.session_ref.as_ref().map(|r| json!({
+                    "provider": r.provider,
+                    "id": r.id,
+                })),
             })
         })
         .collect();
@@ -3720,6 +3748,77 @@ mod input_validation_tests {
         assert!(
             msg.contains("a.md") && msg.contains("b.md"),
             "error must show both source_paths so the operator can see what changed; got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_record_roundtrips_native_session_ref() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        tool_dispatch_record(
+            &json!({
+                "id": "dispatch-native",
+                "repo": "rosary",
+                "bead_id": "rosary-native",
+                "agent": "dev-agent",
+                "provider": "codex",
+                "work_dir": "/tmp/native",
+                "session_ref": {
+                    "provider": "codex",
+                    "id": "thread-123"
+                }
+            }),
+            Some(&store),
+        )
+        .await
+        .expect("record dispatch");
+
+        let history = tool_dispatch_history(
+            &json!({ "bead_id": "rosary-native", "active_only": true }),
+            Some(&store),
+        )
+        .await
+        .expect("query dispatch history");
+
+        assert_eq!(history["count"], 1);
+        assert_eq!(history["dispatches"][0]["session_id"], Value::Null);
+        assert_eq!(history["dispatches"][0]["session_ref"]["provider"], "codex");
+        assert_eq!(history["dispatches"][0]["session_ref"]["id"], "thread-123");
+    }
+
+    #[tokio::test]
+    async fn dispatch_record_rejects_malformed_native_session_ref() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        let err = tool_dispatch_record(
+            &json!({
+                "id": "dispatch-native",
+                "repo": "rosary",
+                "bead_id": "rosary-native",
+                "agent": "dev-agent",
+                "provider": "codex",
+                "work_dir": "/tmp/native",
+                "session_ref": {
+                    "provider": "codex"
+                }
+            }),
+            Some(&store),
+        )
+        .await
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("session_ref.id"),
+            "error must name the malformed field; got: {msg}"
+        );
+        assert!(
+            crate::store::DispatchStore::active_dispatches(&store)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 }

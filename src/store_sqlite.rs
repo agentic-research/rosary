@@ -13,6 +13,7 @@ use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use crate::dispatch::AgentSessionRef;
 use crate::store::*;
 
 /// SQLite-backed orchestrator store. Thread-safe via Mutex.
@@ -39,6 +40,8 @@ impl SqliteBackend {
 
         // Additive migrations — safe to run on every connect (IF NOT EXISTS / column-exists guard)
         let _ = conn.execute_batch("ALTER TABLE dispatches ADD COLUMN chain_hash TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE dispatches ADD COLUMN session_ref_provider TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE dispatches ADD COLUMN session_ref_id TEXT;");
         let _ = conn
             .execute_batch("ALTER TABLE thread_members ADD COLUMN scope TEXT NOT NULL DEFAULT '';");
         // ADR-0009: modal evidence tier on cross-repo deps
@@ -180,6 +183,8 @@ CREATE TABLE IF NOT EXISTS dispatches (
     outcome TEXT,
     work_dir TEXT NOT NULL DEFAULT '',
     session_id TEXT,
+    session_ref_provider TEXT,
+    session_ref_id TEXT,
     workspace_path TEXT,
     chain_hash TEXT
 );
@@ -458,8 +463,8 @@ impl DispatchStore for SqliteBackend {
     async fn record_dispatch(&self, record: &DispatchRecord) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path, chain_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, session_ref_provider, session_ref_id, workspace_path, chain_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 record.id,
                 record.bead_ref.repo,
@@ -471,6 +476,8 @@ impl DispatchStore for SqliteBackend {
                 record.outcome,
                 record.work_dir,
                 record.session_id,
+                record.session_ref.as_ref().map(|r| r.provider.as_str()),
+                record.session_ref.as_ref().map(|r| r.id.as_str()),
                 record.workspace_path,
                 record.chain_hash,
             ],
@@ -481,11 +488,14 @@ impl DispatchStore for SqliteBackend {
     async fn upsert_dispatch(&self, record: &DispatchRecord) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path, chain_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO dispatches (id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, session_ref_provider, session_ref_id, workspace_path, chain_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(id) DO UPDATE SET
                  completed_at = excluded.completed_at, outcome = excluded.outcome,
-                 session_id = excluded.session_id, workspace_path = excluded.workspace_path",
+                 session_id = excluded.session_id,
+                 session_ref_provider = excluded.session_ref_provider,
+                 session_ref_id = excluded.session_ref_id,
+                 workspace_path = excluded.workspace_path",
             params![
                 record.id,
                 record.bead_ref.repo,
@@ -497,6 +507,8 @@ impl DispatchStore for SqliteBackend {
                 record.outcome,
                 record.work_dir,
                 record.session_id,
+                record.session_ref.as_ref().map(|r| r.provider.as_str()),
+                record.session_ref.as_ref().map(|r| r.id.as_str()),
                 record.workspace_path,
                 record.chain_hash,
             ],
@@ -522,10 +534,23 @@ impl DispatchStore for SqliteBackend {
         Ok(())
     }
 
+    async fn update_dispatch_session_ref(
+        &self,
+        id: &str,
+        session_ref: &AgentSessionRef,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE dispatches SET session_ref_provider = ?1, session_ref_id = ?2 WHERE id = ?3",
+            params![session_ref.provider, session_ref.id, id],
+        )?;
+        Ok(())
+    }
+
     async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path, chain_hash
+            "SELECT id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, session_ref_provider, session_ref_id, workspace_path, chain_hash
              FROM dispatches WHERE completed_at IS NULL",
         )?;
         let rows = stmt.query_map([], row_to_dispatch)?;
@@ -736,7 +761,7 @@ impl BackendExport for SqliteBackend {
     async fn all_dispatches(&self) -> Result<Vec<DispatchRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, workspace_path, chain_hash
+            "SELECT id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, session_ref_provider, session_ref_id, workspace_path, chain_hash
              FROM dispatches ORDER BY started_at ASC",
         )?;
         let rows = stmt.query_map([], row_to_dispatch)?;
@@ -888,8 +913,15 @@ fn row_to_dispatch(row: &rusqlite::Row) -> rusqlite::Result<DispatchRecord> {
         outcome: row.get(7)?,
         work_dir: row.get(8)?,
         session_id: row.get(9)?,
-        workspace_path: row.get(10)?,
-        chain_hash: row.get(11)?,
+        session_ref: {
+            let provider: Option<String> = row.get(10)?;
+            let id: Option<String> = row.get(11)?;
+            provider
+                .zip(id)
+                .map(|(provider, id)| AgentSessionRef { provider, id })
+        },
+        workspace_path: row.get(12)?,
+        chain_hash: row.get(13)?,
     })
 }
 
@@ -949,6 +981,7 @@ mod tests {
             outcome: None,
             work_dir: "/tmp/work".into(),
             session_id: None,
+            session_ref: None,
             workspace_path: None,
             chain_hash: None,
         };
@@ -1390,6 +1423,7 @@ mod tests {
             outcome: None,
             work_dir: "/tmp/work".into(),
             session_id: None,
+            session_ref: None,
             workspace_path: None,
             chain_hash: None,
         };
@@ -1402,6 +1436,74 @@ mod tests {
 
         let active = store.active_dispatches().await.unwrap();
         assert_eq!(active[0].session_id.as_deref(), Some("sess-abc-123"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_update_native_session_ref() {
+        let (store, _dir) = temp_backend();
+        let record = DispatchRecord {
+            id: "d-native".into(),
+            bead_ref: WorkRef {
+                repo: "rosary".into(),
+                bead_id: "rsry-native".into(),
+                scope: String::new(),
+            },
+            agent: "dev-agent".into(),
+            provider: "codex".into(),
+            started_at: Utc::now(),
+            completed_at: None,
+            outcome: None,
+            work_dir: "/tmp/work".into(),
+            session_id: None,
+            session_ref: None,
+            workspace_path: None,
+            chain_hash: None,
+        };
+        store.record_dispatch(&record).await.unwrap();
+
+        store
+            .update_dispatch_session_ref("d-native", &AgentSessionRef::new("codex", "thread-123"))
+            .await
+            .unwrap();
+
+        let active = store.active_dispatches().await.unwrap();
+        assert_eq!(
+            active[0].session_ref,
+            Some(AgentSessionRef::new("codex", "thread-123"))
+        );
+        assert!(active[0].session_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn dispatch_record_preserves_native_session_ref_on_insert() {
+        let (store, _dir) = temp_backend();
+        let record = DispatchRecord {
+            id: "d-native-insert".into(),
+            bead_ref: WorkRef {
+                repo: "rosary".into(),
+                bead_id: "rsry-native-insert".into(),
+                scope: String::new(),
+            },
+            agent: "dev-agent".into(),
+            provider: "codex".into(),
+            started_at: Utc::now(),
+            completed_at: None,
+            outcome: None,
+            work_dir: "/tmp/work".into(),
+            session_id: None,
+            session_ref: Some(AgentSessionRef::new("codex", "thread-456")),
+            workspace_path: None,
+            chain_hash: None,
+        };
+
+        store.record_dispatch(&record).await.unwrap();
+
+        let active = store.active_dispatches().await.unwrap();
+        assert_eq!(
+            active[0].session_ref,
+            Some(AgentSessionRef::new("codex", "thread-456"))
+        );
+        assert!(active[0].session_id.is_none());
     }
 
     #[tokio::test]
@@ -1476,6 +1578,7 @@ mod tests {
             outcome: None,
             work_dir: "/tmp/work".into(),
             session_id: None,
+            session_ref: None,
             workspace_path: None,
             chain_hash: None,
         };
