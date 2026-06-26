@@ -2,6 +2,7 @@
 
 Status: draft
 Tracking: rosary-7a1d4a, rosary-cc2d08
+Related: codex-rosary-determinism-friction.md
 
 ## Purpose
 
