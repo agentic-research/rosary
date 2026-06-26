@@ -1,6 +1,7 @@
 //! Tests for the dispatch module.
 
 use super::*;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 // -----------------------------------------------------------------------
@@ -84,6 +85,36 @@ impl MockAgentProvider {
     }
 }
 
+#[derive(Clone, Default)]
+struct CapturingRunSpecProvider {
+    captured: Arc<Mutex<Option<providers::AgentRunSpec>>>,
+}
+
+impl AgentProvider for CapturingRunSpecProvider {
+    fn spawn_agent(
+        &self,
+        _prompt: &str,
+        _work_dir: &Path,
+        _permissions: &PermissionProfile,
+        _system_prompt: &str,
+    ) -> Result<Box<dyn AgentSession>> {
+        panic!("dispatch should call spawn_run for agent-native providers")
+    }
+
+    fn spawn_run(&self, spec: &providers::AgentRunSpec) -> Result<Box<dyn AgentSession>> {
+        *self.captured.lock().unwrap() = Some(spec.clone());
+        Ok(MockAgentSession::success())
+    }
+
+    fn name(&self) -> &str {
+        "capture"
+    }
+
+    fn with_model(&self, _model: Option<String>) -> Box<dyn providers::AgentProvider> {
+        Box::new(self.clone())
+    }
+}
+
 impl AgentProvider for MockAgentProvider {
     fn spawn_agent(
         &self,
@@ -121,6 +152,43 @@ impl AgentProvider for MockAgentProvider {
             exit_success: self.exit_success,
         })
     }
+}
+
+#[tokio::test]
+async fn spawn_passes_agent_native_run_spec_to_provider() {
+    let repo = crate::testutil::TestRepo::new();
+    let mut bead = crate::testutil::make_bead("rsry-spec1", "bug", "rosary");
+    bead.title = "Audit Codex dispatch".into();
+    bead.description = "Keep Rosary agent context structured.".into();
+    bead.owner = Some("scoping-agent".into());
+
+    let provider = CapturingRunSpecProvider::default();
+    let captured = provider.captured.clone();
+
+    let handle = spawn(&bead, repo.path(), false, 0, &provider, None, None, None)
+        .await
+        .unwrap();
+
+    let spec = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("provider should capture run spec");
+    assert_eq!(spec.bead_id.as_deref(), Some("rsry-spec1"));
+    assert_eq!(spec.agent_name.as_deref(), Some("scoping-agent"));
+    assert_eq!(spec.work_dir, handle.work_dir);
+    assert_eq!(spec.permissions, PermissionProfile::ReadOnly);
+    assert!(spec.prompt.contains("Audit Codex dispatch"));
+    assert!(
+        spec.prompt
+            .contains("Keep Rosary agent context structured.")
+    );
+    assert!(spec.system_prompt.contains(PROMPT_VERSION));
+    assert!(spec.mcp_servers.contains_key("rsry"));
+    assert!(spec.mcp_servers.contains_key("mache"));
+    assert!(spec.expected_mcp_tools.contains(&"rsry".to_string()));
+    assert!(spec.expected_mcp_tools.contains(&"mache".to_string()));
+    assert!(spec.expected_mcp_tools.contains(&"lectio".to_string()));
 }
 
 #[tokio::test]

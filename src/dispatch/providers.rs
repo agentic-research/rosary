@@ -4,10 +4,69 @@
 //! Each provider translates `PermissionProfile` to its own CLI flags.
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use super::session::{AgentSession, CliSession};
 use super::{PermissionProfile, STREAM_LOG_FILENAME};
+
+/// MCP tool families Rosary expects dispatched agents to understand.
+///
+/// A provider may not have every server URL available in a given process (for
+/// example, `lectio` is still private/new), but native runtimes should receive
+/// this expectation explicitly instead of inferring capabilities from prompt text.
+pub const EXPECTED_AGENT_MCP_TOOLS: &[&str] = &["rsry", "mache", "lectio"];
+
+/// Structured run request passed from Rosary's dispatcher into an agent provider.
+///
+/// This keeps Rosary-owned facts (bead id, agent definition, workspace,
+/// permission profile, MCP context) separate from provider-owned launch details.
+/// CLI providers can still translate the prompt fields into args; native
+/// providers such as Codex can use the structured fields directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRunSpec {
+    pub bead_id: Option<String>,
+    pub agent_name: Option<String>,
+    pub prompt: String,
+    pub work_dir: PathBuf,
+    pub permissions: PermissionProfile,
+    pub system_prompt: String,
+    pub mcp_servers: BTreeMap<String, String>,
+    pub expected_mcp_tools: Vec<String>,
+}
+
+impl AgentRunSpec {
+    pub fn new(
+        prompt: String,
+        work_dir: PathBuf,
+        permissions: PermissionProfile,
+        system_prompt: String,
+    ) -> Self {
+        Self {
+            bead_id: None,
+            agent_name: None,
+            prompt,
+            work_dir,
+            permissions,
+            system_prompt,
+            mcp_servers: agent_mcp_servers(),
+            expected_mcp_tools: EXPECTED_AGENT_MCP_TOOLS
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
+        }
+    }
+
+    pub fn with_bead_context(
+        mut self,
+        bead_id: impl Into<String>,
+        agent_name: Option<String>,
+    ) -> Self {
+        self.bead_id = Some(bead_id.into());
+        self.agent_name = agent_name;
+        self
+    }
+}
 
 /// Trait for AI agent providers. Implementations handle spawning and
 /// communicating with different AI backends (Claude, Gemini, Codex, etc).
@@ -16,6 +75,20 @@ use super::{PermissionProfile, STREAM_LOG_FILENAME};
 /// translates it to CLI flags. This keeps schema/config decisions out
 /// of the provider code.
 pub trait AgentProvider: Send + Sync {
+    /// Spawn an agent from Rosary's structured run request.
+    ///
+    /// Existing CLI providers keep implementing `spawn_agent`; native providers
+    /// should override this method so they do not have to parse Rosary facts back
+    /// out of prompt strings.
+    fn spawn_run(&self, spec: &AgentRunSpec) -> Result<Box<dyn AgentSession>> {
+        self.spawn_agent(
+            &spec.prompt,
+            &spec.work_dir,
+            &spec.permissions,
+            &spec.system_prompt,
+        )
+    }
+
     /// Spawn an agent session with the given prompt, working directory,
     /// permission profile (derived from the bead), and system prompt
     /// (assembled from agent definitions + golden rules).
@@ -573,7 +646,7 @@ fn collect_envrc(work_dir: &Path) -> Vec<String> {
 
 /// MCP servers to expose to dispatched agents (rosary-563b3f), from
 /// `[dispatch] agent_mcp` (name → HTTP URL); defaults to local rsry + mache.
-fn agent_mcp_servers() -> std::collections::BTreeMap<String, String> {
+pub(crate) fn agent_mcp_servers() -> BTreeMap<String, String> {
     crate::config::load_global()
         .ok()
         .and_then(|c| c.dispatch.map(|d| d.agent_mcp))

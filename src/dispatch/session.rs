@@ -5,6 +5,25 @@
 
 use anyhow::{Context, Result};
 
+/// Provider-native handle for a session that may not have an OS process id.
+///
+/// Examples: a Codex thread id, an ACP session id, or a remote worker run id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSessionRef {
+    pub provider: String,
+    pub id: String,
+}
+
+impl AgentSessionRef {
+    #[allow(dead_code)] // Public API for native providers; used by tests before Codex lands.
+    pub fn new(provider: impl Into<String>, id: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            id: id.into(),
+        }
+    }
+}
+
 /// Abstract session to a running agent. Decouples from tokio::process::Child
 /// so we can support CLI subprocesses, ACP sockets, raw API calls, etc.
 #[async_trait::async_trait]
@@ -21,6 +40,11 @@ pub trait AgentSession: Send + Sync {
     /// Process ID (if applicable). For logging/debugging.
     #[allow(dead_code)] // Used by reconciler path, not MCP
     fn pid(&self) -> Option<u32> {
+        None
+    }
+
+    /// Provider-native session identity for runtimes without an OS PID.
+    fn session_ref(&self) -> Option<AgentSessionRef> {
         None
     }
 
@@ -263,6 +287,39 @@ mod tests {
         fn kill(&mut self) -> anyhow::Result<()> {
             Ok(())
         }
+    }
+
+    struct NativeSession {
+        session_ref: AgentSessionRef,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentSession for NativeSession {
+        fn try_wait(&mut self) -> anyhow::Result<Option<bool>> {
+            Ok(None)
+        }
+        async fn wait(&mut self) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+        fn kill(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn session_ref(&self) -> Option<AgentSessionRef> {
+            Some(self.session_ref.clone())
+        }
+    }
+
+    #[test]
+    fn native_session_can_expose_provider_ref_without_pid() {
+        let session = NativeSession {
+            session_ref: AgentSessionRef::new("codex", "thread-123"),
+        };
+
+        assert_eq!(session.pid(), None);
+        assert_eq!(
+            session.session_ref(),
+            Some(AgentSessionRef::new("codex", "thread-123"))
+        );
     }
 
     #[test]
