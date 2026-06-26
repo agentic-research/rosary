@@ -19,6 +19,8 @@ impl TestRepo {
         run_git(path, &["init"]);
         run_git(path, &["config", "user.email", "test@test.com"]);
         run_git(path, &["config", "user.name", "Test"]);
+        run_git(path, &["config", "commit.gpgsign", "false"]);
+        run_git(path, &["config", "tag.gpgsign", "false"]);
 
         // Initial commit so HEAD exists
         std::fs::write(path.join(".gitkeep"), "").unwrap();

@@ -22,10 +22,10 @@ pub use prompt::{
 };
 #[allow(unused_imports)] // API surface
 pub use providers::{
-    AcpCliProvider, AgentProvider, ClaudeProvider, GeminiProvider, provider_by_name,
+    AcpCliProvider, AgentProvider, AgentRunSpec, ClaudeProvider, GeminiProvider, provider_by_name,
 };
 #[allow(unused_imports)] // API surface
-pub use session::{AgentSession, CliSession};
+pub use session::{AgentSession, AgentSessionRef, CliSession};
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -43,7 +43,7 @@ use session::ComputeSession;
 ///
 /// Profiles are intentionally simple -- 3 levels. Complex per-tool rules
 /// belong in a schema/config file, not in Rust match arms.
-#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionProfile {
     /// Read + analyze only. For review, survey, audit.
@@ -166,6 +166,12 @@ impl AgentHandle {
     #[allow(dead_code)] // Used by reconciler path
     pub fn pid(&self) -> Option<u32> {
         self.session.pid()
+    }
+
+    /// Provider-native session identity, if this is not a PID-backed process.
+    #[allow(dead_code)]
+    pub fn session_ref(&self) -> Option<AgentSessionRef> {
+        self.session.session_ref()
     }
 
     /// Set the session ID (captured from agent output after spawn).
@@ -349,10 +355,17 @@ pub async fn spawn(
         permissions
     );
 
+    let run_spec = AgentRunSpec::new(prompt, work_dir.clone(), permissions, system_prompt)
+        .with_bead_context(bead.id.clone(), bead.owner.clone());
+
     let session: Box<dyn AgentSession> = if let Some(compute) = compute {
         // Container dispatch: build command, provision, exec, destroy.
         // Synchronous -- spawn() blocks for exec duration. Session is already resolved.
-        let (bin, args) = effective_provider.build_command(&prompt, &permissions, &system_prompt);
+        let (bin, args) = effective_provider.build_command(
+            &run_spec.prompt,
+            &run_spec.permissions,
+            &run_spec.system_prompt,
+        );
         anyhow::ensure!(
             !bin.is_empty(),
             "{} does not support build_command()",
@@ -416,7 +429,7 @@ pub async fn spawn(
         // Local dispatch: spawn agent process directly (existing behavior).
         // On failure, clean up the workspace so no orphaned worktrees are left.
         match effective_provider
-            .spawn_agent(&prompt, &work_dir, &permissions, &system_prompt)
+            .spawn_run(&run_spec)
             .with_context(|| format!("spawning {} for {}", effective_provider.name(), bead.id))
         {
             Ok(session) => session,
