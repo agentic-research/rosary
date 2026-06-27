@@ -421,6 +421,34 @@ pub(crate) fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "rsry_agent_session_message_record",
+                "description": "Record an outbound handoff/message for a provider-native agent session as a durable agent run event. This is the Rosary-owned mailbox layer; provider-native delivery can consume the same event stream later.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Optional stable message/event id. Defaults to msg-<uuid>." },
+                        "repo": { "type": "string", "description": "Repo name" },
+                        "bead_id": { "type": "string", "description": "Bead ID" },
+                        "scope": { "type": "string", "description": "Optional bead scope; defaults to empty repo scope" },
+                        "dispatch_id": { "type": "string", "description": "Optional dispatch id. If omitted, Rosary resolves it from repo/bead/session_ref." },
+                        "session_ref": {
+                            "type": "object",
+                            "description": "Provider-native session identity to address",
+                            "properties": {
+                                "provider": { "type": "string" },
+                                "id": { "type": "string" }
+                            },
+                            "required": ["provider", "id"]
+                        },
+                        "message": { "type": "string", "description": "Message or handoff text to persist" },
+                        "event_type": { "type": "string", "description": "Event type to record; defaults to handoff_message" },
+                        "payload": { "type": "object", "description": "Structured message metadata; must be an object", "additionalProperties": true },
+                        "created_at": { "type": "string", "description": "Optional RFC3339 timestamp; defaults to server time" }
+                    },
+                    "required": ["repo", "bead_id", "session_ref", "message"]
+                }
+            },
+            {
                 "name": "rsry_decade_list",
                 "description": "List decades (ADR-level organizing primitives). Optionally filter by status (proposed, active, completed, superseded).",
                 "inputSchema": {
@@ -688,6 +716,7 @@ mod tests {
         assert!(names.contains(&"rsry_agent_run_event_record"));
         assert!(names.contains(&"rsry_agent_run_events"));
         assert!(names.contains(&"rsry_agent_session_addresses"));
+        assert!(names.contains(&"rsry_agent_session_message_record"));
 
         let record = tools
             .iter()

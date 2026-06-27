@@ -223,6 +223,9 @@ pub(crate) async fn call_tool(
         "rsry_agent_run_event_record" => tool_agent_run_event_record(args, backend).await,
         "rsry_agent_run_events" => tool_agent_run_events(args, backend).await,
         "rsry_agent_session_addresses" => tool_agent_session_addresses(args, backend).await,
+        "rsry_agent_session_message_record" => {
+            tool_agent_session_message_record(args, backend).await
+        }
         "rsry_decade_list" => tool_decade_list(args, backend).await,
         "rsry_decade_create" => tool_decade_create(args, backend).await,
         "rsry_thread_list" => tool_thread_list(args, backend).await,
@@ -2186,6 +2189,102 @@ async fn tool_agent_session_addresses(
         .collect();
 
     Ok(json!({ "count": items.len(), "addresses": items }))
+}
+
+fn matching_dispatch_id_for_session(
+    dispatches: &[DispatchRecord],
+    session_ref: &AgentSessionRef,
+) -> Option<String> {
+    dispatches
+        .iter()
+        .rev()
+        .find(|dispatch| {
+            dispatch_session_address(dispatch)
+                .as_ref()
+                .map(|candidate| candidate == session_ref)
+                .unwrap_or(false)
+        })
+        .map(|dispatch| dispatch.id.clone())
+}
+
+async fn tool_agent_session_message_record(
+    args: &Value,
+    backend: Option<&dyn BackendStore>,
+) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+    let repo = args["repo"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo required"))?;
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+    let session_ref = parse_session_ref_arg(args)?
+        .ok_or_else(|| anyhow::anyhow!("session_ref required for addressed message"))?;
+    let message = args["message"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("message required"))?;
+    if message.trim().is_empty() {
+        anyhow::bail!("message must not be blank");
+    }
+    if message.len() > BODY_MAX_LEN {
+        anyhow::bail!(
+            "message exceeds {BODY_MAX_LEN} bytes (got {})",
+            message.len()
+        );
+    }
+
+    let bead = WorkRef {
+        repo: repo.to_string(),
+        scope: scope.to_string(),
+        bead_id: bead_id.to_string(),
+    };
+    let dispatches = backend.dispatches_for_bead(&bead).await?;
+    let dispatch_id = match args.get("dispatch_id").and_then(|v| v.as_str()) {
+        Some(id) => id.to_string(),
+        None => matching_dispatch_id_for_session(&dispatches, &session_ref).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no dispatch found for session_ref {}:{} on {repo}/{bead_id}; pass dispatch_id explicitly",
+                session_ref.provider,
+                session_ref.id,
+            )
+        })?,
+    };
+
+    let mut payload = parse_agent_event_payload(args)?;
+    let payload_obj = payload
+        .as_object_mut()
+        .expect("parse_agent_event_payload returns an object");
+    payload_obj.insert("direction".to_string(), json!("outbound"));
+    payload_obj.insert("message".to_string(), json!(message));
+
+    let id = args
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("msg-{}", uuid::Uuid::new_v4()));
+    let event_type = args
+        .get("event_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("handoff_message");
+    let event = AgentRunEvent {
+        id: id.clone(),
+        dispatch_id: dispatch_id.clone(),
+        bead_ref: bead,
+        session_ref: Some(session_ref),
+        event_type: event_type.to_string(),
+        summary: message.to_string(),
+        payload,
+        created_at: parse_agent_event_created_at(args)?,
+    };
+
+    backend.record_agent_run_event(&event).await?;
+    Ok(json!({
+        "id": id,
+        "dispatch_id": dispatch_id,
+        "bead_id": bead_id,
+        "recorded": true,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -4308,5 +4407,67 @@ mod input_validation_tests {
         assert_eq!(got["addresses"][0]["id"], "thread-complete");
         assert_eq!(got["addresses"][0]["active"], false);
         assert_eq!(got["addresses"][0]["sources"], json!(["dispatch"]));
+    }
+
+    #[tokio::test]
+    async fn agent_session_message_records_addressed_handoff_event() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        tool_dispatch_record(
+            &json!({
+                "id": "dispatch-codex",
+                "repo": "rosary",
+                "bead_id": "rosary-addressable",
+                "agent": "staging-agent",
+                "provider": "codex",
+                "work_dir": "/tmp/codex",
+                "session_ref": {
+                    "provider": "codex",
+                    "id": "thread-123"
+                }
+            }),
+            Some(&store),
+        )
+        .await
+        .expect("record codex dispatch");
+
+        let recorded = tool_agent_session_message_record(
+            &json!({
+                "id": "msg-1",
+                "repo": "rosary",
+                "bead_id": "rosary-addressable",
+                "session_ref": {
+                    "provider": "codex",
+                    "id": "thread-123"
+                },
+                "message": "please review the stored findings",
+                "payload": { "handoff_kind": "review" }
+            }),
+            Some(&store),
+        )
+        .await
+        .expect("record message");
+
+        assert_eq!(recorded["id"], "msg-1");
+        assert_eq!(recorded["dispatch_id"], "dispatch-codex");
+        assert_eq!(recorded["recorded"], true);
+
+        let got = tool_agent_run_events(
+            &json!({ "repo": "rosary", "bead_id": "rosary-addressable" }),
+            Some(&store),
+        )
+        .await
+        .expect("list events");
+
+        assert_eq!(got["count"], 1);
+        assert_eq!(got["events"][0]["event_type"], "handoff_message");
+        assert_eq!(
+            got["events"][0]["summary"],
+            "please review the stored findings"
+        );
+        assert_eq!(got["events"][0]["session_ref"]["provider"], "codex");
+        assert_eq!(got["events"][0]["payload"]["direction"], "outbound");
+        assert_eq!(got["events"][0]["payload"]["handoff_kind"], "review");
     }
 }
