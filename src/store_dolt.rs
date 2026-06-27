@@ -1120,6 +1120,20 @@ impl BackendExport for DoltBackend {
         Ok(rows.iter().map(row_to_dispatch_record).collect())
     }
 
+    async fn all_agent_run_events(&self) -> Result<Vec<AgentRunEvent>> {
+        let rows = query(
+            "SELECT id, dispatch_id, repo, bead_id, scope, session_ref_provider, session_ref_id,
+                    event_type, summary, payload_json, created_at
+             FROM agent_run_events
+             ORDER BY created_at ASC, id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("listing all agent run events")?;
+
+        rows.iter().map(row_to_agent_run_event).collect()
+    }
+
     async fn all_dependencies(&self) -> Result<Vec<CrossRepoDep>> {
         let rows = query(
             "SELECT from_repo, from_bead, to_repo, to_bead, dep_type,

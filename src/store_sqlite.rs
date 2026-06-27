@@ -826,6 +826,19 @@ impl BackendExport for SqliteBackend {
             .map_err(Into::into)
     }
 
+    async fn all_agent_run_events(&self) -> Result<Vec<AgentRunEvent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, dispatch_id, repo, bead_id, scope, session_ref_provider, session_ref_id,
+                    event_type, summary, payload_json, created_at
+             FROM agent_run_events
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([], row_to_agent_run_event)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     async fn all_dependencies(&self) -> Result<Vec<CrossRepoDep>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

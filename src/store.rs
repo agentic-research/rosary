@@ -491,6 +491,7 @@ pub trait BackendExport: BackendStore {
     async fn all_threads(&self) -> Result<Vec<ThreadRecord>>;
     async fn all_thread_members(&self) -> Result<Vec<(String, WorkRef)>>;
     async fn all_dispatches(&self) -> Result<Vec<DispatchRecord>>;
+    async fn all_agent_run_events(&self) -> Result<Vec<AgentRunEvent>>;
     async fn all_dependencies(&self) -> Result<Vec<CrossRepoDep>>;
     async fn all_linear_links(&self) -> Result<Vec<LinearLink>>;
     async fn all_user_repos(&self) -> Result<Vec<UserRepo>>;

@@ -2590,12 +2590,13 @@ async fn tool_review(args: &Value, backend: Option<&dyn BackendStore>) -> Result
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".into());
 
+    let event_scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("");
     let agent_run_events = match backend {
         Some(backend) => {
             let bead = WorkRef {
                 repo: repo_name.clone(),
                 bead_id: bead_id.to_string(),
-                scope: String::new(),
+                scope: event_scope.to_string(),
             };
             backend.agent_run_events_for_bead(&bead).await?
         }
@@ -2732,6 +2733,62 @@ mod tests {
             err.to_string().contains("repo_path"),
             "error must name the missing field; got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn review_surfaces_scoped_agent_run_events() {
+        use crate::store::tests::InMemoryStore;
+
+        let repo_dir = tempfile::TempDir::new().unwrap();
+        let repo_name = repo_dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let repo_path = repo_dir.path().to_string_lossy().to_string();
+        let beads_dir = repo_dir.path().join(".beads");
+        let bead_store = crate::bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db"))
+            .expect("connect temp bead store");
+        bead_store
+            .create_bead("rosary-scoped", "scoped review fixture", "", 1, "task")
+            .await
+            .unwrap();
+
+        let backend = InMemoryStore::new();
+        tool_agent_run_event_record(
+            &json!({
+                "id": "evt-scoped",
+                "dispatch_id": "dispatch-scoped",
+                "repo": repo_name,
+                "bead_id": "rosary-scoped",
+                "scope": "team/auth",
+                "event_type": "review_finding",
+                "summary": "scoped partial evidence",
+                "payload": { "severity": "should-fix" }
+            }),
+            Some(&backend),
+        )
+        .await
+        .unwrap();
+
+        let got = tool_review(
+            &json!({
+                "repo_path": repo_path,
+                "bead_id": "rosary-scoped",
+                "scope": "team/auth"
+            }),
+            Some(&backend),
+        )
+        .await
+        .expect("review should render");
+
+        assert_eq!(
+            got["evidence"]["agent_run_event_count"].as_u64(),
+            Some(1),
+            "scoped event must be visible to rsry_review"
+        );
+        assert_eq!(got["agent_run_events"][0]["id"], "evt-scoped");
     }
 
     // ---- tool_ticket_load (rosary-5dc9b0) ---------------------------------

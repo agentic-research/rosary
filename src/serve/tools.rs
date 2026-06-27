@@ -547,6 +547,10 @@ pub(crate) fn tool_definitions() -> Value {
                         "repo_path": {
                             "type": "string",
                             "description": "Path to the repo containing the bead. Required in Phase 0; scope→path resolution lands in a follow-up."
+                        },
+                        "scope": {
+                            "type": "string",
+                            "description": "Optional WorkRef scope for scoped/monorepo beads; defaults to empty repo scope."
                         }
                     },
                     "required": ["bead_id", "repo_path"]
