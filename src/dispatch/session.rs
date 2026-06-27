@@ -4,11 +4,12 @@
 //! CLI subprocesses, ACP sockets, raw API calls, container-dispatched agents, etc.
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 /// Provider-native handle for a session that may not have an OS process id.
 ///
 /// Examples: a Codex thread id, an ACP session id, or a remote worker run id.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSessionRef {
     pub provider: String,
     pub id: String,

@@ -898,6 +898,7 @@ impl Reconciler {
                             outcome: None,
                             work_dir: handle.work_dir.display().to_string(),
                             session_id: None,
+                            session_ref: handle.session_ref(),
                             workspace_path: handle.workspace_path.clone(),
                             chain_hash: handle.chain_hash.clone(),
                         };

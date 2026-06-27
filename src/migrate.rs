@@ -21,6 +21,8 @@ pub struct BackendSnapshot {
     pub thread_members: Vec<(String, WorkRef)>,
     pub pipelines: Vec<PipelineState>,
     pub dispatches: Vec<DispatchRecord>,
+    #[serde(default)]
+    pub agent_run_events: Vec<AgentRunEvent>,
     pub dependencies: Vec<CrossRepoDep>,
     pub linear_links: Vec<LinearLink>,
     pub user_repos: Vec<UserRepo>,
@@ -34,6 +36,7 @@ pub struct TableCounts {
     pub thread_members: usize,
     pub pipelines: usize,
     pub dispatches: usize,
+    pub agent_run_events: usize,
     pub dependencies: usize,
     pub linear_links: usize,
     pub user_repos: usize,
@@ -47,6 +50,7 @@ impl BackendSnapshot {
             thread_members: self.thread_members.len(),
             pipelines: self.pipelines.len(),
             dispatches: self.dispatches.len(),
+            agent_run_events: self.agent_run_events.len(),
             dependencies: self.dependencies.len(),
             linear_links: self.linear_links.len(),
             user_repos: self.user_repos.len(),
@@ -69,6 +73,7 @@ pub fn save_backup(snapshot: &BackendSnapshot, dir: &std::path::Path) -> Result<
             "thread_members": snapshot.thread_members.len(),
             "pipelines": snapshot.pipelines.len(),
             "dispatches": snapshot.dispatches.len(),
+            "agent_run_events": snapshot.agent_run_events.len(),
             "dependencies": snapshot.dependencies.len(),
             "linear_links": snapshot.linear_links.len(),
             "user_repos": snapshot.user_repos.len(),
@@ -97,6 +102,10 @@ pub fn save_backup(snapshot: &BackendSnapshot, dir: &std::path::Path) -> Result<
     fs::write(
         dir.join("dispatches.json"),
         serde_json::to_string_pretty(&snapshot.dispatches)?,
+    )?;
+    fs::write(
+        dir.join("agent_run_events.json"),
+        serde_json::to_string_pretty(&snapshot.agent_run_events)?,
     )?;
     fs::write(
         dir.join("dependencies.json"),
@@ -135,6 +144,11 @@ pub fn load_backup(dir: &std::path::Path) -> Result<BackendSnapshot> {
         )?)?,
         pipelines: serde_json::from_str(&fs::read_to_string(dir.join("pipelines.json"))?)?,
         dispatches: serde_json::from_str(&fs::read_to_string(dir.join("dispatches.json"))?)?,
+        agent_run_events: match fs::read_to_string(dir.join("agent_run_events.json")) {
+            Ok(raw) => serde_json::from_str(&raw)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+            Err(e) => return Err(e.into()),
+        },
         dependencies: serde_json::from_str(&fs::read_to_string(dir.join("dependencies.json"))?)?,
         linear_links: serde_json::from_str(&fs::read_to_string(dir.join("linear_links.json"))?)?,
         user_repos: serde_json::from_str(&fs::read_to_string(dir.join("user_repos.json"))?)?,
@@ -182,6 +196,7 @@ pub async fn migrate(
         && target_counts.thread_members == source_counts.thread_members
         && target_counts.pipelines == source_counts.pipelines
         && target_counts.dispatches == source_counts.dispatches
+        && target_counts.agent_run_events == source_counts.agent_run_events
         && target_counts.dependencies == source_counts.dependencies
         && target_counts.linear_links == source_counts.linear_links
         && target_counts.user_repos == source_counts.user_repos;
@@ -240,6 +255,9 @@ pub async fn import_snapshot(
     for d in &snapshot.dispatches {
         target.upsert_dispatch(d).await?;
     }
+    for event in &snapshot.agent_run_events {
+        target.record_agent_run_event(event).await?;
+    }
     for dep in &snapshot.dependencies {
         target.add_dependency(dep).await?;
     }
@@ -267,6 +285,7 @@ pub async fn export_snapshot(
         thread_members: source.all_thread_members().await?,
         pipelines: source.list_active_pipelines().await?,
         dispatches: source.all_dispatches().await?,
+        agent_run_events: source.all_agent_run_events().await?,
         dependencies: source.all_dependencies().await?,
         linear_links: source.all_linear_links().await?,
         user_repos: source.all_user_repos().await?,
@@ -296,6 +315,7 @@ mod tests {
         assert_eq!(counts.thread_members, 0);
         assert_eq!(counts.pipelines, 0);
         assert_eq!(counts.dispatches, 0);
+        assert_eq!(counts.agent_run_events, 0);
         assert_eq!(counts.dependencies, 0);
         assert_eq!(counts.linear_links, 0);
         assert_eq!(counts.user_repos, 0);
@@ -363,8 +383,22 @@ mod tests {
                 outcome: None,
                 work_dir: "/tmp/work".into(),
                 session_id: None,
+                session_ref: None,
                 workspace_path: None,
                 chain_hash: None,
+            })
+            .await
+            .unwrap();
+        store
+            .record_agent_run_event(&AgentRunEvent {
+                id: "evt-1".into(),
+                dispatch_id: "disp-1".into(),
+                bead_ref: bead.clone(),
+                session_ref: Some(crate::dispatch::AgentSessionRef::new("codex", "thread-1")),
+                event_type: "review_finding".into(),
+                summary: "partial review evidence".into(),
+                payload: serde_json::json!({ "severity": "should-fix" }),
+                created_at: Utc::now(),
             })
             .await
             .unwrap();
@@ -415,6 +449,7 @@ mod tests {
         assert_eq!(counts.thread_members, 1);
         assert_eq!(counts.pipelines, 1);
         assert_eq!(counts.dispatches, 1);
+        assert_eq!(counts.agent_run_events, 1);
         assert_eq!(counts.dependencies, 1);
         assert_eq!(counts.linear_links, 1);
         assert_eq!(counts.user_repos, 1);
@@ -471,8 +506,22 @@ mod tests {
                 outcome: None,
                 work_dir: "/tmp/work".into(),
                 session_id: None,
+                session_ref: None,
                 workspace_path: None,
                 chain_hash: None,
+            })
+            .await
+            .unwrap();
+        store
+            .record_agent_run_event(&AgentRunEvent {
+                id: "evt-1".into(),
+                dispatch_id: "disp-1".into(),
+                bead_ref: bead.clone(),
+                session_ref: Some(crate::dispatch::AgentSessionRef::new("codex", "thread-1")),
+                event_type: "review_finding".into(),
+                summary: "partial review evidence".into(),
+                payload: serde_json::json!({ "severity": "should-fix" }),
+                created_at: Utc::now(),
             })
             .await
             .unwrap();
@@ -523,6 +572,7 @@ mod tests {
         assert_eq!(counts.thread_members, 1);
         assert_eq!(counts.pipelines, 1);
         assert_eq!(counts.dispatches, 1);
+        assert_eq!(counts.agent_run_events, 1);
         assert_eq!(counts.dependencies, 1);
         assert_eq!(counts.linear_links, 1);
         assert_eq!(counts.user_repos, 1);
@@ -559,6 +609,8 @@ mod tests {
         assert_eq!(snap1.decades[0].id, snap2.decades[0].id);
         assert_eq!(snap1.threads[0].name, snap2.threads[0].name);
         assert_eq!(snap1.dispatches[0].agent, snap2.dispatches[0].agent);
+        assert_eq!(snap1.agent_run_events[0].id, snap2.agent_run_events[0].id);
+        assert_eq!(snap2.agent_run_events[0].payload["severity"], "should-fix");
     }
 
     #[tokio::test]
@@ -596,6 +648,7 @@ mod tests {
             thread_members: vec![],
             pipelines: vec![],
             dispatches: vec![],
+            agent_run_events: vec![],
             dependencies: vec![],
             linear_links: vec![],
             user_repos: vec![],

@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 use crate::bead::Comment;
 use crate::handoff::Handoff;
-use crate::store::BeadStore;
+use crate::store::{AgentRunEvent, BeadStore};
 
 /// Aggregated evidence summary for the review panel.
 ///
@@ -40,6 +40,7 @@ pub struct EvidenceSummary {
     /// One-line summary of the most recent handoff (None if no handoffs).
     pub latest_handoff_summary: Option<String>,
     pub comment_count: usize,
+    pub agent_run_event_count: usize,
 }
 
 /// One entry in the sliced change-set view.
@@ -84,6 +85,7 @@ pub(crate) fn summarize_evidence(
     comments: &[Comment],
     observation_count: usize,
     gate_results: &[GateResult],
+    agent_run_events: &[AgentRunEvent],
 ) -> EvidenceSummary {
     let latest = handoffs.iter().max_by_key(|h| h.timestamp);
     EvidenceSummary {
@@ -94,6 +96,7 @@ pub(crate) fn summarize_evidence(
         latest_handoff_at: latest.map(|h| h.timestamp),
         latest_handoff_summary: latest.map(|h| h.summary.clone()),
         comment_count: comments.len(),
+        agent_run_event_count: agent_run_events.len(),
     }
 }
 
@@ -117,12 +120,14 @@ pub(crate) fn assemble_review(
     workspace: Option<WorkspaceInfo>,
     change_set: Vec<ChangeSetEntry>,
     evidence: EvidenceSummary,
+    agent_run_events: Vec<AgentRunEvent>,
 ) -> Value {
     json!({
         "bead": bead,
         "workspace": workspace,
         "change_set": change_set,
         "evidence": evidence,
+        "agent_run_events": agent_run_events,
     })
 }
 
@@ -162,6 +167,7 @@ pub(crate) async fn collect_review_for_bead(
     repo_name: &str,
     repo_path: &Path,
     bead_id: &str,
+    agent_run_events: Vec<AgentRunEvent>,
 ) -> anyhow::Result<Value> {
     let bead = store
         .get_bead(bead_id, repo_name)
@@ -186,12 +192,13 @@ pub(crate) async fn collect_review_for_bead(
     };
 
     let change_set = format_change_set(raw_commits);
-    let evidence = summarize_evidence(&handoffs, &comments, 0, &[]);
+    let evidence = summarize_evidence(&handoffs, &comments, 0, &[], &agent_run_events);
     Ok(assemble_review(
         bead_json,
         workspace_info,
         change_set,
         evidence,
+        agent_run_events,
     ))
 }
 
@@ -298,7 +305,7 @@ mod tests {
     /// not a synthesized lie.
     #[test]
     fn summarize_evidence_zero_case_all_counts_zero() {
-        let got = summarize_evidence(&[], &[], 0, &[]);
+        let got = summarize_evidence(&[], &[], 0, &[], &[]);
         let want = EvidenceSummary {
             observation_count: 0,
             gate_count: 0,
@@ -307,6 +314,7 @@ mod tests {
             latest_handoff_at: None,
             latest_handoff_summary: None,
             comment_count: 0,
+            agent_run_event_count: 0,
         };
         assert_eq!(got, want);
     }
@@ -328,13 +336,49 @@ mod tests {
                 passed: false,
             },
         ];
-        let got = summarize_evidence(&handoffs, &comments, 7, &gates);
+        let got = summarize_evidence(&handoffs, &comments, 7, &gates, &[]);
 
         assert_eq!(got.handoff_count, 1, "handoffs");
         assert_eq!(got.comment_count, 2, "comments");
         assert_eq!(got.observation_count, 7, "observations passed through");
         assert_eq!(got.gate_count, 2, "gate total");
         assert_eq!(got.gate_pass_count, 1, "gates that passed");
+    }
+
+    #[test]
+    fn assemble_review_surfaces_partial_agent_run_events() {
+        let ts = Utc.with_ymd_and_hms(2026, 6, 26, 16, 0, 0).unwrap();
+        let event = crate::store::AgentRunEvent {
+            id: "evt-review-1".to_string(),
+            dispatch_id: "dispatch-review".to_string(),
+            bead_ref: crate::store::WorkRef {
+                repo: "rosary".to_string(),
+                bead_id: "rosary-run".to_string(),
+                scope: String::new(),
+            },
+            session_ref: Some(crate::dispatch::AgentSessionRef::new("codex", "thread-123")),
+            event_type: "review_finding".to_string(),
+            summary: "malformed session_ref should be rejected".to_string(),
+            payload: json!({ "severity": "should-fix" }),
+            created_at: ts,
+        };
+
+        let events = vec![event];
+        let evidence = summarize_evidence(&[], &[], 0, &[], &events);
+        let got = assemble_review(
+            json!({ "id": "rosary-run" }),
+            None,
+            vec![],
+            evidence,
+            events,
+        );
+
+        assert_eq!(got["agent_run_events"][0]["event_type"], "review_finding");
+        assert_eq!(
+            got["agent_run_events"][0]["summary"],
+            "malformed session_ref should be rejected"
+        );
+        assert_eq!(got["evidence"]["agent_run_event_count"], 1);
     }
 
     /// Most-recent handoff wins for the latest-* fields — pinning ordering
@@ -347,7 +391,7 @@ mod tests {
             handoff_at(1, early, "scaffold landed"),
             handoff_at(2, late, "tests green"),
         ];
-        let got = summarize_evidence(&handoffs, &[], 0, &[]);
+        let got = summarize_evidence(&handoffs, &[], 0, &[], &[]);
 
         assert_eq!(got.latest_handoff_at, Some(late));
         assert_eq!(got.latest_handoff_summary.as_deref(), Some("tests green"));
@@ -407,6 +451,7 @@ mod tests {
             latest_handoff_at: None,
             latest_handoff_summary: None,
             comment_count: 4,
+            agent_run_event_count: 0,
         };
         (bead, workspace, change_set, evidence)
     }
@@ -417,12 +462,16 @@ mod tests {
     #[test]
     fn assemble_review_emits_all_documented_top_level_keys() {
         let (bead, ws, cs, ev) = sample_review_inputs();
-        let got = assemble_review(bead, ws, cs, ev);
+        let got = assemble_review(bead, ws, cs, ev, vec![]);
 
         assert!(got.get("bead").is_some(), "bead key present");
         assert!(got.get("workspace").is_some(), "workspace key present");
         assert!(got.get("change_set").is_some(), "change_set key present");
         assert!(got.get("evidence").is_some(), "evidence key present");
+        assert!(
+            got.get("agent_run_events").is_some(),
+            "agent_run_events key present"
+        );
     }
 
     /// `workspace: null` is the canonical "no agent dispatched" signal.
@@ -431,7 +480,7 @@ mod tests {
     #[test]
     fn assemble_review_workspace_absent_serializes_as_null() {
         let (bead, _ws, cs, ev) = sample_review_inputs();
-        let got = assemble_review(bead, None, cs, ev);
+        let got = assemble_review(bead, None, cs, ev, vec![]);
         assert!(
             got.get("workspace").map(|v| v.is_null()).unwrap_or(false),
             "workspace key present and JSON null"
@@ -446,8 +495,8 @@ mod tests {
     fn assemble_review_is_idempotent() {
         let (bead1, ws1, cs1, ev1) = sample_review_inputs();
         let (bead2, ws2, cs2, ev2) = sample_review_inputs();
-        let a = assemble_review(bead1, ws1, cs1, ev1);
-        let b = assemble_review(bead2, ws2, cs2, ev2);
+        let a = assemble_review(bead1, ws1, cs1, ev1, vec![]);
+        let b = assemble_review(bead2, ws2, cs2, ev2, vec![]);
         assert_eq!(a, b);
     }
 
@@ -501,7 +550,7 @@ mod tests {
         use crate::bead_sqlite::SqliteBeadStore;
         let store = SqliteBeadStore::connect(Path::new(":memory:")).unwrap();
         let nowhere = Path::new("/nonexistent-for-review-test");
-        let err = collect_review_for_bead(&store, "rosary", nowhere, "rosary-ghost")
+        let err = collect_review_for_bead(&store, "rosary", nowhere, "rosary-ghost", vec![])
             .await
             .expect_err("missing bead must error");
         assert!(
@@ -531,8 +580,26 @@ mod tests {
             .await
             .unwrap();
 
+        let event = AgentRunEvent {
+            id: "evt-review-collect".to_string(),
+            dispatch_id: "dispatch-review-collect".to_string(),
+            bead_ref: crate::store::WorkRef {
+                repo: "rosary".to_string(),
+                bead_id: "rosary-rev1".to_string(),
+                scope: String::new(),
+            },
+            session_ref: Some(crate::dispatch::AgentSessionRef::new(
+                "codex",
+                "thread-review",
+            )),
+            event_type: "review_finding".to_string(),
+            summary: "partial review evidence".to_string(),
+            payload: json!({ "severity": "should-fix" }),
+            created_at: Utc::now(),
+        };
+
         let nowhere = Path::new("/nonexistent-for-review-test");
-        let got = collect_review_for_bead(&store, "rosary", nowhere, "rosary-rev1")
+        let got = collect_review_for_bead(&store, "rosary", nowhere, "rosary-rev1", vec![event])
             .await
             .expect("seeded bead must be retrievable");
 
@@ -551,6 +618,15 @@ mod tests {
             got["evidence"]["handoff_count"].as_u64(),
             Some(0),
             "no workspace → no handoffs"
+        );
+        assert_eq!(
+            got["evidence"]["agent_run_event_count"].as_u64(),
+            Some(1),
+            "partial agent events must be counted"
+        );
+        assert_eq!(
+            got["agent_run_events"][0]["summary"],
+            "partial review evidence"
         );
         assert_eq!(
             got["bead"]["id"].as_str(),
