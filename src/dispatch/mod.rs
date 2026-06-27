@@ -13,6 +13,9 @@ pub mod session;
 pub mod sweep;
 
 #[cfg(test)]
+pub(crate) mod fake;
+
+#[cfg(test)]
 pub(crate) mod tests;
 
 // Re-export public API so callers can still use `dispatch::X`.

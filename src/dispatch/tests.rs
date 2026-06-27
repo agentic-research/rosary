@@ -4,6 +4,8 @@ use super::*;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
+use crate::dispatch::fake::{DeterministicAgentAction, DeterministicAgentProvider};
+
 // -----------------------------------------------------------------------
 // MockAgentSession — fake agent that completes immediately
 // -----------------------------------------------------------------------
@@ -189,6 +191,102 @@ async fn spawn_passes_agent_native_run_spec_to_provider() {
     assert!(spec.expected_mcp_tools.contains(&"rsry".to_string()));
     assert!(spec.expected_mcp_tools.contains(&"mache".to_string()));
     assert!(spec.expected_mcp_tools.contains(&"lectio".to_string()));
+}
+
+#[tokio::test]
+async fn deterministic_agent_harness_exposes_native_session_and_captures_run_spec() {
+    let repo = crate::testutil::TestRepo::new();
+    let mut bead = crate::testutil::make_bead("rsry-fake1", "task", "rosary");
+    bead.owner = Some("dev-agent".into());
+
+    let provider =
+        DeterministicAgentProvider::new("codex").with_session_ref("codex", "thread-fake-1");
+    let captured = provider.captured_specs();
+
+    let mut handle = spawn(&bead, repo.path(), false, 0, &provider, None, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(handle.session.pid(), None);
+    assert_eq!(
+        handle.session.session_ref(),
+        Some(AgentSessionRef::new("codex", "thread-fake-1"))
+    );
+    assert_eq!(handle.session.try_wait().unwrap(), Some(true));
+
+    let specs = captured.lock().unwrap();
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].bead_id.as_deref(), Some("rsry-fake1"));
+    assert_eq!(specs[0].agent_name.as_deref(), Some("dev-agent"));
+    assert_eq!(specs[0].permissions, PermissionProfile::Implement);
+    assert!(specs[0].expected_mcp_tools.contains(&"rsry".to_string()));
+    assert!(specs[0].expected_mcp_tools.contains(&"mache".to_string()));
+    assert!(specs[0].expected_mcp_tools.contains(&"lectio".to_string()));
+}
+
+#[tokio::test]
+async fn deterministic_agent_harness_can_script_bead_ref_commit() {
+    let repo = crate::testutil::TestRepo::new();
+    let mut bead = crate::testutil::make_bead("rsry-fake2", "task", "rosary");
+    bead.owner = Some("dev-agent".into());
+
+    let provider = DeterministicAgentProvider::new("codex").with_action(
+        DeterministicAgentAction::CommitWithBeadRef {
+            bead_id: "rsry-fake2".into(),
+            file: "fake.rs".into(),
+            contents: "fn fake() {}\n".into(),
+        },
+    );
+
+    let _handle = spawn(&bead, repo.path(), false, 0, &provider, None, None, None)
+        .await
+        .unwrap();
+
+    let verifier = crate::verify::Verifier::new(vec![
+        Box::new(crate::verify::CommitCheck),
+        Box::new(crate::verify::WorkRefCheck),
+    ]);
+    let summary = verifier.run(repo.path()).unwrap();
+    assert!(summary.passed(), "scripted commit should pass: {summary:?}");
+}
+
+#[tokio::test]
+async fn deterministic_agent_harness_can_script_failure_and_plain_commit() {
+    let repo = crate::testutil::TestRepo::new();
+    let bead = crate::testutil::make_bead("rsry-fake3", "task", "rosary");
+
+    let provider = DeterministicAgentProvider::new("codex")
+        .failing()
+        .with_action(DeterministicAgentAction::WriteFile {
+            file: "notes/failure.txt".into(),
+            contents: "scripted failure\n".into(),
+        })
+        .with_action(DeterministicAgentAction::CommitPlain {
+            message: "test(fake): scripted plain commit".into(),
+            file: "plain.rs".into(),
+            contents: "fn plain() {}\n".into(),
+        });
+
+    let mut handle = spawn(&bead, repo.path(), false, 0, &provider, None, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(handle.session.try_wait().unwrap(), Some(false));
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("notes/failure.txt")).unwrap(),
+        "scripted failure\n"
+    );
+
+    let log = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%s"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(log.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&log.stdout).trim(),
+        "test(fake): scripted plain commit"
+    );
 }
 
 #[tokio::test]
