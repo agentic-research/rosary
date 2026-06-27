@@ -1,6 +1,20 @@
 use super::*;
 use std::io::Write;
+use std::net::TcpListener;
 use tempfile::TempDir;
+
+fn loopback_listener() -> Option<(TcpListener, u16)> {
+    match TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => {
+            let port = listener.local_addr().unwrap().port();
+            Some((listener, port))
+        }
+        Err(e) => {
+            eprintln!("[skip] cannot bind loopback listener in this sandbox: {e}");
+            None
+        }
+    }
+}
 
 /// Sandboxed Dolt beads database for integration testing.
 ///
@@ -276,10 +290,10 @@ async fn reconnect_uses_existing_server_not_fresh() {
     assert_eq!(found.unwrap().title, "Reconnect test");
 }
 
-/// Regression: connect must bail (not auto-start) when port file points
-/// to a dead server.
+/// Regression: dead known ports must be cleaned so connect can auto-start
+/// instead of timing out on a stale sidecar forever.
 #[tokio::test]
-async fn connect_fails_when_known_port_dead() {
+async fn config_cleans_dead_known_port() {
     let tmp = TempDir::new().unwrap();
     let beads = tmp.path();
 
@@ -292,13 +306,10 @@ async fn connect_fails_when_known_port_dead() {
     std::fs::create_dir_all(&dolt_dir).unwrap();
 
     let config = DoltConfig::from_beads_dir(beads).unwrap();
-    assert_eq!(config.port, 19999);
-
-    let result = DoltClient::connect(&config).await;
+    assert_eq!(config.port, 0);
     assert!(
-        result.is_err(),
-        "connect must FAIL when port file exists but server is dead — \
-         not silently auto-start a fresh empty server"
+        !beads.join("dolt-server.port").exists(),
+        "dead known port should be removed so connect can auto-start"
     );
 }
 
@@ -352,23 +363,92 @@ fn parse_dolt_config_prefers_live_sql_server_info_over_stale_sidecar() {
     std::fs::write(beads.join("dolt-server.pid"), "999999").unwrap();
     std::fs::write(beads.join("dolt-server.port"), "64628").unwrap();
 
+    let Some((_listener, port)) = loopback_listener() else {
+        return;
+    };
     let live_pid = std::process::id();
     std::fs::write(
         dot_dolt.join("sql-server.info"),
-        format!("{live_pid}:51052:test-server-uuid"),
+        format!("{live_pid}:{port}:test-server-uuid"),
     )
     .unwrap();
 
     let config = DoltConfig::from_beads_dir(beads).unwrap();
     assert_eq!(config.database, "rosary");
-    assert_eq!(config.port, 51052);
+    assert_eq!(config.port, port);
     assert_eq!(
         std::fs::read_to_string(beads.join("dolt-server.pid")).unwrap(),
         live_pid.to_string()
     );
     assert_eq!(
         std::fs::read_to_string(beads.join("dolt-server.port")).unwrap(),
-        "51052"
+        port.to_string()
+    );
+}
+
+#[test]
+fn parse_dolt_config_prefers_live_root_sql_server_info_over_stale_database_info() {
+    let dir = TempDir::new().unwrap();
+    let beads = dir.path();
+    let root_dot_dolt = beads.join("dolt").join(".dolt");
+    let db_dot_dolt = beads.join("dolt").join("rosary").join(".dolt");
+    std::fs::create_dir_all(&root_dot_dolt).unwrap();
+    std::fs::create_dir_all(&db_dot_dolt).unwrap();
+
+    std::fs::write(
+        beads.join("metadata.json"),
+        r#"{"dolt_database": "rosary"}"#,
+    )
+    .unwrap();
+    std::fs::write(beads.join("dolt-server.pid"), "3854").unwrap();
+    std::fs::write(beads.join("dolt-server.port"), "51052").unwrap();
+
+    let Some((_listener, port)) = loopback_listener() else {
+        return;
+    };
+    let live_pid = std::process::id();
+    std::fs::write(
+        root_dot_dolt.join("sql-server.info"),
+        format!("{live_pid}:{port}:root-server-uuid"),
+    )
+    .unwrap();
+    std::fs::write(
+        db_dot_dolt.join("sql-server.info"),
+        format!("{live_pid}:51052:stale-db-server-uuid"),
+    )
+    .unwrap();
+
+    let config = DoltConfig::from_beads_dir(beads).unwrap();
+    assert_eq!(config.database, "rosary");
+    assert_eq!(config.port, port);
+    assert_eq!(
+        std::fs::read_to_string(beads.join("dolt-server.pid")).unwrap(),
+        live_pid.to_string()
+    );
+    assert_eq!(
+        std::fs::read_to_string(beads.join("dolt-server.port")).unwrap(),
+        port.to_string()
+    );
+}
+
+#[test]
+fn parse_dolt_config_ignores_alive_pid_when_tcp_port_is_closed() {
+    let dir = TempDir::new().unwrap();
+    let beads = dir.path();
+    std::fs::create_dir(beads.join("dolt")).unwrap();
+
+    std::fs::write(
+        beads.join("dolt-server.pid"),
+        std::process::id().to_string(),
+    )
+    .unwrap();
+    std::fs::write(beads.join("dolt-server.port"), "9").unwrap();
+
+    let config = DoltConfig::from_beads_dir(beads).unwrap();
+    assert_eq!(config.port, 0);
+    assert!(
+        !beads.join("dolt-server.port").exists(),
+        "closed port should be cleaned so connect can auto-start"
     );
 }
 

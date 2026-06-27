@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use sqlx_core::pool::PoolOptions;
 use sqlx_mysql::{MySql, MySqlPool};
 use std::path::Path;
+use std::time::Duration;
 
 /// Connection details for a Dolt beads server.
 #[derive(Debug, Clone)]
@@ -54,10 +55,15 @@ impl DoltConfig {
             "beads".to_string()
         };
 
-        let dolt_dir = beads_dir.join("dolt").join(&database);
-        if let Some((pid, port)) = read_sql_server_info(&dolt_dir)
-            && crate::session::is_pid_alive(pid)
-        {
+        let dolt_root = beads_dir.join("dolt");
+        let dolt_dir = dolt_root.join(&database);
+        let live_server = [dolt_root.as_path(), dolt_dir.as_path()]
+            .iter()
+            .find_map(|dir| {
+                let (pid, port) = read_sql_server_info(dir)?;
+                (crate::session::is_pid_alive(pid) && tcp_port_open(port)).then_some((pid, port))
+            });
+        if let Some((pid, port)) = live_server {
             let _ = std::fs::write(&pid_file, pid.to_string());
             let _ = std::fs::write(&port_file, port.to_string());
             return Ok(DoltConfig {
@@ -85,10 +91,19 @@ impl DoltConfig {
         let port: u16 = if port_file.exists() {
             let port_str = std::fs::read_to_string(&port_file)
                 .with_context(|| format!("reading {}", port_file.display()))?;
-            port_str
+            let port = port_str
                 .trim()
                 .parse()
-                .with_context(|| format!("parsing port from {}", port_file.display()))?
+                .with_context(|| format!("parsing port from {}", port_file.display()))?;
+            if port != 0 && beads_dir.join("dolt").exists() && !tcp_port_open(port) {
+                eprintln!("[dolt] cleaning stale server files (port {port} not accepting TCP)");
+                let _ = std::fs::remove_file(&pid_file);
+                let _ = std::fs::remove_file(&port_file);
+                let _ = std::fs::remove_file(beads_dir.join("dolt-server.lock"));
+                0
+            } else {
+                port
+            }
         } else {
             0 // No server running — connect() will auto-start
         };
@@ -119,6 +134,16 @@ fn read_sql_server_info(dolt_dir: &Path) -> Option<(u32, u16)> {
     let path = dolt_dir.join(".dolt").join("sql-server.info");
     let content = std::fs::read_to_string(path).ok()?;
     parse_sql_server_info(&content)
+}
+
+fn tcp_port_open(port: u16) -> bool {
+    if port == 0 {
+        return false;
+    }
+    let Ok(addr) = format!("127.0.0.1:{port}").parse() else {
+        return false;
+    };
+    std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
 }
 
 /// Build a connection pool with timeouts that prevent MCP server hangs.

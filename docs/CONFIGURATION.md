@@ -89,7 +89,7 @@ network_allowlist = ["github.com", "crates.io"]
 
 ```toml
 [dispatch]
-provider = "claude"              # Default: "claude", "gemini", "acp"
+provider = "claude"              # Options: "claude", "gemini", "acp", "codex"
 adversarial_provider = "gemini"  # Provider for review phases
 max_concurrent = 3               # Max parallel dispatches
 
@@ -97,6 +97,13 @@ max_concurrent = 3               # Max parallel dispatches
 claude = "/Users/me/.local/bin/claude"     # Absolute path (avoids PATH issues)
 acp = "/opt/homebrew/bin/claude-agent-acp" # ACP protocol agent
 ```
+
+Provider notes:
+
+- `claude` and `gemini` use their CLI providers.
+- `acp` uses the native ACP protocol over an ACP-compatible agent binary.
+- `codex` is the native Codex provider boundary. It does not use `codex exec`;
+  live dispatch requires the Codex app-server/client runtime adapter to be wired.
 
 #### Authentication for dispatched agents
 

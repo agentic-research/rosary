@@ -361,6 +361,7 @@ mod tests {
             repo: repo.to_string(),
             provider: "claude".to_string(),
             pid,
+            session_ref: None,
             work_dir: "/tmp/test-work-dir".to_string(),
             started_at: chrono::Utc::now(),
             title: format!("test bead {bead_id}"),

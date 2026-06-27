@@ -1152,18 +1152,43 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     // (corrupted file → start fresh); saving is the real test.
     let mut registry = crate::session::SessionRegistry::load().unwrap_or_default();
 
-    // Server-side spawn: setsid + detached so the worker survives the MCP
-    // request returning AND isn't subject to the caller's safety classifier.
     let work_dir_path = std::path::Path::new(&work_dir);
-    let spawned = crate::dispatch::spawn_detached(
-        provider.as_ref(),
-        &prompt,
-        work_dir_path,
-        &perms,
-        &system_prompt,
-    )
-    .await
-    .with_context(|| format!("spawning agent for {bead_id}"))?;
+    let (command_bin, _) = provider.build_command(&prompt, &perms, &system_prompt);
+    let mut native_session: Option<Box<dyn crate::dispatch::AgentSession>> = None;
+    let (pid, session_ref, stream_path) = if command_bin.is_empty() {
+        let run_spec = crate::dispatch::providers::AgentRunSpec::new(
+            prompt.clone(),
+            work_dir_path.to_path_buf(),
+            perms,
+            system_prompt.clone(),
+        )
+        .with_bead_context(bead_id.to_string(), bead.owner.clone());
+        let session = provider
+            .spawn_run(&run_spec)
+            .with_context(|| format!("spawning native {provider_name} session for {bead_id}"))?;
+        let pid = session.pid();
+        let session_ref = session.session_ref();
+        anyhow::ensure!(
+            pid.is_some() || session_ref.is_some(),
+            "native provider {provider_name} returned no pid or session_ref for {bead_id}"
+        );
+        let stream_path = work_dir_path.join(crate::dispatch::STREAM_LOG_FILENAME);
+        native_session = Some(session);
+        (pid, session_ref, stream_path)
+    } else {
+        // Server-side spawn: setsid + detached so the worker survives the MCP
+        // request returning AND isn't subject to the caller's safety classifier.
+        let spawned = crate::dispatch::spawn_detached(
+            provider.as_ref(),
+            &prompt,
+            work_dir_path,
+            &perms,
+            &system_prompt,
+        )
+        .await
+        .with_context(|| format!("spawning agent for {bead_id}"))?;
+        (Some(spawned.pid), None, spawned.stream_log)
+    };
 
     let workspace_vcs = workspace
         .as_ref()
@@ -1178,7 +1203,8 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         bead_id: bead_id.to_string(),
         repo: repo_name.clone(),
         provider: provider_name.to_string(),
-        pid: Some(spawned.pid),
+        pid,
+        session_ref: session_ref.clone(),
         work_dir: work_dir.clone(),
         started_at: chrono::Utc::now(),
         title: bead.title.clone(),
@@ -1194,16 +1220,19 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     // we have to choose: leak an untracked worker, or kill it. We kill,
     // because an untracked worker is worse than no worker — it leaves the
     // bead in an indeterminate state and gives the operator no handle to
-    // recover. The worker will exit when we send SIGTERM; the tokio reaper
-    // task in spawn_detached will waitpid it.
+    // recover.
     if let Err(e) = registry.register(session_entry) {
-        let pid = spawned.pid;
-        eprintln!("[dispatch] registry write failed; killing untracked worker pid={pid}: {e}");
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+        if let Some(pid) = pid {
+            eprintln!("[dispatch] registry write failed; killing untracked worker pid={pid}: {e}");
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+        if let Some(session) = native_session.as_mut() {
+            let _ = session.kill();
         }
         return Err(e).with_context(|| {
-            format!("persisting session for {bead_id} (pid {pid} killed to keep state consistent)")
+            format!("persisting session for {bead_id} (untracked worker killed to keep state consistent)")
         });
     }
 
@@ -1212,14 +1241,18 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     // waited for the caller to spawn the process). Status update failing
     // here is recoverable (operator can mark out-of-band) so we don't kill
     // the worker — just surface the error.
+    let worker_address = session_ref
+        .as_ref()
+        .map(|r| format!("{}:{}", r.provider, r.id))
+        .or_else(|| pid.map(|pid| format!("pid {pid}")))
+        .unwrap_or_else(|| "unknown address".to_string());
     client
         .update_status(bead_id, "in_progress")
         .await
         .with_context(|| {
             format!(
-                "marking bead {bead_id} in_progress (worker is RUNNING at pid {}; \
+                "marking bead {bead_id} in_progress (worker is RUNNING at {worker_address}; \
                  bead status update failed but the agent is tracked in sessions.json)",
-                spawned.pid,
             )
         })?;
 
@@ -1230,10 +1263,14 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         "agent": agent_label,
         "provider": provider_name,
         "work_dir": work_dir,
-        "pid": spawned.pid,
-        "stream": spawned.stream_log.display().to_string(),
+        "pid": pid,
+        "session_ref": session_ref.as_ref().map(|r| json!({
+            "provider": r.provider,
+            "id": r.id,
+        })),
+        "stream": stream_path.display().to_string(),
         "allowed_tools": allowed_tools,
-        "instructions": "Worker spawned server-side (pid above). Tail `stream` to watch progress, or call rsry_active to list live sessions.",
+        "instructions": "Worker spawned server-side. Tail `stream` when present, or call rsry_active to list live sessions.",
     }))
 }
 
@@ -1251,6 +1288,10 @@ async fn tool_active() -> Result<Value> {
             "repo": s.repo,
             "provider": s.provider,
             "pid": s.pid,
+            "session_ref": s.session_ref.as_ref().map(|r| json!({
+                "provider": r.provider,
+                "id": r.id,
+            })),
             "work_dir": s.work_dir,
             "started_at": s.started_at.to_rfc3339(),
             "last_activity": s.last_activity.map(|t| t.to_rfc3339()),
@@ -1275,6 +1316,10 @@ async fn tool_active() -> Result<Value> {
 /// Quick health check for a dispatched agent.
 /// Returns "healthy", "idle", "stuck", or "dead".
 fn check_agent_health(session: &crate::session::SessionEntry) -> &'static str {
+    if session.pid.is_none() && session.session_ref.is_some() {
+        return "healthy";
+    }
+
     // Check if PID is alive
     let pid_alive = session
         .pid
@@ -3162,6 +3207,27 @@ mod input_validation_tests {
 
     // Validation fires before DB access, so an empty pool + nonexistent path is fine.
     const FAKE_REPO: &str = "/nonexistent/repo";
+
+    #[test]
+    fn native_session_health_uses_session_ref_without_pid() {
+        let session = crate::session::SessionEntry {
+            bead_id: "rosary-native".into(),
+            repo: "rosary".into(),
+            provider: "codex".into(),
+            pid: None,
+            session_ref: Some(crate::dispatch::AgentSessionRef::new("codex", "thread-123")),
+            work_dir: "/tmp/native".into(),
+            started_at: chrono::Utc::now(),
+            title: "Native session".into(),
+            agent: "dev-agent".into(),
+            workspace_vcs: "git".into(),
+            repo_path: "/tmp/repo".into(),
+            last_activity: None,
+            last_comment: None,
+        };
+
+        assert_eq!(check_agent_health(&session), "healthy");
+    }
 
     // ---- tool_bead_create --------------------------------------------------
 

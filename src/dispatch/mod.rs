@@ -25,7 +25,8 @@ pub use prompt::{
 };
 #[allow(unused_imports)] // API surface
 pub use providers::{
-    AcpCliProvider, AgentProvider, AgentRunSpec, ClaudeProvider, GeminiProvider, provider_by_name,
+    AcpCliProvider, AgentProvider, AgentRunSpec, ClaudeProvider, CodexProvider, GeminiProvider,
+    provider_by_name,
 };
 #[allow(unused_imports)] // API surface
 pub use session::{AgentSession, AgentSessionRef, CliSession};

@@ -15,6 +15,13 @@ use crate::store::BeadStore;
 /// Read the current Dolt server port from a `.beads/` directory.
 /// Returns `None` if the port file is absent or unparseable.
 fn read_dolt_port(beads_dir: &Path) -> Option<u16> {
+    if beads_dir.join("dolt").exists()
+        && let Ok(config) = crate::dolt::DoltConfig::from_beads_dir(beads_dir)
+        && config.port != 0
+    {
+        return Some(config.port);
+    }
+
     let port_file = beads_dir.join("dolt-server.port");
     let s = std::fs::read_to_string(port_file).ok()?;
     s.trim().parse().ok()
@@ -40,7 +47,7 @@ fn is_dolt_port_stale(
     }
     match read_dolt_port(beads_dir) {
         Some(current) => current != *known,
-        None => false, // port file gone → server not running, don't invalidate
+        None => true,
     }
 }
 
@@ -256,11 +263,43 @@ path = "/tmp/no-such-repo-xyz"
             "port changed from 9999 to 12345 → should be stale"
         );
 
-        // Same port → not stale
-        known_ports.insert(repo_name.to_string(), 12345u16);
+        assert!(
+            !beads_dir.join("dolt-server.port").exists(),
+            "closed port should be cleaned while checking staleness"
+        );
+    }
+
+    #[test]
+    fn dolt_port_prefers_live_sql_server_info_over_legacy_port_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let beads_dir = tmp.path().to_path_buf();
+        let dolt_meta = beads_dir.join("dolt").join("beads").join(".dolt");
+        std::fs::create_dir_all(&dolt_meta).unwrap();
+        let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:0") else {
+            eprintln!("[skip] cannot bind loopback listener in this sandbox");
+            return;
+        };
+        let port = listener.local_addr().unwrap().port();
+
+        std::fs::write(beads_dir.join("dolt-server.port"), "12345").unwrap();
+        std::fs::write(
+            dolt_meta.join("sql-server.info"),
+            format!("{}:{port}:test-server", std::process::id()),
+        )
+        .unwrap();
+
+        assert_eq!(read_dolt_port(&beads_dir), Some(port));
+
+        let repo_name = "rosary";
+        let mut known_ports = HashMap::new();
+        known_ports.insert(repo_name.to_string(), port);
+
+        let mut beads_dirs = HashMap::new();
+        beads_dirs.insert(repo_name.to_string(), beads_dir);
+
         assert!(
             !is_dolt_port_stale(&known_ports, &beads_dirs, repo_name),
-            "port unchanged → not stale"
+            "pool staleness must use Dolt sql-server.info, not stale legacy port file"
         );
     }
 

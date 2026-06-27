@@ -5,6 +5,9 @@ use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 use crate::dispatch::fake::{DeterministicAgentAction, DeterministicAgentProvider};
+use crate::dispatch::providers::{
+    CodexNativeSession, CodexProvider, CodexRuntime, CodexThreadStart,
+};
 
 // -----------------------------------------------------------------------
 // MockAgentSession — fake agent that completes immediately
@@ -410,6 +413,64 @@ fn provider_by_name_claude() {
     let empty = std::collections::HashMap::new();
     let p = provider_by_name("claude", &empty).unwrap();
     assert_eq!(p.name(), "claude");
+}
+
+#[test]
+fn provider_by_name_codex_returns_native_provider_without_cli_command() {
+    let empty = std::collections::HashMap::new();
+    let p = provider_by_name("codex", &empty).unwrap();
+    assert_eq!(p.name(), "codex");
+
+    let (bin, args) = p.build_command("prompt", &PermissionProfile::Implement, "system prompt");
+    assert!(
+        bin.is_empty() && args.is_empty(),
+        "Codex provider must not expose a durable CLI command path"
+    );
+}
+
+#[derive(Clone)]
+struct MockCodexRuntime {
+    captured: Arc<Mutex<Vec<CodexThreadStart>>>,
+}
+
+impl CodexRuntime for MockCodexRuntime {
+    fn start_thread(&self, start: CodexThreadStart) -> Result<CodexNativeSession> {
+        self.captured.lock().unwrap().push(start);
+        Ok(CodexNativeSession::completed_success("thread-rsry-1"))
+    }
+}
+
+#[tokio::test]
+async fn codex_provider_starts_native_thread_and_exposes_session_ref() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let provider = CodexProvider::with_runtime(Arc::new(MockCodexRuntime {
+        captured: captured.clone(),
+    }));
+    let repo = crate::testutil::TestRepo::new();
+    let mut bead = crate::testutil::make_bead("rsry-codex1", "task", "rosary");
+    bead.owner = Some("dev-agent".into());
+
+    let mut handle = spawn(&bead, repo.path(), false, 0, &provider, None, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(handle.pid(), None);
+    assert_eq!(
+        handle.session_ref(),
+        Some(AgentSessionRef::new("codex", "thread-rsry-1"))
+    );
+    assert_eq!(handle.try_wait().unwrap(), Some(true));
+
+    let starts = captured.lock().unwrap();
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0].bead_id.as_deref(), Some("rsry-codex1"));
+    assert_eq!(starts[0].agent_name.as_deref(), Some("dev-agent"));
+    assert_eq!(starts[0].work_dir, handle.work_dir);
+    assert_eq!(starts[0].permissions, PermissionProfile::Implement);
+    assert!(starts[0].prompt.contains("rsry-codex1"));
+    assert!(starts[0].system_prompt.contains(PROMPT_VERSION));
+    assert!(starts[0].mcp_servers.contains_key("rsry"));
+    assert!(starts[0].expected_mcp_tools.contains(&"lectio".to_string()));
 }
 
 #[test]

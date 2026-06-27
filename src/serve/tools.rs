@@ -208,13 +208,13 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_dispatch",
-                "description": "Dispatch an agent to work on a specific bead. Spawns a Claude/Gemini agent in the bead's repo with the appropriate agent perspective (dev-agent, staging-agent, etc.) and permissions.",
+                "description": "Dispatch an agent to work on a specific bead. Spawns an agent in the bead's repo with the appropriate agent perspective (dev-agent, staging-agent, etc.) and permissions.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "bead_id": { "type": "string", "description": "Bead ID to dispatch" },
                         "repo_path": { "type": "string", "description": "Path to repo containing the bead" },
-                        "provider": { "type": "string", "description": "Agent provider (claude, gemini, acp)", "default": "claude" },
+                        "provider": { "type": "string", "description": "Agent provider (claude, gemini, acp, codex)", "default": "claude" },
                         "agent": { "type": "string", "description": "Agent persona override (dev-agent, staging-agent, prod-agent, feature-agent, pm-agent). If omitted, uses bead owner." },
                         "isolate": { "type": "boolean", "description": "Create an isolated workspace (git worktree / jj workspace) before dispatch. Defaults to true. Set to false only for single-concurrency in-place execution.", "default": true }
                     },

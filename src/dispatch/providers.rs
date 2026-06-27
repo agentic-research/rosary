@@ -6,8 +6,9 @@
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use super::session::{AgentSession, CliSession};
+use super::session::{AgentSession, AgentSessionRef, CliSession};
 use super::{PermissionProfile, STREAM_LOG_FILENAME};
 
 /// MCP tool families Rosary expects dispatched agents to understand.
@@ -122,6 +123,164 @@ pub trait AgentProvider: Send + Sync {
     /// Providers that support model selection (Claude) use the model;
     /// others return a copy of themselves unchanged.
     fn with_model(&self, model: Option<String>) -> Box<dyn AgentProvider>;
+}
+
+/// Structured request used by the native Codex runtime boundary.
+///
+/// This mirrors the subset of [`AgentRunSpec`] that Codex needs to create a
+/// thread/session without parsing Rosary facts out of provider-specific prompt
+/// text. The concrete app-server/client adapter can map these fields to
+/// `ThreadStartParams` and turn injection later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexThreadStart {
+    pub bead_id: Option<String>,
+    pub agent_name: Option<String>,
+    pub prompt: String,
+    pub work_dir: PathBuf,
+    pub permissions: PermissionProfile,
+    pub system_prompt: String,
+    pub mcp_servers: BTreeMap<String, String>,
+    pub expected_mcp_tools: Vec<String>,
+    pub model: Option<String>,
+}
+
+impl CodexThreadStart {
+    fn from_run_spec(spec: &AgentRunSpec, model: Option<String>) -> Self {
+        Self {
+            bead_id: spec.bead_id.clone(),
+            agent_name: spec.agent_name.clone(),
+            prompt: spec.prompt.clone(),
+            work_dir: spec.work_dir.clone(),
+            permissions: spec.permissions,
+            system_prompt: spec.system_prompt.clone(),
+            mcp_servers: spec.mcp_servers.clone(),
+            expected_mcp_tools: spec.expected_mcp_tools.clone(),
+            model,
+        }
+    }
+}
+
+/// Native Codex runtime adapter.
+///
+/// Production implementations should call Codex app-server/client/protocol
+/// APIs directly. This trait intentionally has no binary/argv concept, which
+/// keeps Rosary's durable Codex path from regressing to `codex exec`.
+pub trait CodexRuntime: Send + Sync {
+    fn start_thread(&self, start: CodexThreadStart) -> Result<CodexNativeSession>;
+}
+
+#[derive(Default)]
+struct UnconfiguredCodexRuntime;
+
+impl CodexRuntime for UnconfiguredCodexRuntime {
+    fn start_thread(&self, _start: CodexThreadStart) -> Result<CodexNativeSession> {
+        anyhow::bail!(
+            "native Codex runtime is not configured; wire codex app-server/client before live dispatch"
+        )
+    }
+}
+
+/// Native Codex session handle. It exposes a Codex thread id instead of an OS PID.
+#[derive(Debug)]
+pub struct CodexNativeSession {
+    thread_id: String,
+    result: Arc<Mutex<Option<bool>>>,
+}
+
+impl CodexNativeSession {
+    #[allow(dead_code)] // Public constructor for native runtime adapters and tests.
+    pub fn completed_success(thread_id: impl Into<String>) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            result: Arc::new(Mutex::new(Some(true))),
+        }
+    }
+
+    #[allow(dead_code)] // Useful for future Codex runtime tests.
+    pub fn completed_failure(thread_id: impl Into<String>) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            result: Arc::new(Mutex::new(Some(false))),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentSession for CodexNativeSession {
+    fn try_wait(&mut self) -> Result<Option<bool>> {
+        Ok(*self.result.lock().unwrap())
+    }
+
+    async fn wait(&mut self) -> Result<bool> {
+        Ok(self.result.lock().unwrap().unwrap_or(false))
+    }
+
+    fn kill(&mut self) -> Result<()> {
+        *self.result.lock().unwrap() = Some(false);
+        Ok(())
+    }
+
+    fn session_ref(&self) -> Option<AgentSessionRef> {
+        Some(AgentSessionRef::new("codex", self.thread_id.clone()))
+    }
+}
+
+/// Provider for Codex native thread/session dispatch.
+///
+/// Unlike Claude/Gemini, this provider does not build or spawn a CLI command.
+/// It consumes [`AgentRunSpec`] and delegates to a native runtime adapter.
+#[derive(Clone)]
+pub struct CodexProvider {
+    runtime: Arc<dyn CodexRuntime>,
+    model: Option<String>,
+}
+
+impl Default for CodexProvider {
+    fn default() -> Self {
+        Self {
+            runtime: Arc::new(UnconfiguredCodexRuntime),
+            model: None,
+        }
+    }
+}
+
+impl CodexProvider {
+    #[cfg(test)]
+    pub(crate) fn with_runtime(runtime: Arc<dyn CodexRuntime>) -> Self {
+        Self {
+            runtime,
+            model: None,
+        }
+    }
+}
+
+impl AgentProvider for CodexProvider {
+    fn spawn_run(&self, spec: &AgentRunSpec) -> Result<Box<dyn AgentSession>> {
+        let start = CodexThreadStart::from_run_spec(spec, self.model.clone());
+        let session = self.runtime.start_thread(start)?;
+        Ok(Box::new(session))
+    }
+
+    fn spawn_agent(
+        &self,
+        _prompt: &str,
+        _work_dir: &Path,
+        _permissions: &PermissionProfile,
+        _system_prompt: &str,
+    ) -> Result<Box<dyn AgentSession>> {
+        anyhow::bail!("CodexProvider requires structured spawn_run")
+    }
+
+    fn name(&self) -> &str {
+        "codex"
+    }
+
+    fn with_model(&self, model: Option<String>) -> Box<dyn AgentProvider> {
+        Box::new(Self {
+            runtime: Arc::clone(&self.runtime),
+            model,
+        })
+    }
 }
 
 /// Provider that shells out to the Claude Code CLI (`claude -p`).
@@ -731,7 +890,8 @@ pub fn provider_by_name(
                 .unwrap_or_else(|| "claude-agent-acp".to_string());
             Ok(Box::new(AcpNativeProvider { binary }))
         }
-        other => anyhow::bail!("unknown provider: {other} (available: claude, gemini, acp)"),
+        "codex" => Ok(Box::new(CodexProvider::default())),
+        other => anyhow::bail!("unknown provider: {other} (available: claude, gemini, acp, codex)"),
     }
 }
 
