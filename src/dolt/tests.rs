@@ -328,6 +328,51 @@ fn parse_dolt_config_from_beads_dir() {
 }
 
 #[test]
+fn parse_sql_server_info_file() {
+    assert_eq!(
+        parse_sql_server_info("3854:51052:cb34dcbc-7f75-4e4a-90d7-3a47c2e5df1f"),
+        Some((3854, 51052))
+    );
+    assert_eq!(parse_sql_server_info("not-a-server"), None);
+}
+
+#[test]
+fn parse_dolt_config_prefers_live_sql_server_info_over_stale_sidecar() {
+    let dir = TempDir::new().unwrap();
+    let beads = dir.path();
+    let db_dir = beads.join("dolt").join("rosary");
+    let dot_dolt = db_dir.join(".dolt");
+    std::fs::create_dir_all(&dot_dolt).unwrap();
+
+    std::fs::write(
+        beads.join("metadata.json"),
+        r#"{"dolt_database": "rosary"}"#,
+    )
+    .unwrap();
+    std::fs::write(beads.join("dolt-server.pid"), "999999").unwrap();
+    std::fs::write(beads.join("dolt-server.port"), "64628").unwrap();
+
+    let live_pid = std::process::id();
+    std::fs::write(
+        dot_dolt.join("sql-server.info"),
+        format!("{live_pid}:51052:test-server-uuid"),
+    )
+    .unwrap();
+
+    let config = DoltConfig::from_beads_dir(beads).unwrap();
+    assert_eq!(config.database, "rosary");
+    assert_eq!(config.port, 51052);
+    assert_eq!(
+        std::fs::read_to_string(beads.join("dolt-server.pid")).unwrap(),
+        live_pid.to_string()
+    );
+    assert_eq!(
+        std::fs::read_to_string(beads.join("dolt-server.port")).unwrap(),
+        "51052"
+    );
+}
+
+#[test]
 fn parse_dolt_config_missing_metadata_defaults_to_beads() {
     let dir = TempDir::new().unwrap();
     let beads = dir.path();
