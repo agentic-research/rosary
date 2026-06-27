@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 use crate::config;
 use crate::dispatch::AgentSessionRef;
@@ -221,6 +222,7 @@ pub(crate) async fn call_tool(
         "rsry_dispatch_history" => tool_dispatch_history(args, backend).await,
         "rsry_agent_run_event_record" => tool_agent_run_event_record(args, backend).await,
         "rsry_agent_run_events" => tool_agent_run_events(args, backend).await,
+        "rsry_agent_session_addresses" => tool_agent_session_addresses(args, backend).await,
         "rsry_decade_list" => tool_decade_list(args, backend).await,
         "rsry_decade_create" => tool_decade_create(args, backend).await,
         "rsry_thread_list" => tool_thread_list(args, backend).await,
@@ -2041,6 +2043,149 @@ async fn tool_agent_run_events(args: &Value, backend: Option<&dyn BackendStore>)
     };
     let events = backend.agent_run_events_for_bead(&bead).await?;
     Ok(json!({ "count": events.len(), "events": events }))
+}
+
+#[derive(Debug, Clone)]
+struct AgentSessionAddressAccumulator {
+    session_ref: AgentSessionRef,
+    bead_ref: WorkRef,
+    active: bool,
+    dispatch_id: Option<String>,
+    agent: Option<String>,
+    work_dir: Option<String>,
+    dispatch_source: bool,
+    event_count: usize,
+    latest_event_type: Option<String>,
+    latest_event_summary: Option<String>,
+    latest_event_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl AgentSessionAddressAccumulator {
+    fn new(session_ref: AgentSessionRef, bead_ref: WorkRef) -> Self {
+        Self {
+            session_ref,
+            bead_ref,
+            active: false,
+            dispatch_id: None,
+            agent: None,
+            work_dir: None,
+            dispatch_source: false,
+            event_count: 0,
+            latest_event_type: None,
+            latest_event_summary: None,
+            latest_event_at: None,
+        }
+    }
+
+    fn absorb_dispatch(&mut self, dispatch: &DispatchRecord) {
+        self.active |= dispatch.completed_at.is_none();
+        self.dispatch_id = Some(dispatch.id.clone());
+        self.agent = Some(dispatch.agent.clone());
+        self.work_dir = Some(dispatch.work_dir.clone());
+        self.dispatch_source = true;
+    }
+
+    fn absorb_event(&mut self, event: &AgentRunEvent) {
+        self.event_count += 1;
+        if self.dispatch_id.is_none() {
+            self.dispatch_id = Some(event.dispatch_id.clone());
+        }
+        if self
+            .latest_event_at
+            .map(|existing| event.created_at >= existing)
+            .unwrap_or(true)
+        {
+            self.latest_event_at = Some(event.created_at);
+            self.latest_event_type = Some(event.event_type.clone());
+            self.latest_event_summary = Some(event.summary.clone());
+        }
+    }
+
+    fn into_json(self) -> Value {
+        let mut sources = Vec::new();
+        if self.dispatch_source {
+            sources.push("dispatch");
+        }
+        if self.event_count > 0 {
+            sources.push("agent_run_event");
+        }
+
+        json!({
+            "provider": self.session_ref.provider,
+            "id": self.session_ref.id,
+            "repo": self.bead_ref.repo,
+            "scope": self.bead_ref.scope,
+            "bead_id": self.bead_ref.bead_id,
+            "active": self.active,
+            "dispatch_id": self.dispatch_id,
+            "agent": self.agent,
+            "work_dir": self.work_dir,
+            "event_count": self.event_count,
+            "latest_event_type": self.latest_event_type,
+            "latest_event_summary": self.latest_event_summary,
+            "latest_event_at": self.latest_event_at.map(|t| t.to_rfc3339()),
+            "sources": sources,
+        })
+    }
+}
+
+fn dispatch_session_address(dispatch: &DispatchRecord) -> Option<AgentSessionRef> {
+    dispatch.session_ref.clone().or_else(|| {
+        dispatch
+            .session_id
+            .as_ref()
+            .map(|id| AgentSessionRef::new(dispatch.provider.as_str(), id.as_str()))
+    })
+}
+
+async fn tool_agent_session_addresses(
+    args: &Value,
+    backend: Option<&dyn BackendStore>,
+) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+    let repo = args["repo"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo required"))?;
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+    let bead = WorkRef {
+        repo: repo.to_string(),
+        scope: scope.to_string(),
+        bead_id: bead_id.to_string(),
+    };
+
+    let mut addresses: BTreeMap<(String, String), AgentSessionAddressAccumulator> = BTreeMap::new();
+
+    for dispatch in backend.dispatches_for_bead(&bead).await? {
+        let Some(session_ref) = dispatch_session_address(&dispatch) else {
+            continue;
+        };
+        let key = (session_ref.provider.clone(), session_ref.id.clone());
+        addresses
+            .entry(key)
+            .or_insert_with(|| AgentSessionAddressAccumulator::new(session_ref, bead.clone()))
+            .absorb_dispatch(&dispatch);
+    }
+
+    for event in backend.agent_run_events_for_bead(&bead).await? {
+        let Some(session_ref) = event.session_ref.clone() else {
+            continue;
+        };
+        let key = (session_ref.provider.clone(), session_ref.id.clone());
+        addresses
+            .entry(key)
+            .or_insert_with(|| AgentSessionAddressAccumulator::new(session_ref, bead.clone()))
+            .absorb_event(&event);
+    }
+
+    let items: Vec<Value> = addresses
+        .into_values()
+        .map(AgentSessionAddressAccumulator::into_json)
+        .collect();
+
+    Ok(json!({ "count": items.len(), "addresses": items }))
 }
 
 // ---------------------------------------------------------------------------
@@ -4042,5 +4187,126 @@ mod input_validation_tests {
             err.to_string().contains("payload"),
             "error must name payload; got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn agent_session_addresses_resolve_claude_and_codex_for_bead() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        tool_dispatch_record(
+            &json!({
+                "id": "dispatch-claude",
+                "repo": "rosary",
+                "bead_id": "rosary-addressable",
+                "agent": "dev-agent",
+                "provider": "claude",
+                "work_dir": "/tmp/claude",
+                "session_id": "claude-session-1"
+            }),
+            Some(&store),
+        )
+        .await
+        .expect("record claude dispatch");
+        tool_dispatch_record(
+            &json!({
+                "id": "dispatch-codex",
+                "repo": "rosary",
+                "bead_id": "rosary-addressable",
+                "agent": "staging-agent",
+                "provider": "codex",
+                "work_dir": "/tmp/codex",
+                "session_ref": {
+                    "provider": "codex",
+                    "id": "thread-123"
+                }
+            }),
+            Some(&store),
+        )
+        .await
+        .expect("record codex dispatch");
+        tool_agent_run_event_record(
+            &json!({
+                "id": "evt-codex-1",
+                "dispatch_id": "dispatch-codex",
+                "repo": "rosary",
+                "bead_id": "rosary-addressable",
+                "event_type": "heartbeat",
+                "summary": "codex is alive",
+                "session_ref": {
+                    "provider": "codex",
+                    "id": "thread-123"
+                }
+            }),
+            Some(&store),
+        )
+        .await
+        .expect("record codex event");
+
+        let got = tool_agent_session_addresses(
+            &json!({ "repo": "rosary", "bead_id": "rosary-addressable" }),
+            Some(&store),
+        )
+        .await
+        .expect("resolve addresses");
+
+        assert_eq!(got["count"], 2);
+        assert_eq!(got["addresses"][0]["provider"], "claude");
+        assert_eq!(got["addresses"][0]["id"], "claude-session-1");
+        assert_eq!(got["addresses"][0]["active"], true);
+        assert_eq!(got["addresses"][0]["sources"], json!(["dispatch"]));
+        assert_eq!(got["addresses"][1]["provider"], "codex");
+        assert_eq!(got["addresses"][1]["id"], "thread-123");
+        assert_eq!(got["addresses"][1]["active"], true);
+        assert_eq!(got["addresses"][1]["event_count"], 1);
+        assert_eq!(
+            got["addresses"][1]["sources"],
+            json!(["dispatch", "agent_run_event"])
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_session_addresses_include_completed_dispatch_without_events() {
+        use crate::store::{DispatchRecord, DispatchStore, WorkRef, tests::InMemoryStore};
+
+        let store = InMemoryStore::new();
+        let bead = WorkRef {
+            repo: "rosary".to_string(),
+            scope: String::new(),
+            bead_id: "rosary-addressable".to_string(),
+        };
+        store
+            .record_dispatch(&DispatchRecord {
+                id: "dispatch-complete".to_string(),
+                bead_ref: bead,
+                agent: "prod-agent".to_string(),
+                provider: "codex".to_string(),
+                started_at: chrono::Utc::now(),
+                completed_at: Some(chrono::Utc::now()),
+                outcome: Some("success".to_string()),
+                work_dir: "/tmp/codex-complete".to_string(),
+                session_id: None,
+                session_ref: Some(crate::dispatch::AgentSessionRef::new(
+                    "codex",
+                    "thread-complete",
+                )),
+                workspace_path: None,
+                chain_hash: None,
+            })
+            .await
+            .expect("record completed dispatch");
+
+        let got = tool_agent_session_addresses(
+            &json!({ "repo": "rosary", "bead_id": "rosary-addressable" }),
+            Some(&store),
+        )
+        .await
+        .expect("resolve addresses");
+
+        assert_eq!(got["count"], 1);
+        assert_eq!(got["addresses"][0]["provider"], "codex");
+        assert_eq!(got["addresses"][0]["id"], "thread-complete");
+        assert_eq!(got["addresses"][0]["active"], false);
+        assert_eq!(got["addresses"][0]["sources"], json!(["dispatch"]));
     }
 }

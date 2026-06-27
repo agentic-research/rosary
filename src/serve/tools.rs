@@ -408,6 +408,19 @@ pub(crate) fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "rsry_agent_session_addresses",
+                "description": "Resolve provider-native agent session addresses for a bead from durable dispatch records and agent run events. Normalizes Claude session_id and native session_ref so Claude Code and Codex sessions can be discovered through one read API.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo": { "type": "string", "description": "Repo name" },
+                        "bead_id": { "type": "string", "description": "Bead ID" },
+                        "scope": { "type": "string", "description": "Optional bead scope; defaults to empty repo scope" }
+                    },
+                    "required": ["repo", "bead_id"]
+                }
+            },
+            {
                 "name": "rsry_decade_list",
                 "description": "List decades (ADR-level organizing primitives). Optionally filter by status (proposed, active, completed, superseded).",
                 "inputSchema": {
@@ -674,6 +687,7 @@ mod tests {
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(names.contains(&"rsry_agent_run_event_record"));
         assert!(names.contains(&"rsry_agent_run_events"));
+        assert!(names.contains(&"rsry_agent_session_addresses"));
 
         let record = tools
             .iter()

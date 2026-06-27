@@ -249,6 +249,7 @@ pub trait DispatchStore: Send + Sync {
         id: &str,
         session_ref: &AgentSessionRef,
     ) -> Result<()>;
+    async fn dispatches_for_bead(&self, bead: &WorkRef) -> Result<Vec<DispatchRecord>>;
     async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>>;
 
     async fn record_agent_run_event(&self, event: &AgentRunEvent) -> Result<()>;
@@ -697,6 +698,15 @@ pub(crate) mod tests {
                 d.session_ref = Some(session_ref.clone());
             }
             Ok(())
+        }
+
+        async fn dispatches_for_bead(&self, bead: &WorkRef) -> Result<Vec<DispatchRecord>> {
+            let dispatches = self.dispatches.lock().unwrap();
+            Ok(dispatches
+                .iter()
+                .filter(|d| &d.bead_ref == bead)
+                .cloned()
+                .collect())
         }
 
         async fn active_dispatches(&self) -> Result<Vec<DispatchRecord>> {
