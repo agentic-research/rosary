@@ -20,7 +20,8 @@ const SEARCH_DESC_TRUNCATE: usize = 200;
 /// Maximum bytes for a bead title.
 const TITLE_MAX_LEN: usize = 512;
 /// Maximum bytes for a bead description or comment body.
-const BODY_MAX_LEN: usize = 50_000;
+// Single source of the limit lives in bead_ops (shared with the CLI path).
+const BODY_MAX_LEN: usize = crate::bead_ops::BODY_MAX_LEN;
 /// Maximum valid priority value (P0–P3).
 const PRIORITY_MAX: u64 = 3;
 // Canonical issue type list lives in crate::bead::VALID_ISSUE_TYPES.
@@ -699,12 +700,8 @@ async fn tool_bead_comment(
     let body = args["body"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("body required"))?;
-    if body.trim().is_empty() {
-        anyhow::bail!("body must not be blank");
-    }
-    if body.len() > BODY_MAX_LEN {
-        anyhow::bail!("body exceeds {BODY_MAX_LEN} bytes (got {})", body.len());
-    }
+    // Shared with the CLI comment path via bead_ops (enforced 1:1).
+    crate::bead_ops::validate_comment_body(body)?;
 
     let (scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
