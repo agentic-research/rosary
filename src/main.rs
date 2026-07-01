@@ -447,6 +447,9 @@ enum BeadAction {
         /// Test files to validate the change (comma-separated)
         #[arg(long, value_delimiter = ',')]
         test_files: Vec<String>,
+        /// Skip the close-condition check (for planning/legacy beads)
+        #[arg(long)]
+        force: bool,
     },
     /// Close a bead
     Close {
@@ -1471,10 +1474,20 @@ async fn main() -> Result<()> {
                     issue_type,
                     files,
                     test_files,
+                    force,
                 } => {
                     if bead::requires_files(&issue_type) && files.is_empty() {
                         anyhow::bail!(
                             "files required for {issue_type} beads — specify which code this bead touches"
+                        );
+                    }
+                    if !force && !bead::has_close_condition(&issue_type, &description, &test_files)
+                    {
+                        anyhow::bail!(
+                            "bead has no close condition — {issue_type} beads must declare how \"done\" is verified,\n\
+                             so an observation (PR-merge/verify) can actually close them (ADR-0010).\n\
+                             Add a runnable test/build command to the description (e.g. `cargo test -p <crate>`),\n\
+                             pass --test-files, or --force to override."
                         );
                     }
                     let id = generate_bead_id(&repo_name);
@@ -2864,6 +2877,7 @@ mod tests {
             issue_type: "bug".to_string(),
             files: vec!["src/widget.rs".to_string()],
             test_files: vec![],
+            force: false,
         };
         assert!(matches!(create, BeadAction::Create { priority: 1, .. }));
 
