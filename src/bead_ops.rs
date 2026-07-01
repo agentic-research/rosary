@@ -1,0 +1,146 @@
+//! Rosary-owned **bead operation core** — the `API` layer in CLI ↔ API ↔ MCP.
+//!
+//! The authoring/mutation logic for a bead op lives here ONCE. The CLI
+//! (`main.rs`, HCI: clap flags + prose) and the MCP tools (`serve/handlers.rs`,
+//! ACI: JSON args) are thin adapters that parse their own surface into these
+//! typed args and call this core. Validation is therefore enforced 1:1 *by
+//! construction*, not by remembering to call a guard on both surfaces.
+//!
+//! This is also the shape rosary *owns* as its op contract: a future `$Op`
+//! Cap'n Proto schema for `bead_create` is a projection of [`BeadCreateArgs`],
+//! and downstream consumers (cloister, agents) import that contract rather than
+//! redeclaring it.
+
+use crate::store::BeadStore;
+
+/// Typed inputs for authoring a new bead. Both front-ends build this; the core
+/// validates + creates. `owner`/`created_by`/`id` are resolved by the caller
+/// (they differ by surface — CLI uses the repo name + git config; MCP resolves
+/// a prefix + user scope), so this struct holds only the surface-neutral inputs.
+#[derive(Debug, Clone)]
+pub struct BeadCreateArgs {
+    pub title: String,
+    pub description: String,
+    pub priority: u8,
+    pub issue_type: String,
+    /// Explicit owner/assignee; defaults to the issue-type's default agent.
+    pub owner: Option<String>,
+    pub files: Vec<String>,
+    pub test_files: Vec<String>,
+    pub depends_on: Vec<String>,
+    /// Escape hatch for the close-condition gate (planning/legacy beads).
+    pub force: bool,
+}
+
+impl BeadCreateArgs {
+    /// The single authoring gate — shared by CLI + MCP. Files-required and
+    /// close-condition are enforced here, so neither surface can bypass them.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if crate::bead::requires_files(&self.issue_type) && self.files.is_empty() {
+            anyhow::bail!(
+                "files required for {} beads — specify which code this bead touches",
+                self.issue_type
+            );
+        }
+        crate::bead::ensure_close_condition(
+            &self.issue_type,
+            &self.description,
+            &self.test_files,
+            self.force,
+        )
+    }
+
+    /// The resolved owner (explicit, or the issue-type default agent).
+    pub fn resolved_owner(&self) -> String {
+        self.owner
+            .clone()
+            .unwrap_or_else(|| crate::dispatch::default_agent(&self.issue_type).to_string())
+    }
+}
+
+/// Create a new bead: validate, resolve owner, persist. The single create
+/// chokepoint for the *authoring* intent (distinct from `bead_move`/`import`,
+/// which relocate/replicate existing beads and must not re-validate "done").
+///
+/// Generic over `?Sized` so callers can pass either a concrete store or a
+/// `&dyn BeadStore`.
+pub async fn create_bead<S: BeadStore + ?Sized>(
+    store: &S,
+    id: &str,
+    args: &BeadCreateArgs,
+    created_by: Option<&str>,
+) -> anyhow::Result<()> {
+    args.validate()?;
+    let owner = args.resolved_owner();
+    store
+        .create_bead_full(
+            id,
+            &args.title,
+            &args.description,
+            args.priority,
+            &args.issue_type,
+            &owner,
+            &args.files,
+            &args.test_files,
+            &args.depends_on,
+            created_by,
+            "",
+            &[],
+        )
+        .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(
+        issue_type: &str,
+        description: &str,
+        files: &[&str],
+        test_files: &[&str],
+    ) -> BeadCreateArgs {
+        BeadCreateArgs {
+            title: "T".into(),
+            description: description.into(),
+            priority: 2,
+            issue_type: issue_type.into(),
+            owner: None,
+            files: files.iter().map(|s| s.to_string()).collect(),
+            test_files: test_files.iter().map(|s| s.to_string()).collect(),
+            depends_on: vec![],
+            force: false,
+        }
+    }
+
+    #[test]
+    fn validate_requires_files_for_impl_types() {
+        let err = args("task", "verify: cargo test", &[], &[])
+            .validate()
+            .unwrap_err();
+        assert!(err.to_string().contains("files required"), "{err}");
+    }
+
+    #[test]
+    fn validate_requires_close_condition() {
+        let err = args("task", "just do it", &["a.rs"], &[])
+            .validate()
+            .unwrap_err();
+        assert!(err.to_string().contains("no close condition"), "{err}");
+    }
+
+    #[test]
+    fn validate_passes_with_files_and_test_command() {
+        args("task", "verify: cargo test", &["a.rs"], &[])
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn resolved_owner_defaults_to_agent_then_honors_explicit() {
+        let mut a = args("bug", "cargo test", &["a.rs"], &[]);
+        assert_eq!(a.resolved_owner(), crate::dispatch::default_agent("bug"));
+        a.owner = Some("staging-agent".into());
+        assert_eq!(a.resolved_owner(), "staging-agent");
+    }
+}

@@ -20,6 +20,7 @@ mod bead;
 mod bead_backup;
 mod bead_dolt;
 mod bead_move;
+mod bead_ops;
 mod bead_sqlite;
 mod capture;
 mod cas;
@@ -1476,32 +1477,23 @@ async fn main() -> Result<()> {
                     test_files,
                     force,
                 } => {
-                    if bead::requires_files(&issue_type) && files.is_empty() {
-                        anyhow::bail!(
-                            "files required for {issue_type} beads — specify which code this bead touches"
-                        );
-                    }
-                    bead::ensure_close_condition(&issue_type, &description, &test_files, force)?;
                     let id = generate_bead_id(&repo_name);
-                    let owner = dispatch::default_agent(&issue_type);
                     let created_by = git_config_user_name(&repo_root);
-                    client
-                        .create_bead_full(
-                            &id,
-                            &title,
-                            &description,
-                            priority,
-                            &issue_type,
-                            owner,
-                            &files,
-                            &test_files,
-                            &[], // CLI doesn't support depends_on yet
-                            created_by.as_deref(),
-                            "",
-                            &[],
-                        )
+                    // HCI adapter: clap flags → the shared op core (bead_ops).
+                    let args = bead_ops::BeadCreateArgs {
+                        title,
+                        description,
+                        priority,
+                        issue_type,
+                        owner: None, // CLI has no --owner; defaults to the agent
+                        files,
+                        test_files,
+                        depends_on: vec![], // CLI doesn't support depends_on yet
+                        force,
+                    };
+                    bead_ops::create_bead(client.as_ref(), &id, &args, created_by.as_deref())
                         .await?;
-                    cli::bead_created(&id, &title);
+                    cli::bead_created(&id, &args.title);
                 }
                 BeadAction::Close { id, force } => {
                     if !force {
