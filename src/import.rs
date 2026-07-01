@@ -125,6 +125,17 @@ pub struct ImportResult {
 
 /// Parse a JSON bead value into fields and create it via the BeadStore.
 /// Returns `Some(id)` if created, `None` if skipped (duplicate title).
+///
+/// **Fidelity (rosary-c67538):** this importer preserves title, description,
+/// priority, issue_type, files/test_files, **owner**, **created_by**,
+/// **comment bodies** (with author), and a **terminal (done/closed) status**.
+/// It deliberately does NOT preserve: the original **id** (a fresh one is
+/// minted), **dependency edges** (source ids would dangle under fresh ids —
+/// needs a two-pass id remap), **comment timestamps/authorship exactness**
+/// (reset to now), or non-terminal transient states. For a byte-exact,
+/// id-preserving restore, use `bd init --from-jsonl` on the export — the
+/// contract carries full fidelity even though this rosary importer is
+/// intentionally approximate.
 pub async fn import_bead(
     bead: &Value,
     client: &dyn BeadStore,
@@ -143,25 +154,25 @@ pub async fn import_bead(
     let description = bead["description"].as_str().unwrap_or("");
     let priority = bead["priority"].as_u64().unwrap_or(2) as u8;
     let issue_type = bead["issue_type"].as_str().unwrap_or("task");
-    let owner = crate::dispatch::default_agent(issue_type);
-    let files: Vec<String> = bead
-        .get("files")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let test_files: Vec<String> = bead
-        .get("test_files")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Preserve the source owner/created_by when present (previously dropped —
+    // rosary-c67538); fall back to the issue-type default agent.
+    let owner = bead["owner"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| crate::dispatch::default_agent(issue_type));
+    let created_by = bead["created_by"].as_str().filter(|s| !s.is_empty());
+    let str_array = |key: &str| -> Vec<String> {
+        bead.get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let files = str_array("files");
+    let test_files = str_array("test_files");
 
     let id = crate::generate_bead_id(repo_name);
     client
@@ -174,12 +185,42 @@ pub async fn import_bead(
             owner,
             &files,
             &test_files,
+            // Dependency edges are NOT re-wired: exported dep ids reference the
+            // SOURCE store, and this importer mints fresh ids, so wiring them
+            // would create dangling/phantom blockers. Faithful dep restore
+            // needs `bd init --from-jsonl` (id-preserving) — see fn doc.
             &[],
-            None,
+            created_by,
             "",
             &[],
         )
         .await?;
+
+    // Re-attach comment bodies (with original author) — previously dropped.
+    // Comment timestamps reset to now (add_comment has no created_at param);
+    // for byte-exact comment history use `bd init --from-jsonl`.
+    if let Some(comments) = bead.get("comments").and_then(|v| v.as_array()) {
+        for c in comments {
+            let body = c
+                .get("text")
+                .or_else(|| c.get("body"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if body.trim().is_empty() {
+                continue;
+            }
+            let author = c.get("author").and_then(|v| v.as_str()).unwrap_or("import");
+            client.add_comment(&id, body, author).await?;
+        }
+    }
+
+    // Preserve a terminal (done/closed) status (previously every import landed
+    // as open). Non-terminal transient states (dispatched/blocked/…) still
+    // import as open — they describe live orchestration, not durable state.
+    let status = bead["status"].as_str().unwrap_or("open");
+    if crate::bead::BeadState::from(status) == crate::bead::BeadState::Done {
+        client.close_bead(&id).await?;
+    }
 
     Ok(Some(id))
 }
@@ -299,6 +340,45 @@ mod tests {
         assert_eq!(v["repo"], "rosary");
         // ADR-0014 D2: the contract is versioned with an integer schema_version.
         assert_eq!(v["schema_version"], BEAD_CONTRACT_SCHEMA_VERSION);
+    }
+
+    /// rosary-c67538: rosary re-import preserves owner, created_by, comment
+    /// bodies, and a terminal (closed) status — previously all dropped.
+    #[tokio::test]
+    async fn import_preserves_owner_created_by_comments_and_closed_status() {
+        let dst =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+        let mut b = make_bead("rosary-src001", "bug", "rosary");
+        b.title = "Round-trip me".to_string();
+        b.owner = Some("staging-agent".to_string());
+        b.created_by = Some("jamestexas".to_string());
+        b.status = "closed".to_string();
+        let comments = vec![sample_comment("c1", "rosary-src001", "the finding", "bob")];
+        let v = bead_to_contract_value(&b, &[], &comments);
+
+        let new_id = import_bead(&v, &dst, "rosary").await.unwrap().unwrap();
+        let got = dst.get_bead(&new_id, "rosary").await.unwrap().unwrap();
+
+        assert_eq!(
+            got.owner.as_deref(),
+            Some("staging-agent"),
+            "owner preserved"
+        );
+        assert_eq!(
+            got.created_by.as_deref(),
+            Some("jamestexas"),
+            "created_by preserved"
+        );
+        assert_eq!(
+            crate::bead::BeadState::from(got.status.as_str()),
+            crate::bead::BeadState::Done,
+            "closed status preserved"
+        );
+        let imported_comments = dst.list_comments(&new_id, false).await.unwrap();
+        assert!(
+            imported_comments.iter().any(|c| c.text == "the finding"),
+            "comment body preserved"
+        );
     }
 
     /// ADR-0014 additive-change discipline: import tolerates a record whose
