@@ -688,11 +688,21 @@ pub fn resolve_bead_prefix(
 /// Generate a bead ID: `{prefix}-{lower 6 hex chars of millis}` (~16M values before collision).
 /// The prefix is sanitized first so callers can pass raw repo names/paths safely.
 pub fn generate_bead_id(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Per-process monotonic counter. `millis + counter` is strictly increasing
+    // per process, so consecutive creates never collide — fixes the same-
+    // millisecond collision (rsry-5af158's sibling rosary-b62d5f: batch import
+    // / tight-loop creates hit a UNIQUE key failure). `pid` disambiguates two
+    // processes that start in the same millisecond. Suffix stays 6 hex chars.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let millis = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    format!("{}-{:06x}", sanitize_prefix(prefix), millis & 0xffffff)
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
+    let pid = std::process::id() as u128;
+    let mixed = millis.wrapping_add(n).wrapping_add(pid << 8);
+    format!("{}-{:06x}", sanitize_prefix(prefix), mixed & 0xffffff)
 }
 
 /// Capture git username from `git config user.name` at bead creation time.
@@ -2919,6 +2929,21 @@ mod tests {
         let id2 = generate_bead_id("mache");
         assert!(id1.starts_with("rosary-"));
         assert!(id2.starts_with("mache-"));
+    }
+
+    #[test]
+    fn generate_bead_id_no_collision_in_tight_loop() {
+        // rosary-b62d5f: same-millisecond creates used to collide (millis & mask).
+        // A per-process monotonic counter makes consecutive ids distinct.
+        use std::collections::HashSet;
+        let n = 10_000;
+        let ids: HashSet<String> = (0..n).map(|_| generate_bead_id("rosary")).collect();
+        assert_eq!(ids.len(), n, "all {n} ids must be distinct");
+        // format contract preserved: prefix-6hex
+        let sample = generate_bead_id("rosary");
+        let suffix = &sample["rosary-".len()..];
+        assert_eq!(suffix.len(), 6);
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     // --- rosary-3f8515: prefix sanitization (no more malformed `.-` IDs) ---
