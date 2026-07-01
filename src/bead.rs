@@ -204,6 +204,27 @@ pub fn requires_files(issue_type: &str) -> bool {
     !matches!(issue_type, "epic" | "design" | "research")
 }
 
+/// Whether a bead of this type must declare a *close condition* — a verifiable
+/// way to know it's done. Mirrors [`Bead::has_verifiable_test_command`]'s
+/// exemption: planning/review beads (`epic`/`design`/`research`/`review`)
+/// describe work, they don't ship a behavior that can be verified.
+pub fn requires_close_condition(issue_type: &str) -> bool {
+    matches!(issue_type, "bug" | "feature" | "task" | "chore")
+}
+
+/// Whether the given (type, description, test_files) triple carries a close
+/// condition. True when the type is exempt, OR the description contains a
+/// runnable test/build command, OR test files are declared.
+///
+/// Enforced at `rsry bead create` (fail-loud) so we can't mint an un-closable
+/// bead — the sediment root cause. Complements the `rsry bead close` gate,
+/// which checks the description alone once the bead already exists.
+pub fn has_close_condition(issue_type: &str, description: &str, test_files: &[String]) -> bool {
+    !requires_close_condition(issue_type)
+        || !test_files.is_empty()
+        || verify::looks_like_test_command(description)
+}
+
 /// PATCH-style update for bead fields. Only `Some` fields are written;
 /// `None` fields are left unchanged. Used by `rsry_bead_update` MCP tool
 /// and the `IssueTracker::update_fields` trait method.
@@ -477,10 +498,7 @@ impl Bead {
     /// runnable verification before being marked done. Research/epic/design beads
     /// are exempt — they describe work, they don't claim a behavior was shipped.
     pub fn has_verifiable_test_command(&self) -> bool {
-        if !matches!(
-            self.issue_type.as_str(),
-            "bug" | "feature" | "task" | "chore"
-        ) {
+        if !requires_close_condition(&self.issue_type) {
             return true; // exempt
         }
         verify::looks_like_test_command(&self.description)
@@ -853,6 +871,34 @@ mod tests {
         assert!(!requires_files("epic"));
         assert!(!requires_files("design"));
         assert!(!requires_files("research"));
+    }
+
+    #[test]
+    fn has_close_condition_requires_test_command_or_test_files() {
+        // Impl bead with no test command and no test files -> no close condition.
+        assert!(!has_close_condition("task", "just do the thing", &[]));
+        assert!(!has_close_condition("bug", "fix it", &[]));
+        // Satisfied by a runnable command in the description...
+        assert!(has_close_condition(
+            "task",
+            "implement X; verify with `cargo test -p rosary`",
+            &[]
+        ));
+        // ...or by declaring test files.
+        assert!(has_close_condition(
+            "feature",
+            "no command here",
+            &["tests/foo.rs".to_string()]
+        ));
+    }
+
+    #[test]
+    fn planning_types_exempt_from_close_condition() {
+        // Planning/review beads describe work; nothing to verify at close.
+        for t in ["epic", "design", "research", "review"] {
+            assert!(!requires_close_condition(t));
+            assert!(has_close_condition(t, "no test command", &[]));
+        }
     }
 
     #[test]
