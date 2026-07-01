@@ -515,6 +515,11 @@ async fn tool_bead_create(
         );
     }
 
+    // Same close-condition gate as `rsry bead create` (enforced 1:1 via the
+    // shared guard so the MCP authoring path can't mint un-closable beads).
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    crate::bead::ensure_close_condition(issue_type, description, &test_files, force)?;
+
     let (scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
     let repo_name = scope
@@ -3006,6 +3011,19 @@ mod input_validation_tests {
         );
     }
 
+    #[tokio::test]
+    async fn create_rejects_missing_close_condition() {
+        // Impl bead, no test command in description, no test_files → fail-loud,
+        // 1:1 with `rsry bead create` (this is the smell-fix: MCP enforces too).
+        let args = json!({
+            "repo_path": FAKE_REPO, "title": "T", "issue_type": "task", "files": ["a.rs"]
+        });
+        let err = tool_bead_create(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no close condition"), "{err}");
+    }
+
     // ---- tool_bead_update --------------------------------------------------
 
     #[tokio::test]
@@ -3372,6 +3390,7 @@ mod input_validation_tests {
             "title": "Test bead",
             "issue_type": "task",
             "files": ["a.rs"],
+            "force": true, // bypass close-condition gate; this test exercises scope resolution
         });
         let err = tool_bead_create(&args, &empty_pool(), None)
             .await
@@ -3471,7 +3490,7 @@ mod input_validation_tests {
             (
                 "bead_create",
                 json!({
-                    "title": "x", "issue_type": "task", "files": ["a.rs"]
+                    "title": "x", "issue_type": "task", "files": ["a.rs"], "force": true
                 }),
             ),
             ("bead_update", json!({"id": "x-1", "title": "x"})),
