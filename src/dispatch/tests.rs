@@ -1,12 +1,14 @@
 //! Tests for the dispatch module.
 
 use super::*;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 use crate::dispatch::fake::{DeterministicAgentAction, DeterministicAgentProvider};
 use crate::dispatch::providers::{
-    CodexNativeSession, CodexProvider, CodexRuntime, CodexThreadStart,
+    CodexAppServerClient, CodexAppServerRequest, CodexAppServerRuntime, CodexNativeSession,
+    CodexProvider, CodexRuntime, CodexThreadStart,
 };
 
 // -----------------------------------------------------------------------
@@ -471,6 +473,147 @@ async fn codex_provider_starts_native_thread_and_exposes_session_ref() {
     assert!(starts[0].system_prompt.contains(PROMPT_VERSION));
     assert!(starts[0].mcp_servers.contains_key("rsry"));
     assert!(starts[0].expected_mcp_tools.contains(&"lectio".to_string()));
+}
+
+#[test]
+fn codex_app_server_thread_start_maps_rosary_run_spec_to_codex_protocol() {
+    let mut mcp_servers = std::collections::BTreeMap::new();
+    mcp_servers.insert("rsry".to_string(), "http://localhost:8383/mcp".to_string());
+    let start = CodexThreadStart {
+        bead_id: Some("rosary-codex-protocol".to_string()),
+        agent_name: Some("dev-agent".to_string()),
+        prompt: "work the bead".to_string(),
+        work_dir: PathBuf::from("/tmp/rsry-codex-work"),
+        permissions: PermissionProfile::Implement,
+        system_prompt: "developer rules".to_string(),
+        mcp_servers,
+        expected_mcp_tools: vec![
+            "rsry".to_string(),
+            "mache".to_string(),
+            "lectio".to_string(),
+        ],
+        model: Some("gpt-5-codex".to_string()),
+    };
+
+    let request = CodexAppServerRequest::thread_start("rsry-thread-start-1", &start);
+    let value = serde_json::to_value(request).expect("thread/start request should serialize");
+
+    assert_eq!(value["jsonrpc"], "2.0");
+    assert_eq!(value["id"], "rsry-thread-start-1");
+    assert_eq!(value["method"], "thread/start");
+    assert_eq!(value["params"]["model"], "gpt-5-codex");
+    assert_eq!(value["params"]["cwd"], "/tmp/rsry-codex-work");
+    assert_eq!(
+        value["params"]["runtimeWorkspaceRoots"],
+        serde_json::json!(["/tmp/rsry-codex-work"])
+    );
+    assert_eq!(value["params"]["permissions"], "workspace-write");
+    assert_eq!(value["params"]["developerInstructions"], "developer rules");
+    assert_eq!(
+        value["params"]["config"]["rsry.bead_id"],
+        "rosary-codex-protocol"
+    );
+    assert_eq!(value["params"]["config"]["rsry.agent_name"], "dev-agent");
+    assert_eq!(
+        value["params"]["config"]["rsry.expected_mcp_tools"],
+        serde_json::json!(["rsry", "mache", "lectio"])
+    );
+}
+
+#[test]
+fn codex_app_server_turn_start_carries_prompt_as_text_input() {
+    let request = CodexAppServerRequest::turn_start(
+        "rsry-turn-start-1",
+        "thread-rsry-123",
+        "work the bead",
+        Path::new("/tmp/rsry-codex-work"),
+        PermissionProfile::Plan,
+        Some("gpt-5-codex".to_string()),
+    );
+    let value = serde_json::to_value(request).expect("turn/start request should serialize");
+
+    assert_eq!(value["jsonrpc"], "2.0");
+    assert_eq!(value["id"], "rsry-turn-start-1");
+    assert_eq!(value["method"], "turn/start");
+    assert_eq!(value["params"]["threadId"], "thread-rsry-123");
+    assert_eq!(value["params"]["cwd"], "/tmp/rsry-codex-work");
+    assert_eq!(
+        value["params"]["runtimeWorkspaceRoots"],
+        serde_json::json!(["/tmp/rsry-codex-work"])
+    );
+    assert_eq!(value["params"]["permissions"], "read-only");
+    assert_eq!(value["params"]["model"], "gpt-5-codex");
+    assert_eq!(
+        value["params"]["input"],
+        serde_json::json!([{ "type": "text", "text": "work the bead", "textElements": [] }])
+    );
+}
+
+#[derive(Default)]
+struct FakeCodexAppServerClient {
+    requests: Arc<Mutex<Vec<serde_json::Value>>>,
+}
+
+impl CodexAppServerClient for FakeCodexAppServerClient {
+    fn request(&self, request: CodexAppServerRequest) -> Result<serde_json::Value> {
+        let value = serde_json::to_value(request).expect("request should serialize");
+        let method = value["method"].as_str().unwrap_or_default().to_string();
+        self.requests.lock().unwrap().push(value);
+        match method.as_str() {
+            "thread/start" => Ok(serde_json::json!({
+                "thread": {
+                    "id": "thread-from-fake-app-server",
+                    "sessionId": "session-from-fake-app-server"
+                }
+            })),
+            "turn/start" => Ok(serde_json::json!({
+                "turn": {
+                    "id": "turn-from-fake-app-server"
+                }
+            })),
+            other => anyhow::bail!("unexpected codex request method {other}"),
+        }
+    }
+}
+
+#[test]
+fn codex_app_server_runtime_starts_thread_then_turn_and_returns_session_ref() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let runtime = CodexAppServerRuntime::new(Arc::new(FakeCodexAppServerClient {
+        requests: requests.clone(),
+    }));
+    let start = CodexThreadStart {
+        bead_id: Some("rosary-codex-runtime".to_string()),
+        agent_name: Some("dev-agent".to_string()),
+        prompt: "work the runtime bead".to_string(),
+        work_dir: PathBuf::from("/tmp/rsry-codex-work"),
+        permissions: PermissionProfile::Implement,
+        system_prompt: "developer rules".to_string(),
+        mcp_servers: std::collections::BTreeMap::new(),
+        expected_mcp_tools: vec!["rsry".to_string()],
+        model: None,
+    };
+
+    let session = runtime
+        .start_thread(start)
+        .expect("runtime should start codex");
+
+    assert_eq!(
+        session.session_ref(),
+        Some(AgentSessionRef::new("codex", "thread-from-fake-app-server"))
+    );
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0]["method"], "thread/start");
+    assert_eq!(captured[1]["method"], "turn/start");
+    assert_eq!(
+        captured[1]["params"]["threadId"],
+        "thread-from-fake-app-server"
+    );
+    assert_eq!(
+        captured[1]["params"]["input"][0]["text"],
+        "work the runtime bead"
+    );
 }
 
 #[test]

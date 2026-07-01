@@ -13,6 +13,10 @@ vars:
 
 env:
   PKG_CONFIG_PATH: '{{.FUSE_PKG_CONFIG_PATH}}'
+  # Disable inherited rustc wrappers (notably sccache) inside task recipes by
+  # default. Sandboxed Codex verification cannot always execute those wrappers;
+  # users who want one can still pass CARGO_BUILD_RUSTC_WRAPPER explicitly.
+  CARGO_BUILD_RUSTC_WRAPPER: '{{.CARGO_BUILD_RUSTC_WRAPPER | default ""}}'
 
 tasks:
   default:

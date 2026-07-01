@@ -4,6 +4,7 @@
 //! Each provider translates `PermissionProfile` to its own CLI flags.
 
 use anyhow::{Context, Result};
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -125,6 +126,144 @@ pub trait AgentProvider: Send + Sync {
     fn with_model(&self, model: Option<String>) -> Box<dyn AgentProvider>;
 }
 
+/// JSON-RPC request envelope for Codex's remote app-server transport.
+///
+/// Rosary owns this minimal wire contract so Codex dispatch can be tested
+/// without linking the full Codex workspace or spawning `codex exec`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[allow(dead_code)] // Native Codex transport seam; exercised by focused adapter tests until config selects it.
+pub struct CodexAppServerRequest {
+    jsonrpc: &'static str,
+    id: String,
+    method: &'static str,
+    params: serde_json::Value,
+}
+
+impl CodexAppServerRequest {
+    #[allow(dead_code)] // Used by CodexAppServerRuntime; runtime is dormant until transport config lands.
+    pub fn thread_start(id: impl Into<String>, start: &CodexThreadStart) -> Self {
+        let work_dir = start.work_dir.display().to_string();
+        Self {
+            jsonrpc: "2.0",
+            id: id.into(),
+            method: "thread/start",
+            params: serde_json::json!({
+                "model": start.model,
+                "cwd": work_dir,
+                "runtimeWorkspaceRoots": [work_dir],
+                "permissions": codex_permissions(start.permissions),
+                "developerInstructions": start.system_prompt,
+                "config": codex_config(start),
+            }),
+        }
+    }
+
+    #[allow(dead_code)] // Used by CodexAppServerRuntime; runtime is dormant until transport config lands.
+    pub fn turn_start(
+        id: impl Into<String>,
+        thread_id: impl Into<String>,
+        prompt: impl Into<String>,
+        work_dir: &Path,
+        permissions: PermissionProfile,
+        model: Option<String>,
+    ) -> Self {
+        let work_dir = work_dir.display().to_string();
+        Self {
+            jsonrpc: "2.0",
+            id: id.into(),
+            method: "turn/start",
+            params: serde_json::json!({
+                "threadId": thread_id.into(),
+                "input": [{
+                    "type": "text",
+                    "text": prompt.into(),
+                    "textElements": [],
+                }],
+                "cwd": work_dir,
+                "runtimeWorkspaceRoots": [work_dir],
+                "permissions": codex_permissions(permissions),
+                "model": model,
+            }),
+        }
+    }
+}
+
+#[allow(dead_code)] // Used by the dormant Codex app-server request constructors.
+fn codex_permissions(permissions: PermissionProfile) -> &'static str {
+    match permissions {
+        PermissionProfile::Implement => "workspace-write",
+        PermissionProfile::ReadOnly | PermissionProfile::Plan => "read-only",
+    }
+}
+
+#[allow(dead_code)] // Used by the dormant Codex app-server request constructors.
+fn codex_config(start: &CodexThreadStart) -> serde_json::Value {
+    serde_json::json!({
+        "rsry.bead_id": start.bead_id,
+        "rsry.agent_name": start.agent_name,
+        "rsry.mcp_servers": start.mcp_servers,
+        "rsry.expected_mcp_tools": start.expected_mcp_tools,
+    })
+}
+
+/// Minimal app-server client boundary used by Rosary's native Codex runtime.
+///
+/// The production implementation can speak Codex's WebSocket/UDS JSON-RPC
+/// protocol, while tests can provide an in-memory client with exact request
+/// assertions. The trait remains request/response shaped on purpose: dispatch
+/// should not know about a Codex process or shell command.
+#[allow(dead_code)] // Production transport is the next slice; tests exercise the boundary now.
+pub trait CodexAppServerClient: Send + Sync {
+    fn request(&self, request: CodexAppServerRequest) -> Result<serde_json::Value>;
+}
+
+/// Native Codex runtime backed by a Codex app-server client.
+#[allow(dead_code)] // Production transport is the next slice; tests exercise the boundary now.
+pub struct CodexAppServerRuntime {
+    client: Arc<dyn CodexAppServerClient>,
+}
+
+impl CodexAppServerRuntime {
+    #[allow(dead_code)] // Constructed by tests and future configured runtime factory.
+    pub fn new(client: Arc<dyn CodexAppServerClient>) -> Self {
+        Self { client }
+    }
+}
+
+impl CodexRuntime for CodexAppServerRuntime {
+    fn start_thread(&self, start: CodexThreadStart) -> Result<CodexNativeSession> {
+        let thread_response = self
+            .client
+            .request(CodexAppServerRequest::thread_start(
+                "rsry-thread-start",
+                &start,
+            ))
+            .context("starting codex app-server thread")?;
+        let thread_id = thread_id_from_thread_start_response(&thread_response)?;
+        self.client
+            .request(CodexAppServerRequest::turn_start(
+                "rsry-turn-start",
+                thread_id.clone(),
+                start.prompt,
+                &start.work_dir,
+                start.permissions,
+                start.model,
+            ))
+            .context("starting codex app-server turn")?;
+        Ok(CodexNativeSession::running(thread_id))
+    }
+}
+
+#[allow(dead_code)] // Used by the dormant Codex app-server runtime.
+fn thread_id_from_thread_start_response(response: &serde_json::Value) -> Result<String> {
+    response
+        .get("thread")
+        .and_then(|thread| thread.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .context("codex thread/start response missing thread.id")
+}
+
 /// Structured request used by the native Codex runtime boundary.
 ///
 /// This mirrors the subset of [`AgentRunSpec`] that Codex needs to create a
@@ -188,6 +327,14 @@ pub struct CodexNativeSession {
 }
 
 impl CodexNativeSession {
+    #[allow(dead_code)] // Used by the dormant Codex app-server runtime.
+    pub fn running(thread_id: impl Into<String>) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            result: Arc::new(Mutex::new(None)),
+        }
+    }
+
     #[allow(dead_code)] // Public constructor for native runtime adapters and tests.
     pub fn completed_success(thread_id: impl Into<String>) -> Self {
         Self {
