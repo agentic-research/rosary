@@ -497,6 +497,8 @@ pub async fn run(
         .await?
         .ok_or_else(|| anyhow::anyhow!("bead {bead_id} not found"))?;
 
+    ensure_dispatch_close_condition(&bead)?;
+
     client.update_status(bead_id, "dispatched").await?;
 
     let agents_dir = resolve_agents_dir();
@@ -610,6 +612,15 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+pub(crate) fn ensure_dispatch_close_condition(bead: &Bead) -> Result<()> {
+    crate::bead::ensure_close_condition(
+        &bead.issue_type,
+        &bead.description,
+        &bead.test_files,
+        false,
+    )
 }
 
 // ---------------------------------------------------------------------------

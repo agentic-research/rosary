@@ -294,6 +294,51 @@ async fn deterministic_agent_harness_can_script_failure_and_plain_commit() {
     );
 }
 
+#[test]
+fn dispatch_close_condition_accepts_test_files() {
+    let mut bead = crate::testutil::make_bead("rsry-close-ok", "task", "rosary");
+    bead.description = "Implementation bead with acceptance carried by test_files.".into();
+    bead.test_files = vec!["src/dispatch/tests.rs".into()];
+
+    ensure_dispatch_close_condition(&bead).unwrap();
+}
+
+#[tokio::test]
+async fn run_rejects_unclosable_impl_bead_before_status_mutation() {
+    let repo = crate::testutil::TestRepo::new();
+    let store = crate::bead_sqlite::connect_bead_store(&repo.path().join(".beads"))
+        .await
+        .unwrap();
+    store
+        .create_bead_full(
+            "rsry-no-close",
+            "Unclosable dispatch bead",
+            "No runnable close condition here.",
+            1,
+            "task",
+            "dev-agent",
+            &["src/dispatch/mod.rs".into()],
+            &[],
+            &[],
+            Some("test"),
+            "",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let err = run("rsry-no-close", repo.path(), false, "not-a-provider")
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("no close condition"), "{err}");
+    assert_eq!(
+        store.get_status("rsry-no-close").await.unwrap().as_deref(),
+        Some("open"),
+        "dispatch must not mark an unclosable bead dispatched before rejecting it"
+    );
+}
+
 #[tokio::test]
 async fn dispatch_missing_beads_dir_errors() {
     let dir = TempDir::new().unwrap();

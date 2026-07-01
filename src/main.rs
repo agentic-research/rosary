@@ -174,7 +174,7 @@ enum Command {
         /// Print what would be dispatched without actually spawning agents
         #[arg(long)]
         dry_run: bool,
-        /// AI provider to use for dispatch (claude, gemini)
+        /// AI provider to use for dispatch (claude, gemini, acp, codex)
         #[arg(long, default_value = "claude")]
         provider: String,
         /// Overnight mode: prefer small/mechanical beads, concurrency=1, interval=120s

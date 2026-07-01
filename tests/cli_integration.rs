@@ -154,7 +154,15 @@ impl CliSandbox {
 
     /// Create a bead and return its ID.
     fn create_bead(&self, title: &str) -> String {
-        let stdout = self.run_ok(&["bead", "create", title, "-f", "src/main.rs"]);
+        let stdout = self.run_ok(&[
+            "bead",
+            "create",
+            title,
+            "-f",
+            "src/main.rs",
+            "--test-files",
+            "src/main.rs",
+        ]);
         extract_bead_id(&stdout)
             .unwrap_or_else(|| panic!("could not extract bead ID from: {stdout}"))
     }
@@ -284,7 +292,15 @@ fn bead_create_and_list() {
         None => return,
     };
 
-    let stdout = sandbox.run_ok(&["bead", "create", "Test bead alpha", "-f", "src/main.rs"]);
+    let stdout = sandbox.run_ok(&[
+        "bead",
+        "create",
+        "Test bead alpha",
+        "-f",
+        "src/main.rs",
+        "--test-files",
+        "src/main.rs",
+    ]);
     assert!(
         stdout.contains("created"),
         "create output should confirm creation: {stdout}"
@@ -478,6 +494,8 @@ fn bead_create_with_priority_and_type() {
         "-t",
         "bug",
         "-f",
+        "src/main.rs",
+        "--test-files",
         "src/main.rs",
     ]);
     assert!(stdout.contains("created"));

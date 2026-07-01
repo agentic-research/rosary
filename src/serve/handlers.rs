@@ -1083,6 +1083,8 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         bead.owner = Some(agent.to_string());
     }
 
+    crate::dispatch::ensure_dispatch_close_condition(&bead)?;
+
     let agent_label = bead
         .owner
         .as_deref()
@@ -3303,6 +3305,51 @@ mod input_validation_tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no close condition"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_missing_close_condition_before_provider_resolution() {
+        let repo = crate::testutil::TestRepo::new();
+        let store = crate::bead_sqlite::connect_bead_store(&repo.path().join(".beads"))
+            .await
+            .unwrap();
+        store
+            .create_bead_full(
+                "rsry-mcp-no-close",
+                "MCP dispatch without close condition",
+                "No runnable close condition here.",
+                1,
+                "task",
+                "dev-agent",
+                &["src/serve/handlers.rs".into()],
+                &[],
+                &[],
+                Some("test"),
+                "",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let repo_path = repo.path().to_string_lossy().to_string();
+        let args = json!({
+            "repo_path": repo_path,
+            "bead_id": "rsry-mcp-no-close",
+            "provider": "not-a-provider",
+            "isolate": false
+        });
+        let err = tool_dispatch(&args, "rosary.toml").await.unwrap_err();
+
+        assert!(err.to_string().contains("no close condition"), "{err}");
+        assert_eq!(
+            store
+                .get_status("rsry-mcp-no-close")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("open"),
+            "MCP dispatch must not create workspace/session state for unclosable beads"
+        );
     }
 
     // ---- tool_bead_update --------------------------------------------------
