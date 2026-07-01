@@ -702,9 +702,37 @@ fn save_global(config: &Config) -> Result<()> {
             .with_context(|| format!("creating {}", parent.display()))?;
     }
     let content = toml::to_string_pretty(config).context("serializing config")?;
-    std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
-    // config.toml stores secrets (e.g. LINEAR_API_KEY) — lock it to owner-only.
-    set_owner_only(&path)?;
+    write_secret_file(&path, content.as_bytes())?;
+    Ok(())
+}
+
+/// Write a secret-bearing file, owner-only from creation. Avoids the TOCTOU
+/// window of `fs::write` + later `chmod`: a NEW file is created `0600`
+/// atomically (via `OpenOptions::mode`), so the secret is never world-readable
+/// even briefly. A pre-existing file keeps its perms on open, so we also
+/// tighten explicitly (its contents were already the prior secret — this
+/// exposes nothing new and leaves it locked).
+fn write_secret_file(path: &Path, content: &[u8]) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("creating {} (0600)", path.display()))?;
+        f.write_all(content)
+            .with_context(|| format!("writing {}", path.display()))?;
+        // Tighten a pre-existing file whose perms predate this write.
+        set_owner_only(path)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, content).with_context(|| format!("writing {}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -1128,6 +1156,21 @@ path = "~/remotes/art/mache"
     }
 
     #[test]
+    #[cfg(unix)]
+    #[test]
+    fn write_secret_file_creates_new_file_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        // Brand-new file — must be 0600 from creation (no world-readable window).
+        super::write_secret_file(&path, b"linear_api_key = \"secret\"").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "new secret file must be owner-only, got {mode:o}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn set_owner_only_restricts_to_0600() {
