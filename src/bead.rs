@@ -225,6 +225,31 @@ pub fn has_close_condition(issue_type: &str, description: &str, test_files: &[St
         || verify::looks_like_test_command(description)
 }
 
+/// Fail-loud guard for the "author a new bead" intent. The single source of the
+/// close-condition rule, so the CLI (`rsry bead create`) and the MCP
+/// (`rsry_bead_create`) enforce it **1:1** — an invariant enforced on one
+/// authoring surface but bypassable on the other is worse than none.
+///
+/// `force` is the deliberate escape hatch (legacy/planning imports); it mirrors
+/// `rsry bead close --force`. Note: this guards *authoring* only — `bead_move`
+/// and `import` relocate/replicate already-existing beads and must not re-run it.
+pub fn ensure_close_condition(
+    issue_type: &str,
+    description: &str,
+    test_files: &[String],
+    force: bool,
+) -> anyhow::Result<()> {
+    if force || has_close_condition(issue_type, description, test_files) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "bead has no close condition — {issue_type} beads must declare how \"done\" is verified,\n\
+         so an observation (PR-merge/verify) can actually close them (ADR-0010).\n\
+         Add a runnable test/build command to the description (e.g. `cargo test -p <crate>`),\n\
+         pass test_files, or force to override."
+    )
+}
+
 /// PATCH-style update for bead fields. Only `Some` fields are written;
 /// `None` fields are left unchanged. Used by `rsry_bead_update` MCP tool
 /// and the `IssueTracker::update_fields` trait method.

@@ -1481,15 +1481,7 @@ async fn main() -> Result<()> {
                             "files required for {issue_type} beads — specify which code this bead touches"
                         );
                     }
-                    if !force && !bead::has_close_condition(&issue_type, &description, &test_files)
-                    {
-                        anyhow::bail!(
-                            "bead has no close condition — {issue_type} beads must declare how \"done\" is verified,\n\
-                             so an observation (PR-merge/verify) can actually close them (ADR-0010).\n\
-                             Add a runnable test/build command to the description (e.g. `cargo test -p <crate>`),\n\
-                             pass --test-files, or --force to override."
-                        );
-                    }
+                    bead::ensure_close_condition(&issue_type, &description, &test_files, force)?;
                     let id = generate_bead_id(&repo_name);
                     let owner = dispatch::default_agent(&issue_type);
                     let created_by = git_config_user_name(&repo_root);

@@ -76,7 +76,7 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_bead_create",
-                "description": "Create a new bead (work item) in a repo's Dolt database. Use when you've identified a discrete, actionable issue. Set file scopes accurately — they determine parallel dispatch safety via has_file_overlap(). Pass either `scope: 'repo:<name>'` (canonical) or `repo_path: '/path/to/repo'` (legacy).",
+                "description": "Create a new bead (work item) in a repo's Dolt database. Use when you've identified a discrete, actionable issue. Set file scopes accurately — they determine parallel dispatch safety via has_file_overlap(). IMPLEMENTATION beads (bug/feature/task/chore) MUST declare a close condition — a runnable test/build command in `description` (e.g. `cargo test -p <crate>`) or `test_files` — or the create fails loud (ADR-0010: a bead with no defined 'done' can never be closed by an observation). Pass either `scope: 'repo:<name>'` (canonical) or `repo_path: '/path/to/repo'` (legacy).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -89,7 +89,8 @@ pub(crate) fn tool_definitions() -> Value {
                         "owner": { "type": "string", "description": "Agent owner (dev-agent, staging-agent, etc.). Auto-assigned from issue_type if omitted." },
                         "files": { "type": "array", "items": { "type": "string" }, "description": "Source files this bead touches. CRITICAL: these scope parallel dispatch — has_file_overlap() (epic.rs:386-393) blocks concurrent beads sharing files, and reconcile.rs:372-380 enforces it at dispatch time. Set scopes ONLY after reading the code; guessed scopes cause false-negative overlap and agent collisions. Include both files being modified AND files needing wiring changes (imports, call sites). New files are safe — no overlap possible." },
                         "test_files": { "type": "array", "items": { "type": "string" }, "description": "Test files to validate the change. Also checked for overlap — two beads sharing a test file will be serialized, not parallelized." },
-                        "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Bead IDs this bead depends on (blocked until they complete). Creates entries in the dependencies table." }
+                        "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Bead IDs this bead depends on (blocked until they complete). Creates entries in the dependencies table." },
+                        "force": { "type": "boolean", "description": "Skip the close-condition check (for planning/legacy beads). Mirrors `rsry bead create --force`. Default false.", "default": false }
                     },
                     "required": ["title"]                }
             },
