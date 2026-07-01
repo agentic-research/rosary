@@ -481,7 +481,12 @@ pub async fn spawn(
 
 /// Original blocking dispatch -- reads Dolt, spawns agent, waits for completion.
 /// Kept for `rsry dispatch` CLI command.
-pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
+pub async fn run(
+    bead_id: &str,
+    repo_path: &Path,
+    isolate: bool,
+    provider_name: &str,
+) -> Result<()> {
     let path = expand_path(repo_path);
     let beads_dir = path.join(".beads");
 
@@ -495,17 +500,30 @@ pub async fn run(bead_id: &str, repo_path: &Path, isolate: bool) -> Result<()> {
     client.update_status(bead_id, "dispatched").await?;
 
     let agents_dir = resolve_agents_dir();
+    let provider = provider_by_name(provider_name, &std::collections::HashMap::new())
+        .with_context(|| format!("resolving provider {provider_name}"))?;
     let mut handle = spawn(
         &bead,
         &path,
         isolate,
         bead.generation(),
-        &ClaudeProvider::default(),
+        provider.as_ref(),
         agents_dir.as_deref(),
         None, // compute: local subprocess (default)
         None, // model: use provider default
     )
     .await?;
+
+    if let Some(session_ref) = handle.session_ref()
+        && handle.pid().is_none()
+    {
+        eprintln!(
+            "[dispatch] {bead_id} started native {} session {} — leaving bead dispatched for follow-up",
+            session_ref.provider, session_ref.id
+        );
+        return Ok(());
+    }
+
     let success = handle.wait().await?;
 
     // Fail loud on credential failure: a "Not logged in" agent exits without

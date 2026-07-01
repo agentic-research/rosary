@@ -143,13 +143,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Dispatch a bead to a Claude Code agent in an isolated worktree
+    /// Dispatch a bead to an agent provider in an isolated worktree
     Dispatch {
         /// Bead ID to work on
         bead_id: String,
         /// Repo path containing .beads/
         #[arg(short, long, default_value = ".")]
         repo: String,
+        /// Agent provider (claude, gemini, acp, codex)
+        #[arg(long, default_value = "claude")]
+        provider: String,
         /// Use isolated jj workspace
         #[arg(long, default_value_t = true)]
         isolate: bool,
@@ -1003,9 +1006,10 @@ async fn main() -> Result<()> {
         Command::Dispatch {
             bead_id,
             repo,
+            provider,
             isolate,
         } => {
-            dispatch::run(&bead_id, std::path::Path::new(&repo), isolate).await?;
+            dispatch::run(&bead_id, std::path::Path::new(&repo), isolate, &provider).await?;
         }
         Command::Run {
             config,

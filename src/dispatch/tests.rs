@@ -297,7 +297,7 @@ async fn deterministic_agent_harness_can_script_failure_and_plain_commit() {
 #[tokio::test]
 async fn dispatch_missing_beads_dir_errors() {
     let dir = TempDir::new().unwrap();
-    let result = run("fake-id", dir.path(), false).await;
+    let result = run("fake-id", dir.path(), false, "claude").await;
     assert!(result.is_err());
 }
 
