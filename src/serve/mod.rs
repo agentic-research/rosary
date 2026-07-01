@@ -321,6 +321,22 @@ pub(crate) struct AppState {
     pub repo_cache: Arc<crate::repo_cache::RepoCache>,
 }
 
+/// True iff `origin`'s scheme+host equals `base` — exactly, or followed only by
+/// a port (`:…`) or path (`/…`).
+///
+/// A bare `starts_with(base)` would also accept `http://localhost.evil.com` —
+/// the DNS-rebinding bypass (rosary-42e38c). The host ends at the first `:` or
+/// `/`; requiring one of those (or end-of-string) after `base` pins the host
+/// component exactly, so `localhost.evil.com` (next char `.`) is rejected while
+/// `localhost:3000` and `localhost/path` (same host) are allowed.
+fn origin_matches(origin: &str, base: &str) -> bool {
+    match origin.strip_prefix(base) {
+        Some("") => true,
+        Some(rest) => rest.starts_with(':') || rest.starts_with('/'),
+        None => false,
+    }
+}
+
 /// Validate Origin header to prevent DNS rebinding attacks.
 #[allow(clippy::result_large_err)]
 fn validate_origin(
@@ -330,13 +346,17 @@ fn validate_origin(
     if let Some(origin) = headers.get("origin") {
         let o = origin.to_str().unwrap_or("");
         let extra_origins = std::env::var("RSRY_ALLOWED_ORIGINS").unwrap_or_default();
-        let allowed = o.starts_with("http://localhost")
-            || o.starts_with("http://127.0.0.1")
-            || o.starts_with("https://localhost")
-            || o.starts_with("https://127.0.0.1")
+        const LOCAL_BASES: &[&str] = &[
+            "http://localhost",
+            "http://127.0.0.1",
+            "https://localhost",
+            "https://127.0.0.1",
+        ];
+        let allowed = LOCAL_BASES.iter().any(|b| origin_matches(o, b))
             || extra_origins
                 .split(',')
-                .any(|a| !a.trim().is_empty() && o.starts_with(a.trim()));
+                .map(str::trim)
+                .any(|a| !a.is_empty() && origin_matches(o, a));
         if !allowed {
             return Err((axum::http::StatusCode::FORBIDDEN, "Origin not allowed").into_response());
         }
@@ -864,6 +884,35 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("origin", "http://evil.com".parse().unwrap());
         assert!(validate_origin(&headers).is_err());
+    }
+
+    #[test]
+    fn validate_origin_rejects_localhost_prefix_dns_rebind() {
+        // rosary-42e38c: `starts_with("http://localhost")` also matched
+        // attacker-controlled `http://localhost.evil.com`. Must reject.
+        for evil in [
+            "http://localhost.evil.com",
+            "http://127.0.0.1.evil.com",
+            "https://localhost.attacker.io:443",
+            "http://localhostx",
+        ] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("origin", evil.parse().unwrap());
+            assert!(
+                validate_origin(&headers).is_err(),
+                "must reject rebinding origin: {evil}"
+            );
+        }
+        // Bare host + host:port still allowed.
+        for ok in [
+            "http://localhost",
+            "http://localhost:3000",
+            "https://127.0.0.1:8080",
+        ] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("origin", ok.parse().unwrap());
+            assert!(validate_origin(&headers).is_ok(), "must allow: {ok}");
+        }
     }
 
     #[test]
