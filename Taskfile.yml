@@ -91,9 +91,9 @@ tasks:
       - cp target/release/rsry /tmp/rsry-staged
       - codesign -s - --force --deep --entitlements entitlements.plist /tmp/rsry-staged
       - mv /tmp/rsry-staged ~/.local/bin/rsry
-      # macOS WatchPaths doesn't trigger on rename(2). Touch ensures
-      # the launchd service restarts after atomic binary replacement.
-      - touch ~/.local/bin/rsry
+      # Restart is handled by install-service via `launchctl kickstart -k`
+      # (rosary-de1237) — WatchPaths/touch didn't reliably fire on the
+      # atomic-rename inode swap, so the service ran stale for days.
       - echo "Installed rsry to ~/.local/bin/rsry (codesigned)"
       - task: install-service
 
@@ -111,7 +111,8 @@ tasks:
           scripts/com.rosary.serve.plist.template > "$STAGED"
         # Only reload launchd if the plist content has actually changed
         # (or doesn't exist yet). On normal `task install`, the binary
-        # changes but the plist doesn't — WatchPaths handles the restart.
+        # changes but the plist doesn't — a kickstart restarts on the new
+        # binary (WatchPaths was unreliable on atomic rename — rosary-de1237).
         if [ ! -f "$PLIST" ] || ! diff -q "$STAGED" "$PLIST" >/dev/null 2>&1; then
           cp "$STAGED" "$PLIST"
           launchctl unload "$PLIST" 2>/dev/null || true
@@ -124,7 +125,11 @@ tasks:
           launchctl load "$PLIST"
           echo "HTTP MCP service plist unchanged but was unloaded — loaded"
         else
-          echo "HTTP MCP service plist unchanged and loaded — WatchPaths handles restart"
+          # Plist unchanged and loaded: force a restart onto the new binary.
+          # kickstart -k is deterministic — no FSEvents/WatchPaths dependency
+          # (rosary-de1237: the service ran a 5-day-stale binary otherwise).
+          launchctl kickstart -k "gui/$(id -u)/$LABEL"
+          echo "HTTP MCP service kickstarted onto the new binary"
         fi
         rm -f "$STAGED"
         echo "  Port: 8383 | Log: $LOG"

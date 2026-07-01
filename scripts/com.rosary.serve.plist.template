@@ -22,10 +22,9 @@
     <integer>5</integer>
     <key>ThrottleInterval</key>
     <integer>5</integer>
-    <key>WatchPaths</key>
-    <array>
-        <string>__RSRY_BIN__</string>
-    </array>
+    <!-- No WatchPaths: it didn't reliably fire on the atomic-rename inode
+         swap, leaving the service on a stale binary (rosary-de1237). `task
+         install` now restarts explicitly via `launchctl kickstart -k`. -->
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
