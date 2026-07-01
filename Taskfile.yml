@@ -105,6 +105,7 @@ tasks:
     cmds:
       - |
         PLIST="$HOME/Library/LaunchAgents/com.rosary.serve.plist"
+        LABEL="com.rosary.serve"
         BIN="$HOME/.local/bin/rsry"
         LOG="$HOME/.rsry/http.log"
         STAGED="/tmp/com.rosary.serve.plist.staged"
@@ -118,8 +119,14 @@ tasks:
           launchctl unload "$PLIST" 2>/dev/null || true
           launchctl load "$PLIST"
           echo "HTTP MCP service (re)loaded (plist changed)"
+        elif ! launchctl list "$LABEL" >/dev/null 2>&1; then
+          # Plist unchanged but the agent is NOT loaded (crashed, manually
+          # unloaded, or never loaded because nothing was listening). Load it so
+          # agents always find the MCP server at session start (rosary-0e1d78).
+          launchctl load "$PLIST"
+          echo "HTTP MCP service plist unchanged but was unloaded — loaded"
         else
-          echo "HTTP MCP service plist unchanged — WatchPaths handles restart"
+          echo "HTTP MCP service plist unchanged and loaded — WatchPaths handles restart"
         fi
         rm -f "$STAGED"
         echo "  Port: 8383 | Log: $LOG"
