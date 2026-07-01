@@ -686,6 +686,7 @@ pub fn load_global() -> Result<Config> {
             ..Default::default()
         });
     }
+    warn_if_perms_too_open(&path);
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("reading global registry {}", path.display()))?;
     let config: Config =
@@ -702,7 +703,47 @@ fn save_global(config: &Config) -> Result<()> {
     }
     let content = toml::to_string_pretty(config).context("serializing config")?;
     std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
+    // config.toml stores secrets (e.g. LINEAR_API_KEY) — lock it to owner-only.
+    set_owner_only(&path)?;
     Ok(())
+}
+
+/// Restrict a file to owner read/write (`0600`) on Unix. No-op elsewhere.
+/// Called after writing config so secrets never sit at a world-readable
+/// default umask (rsry-5af158).
+fn set_owner_only(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("securing permissions on {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// Warn (ssh-style) when a secret-bearing config file is group/other-accessible.
+/// Read-time advisory only — does not fail the load.
+fn warn_if_perms_too_open(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mode = meta.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                eprintln!(
+                    "warning: {} is group/other-accessible (mode {:o}); it stores secrets. \
+                     Run: chmod 600 {}",
+                    path.display(),
+                    mode,
+                    path.display()
+                );
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// Walk up the directory tree from `start` to find a repo root.
@@ -1087,6 +1128,25 @@ path = "~/remotes/art/mache"
     }
 
     #[test]
+    #[cfg(unix)]
+    #[test]
+    fn set_owner_only_restricts_to_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        // Simulate a world-readable file (default umask ~0644).
+        std::fs::write(&path, "linear_api_key = \"secret\"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        super::set_owner_only(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "secret config must be owner-only, got {mode:o}"
+        );
+    }
+
     fn enable_disable_roundtrip() {
         // Use a temp dir as both the "repo" and the registry location.
         let tmp = tempfile::TempDir::new().unwrap();
