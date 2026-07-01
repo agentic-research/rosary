@@ -488,37 +488,37 @@ async fn tool_bead_create(
     let owner = args
         .get("owner")
         .and_then(|v| v.as_str())
-        .unwrap_or_else(|| crate::dispatch::default_agent(issue_type));
+        .map(|s| s.to_string());
 
-    let files: Vec<String> = args
-        .get("files")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-    let test_files: Vec<String> = args
-        .get("test_files")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if crate::bead::requires_files(issue_type) && files.is_empty() {
-        anyhow::bail!(
-            "files required for {issue_type} beads — specify which code this bead touches"
-        );
-    }
-
-    // Same close-condition gate as `rsry bead create` (enforced 1:1 via the
-    // shared guard so the MCP authoring path can't mint un-closable beads).
+    let str_array = |key: &str| -> Vec<String> {
+        args.get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-    crate::bead::ensure_close_condition(issue_type, description, &test_files, force)?;
+
+    // ACI adapter: parse the JSON surface into the shared op core (bead_ops).
+    let create_args = crate::bead_ops::BeadCreateArgs {
+        title: title.to_string(),
+        description: description.to_string(),
+        priority,
+        issue_type: issue_type.to_string(),
+        owner,
+        files: str_array("files"),
+        test_files: str_array("test_files"),
+        depends_on: str_array("depends_on"),
+        force,
+    };
+    // Validate BEFORE resolve_repo_client so arg errors surface as arg errors
+    // (not an FS/scope error) regardless of repo validity — the error-class
+    // contract the input-validation tests rely on. `create_bead` re-validates,
+    // so the gate stays enforced-by-construction on the create path itself.
+    create_args.validate()?;
 
     let (scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
@@ -533,17 +533,6 @@ async fn tool_bead_create(
         None, repo_name, None, repo_name,
     ));
 
-    // Wire dependencies if provided
-    let depends_on: Vec<String> = args
-        .get("depends_on")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
     // Capture git username from the repo's git config for creator
     // attribution — best-effort, only when `repo_path` is passed
     // explicitly. Pure scope-only callers get `created_by = None`
@@ -553,23 +542,7 @@ async fn tool_bead_create(
         .and_then(|v| v.as_str())
         .and_then(|p| crate::git_config_user_name(std::path::Path::new(p)));
 
-    // Single transaction: INSERT + assignee + files + deps → one dolt commit
-    client
-        .create_bead_full(
-            &id,
-            title,
-            description,
-            priority,
-            issue_type,
-            owner,
-            &files,
-            &test_files,
-            &depends_on,
-            created_by.as_deref(),
-            "",
-            &[],
-        )
-        .await?;
+    crate::bead_ops::create_bead(client, &id, &create_args, created_by.as_deref()).await?;
 
     // Set user_id for multi-tenant scoping
     if let Some(uid) = user_scope {
@@ -579,6 +552,7 @@ async fn tool_bead_create(
         client.log_event(&id, "created_by", uid).await;
     }
 
+    let owner = create_args.resolved_owner();
     Ok(json!({ "id": id, "title": title, "priority": priority, "owner": owner }))
 }
 
