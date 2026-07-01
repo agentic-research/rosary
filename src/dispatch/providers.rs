@@ -1205,9 +1205,27 @@ pub fn provider_by_name(
                 .unwrap_or_else(|| "claude-agent-acp".to_string());
             Ok(Box::new(AcpNativeProvider { binary }))
         }
-        "codex" => Ok(Box::new(CodexProvider::default())),
+        "codex" => {
+            ensure_codex_experimental_enabled()?;
+            Ok(Box::new(CodexProvider::default()))
+        }
         other => anyhow::bail!("unknown provider: {other} (available: claude, gemini, acp, codex)"),
     }
+}
+
+fn ensure_codex_experimental_enabled() -> Result<()> {
+    let enabled = std::env::var("RSRY_EXPERIMENTAL_CODEX")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .unwrap_or(false);
+    if enabled {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "codex provider is experimental and disabled by default; set RSRY_EXPERIMENTAL_CODEX=1 \
+         to opt in. Native session durability and live app-server validation are tracked in \
+         rosary-d6b6e6 and rosary-2500f3."
+    )
 }
 
 #[cfg(test)]

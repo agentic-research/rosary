@@ -103,7 +103,10 @@ Provider notes:
 - `claude` and `gemini` use their CLI providers.
 - `acp` uses the native ACP protocol over an ACP-compatible agent binary.
 - `codex` is the native Codex provider boundary. It does not use `codex exec`;
-  live dispatch requires the Codex app-server/client runtime adapter to be wired.
+  live dispatch is experimental and disabled by default. Set
+  `RSRY_EXPERIMENTAL_CODEX=1` to opt in while native session durability
+  (`rosary-d6b6e6`) and live app-server validation (`rosary-2500f3`) are still
+  being hardened.
 
 #### Authentication for dispatched agents
 

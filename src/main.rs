@@ -150,7 +150,7 @@ enum Command {
         /// Repo path containing .beads/
         #[arg(short, long, default_value = ".")]
         repo: String,
-        /// Agent provider (claude, gemini, acp, codex)
+        /// Agent provider (claude, gemini, acp, codex experimental)
         #[arg(long, default_value = "claude")]
         provider: String,
         /// Use isolated jj workspace
@@ -174,7 +174,7 @@ enum Command {
         /// Print what would be dispatched without actually spawning agents
         #[arg(long)]
         dry_run: bool,
-        /// AI provider to use for dispatch (claude, gemini, acp, codex)
+        /// AI provider to use for dispatch (claude, gemini, acp, codex experimental)
         #[arg(long, default_value = "claude")]
         provider: String,
         /// Overnight mode: prefer small/mechanical beads, concurrency=1, interval=120s

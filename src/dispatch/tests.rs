@@ -2,7 +2,7 @@
 
 use super::*;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tempfile::TempDir;
 
 use crate::dispatch::fake::{DeterministicAgentAction, DeterministicAgentProvider};
@@ -10,6 +10,23 @@ use crate::dispatch::providers::{
     CodexAppServerClient, CodexAppServerRequest, CodexAppServerRuntime, CodexNativeSession,
     CodexProvider, CodexRuntime, CodexThreadStart, CodexUnixSocketClient,
 };
+
+fn codex_gate_test_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
+
+fn clear_codex_gate_env() {
+    unsafe {
+        std::env::remove_var("RSRY_EXPERIMENTAL_CODEX");
+    }
+}
+
+fn set_codex_gate_env(value: &str) {
+    unsafe {
+        std::env::set_var("RSRY_EXPERIMENTAL_CODEX", value);
+    }
+}
 
 // -----------------------------------------------------------------------
 // MockAgentSession — fake agent that completes immediately
@@ -463,9 +480,31 @@ fn provider_by_name_claude() {
 }
 
 #[test]
-fn provider_by_name_codex_returns_native_provider_without_cli_command() {
+fn provider_by_name_codex_requires_experimental_gate() {
+    let _guard = codex_gate_test_lock();
+    clear_codex_gate_env();
+    let empty = std::collections::HashMap::new();
+    let err = match provider_by_name("codex", &empty) {
+        Ok(_) => panic!("codex provider must be gated off by default"),
+        Err(err) => err,
+    };
+
+    assert!(err.to_string().contains("experimental"), "{err}");
+    assert!(
+        err.to_string().contains("RSRY_EXPERIMENTAL_CODEX=1"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("rosary-d6b6e6"), "{err}");
+    assert!(err.to_string().contains("rosary-2500f3"), "{err}");
+}
+
+#[test]
+fn provider_by_name_codex_returns_native_provider_when_experimental_gate_is_enabled() {
+    let _guard = codex_gate_test_lock();
+    set_codex_gate_env("1");
     let empty = std::collections::HashMap::new();
     let p = provider_by_name("codex", &empty).unwrap();
+    clear_codex_gate_env();
     assert_eq!(p.name(), "codex");
 
     let (bin, args) = p.build_command("prompt", &PermissionProfile::Implement, "system prompt");
