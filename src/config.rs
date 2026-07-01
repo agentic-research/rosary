@@ -1155,7 +1155,6 @@ path = "~/remotes/art/mache"
         assert_eq!(config.repo[0].name, "mache");
     }
 
-    #[test]
     #[cfg(unix)]
     #[test]
     fn write_secret_file_creates_new_file_0600() {
@@ -1190,6 +1189,7 @@ path = "~/remotes/art/mache"
         );
     }
 
+    #[test]
     fn enable_disable_roundtrip() {
         // Use a temp dir as both the "repo" and the registry location.
         let tmp = tempfile::TempDir::new().unwrap();
