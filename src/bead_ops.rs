@@ -13,6 +13,23 @@
 
 use crate::store::BeadStore;
 
+/// Max byte length for a comment body (and bead description). Shared by every
+/// surface so the limit is defined once, not per-handler.
+pub const BODY_MAX_LEN: usize = 50_000;
+
+/// Validate a comment body — the single gate shared by CLI (`rsry bead comment
+/// add`) and MCP (`rsry_bead_comment`). Rejects blank and over-long bodies on
+/// both surfaces (previously only MCP enforced this; the CLI accepted anything).
+pub fn validate_comment_body(body: &str) -> anyhow::Result<()> {
+    if body.trim().is_empty() {
+        anyhow::bail!("body must not be blank");
+    }
+    if body.len() > BODY_MAX_LEN {
+        anyhow::bail!("body exceeds {BODY_MAX_LEN} bytes (got {})", body.len());
+    }
+    Ok(())
+}
+
 /// Typed inputs for authoring a new bead. Both front-ends build this; the core
 /// validates + creates. `owner`/`created_by`/`id` are resolved by the caller
 /// (they differ by surface — CLI uses the repo name + git config; MCP resolves
@@ -134,6 +151,14 @@ mod tests {
         args("task", "verify: cargo test", &["a.rs"], &[])
             .validate()
             .unwrap();
+    }
+
+    #[test]
+    fn comment_body_rejects_blank_and_overlong_accepts_normal() {
+        assert!(validate_comment_body("").is_err());
+        assert!(validate_comment_body("   \n ").is_err());
+        assert!(validate_comment_body(&"a".repeat(BODY_MAX_LEN + 1)).is_err());
+        validate_comment_body("a real comment").unwrap();
     }
 
     #[test]

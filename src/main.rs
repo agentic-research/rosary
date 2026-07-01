@@ -1594,6 +1594,7 @@ async fn main() -> Result<()> {
                 }
                 BeadAction::Comment { action } => match action {
                     BeadCommentAction::Add { id, body } => {
+                        bead_ops::validate_comment_body(&body)?;
                         client.add_comment(&id, &body, "rsry-cli").await?;
                         cli::bead_commented(&id);
                     }
