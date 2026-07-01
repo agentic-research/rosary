@@ -8,7 +8,7 @@ use tempfile::TempDir;
 use crate::dispatch::fake::{DeterministicAgentAction, DeterministicAgentProvider};
 use crate::dispatch::providers::{
     CodexAppServerClient, CodexAppServerRequest, CodexAppServerRuntime, CodexNativeSession,
-    CodexProvider, CodexRuntime, CodexThreadStart,
+    CodexProvider, CodexRuntime, CodexThreadStart, CodexUnixSocketClient,
 };
 
 // -----------------------------------------------------------------------
@@ -507,7 +507,12 @@ fn codex_app_server_thread_start_maps_rosary_run_spec_to_codex_protocol() {
         value["params"]["runtimeWorkspaceRoots"],
         serde_json::json!(["/tmp/rsry-codex-work"])
     );
-    assert_eq!(value["params"]["permissions"], "workspace-write");
+    assert_eq!(value["params"]["approvalPolicy"], "on-request");
+    assert_eq!(value["params"]["sandbox"], "workspace-write");
+    assert!(
+        value["params"].get("permissions").is_none(),
+        "Rosary should not depend on Codex's experimental named permission profiles"
+    );
     assert_eq!(value["params"]["developerInstructions"], "developer rules");
     assert_eq!(
         value["params"]["config"]["rsry.bead_id"],
@@ -541,7 +546,15 @@ fn codex_app_server_turn_start_carries_prompt_as_text_input() {
         value["params"]["runtimeWorkspaceRoots"],
         serde_json::json!(["/tmp/rsry-codex-work"])
     );
-    assert_eq!(value["params"]["permissions"], "read-only");
+    assert_eq!(value["params"]["approvalPolicy"], "on-request");
+    assert_eq!(
+        value["params"]["sandboxPolicy"],
+        serde_json::json!({ "type": "readOnly", "networkAccess": false })
+    );
+    assert!(
+        value["params"].get("permissions").is_none(),
+        "Rosary should not depend on Codex's experimental named permission profiles"
+    );
     assert_eq!(value["params"]["model"], "gpt-5-codex");
     assert_eq!(
         value["params"]["input"],
@@ -614,6 +627,102 @@ fn codex_app_server_runtime_starts_thread_then_turn_and_returns_session_ref() {
         captured[1]["params"]["input"][0]["text"],
         "work the runtime bead"
     );
+}
+
+#[test]
+fn codex_unix_socket_client_initializes_and_sends_request() {
+    let dir = TempDir::new().unwrap();
+    let socket_path = dir.path().join("codex-app-server.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut websocket = tungstenite::accept(stream).unwrap();
+
+        let initialize = read_test_ws_json(&mut websocket);
+        assert_eq!(initialize["method"], "initialize");
+        assert_eq!(initialize["params"]["clientInfo"]["name"], "rosary");
+        write_test_ws_json(
+            &mut websocket,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": initialize["id"],
+                "result": {
+                    "userAgent": "codex-test/0"
+                }
+            }),
+        );
+
+        let initialized = read_test_ws_json(&mut websocket);
+        assert_eq!(initialized["method"], "initialized");
+
+        let request = read_test_ws_json(&mut websocket);
+        assert_eq!(request["method"], "thread/start");
+        assert_eq!(request["params"]["approvalPolicy"], "on-request");
+        assert_eq!(request["params"]["sandbox"], "workspace-write");
+        write_test_ws_json(
+            &mut websocket,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "thread": {
+                        "id": "thread-from-unix-socket"
+                    }
+                }
+            }),
+        );
+    });
+
+    let mut mcp_servers = std::collections::BTreeMap::new();
+    mcp_servers.insert("rsry".to_string(), "http://localhost:8383/mcp".to_string());
+    let start = CodexThreadStart {
+        bead_id: Some("rosary-codex-socket".to_string()),
+        agent_name: Some("dev-agent".to_string()),
+        prompt: "work through socket".to_string(),
+        work_dir: PathBuf::from("/tmp/rsry-codex-work"),
+        permissions: PermissionProfile::Implement,
+        system_prompt: "developer rules".to_string(),
+        mcp_servers,
+        expected_mcp_tools: vec!["rsry".to_string()],
+        model: None,
+    };
+
+    let client = CodexUnixSocketClient::new(socket_path);
+    let response = client
+        .request(CodexAppServerRequest::thread_start(
+            "rsry-thread-start-socket",
+            &start,
+        ))
+        .expect("socket client should round-trip request");
+
+    assert_eq!(response["thread"]["id"], "thread-from-unix-socket");
+    server.join().expect("fake codex app-server should exit");
+}
+
+fn read_test_ws_json(
+    websocket: &mut tungstenite::WebSocket<std::os::unix::net::UnixStream>,
+) -> serde_json::Value {
+    loop {
+        match websocket.read().unwrap() {
+            tungstenite::Message::Text(text) => return serde_json::from_str(&text).unwrap(),
+            tungstenite::Message::Binary(bytes) => {
+                return serde_json::from_slice(&bytes).unwrap();
+            }
+            tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => continue,
+            tungstenite::Message::Close(_) | tungstenite::Message::Frame(_) => {
+                panic!("unexpected websocket control frame")
+            }
+        }
+    }
+}
+
+fn write_test_ws_json(
+    websocket: &mut tungstenite::WebSocket<std::os::unix::net::UnixStream>,
+    value: serde_json::Value,
+) {
+    websocket
+        .send(tungstenite::Message::Text(value.to_string().into()))
+        .unwrap();
 }
 
 #[test]

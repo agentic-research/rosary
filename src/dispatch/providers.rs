@@ -8,6 +8,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tungstenite::{Message, WebSocket};
 
 use super::session::{AgentSession, AgentSessionRef, CliSession};
 use super::{PermissionProfile, STREAM_LOG_FILENAME};
@@ -151,7 +152,8 @@ impl CodexAppServerRequest {
                 "model": start.model,
                 "cwd": work_dir,
                 "runtimeWorkspaceRoots": [work_dir],
-                "permissions": codex_permissions(start.permissions),
+                "approvalPolicy": codex_approval_policy(start.permissions),
+                "sandbox": codex_sandbox_mode(start.permissions),
                 "developerInstructions": start.system_prompt,
                 "config": codex_config(start),
             }),
@@ -181,7 +183,8 @@ impl CodexAppServerRequest {
                 }],
                 "cwd": work_dir,
                 "runtimeWorkspaceRoots": [work_dir],
-                "permissions": codex_permissions(permissions),
+                "approvalPolicy": codex_approval_policy(permissions),
+                "sandboxPolicy": codex_sandbox_policy(permissions, &work_dir),
                 "model": model,
             }),
         }
@@ -189,10 +192,35 @@ impl CodexAppServerRequest {
 }
 
 #[allow(dead_code)] // Used by the dormant Codex app-server request constructors.
-fn codex_permissions(permissions: PermissionProfile) -> &'static str {
+fn codex_approval_policy(permissions: PermissionProfile) -> &'static str {
+    match permissions {
+        PermissionProfile::Implement | PermissionProfile::Plan => "on-request",
+        PermissionProfile::ReadOnly => "never",
+    }
+}
+
+#[allow(dead_code)] // Used by the dormant Codex app-server request constructors.
+fn codex_sandbox_mode(permissions: PermissionProfile) -> &'static str {
     match permissions {
         PermissionProfile::Implement => "workspace-write",
         PermissionProfile::ReadOnly | PermissionProfile::Plan => "read-only",
+    }
+}
+
+#[allow(dead_code)] // Used by the dormant Codex app-server request constructors.
+fn codex_sandbox_policy(permissions: PermissionProfile, work_dir: &str) -> serde_json::Value {
+    match permissions {
+        PermissionProfile::Implement => serde_json::json!({
+            "type": "workspaceWrite",
+            "writableRoots": [work_dir],
+            "networkAccess": false,
+            "excludeTmpdirEnvVar": false,
+            "excludeSlashTmp": false,
+        }),
+        PermissionProfile::ReadOnly | PermissionProfile::Plan => serde_json::json!({
+            "type": "readOnly",
+            "networkAccess": false,
+        }),
     }
 }
 
@@ -215,6 +243,36 @@ fn codex_config(start: &CodexThreadStart) -> serde_json::Value {
 #[allow(dead_code)] // Production transport is the next slice; tests exercise the boundary now.
 pub trait CodexAppServerClient: Send + Sync {
     fn request(&self, request: CodexAppServerRequest) -> Result<serde_json::Value>;
+}
+
+/// Remote Codex app-server client over the local control Unix socket.
+///
+/// This is a native protocol transport, not `codex exec`: Rosary speaks the
+/// app-server JSON-RPC/WebSocket protocol directly and receives Codex's native
+/// thread id back as an addressable session ref.
+pub struct CodexUnixSocketClient {
+    socket_path: PathBuf,
+}
+
+impl Default for CodexUnixSocketClient {
+    fn default() -> Self {
+        Self {
+            socket_path: default_codex_app_server_socket_path(),
+        }
+    }
+}
+
+impl CodexUnixSocketClient {
+    #[cfg(test)]
+    pub(crate) fn new(socket_path: PathBuf) -> Self {
+        Self { socket_path }
+    }
+}
+
+impl CodexAppServerClient for CodexUnixSocketClient {
+    fn request(&self, request: CodexAppServerRequest) -> Result<serde_json::Value> {
+        request_codex_app_server(&self.socket_path, request)
+    }
 }
 
 /// Native Codex runtime backed by a Codex app-server client.
@@ -264,6 +322,125 @@ fn thread_id_from_thread_start_response(response: &serde_json::Value) -> Result<
         .context("codex thread/start response missing thread.id")
 }
 
+fn default_codex_app_server_socket_path() -> PathBuf {
+    if let Ok(path) = std::env::var("RSRY_CODEX_APP_SERVER_SOCKET") {
+        return PathBuf::from(path);
+    }
+    if let Ok(path) = std::env::var("CODEX_APP_SERVER_SOCKET") {
+        return PathBuf::from(path);
+    }
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(dirs_next::home_dir)
+        .map(|home| {
+            if home.ends_with(".codex") {
+                home
+            } else {
+                home.join(".codex")
+            }
+        })
+        .unwrap_or_else(|| PathBuf::from(".codex"));
+    codex_home
+        .join("app-server-control")
+        .join("app-server-control.sock")
+}
+
+fn request_codex_app_server(
+    socket_path: &Path,
+    request: CodexAppServerRequest,
+) -> Result<serde_json::Value> {
+    let stream = std::os::unix::net::UnixStream::connect(socket_path).with_context(|| {
+        format!(
+            "connecting Codex app-server socket {}",
+            socket_path.display()
+        )
+    })?;
+    let (mut websocket, _response) = tungstenite::client::client("ws://localhost/", stream)
+        .with_context(|| {
+            format!(
+                "upgrading Codex app-server socket {}",
+                socket_path.display()
+            )
+        })?;
+
+    initialize_codex_app_server(&mut websocket)?;
+    let request_id = request.id.clone();
+    send_jsonrpc_value(&mut websocket, &serde_json::to_value(request)?)?;
+    read_jsonrpc_result(&mut websocket, &request_id)
+}
+
+fn initialize_codex_app_server(
+    websocket: &mut WebSocket<std::os::unix::net::UnixStream>,
+) -> Result<()> {
+    send_jsonrpc_value(
+        websocket,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "rsry-initialize",
+            "method": "initialize",
+            "params": {
+                "clientInfo": {
+                    "name": "rosary",
+                    "title": "Rosary",
+                    "version": env!("CARGO_PKG_VERSION"),
+                },
+                "capabilities": {
+                    "experimentalApi": true,
+                    "requestAttestation": false,
+                    "mcpServerOpenaiFormElicitation": false,
+                }
+            }
+        }),
+    )?;
+    let _ = read_jsonrpc_result(websocket, "rsry-initialize")?;
+    send_jsonrpc_value(
+        websocket,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+        }),
+    )
+}
+
+fn send_jsonrpc_value(
+    websocket: &mut WebSocket<std::os::unix::net::UnixStream>,
+    value: &serde_json::Value,
+) -> Result<()> {
+    websocket
+        .send(Message::Text(serde_json::to_string(value)?.into()))
+        .context("sending Codex app-server JSON-RPC message")
+}
+
+fn read_jsonrpc_result(
+    websocket: &mut WebSocket<std::os::unix::net::UnixStream>,
+    request_id: &str,
+) -> Result<serde_json::Value> {
+    loop {
+        let message = websocket
+            .read()
+            .context("reading Codex app-server JSON-RPC message")?;
+        let payload = match message {
+            Message::Text(text) => text.to_string(),
+            Message::Binary(bytes) => String::from_utf8(bytes.to_vec())
+                .context("Codex app-server returned non-UTF8 binary JSON-RPC payload")?,
+            Message::Close(_) => anyhow::bail!("Codex app-server closed before {request_id}"),
+            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&payload).context("parsing Codex app-server JSON-RPC payload")?;
+        if value.get("id").and_then(serde_json::Value::as_str) != Some(request_id) {
+            continue;
+        }
+        if let Some(error) = value.get("error") {
+            anyhow::bail!("Codex app-server request {request_id} failed: {error}");
+        }
+        return value
+            .get("result")
+            .cloned()
+            .with_context(|| format!("Codex app-server response {request_id} missing result"));
+    }
+}
+
 /// Structured request used by the native Codex runtime boundary.
 ///
 /// This mirrors the subset of [`AgentRunSpec`] that Codex needs to create a
@@ -306,17 +483,6 @@ impl CodexThreadStart {
 /// keeps Rosary's durable Codex path from regressing to `codex exec`.
 pub trait CodexRuntime: Send + Sync {
     fn start_thread(&self, start: CodexThreadStart) -> Result<CodexNativeSession>;
-}
-
-#[derive(Default)]
-struct UnconfiguredCodexRuntime;
-
-impl CodexRuntime for UnconfiguredCodexRuntime {
-    fn start_thread(&self, _start: CodexThreadStart) -> Result<CodexNativeSession> {
-        anyhow::bail!(
-            "native Codex runtime is not configured; wire codex app-server/client before live dispatch"
-        )
-    }
 }
 
 /// Native Codex session handle. It exposes a Codex thread id instead of an OS PID.
@@ -385,7 +551,9 @@ pub struct CodexProvider {
 impl Default for CodexProvider {
     fn default() -> Self {
         Self {
-            runtime: Arc::new(UnconfiguredCodexRuntime),
+            runtime: Arc::new(CodexAppServerRuntime::new(Arc::new(
+                CodexUnixSocketClient::default(),
+            ))),
             model: None,
         }
     }
