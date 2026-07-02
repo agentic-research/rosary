@@ -302,7 +302,6 @@ pub(crate) async fn handle_github_webhook(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -399,7 +398,7 @@ mod tests {
         crate::serve::AppState {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
-            sessions: Arc::new(RwLock::new(HashSet::new())),
+            sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             webhook_secret: None,
             github_webhook_secret: None,
             backend: None,

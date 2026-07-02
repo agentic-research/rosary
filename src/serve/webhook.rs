@@ -202,7 +202,6 @@ pub(crate) async fn handle_webhook(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -357,7 +356,7 @@ mod tests {
         let state = AppState {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
-            sessions: Arc::new(RwLock::new(HashSet::new())),
+            sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             webhook_secret: Some(Arc::from("test-secret")),
             github_webhook_secret: None,
             backend: None,
@@ -388,7 +387,7 @@ mod tests {
         let state = AppState {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
-            sessions: Arc::new(RwLock::new(HashSet::new())),
+            sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             webhook_secret: Some(Arc::from("test-secret")),
             github_webhook_secret: None,
             backend: None,
@@ -426,7 +425,7 @@ mod tests {
         let state = AppState {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
-            sessions: Arc::new(RwLock::new(HashSet::new())),
+            sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             webhook_secret: Some(Arc::from(secret)),
             github_webhook_secret: None,
             backend: None,
