@@ -42,11 +42,10 @@ repos:
         # or GREW while already over. No exclude list needed.
 
       # God-file gate: block NEW files crossing the long_file threshold, while
-      # grandfathering the known-legacy set being decomposed. Ratchets down via
-      # scripts/god-files-baseline.txt. Uses mache's long_file rule when present,
-      # native wc -l fallback otherwise (so it blocks in CI without mache).
+      # grandfathering whatever is already a god-file on origin/main (the dynamic
+      # baseline — no committed list). Uses wc -l vs the base branch.
       - id: god-files
-        name: god-file gate (mache long_file, baseline ratchet)
+        name: god-file gate (line threshold vs origin/main)
         entry: scripts/check-god-files.sh
         language: script
         pass_filenames: false
