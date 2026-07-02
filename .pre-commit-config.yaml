@@ -41,6 +41,17 @@ repos:
         # Hook is now baseline-aware — only fails if file CROSSED the limit
         # or GREW while already over. No exclude list needed.
 
+      # God-file gate: block NEW files crossing the long_file threshold, while
+      # grandfathering the known-legacy set being decomposed. Ratchets down via
+      # scripts/god-files-baseline.txt. Uses mache's long_file rule when present,
+      # native wc -l fallback otherwise (so it blocks in CI without mache).
+      - id: god-files
+        name: god-file gate (mache long_file, baseline ratchet)
+        entry: scripts/check-god-files.sh
+        language: script
+        pass_filenames: false
+        files: \.rs$
+
       # Rule 11: Every commit references a bead
       - id: bead-ref
         name: bead reference in commit (Rule 11)
