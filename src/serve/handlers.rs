@@ -3295,16 +3295,21 @@ mod input_validation_tests {
     }
 
     #[tokio::test]
-    async fn create_rejects_missing_close_condition() {
-        // Impl bead, no test command in description, no test_files → fail-loud,
-        // 1:1 with `rsry bead create` (this is the smell-fix: MCP enforces too).
+    async fn create_defaults_missing_close_condition_rather_than_rejecting() {
+        // A missing close condition no longer fails authoring — it's defaulted
+        // (PR-merge) so bare create works, 1:1 across CLI + MCP. Validation
+        // passes it through; the only error here is the fake repo's store
+        // access, NOT a "no close condition" rejection.
         let args = json!({
             "repo_path": FAKE_REPO, "title": "T", "issue_type": "task", "files": ["a.rs"]
         });
         let err = tool_bead_create(&args, &empty_pool(), None)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("no close condition"), "{err}");
+        assert!(
+            !err.to_string().contains("no close condition"),
+            "missing close condition must be defaulted, not rejected: {err}"
+        );
     }
 
     #[tokio::test]

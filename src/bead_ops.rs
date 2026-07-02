@@ -55,8 +55,11 @@ pub struct BeadCreateArgs {
 }
 
 impl BeadCreateArgs {
-    /// The single authoring gate — shared by CLI + MCP. Files-required and
-    /// close-condition are enforced here, so neither surface can bypass them.
+    /// The single authoring gate — shared by CLI + MCP. Enforces files-required
+    /// here so neither surface can bypass it. The close-condition rule is no
+    /// longer a *rejection*: [`create_bead`] resolves a default one (see
+    /// [`crate::bead::resolve_acceptance_criteria`]) so every bead is closeable
+    /// without breaking bare `rsry bead create "title"`.
     pub fn validate(&self) -> anyhow::Result<()> {
         if crate::bead::requires_files(&self.issue_type) && self.files.is_empty() {
             anyhow::bail!(
@@ -64,7 +67,13 @@ impl BeadCreateArgs {
                 self.issue_type
             );
         }
-        crate::bead::ensure_close_condition(
+        Ok(())
+    }
+
+    /// The `acceptance_criteria` this bead will actually be stored with —
+    /// explicit if given, else the honest PR-merge default for gated types.
+    pub fn resolved_acceptance_criteria(&self) -> String {
+        crate::bead::resolve_acceptance_criteria(
             &self.issue_type,
             &self.description,
             &self.test_files,
@@ -106,7 +115,7 @@ pub async fn create_bead<S: BeadStore + ?Sized>(
             test_files: args.test_files.clone(),
             depends_on: args.depends_on.clone(),
             created_by: created_by.map(str::to_string),
-            acceptance_criteria: args.acceptance_criteria.clone(),
+            acceptance_criteria: args.resolved_acceptance_criteria(),
             ..Default::default()
         })
         .await
@@ -173,18 +182,38 @@ mod tests {
     }
 
     #[test]
-    fn validate_requires_close_condition() {
-        let err = args("task", "just do it", &["a.rs"], &[])
-            .validate()
-            .unwrap_err();
-        assert!(err.to_string().contains("no close condition"), "{err}");
+    fn missing_close_condition_defaults_to_pr_merge_not_rejected() {
+        // Authoring no longer rejects a condition-less impl bead — it defaults
+        // one so bare `rsry bead create` stays frictionless while the bead is
+        // still closeable (ADR-0010 invariant preserved).
+        let a = args("task", "just do it", &["a.rs"], &[]);
+        a.validate().unwrap();
+        let ac = a.resolved_acceptance_criteria();
+        assert!(
+            ac.contains("PR merges"),
+            "expected the PR-merge default, got {ac:?}"
+        );
     }
 
     #[test]
-    fn validate_passes_with_files_and_test_command() {
-        args("task", "verify: cargo test", &["a.rs"], &[])
-            .validate()
-            .unwrap();
+    fn explicit_and_command_conditions_suppress_the_default() {
+        // A runnable command in the description already IS a close condition, so
+        // no default is synthesized.
+        assert_eq!(
+            args("task", "verify: cargo test", &["a.rs"], &[]).resolved_acceptance_criteria(),
+            ""
+        );
+        // An explicit acceptance_criteria always wins verbatim.
+        let mut a = args("task", "just do it", &["a.rs"], &[]);
+        a.acceptance_criteria = "closes when X".into();
+        assert_eq!(a.resolved_acceptance_criteria(), "closes when X");
+    }
+
+    #[test]
+    fn force_opts_out_of_the_default() {
+        let mut a = args("task", "just do it", &["a.rs"], &[]);
+        a.force = true;
+        assert_eq!(a.resolved_acceptance_criteria(), "");
     }
 
     #[test]
