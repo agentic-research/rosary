@@ -574,6 +574,17 @@ impl DispatchStore for SqliteBackend {
             .map_err(Into::into)
     }
 
+    async fn dispatches_for_bead(&self, bead: &WorkRef) -> Result<Vec<DispatchRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, repo, bead_id, agent, provider, started_at, completed_at, outcome, work_dir, session_id, session_ref_provider, session_ref_id, workspace_path, chain_hash
+             FROM dispatches WHERE repo = ?1 AND bead_id = ?2 ORDER BY started_at ASC",
+        )?;
+        let rows = stmt.query_map(params![bead.repo, bead.bead_id], row_to_dispatch)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     async fn record_agent_run_event(&self, event: &AgentRunEvent) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let payload_json = serde_json::to_string(&event.payload)?;

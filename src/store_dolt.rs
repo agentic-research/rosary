@@ -658,6 +658,21 @@ impl DispatchStore for DoltBackend {
         Ok(rows.iter().map(row_to_dispatch_record).collect())
     }
 
+    async fn dispatches_for_bead(&self, bead: &WorkRef) -> Result<Vec<DispatchRecord>> {
+        let rows = query(
+            "SELECT id, repo, bead_id, agent, provider, started_at,
+                    completed_at, outcome, work_dir, session_id, session_ref_provider, session_ref_id, workspace_path, chain_hash
+             FROM dispatches WHERE repo = ? AND bead_id = ? ORDER BY started_at ASC",
+        )
+        .bind(&bead.repo)
+        .bind(&bead.bead_id)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| format!("listing dispatches for {}/{}", bead.repo, bead.bead_id))?;
+
+        Ok(rows.iter().map(row_to_dispatch_record).collect())
+    }
+
     async fn record_agent_run_event(&self, event: &AgentRunEvent) -> Result<()> {
         let payload_json = serde_json::to_string(&event.payload)?;
         query(

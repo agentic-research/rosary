@@ -143,13 +143,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Dispatch a bead to a Claude Code agent in an isolated worktree
+    /// Dispatch a bead to an agent provider in an isolated worktree
     Dispatch {
         /// Bead ID to work on
         bead_id: String,
         /// Repo path containing .beads/
         #[arg(short, long, default_value = ".")]
         repo: String,
+        /// Agent provider (claude, gemini, acp, codex experimental)
+        #[arg(long, default_value = "claude")]
+        provider: String,
         /// Use isolated jj workspace
         #[arg(long, default_value_t = true)]
         isolate: bool,
@@ -171,7 +174,7 @@ enum Command {
         /// Print what would be dispatched without actually spawning agents
         #[arg(long)]
         dry_run: bool,
-        /// AI provider to use for dispatch (claude, gemini)
+        /// AI provider to use for dispatch (claude, gemini, acp, codex experimental)
         #[arg(long, default_value = "claude")]
         provider: String,
         /// Overnight mode: prefer small/mechanical beads, concurrency=1, interval=120s
@@ -1003,9 +1006,10 @@ async fn main() -> Result<()> {
         Command::Dispatch {
             bead_id,
             repo,
+            provider,
             isolate,
         } => {
-            dispatch::run(&bead_id, std::path::Path::new(&repo), isolate).await?;
+            dispatch::run(&bead_id, std::path::Path::new(&repo), isolate, &provider).await?;
         }
         Command::Run {
             config,

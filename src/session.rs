@@ -7,6 +7,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::dispatch::AgentSessionRef;
+
 /// A tracked agent session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
@@ -14,6 +16,9 @@ pub struct SessionEntry {
     pub repo: String,
     pub provider: String,
     pub pid: Option<u32>,
+    /// Provider-native session identity for runtimes without a local PID.
+    #[serde(default)]
+    pub session_ref: Option<AgentSessionRef>,
     pub work_dir: String,
     pub started_at: chrono::DateTime<chrono::Utc>,
     #[serde(default)]
@@ -57,13 +62,17 @@ impl SessionRegistry {
         let mut registry: Self =
             serde_json::from_str(&content).with_context(|| "parsing sessions.json")?;
 
-        // Remove sessions with no PID (legacy entries), but keep dead-PID
-        // sessions — their worktrees may contain unmerged work. Cleanup
-        // happens explicitly via rsry_workspace_cleanup or rsry_workspace_merge,
-        // NOT on load. Auto-cleanup on load caused data loss: agent finishes →
-        // PID dies → next MCP call nukes worktree before merge.
-        registry.sessions.retain(|s| s.pid.is_some());
+        // Remove legacy entries with no address, but keep native sessions
+        // identified by provider session_ref and keep dead-PID sessions — their
+        // worktrees may contain unmerged work. Cleanup happens explicitly via
+        // rsry_workspace_cleanup or rsry_workspace_merge, NOT on load.
+        registry.retain_addressable_sessions();
         Ok(registry)
+    }
+
+    fn retain_addressable_sessions(&mut self) {
+        self.sessions
+            .retain(|s| s.pid.is_some() || s.session_ref.is_some());
     }
 
     /// Save the registry.
@@ -179,6 +188,7 @@ mod tests {
             repo: "rosary".into(),
             provider: "claude".into(),
             pid: Some(std::process::id()), // current process — alive
+            session_ref: None,
             work_dir: "/tmp/test".into(),
             started_at: chrono::Utc::now(),
             title: String::new(),
@@ -200,6 +210,7 @@ mod tests {
             repo: "rosary".into(),
             provider: "claude".into(),
             pid: Some(1),
+            session_ref: None,
             work_dir: "/tmp/test".into(),
             started_at: chrono::Utc::now(),
             title: String::new(),
@@ -274,6 +285,7 @@ mod tests {
                 repo: "rosary".into(),
                 provider: "claude".into(),
                 pid: Some(42),
+                session_ref: None,
                 work_dir: "/tmp/test".into(),
                 started_at: chrono::Utc::now(),
                 title: "Test bead".into(),
@@ -291,6 +303,82 @@ mod tests {
     }
 
     #[test]
+    fn native_session_ref_serializes_without_pid() {
+        let reg = SessionRegistry {
+            sessions: vec![SessionEntry {
+                bead_id: "rsry-native".into(),
+                repo: "rosary".into(),
+                provider: "codex".into(),
+                pid: None,
+                session_ref: Some(AgentSessionRef::new("codex", "thread-123")),
+                work_dir: "/tmp/native".into(),
+                started_at: chrono::Utc::now(),
+                title: "Native session".into(),
+                agent: "dev-agent".into(),
+                workspace_vcs: "git".into(),
+                repo_path: "/tmp/repo".into(),
+                last_activity: None,
+                last_comment: None,
+            }],
+        };
+        let json = serde_json::to_string(&reg).unwrap();
+        let parsed: SessionRegistry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.sessions.len(), 1);
+        assert_eq!(parsed.sessions[0].pid, None);
+        assert_eq!(
+            parsed.sessions[0].session_ref,
+            Some(AgentSessionRef::new("codex", "thread-123"))
+        );
+    }
+
+    #[test]
+    fn native_session_ref_survives_addressability_prune() {
+        let mut reg = SessionRegistry {
+            sessions: vec![
+                SessionEntry {
+                    bead_id: "rsry-native".into(),
+                    repo: "rosary".into(),
+                    provider: "codex".into(),
+                    pid: None,
+                    session_ref: Some(AgentSessionRef::new("codex", "thread-123")),
+                    work_dir: "/tmp/native".into(),
+                    started_at: chrono::Utc::now(),
+                    title: "Native session".into(),
+                    agent: "dev-agent".into(),
+                    workspace_vcs: "git".into(),
+                    repo_path: "/tmp/repo".into(),
+                    last_activity: None,
+                    last_comment: None,
+                },
+                SessionEntry {
+                    bead_id: "rsry-legacy".into(),
+                    repo: "rosary".into(),
+                    provider: "legacy".into(),
+                    pid: None,
+                    session_ref: None,
+                    work_dir: "/tmp/legacy".into(),
+                    started_at: chrono::Utc::now(),
+                    title: "Legacy session".into(),
+                    agent: "dev-agent".into(),
+                    workspace_vcs: String::new(),
+                    repo_path: String::new(),
+                    last_activity: None,
+                    last_comment: None,
+                },
+            ],
+        };
+
+        reg.retain_addressable_sessions();
+
+        assert_eq!(reg.sessions.len(), 1);
+        assert_eq!(reg.sessions[0].bead_id, "rsry-native");
+        assert_eq!(
+            reg.sessions[0].session_ref,
+            Some(AgentSessionRef::new("codex", "thread-123"))
+        );
+    }
+
+    #[test]
     fn session_lifecycle_register_unregister() {
         // Simulates: dispatch → agent works → bead closed → unregister called
         let mut reg = SessionRegistry::default();
@@ -301,6 +389,7 @@ mod tests {
             repo: "rosary".into(),
             provider: "claude".into(),
             pid: Some(std::process::id()),
+            session_ref: None,
             work_dir: "/tmp/test".into(),
             started_at: chrono::Utc::now(),
             title: "Lifecycle test".into(),
@@ -333,6 +422,7 @@ mod tests {
             repo: "rosary".into(),
             provider: "claude".into(),
             pid: Some(99_999_999), // dead PID
+            session_ref: None,
             work_dir: "/tmp/test".into(),
             started_at: chrono::Utc::now(),
             title: "Dead session".into(),

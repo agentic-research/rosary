@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 use crate::config;
 use crate::dispatch::AgentSessionRef;
@@ -221,6 +222,10 @@ pub(crate) async fn call_tool(
         "rsry_dispatch_history" => tool_dispatch_history(args, backend).await,
         "rsry_agent_run_event_record" => tool_agent_run_event_record(args, backend).await,
         "rsry_agent_run_events" => tool_agent_run_events(args, backend).await,
+        "rsry_agent_session_addresses" => tool_agent_session_addresses(args, backend).await,
+        "rsry_agent_session_message_record" => {
+            tool_agent_session_message_record(args, backend).await
+        }
         "rsry_decade_list" => tool_decade_list(args, backend).await,
         "rsry_decade_create" => tool_decade_create(args, backend).await,
         "rsry_thread_list" => tool_thread_list(args, backend).await,
@@ -1078,6 +1083,8 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         bead.owner = Some(agent.to_string());
     }
 
+    crate::dispatch::ensure_dispatch_close_condition(&bead)?;
+
     let agent_label = bead
         .owner
         .as_deref()
@@ -1147,18 +1154,43 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     // (corrupted file → start fresh); saving is the real test.
     let mut registry = crate::session::SessionRegistry::load().unwrap_or_default();
 
-    // Server-side spawn: setsid + detached so the worker survives the MCP
-    // request returning AND isn't subject to the caller's safety classifier.
     let work_dir_path = std::path::Path::new(&work_dir);
-    let spawned = crate::dispatch::spawn_detached(
-        provider.as_ref(),
-        &prompt,
-        work_dir_path,
-        &perms,
-        &system_prompt,
-    )
-    .await
-    .with_context(|| format!("spawning agent for {bead_id}"))?;
+    let (command_bin, _) = provider.build_command(&prompt, &perms, &system_prompt);
+    let mut native_session: Option<Box<dyn crate::dispatch::AgentSession>> = None;
+    let (pid, session_ref, stream_path) = if command_bin.is_empty() {
+        let run_spec = crate::dispatch::providers::AgentRunSpec::new(
+            prompt.clone(),
+            work_dir_path.to_path_buf(),
+            perms,
+            system_prompt.clone(),
+        )
+        .with_bead_context(bead_id.to_string(), bead.owner.clone());
+        let session = provider
+            .spawn_run(&run_spec)
+            .with_context(|| format!("spawning native {provider_name} session for {bead_id}"))?;
+        let pid = session.pid();
+        let session_ref = session.session_ref();
+        anyhow::ensure!(
+            pid.is_some() || session_ref.is_some(),
+            "native provider {provider_name} returned no pid or session_ref for {bead_id}"
+        );
+        let stream_path = work_dir_path.join(crate::dispatch::STREAM_LOG_FILENAME);
+        native_session = Some(session);
+        (pid, session_ref, stream_path)
+    } else {
+        // Server-side spawn: setsid + detached so the worker survives the MCP
+        // request returning AND isn't subject to the caller's safety classifier.
+        let spawned = crate::dispatch::spawn_detached(
+            provider.as_ref(),
+            &prompt,
+            work_dir_path,
+            &perms,
+            &system_prompt,
+        )
+        .await
+        .with_context(|| format!("spawning agent for {bead_id}"))?;
+        (Some(spawned.pid), None, spawned.stream_log)
+    };
 
     let workspace_vcs = workspace
         .as_ref()
@@ -1173,7 +1205,8 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         bead_id: bead_id.to_string(),
         repo: repo_name.clone(),
         provider: provider_name.to_string(),
-        pid: Some(spawned.pid),
+        pid,
+        session_ref: session_ref.clone(),
         work_dir: work_dir.clone(),
         started_at: chrono::Utc::now(),
         title: bead.title.clone(),
@@ -1189,16 +1222,19 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     // we have to choose: leak an untracked worker, or kill it. We kill,
     // because an untracked worker is worse than no worker — it leaves the
     // bead in an indeterminate state and gives the operator no handle to
-    // recover. The worker will exit when we send SIGTERM; the tokio reaper
-    // task in spawn_detached will waitpid it.
+    // recover.
     if let Err(e) = registry.register(session_entry) {
-        let pid = spawned.pid;
-        eprintln!("[dispatch] registry write failed; killing untracked worker pid={pid}: {e}");
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+        if let Some(pid) = pid {
+            eprintln!("[dispatch] registry write failed; killing untracked worker pid={pid}: {e}");
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+        if let Some(session) = native_session.as_mut() {
+            let _ = session.kill();
         }
         return Err(e).with_context(|| {
-            format!("persisting session for {bead_id} (pid {pid} killed to keep state consistent)")
+            format!("persisting session for {bead_id} (untracked worker killed to keep state consistent)")
         });
     }
 
@@ -1207,14 +1243,18 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     // waited for the caller to spawn the process). Status update failing
     // here is recoverable (operator can mark out-of-band) so we don't kill
     // the worker — just surface the error.
+    let worker_address = session_ref
+        .as_ref()
+        .map(|r| format!("{}:{}", r.provider, r.id))
+        .or_else(|| pid.map(|pid| format!("pid {pid}")))
+        .unwrap_or_else(|| "unknown address".to_string());
     client
         .update_status(bead_id, "in_progress")
         .await
         .with_context(|| {
             format!(
-                "marking bead {bead_id} in_progress (worker is RUNNING at pid {}; \
+                "marking bead {bead_id} in_progress (worker is RUNNING at {worker_address}; \
                  bead status update failed but the agent is tracked in sessions.json)",
-                spawned.pid,
             )
         })?;
 
@@ -1225,10 +1265,14 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         "agent": agent_label,
         "provider": provider_name,
         "work_dir": work_dir,
-        "pid": spawned.pid,
-        "stream": spawned.stream_log.display().to_string(),
+        "pid": pid,
+        "session_ref": session_ref.as_ref().map(|r| json!({
+            "provider": r.provider,
+            "id": r.id,
+        })),
+        "stream": stream_path.display().to_string(),
         "allowed_tools": allowed_tools,
-        "instructions": "Worker spawned server-side (pid above). Tail `stream` to watch progress, or call rsry_active to list live sessions.",
+        "instructions": "Worker spawned server-side. Tail `stream` when present, or call rsry_active to list live sessions.",
     }))
 }
 
@@ -1246,6 +1290,10 @@ async fn tool_active() -> Result<Value> {
             "repo": s.repo,
             "provider": s.provider,
             "pid": s.pid,
+            "session_ref": s.session_ref.as_ref().map(|r| json!({
+                "provider": r.provider,
+                "id": r.id,
+            })),
             "work_dir": s.work_dir,
             "started_at": s.started_at.to_rfc3339(),
             "last_activity": s.last_activity.map(|t| t.to_rfc3339()),
@@ -1270,6 +1318,10 @@ async fn tool_active() -> Result<Value> {
 /// Quick health check for a dispatched agent.
 /// Returns "healthy", "idle", "stuck", or "dead".
 fn check_agent_health(session: &crate::session::SessionEntry) -> &'static str {
+    if session.pid.is_none() && session.session_ref.is_some() {
+        return "healthy";
+    }
+
     // Check if PID is alive
     let pid_alive = session
         .pid
@@ -2041,6 +2093,245 @@ async fn tool_agent_run_events(args: &Value, backend: Option<&dyn BackendStore>)
     };
     let events = backend.agent_run_events_for_bead(&bead).await?;
     Ok(json!({ "count": events.len(), "events": events }))
+}
+
+#[derive(Debug, Clone)]
+struct AgentSessionAddressAccumulator {
+    session_ref: AgentSessionRef,
+    bead_ref: WorkRef,
+    active: bool,
+    dispatch_id: Option<String>,
+    agent: Option<String>,
+    work_dir: Option<String>,
+    dispatch_source: bool,
+    event_count: usize,
+    latest_event_type: Option<String>,
+    latest_event_summary: Option<String>,
+    latest_event_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl AgentSessionAddressAccumulator {
+    fn new(session_ref: AgentSessionRef, bead_ref: WorkRef) -> Self {
+        Self {
+            session_ref,
+            bead_ref,
+            active: false,
+            dispatch_id: None,
+            agent: None,
+            work_dir: None,
+            dispatch_source: false,
+            event_count: 0,
+            latest_event_type: None,
+            latest_event_summary: None,
+            latest_event_at: None,
+        }
+    }
+
+    fn absorb_dispatch(&mut self, dispatch: &DispatchRecord) {
+        self.active |= dispatch.completed_at.is_none();
+        self.dispatch_id = Some(dispatch.id.clone());
+        self.agent = Some(dispatch.agent.clone());
+        self.work_dir = Some(dispatch.work_dir.clone());
+        self.dispatch_source = true;
+    }
+
+    fn absorb_event(&mut self, event: &AgentRunEvent) {
+        self.event_count += 1;
+        if self.dispatch_id.is_none() {
+            self.dispatch_id = Some(event.dispatch_id.clone());
+        }
+        if self
+            .latest_event_at
+            .map(|existing| event.created_at >= existing)
+            .unwrap_or(true)
+        {
+            self.latest_event_at = Some(event.created_at);
+            self.latest_event_type = Some(event.event_type.clone());
+            self.latest_event_summary = Some(event.summary.clone());
+        }
+    }
+
+    fn into_json(self) -> Value {
+        let mut sources = Vec::new();
+        if self.dispatch_source {
+            sources.push("dispatch");
+        }
+        if self.event_count > 0 {
+            sources.push("agent_run_event");
+        }
+
+        json!({
+            "provider": self.session_ref.provider,
+            "id": self.session_ref.id,
+            "repo": self.bead_ref.repo,
+            "scope": self.bead_ref.scope,
+            "bead_id": self.bead_ref.bead_id,
+            "active": self.active,
+            "dispatch_id": self.dispatch_id,
+            "agent": self.agent,
+            "work_dir": self.work_dir,
+            "event_count": self.event_count,
+            "latest_event_type": self.latest_event_type,
+            "latest_event_summary": self.latest_event_summary,
+            "latest_event_at": self.latest_event_at.map(|t| t.to_rfc3339()),
+            "sources": sources,
+        })
+    }
+}
+
+fn dispatch_session_address(dispatch: &DispatchRecord) -> Option<AgentSessionRef> {
+    dispatch.session_ref.clone().or_else(|| {
+        dispatch
+            .session_id
+            .as_ref()
+            .map(|id| AgentSessionRef::new(dispatch.provider.as_str(), id.as_str()))
+    })
+}
+
+async fn tool_agent_session_addresses(
+    args: &Value,
+    backend: Option<&dyn BackendStore>,
+) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+    let repo = args["repo"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo required"))?;
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+    let bead = WorkRef {
+        repo: repo.to_string(),
+        scope: scope.to_string(),
+        bead_id: bead_id.to_string(),
+    };
+
+    let mut addresses: BTreeMap<(String, String), AgentSessionAddressAccumulator> = BTreeMap::new();
+
+    for dispatch in backend.dispatches_for_bead(&bead).await? {
+        let Some(session_ref) = dispatch_session_address(&dispatch) else {
+            continue;
+        };
+        let key = (session_ref.provider.clone(), session_ref.id.clone());
+        addresses
+            .entry(key)
+            .or_insert_with(|| AgentSessionAddressAccumulator::new(session_ref, bead.clone()))
+            .absorb_dispatch(&dispatch);
+    }
+
+    for event in backend.agent_run_events_for_bead(&bead).await? {
+        let Some(session_ref) = event.session_ref.clone() else {
+            continue;
+        };
+        let key = (session_ref.provider.clone(), session_ref.id.clone());
+        addresses
+            .entry(key)
+            .or_insert_with(|| AgentSessionAddressAccumulator::new(session_ref, bead.clone()))
+            .absorb_event(&event);
+    }
+
+    let items: Vec<Value> = addresses
+        .into_values()
+        .map(AgentSessionAddressAccumulator::into_json)
+        .collect();
+
+    Ok(json!({ "count": items.len(), "addresses": items }))
+}
+
+fn matching_dispatch_id_for_session(
+    dispatches: &[DispatchRecord],
+    session_ref: &AgentSessionRef,
+) -> Option<String> {
+    dispatches
+        .iter()
+        .rev()
+        .find(|dispatch| {
+            dispatch_session_address(dispatch)
+                .as_ref()
+                .map(|candidate| candidate == session_ref)
+                .unwrap_or(false)
+        })
+        .map(|dispatch| dispatch.id.clone())
+}
+
+async fn tool_agent_session_message_record(
+    args: &Value,
+    backend: Option<&dyn BackendStore>,
+) -> Result<Value> {
+    let backend = backend.ok_or_else(|| anyhow::anyhow!("backend store not configured"))?;
+    let repo = args["repo"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("repo required"))?;
+    let bead_id = args["bead_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("bead_id required"))?;
+    let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+    let session_ref = parse_session_ref_arg(args)?
+        .ok_or_else(|| anyhow::anyhow!("session_ref required for addressed message"))?;
+    let message = args["message"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("message required"))?;
+    if message.trim().is_empty() {
+        anyhow::bail!("message must not be blank");
+    }
+    if message.len() > BODY_MAX_LEN {
+        anyhow::bail!(
+            "message exceeds {BODY_MAX_LEN} bytes (got {})",
+            message.len()
+        );
+    }
+
+    let bead = WorkRef {
+        repo: repo.to_string(),
+        scope: scope.to_string(),
+        bead_id: bead_id.to_string(),
+    };
+    let dispatches = backend.dispatches_for_bead(&bead).await?;
+    let dispatch_id = match args.get("dispatch_id").and_then(|v| v.as_str()) {
+        Some(id) => id.to_string(),
+        None => matching_dispatch_id_for_session(&dispatches, &session_ref).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no dispatch found for session_ref {}:{} on {repo}/{bead_id}; pass dispatch_id explicitly",
+                session_ref.provider,
+                session_ref.id,
+            )
+        })?,
+    };
+
+    let mut payload = parse_agent_event_payload(args)?;
+    let payload_obj = payload
+        .as_object_mut()
+        .expect("parse_agent_event_payload returns an object");
+    payload_obj.insert("direction".to_string(), json!("outbound"));
+    payload_obj.insert("message".to_string(), json!(message));
+
+    let id = args
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("msg-{}", uuid::Uuid::new_v4()));
+    let event_type = args
+        .get("event_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("handoff_message");
+    let event = AgentRunEvent {
+        id: id.clone(),
+        dispatch_id: dispatch_id.clone(),
+        bead_ref: bead,
+        session_ref: Some(session_ref),
+        event_type: event_type.to_string(),
+        summary: message.to_string(),
+        payload,
+        created_at: parse_agent_event_created_at(args)?,
+    };
+
+    backend.record_agent_run_event(&event).await?;
+    Ok(json!({
+        "id": id,
+        "dispatch_id": dispatch_id,
+        "bead_id": bead_id,
+        "recorded": true,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2919,6 +3210,27 @@ mod input_validation_tests {
     // Validation fires before DB access, so an empty pool + nonexistent path is fine.
     const FAKE_REPO: &str = "/nonexistent/repo";
 
+    #[test]
+    fn native_session_health_uses_session_ref_without_pid() {
+        let session = crate::session::SessionEntry {
+            bead_id: "rosary-native".into(),
+            repo: "rosary".into(),
+            provider: "codex".into(),
+            pid: None,
+            session_ref: Some(crate::dispatch::AgentSessionRef::new("codex", "thread-123")),
+            work_dir: "/tmp/native".into(),
+            started_at: chrono::Utc::now(),
+            title: "Native session".into(),
+            agent: "dev-agent".into(),
+            workspace_vcs: "git".into(),
+            repo_path: "/tmp/repo".into(),
+            last_activity: None,
+            last_comment: None,
+        };
+
+        assert_eq!(check_agent_health(&session), "healthy");
+    }
+
     // ---- tool_bead_create --------------------------------------------------
 
     #[tokio::test]
@@ -2993,6 +3305,51 @@ mod input_validation_tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no close condition"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_missing_close_condition_before_provider_resolution() {
+        let repo = crate::testutil::TestRepo::new();
+        let store = crate::bead_sqlite::connect_bead_store(&repo.path().join(".beads"))
+            .await
+            .unwrap();
+        store
+            .create_bead_full(
+                "rsry-mcp-no-close",
+                "MCP dispatch without close condition",
+                "No runnable close condition here.",
+                1,
+                "task",
+                "dev-agent",
+                &["src/serve/handlers.rs".into()],
+                &[],
+                &[],
+                Some("test"),
+                "",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let repo_path = repo.path().to_string_lossy().to_string();
+        let args = json!({
+            "repo_path": repo_path,
+            "bead_id": "rsry-mcp-no-close",
+            "provider": "not-a-provider",
+            "isolate": false
+        });
+        let err = tool_dispatch(&args, "rosary.toml").await.unwrap_err();
+
+        assert!(err.to_string().contains("no close condition"), "{err}");
+        assert_eq!(
+            store
+                .get_status("rsry-mcp-no-close")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("open"),
+            "MCP dispatch must not create workspace/session state for unclosable beads"
+        );
     }
 
     // ---- tool_bead_update --------------------------------------------------
@@ -4042,5 +4399,188 @@ mod input_validation_tests {
             err.to_string().contains("payload"),
             "error must name payload; got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn agent_session_addresses_resolve_claude_and_codex_for_bead() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        tool_dispatch_record(
+            &json!({
+                "id": "dispatch-claude",
+                "repo": "rosary",
+                "bead_id": "rosary-addressable",
+                "agent": "dev-agent",
+                "provider": "claude",
+                "work_dir": "/tmp/claude",
+                "session_id": "claude-session-1"
+            }),
+            Some(&store),
+        )
+        .await
+        .expect("record claude dispatch");
+        tool_dispatch_record(
+            &json!({
+                "id": "dispatch-codex",
+                "repo": "rosary",
+                "bead_id": "rosary-addressable",
+                "agent": "staging-agent",
+                "provider": "codex",
+                "work_dir": "/tmp/codex",
+                "session_ref": {
+                    "provider": "codex",
+                    "id": "thread-123"
+                }
+            }),
+            Some(&store),
+        )
+        .await
+        .expect("record codex dispatch");
+        tool_agent_run_event_record(
+            &json!({
+                "id": "evt-codex-1",
+                "dispatch_id": "dispatch-codex",
+                "repo": "rosary",
+                "bead_id": "rosary-addressable",
+                "event_type": "heartbeat",
+                "summary": "codex is alive",
+                "session_ref": {
+                    "provider": "codex",
+                    "id": "thread-123"
+                }
+            }),
+            Some(&store),
+        )
+        .await
+        .expect("record codex event");
+
+        let got = tool_agent_session_addresses(
+            &json!({ "repo": "rosary", "bead_id": "rosary-addressable" }),
+            Some(&store),
+        )
+        .await
+        .expect("resolve addresses");
+
+        assert_eq!(got["count"], 2);
+        assert_eq!(got["addresses"][0]["provider"], "claude");
+        assert_eq!(got["addresses"][0]["id"], "claude-session-1");
+        assert_eq!(got["addresses"][0]["active"], true);
+        assert_eq!(got["addresses"][0]["sources"], json!(["dispatch"]));
+        assert_eq!(got["addresses"][1]["provider"], "codex");
+        assert_eq!(got["addresses"][1]["id"], "thread-123");
+        assert_eq!(got["addresses"][1]["active"], true);
+        assert_eq!(got["addresses"][1]["event_count"], 1);
+        assert_eq!(
+            got["addresses"][1]["sources"],
+            json!(["dispatch", "agent_run_event"])
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_session_addresses_include_completed_dispatch_without_events() {
+        use crate::store::{DispatchRecord, DispatchStore, WorkRef, tests::InMemoryStore};
+
+        let store = InMemoryStore::new();
+        let bead = WorkRef {
+            repo: "rosary".to_string(),
+            scope: String::new(),
+            bead_id: "rosary-addressable".to_string(),
+        };
+        store
+            .record_dispatch(&DispatchRecord {
+                id: "dispatch-complete".to_string(),
+                bead_ref: bead,
+                agent: "prod-agent".to_string(),
+                provider: "codex".to_string(),
+                started_at: chrono::Utc::now(),
+                completed_at: Some(chrono::Utc::now()),
+                outcome: Some("success".to_string()),
+                work_dir: "/tmp/codex-complete".to_string(),
+                session_id: None,
+                session_ref: Some(crate::dispatch::AgentSessionRef::new(
+                    "codex",
+                    "thread-complete",
+                )),
+                workspace_path: None,
+                chain_hash: None,
+            })
+            .await
+            .expect("record completed dispatch");
+
+        let got = tool_agent_session_addresses(
+            &json!({ "repo": "rosary", "bead_id": "rosary-addressable" }),
+            Some(&store),
+        )
+        .await
+        .expect("resolve addresses");
+
+        assert_eq!(got["count"], 1);
+        assert_eq!(got["addresses"][0]["provider"], "codex");
+        assert_eq!(got["addresses"][0]["id"], "thread-complete");
+        assert_eq!(got["addresses"][0]["active"], false);
+        assert_eq!(got["addresses"][0]["sources"], json!(["dispatch"]));
+    }
+
+    #[tokio::test]
+    async fn agent_session_message_records_addressed_handoff_event() {
+        use crate::store::tests::InMemoryStore;
+
+        let store = InMemoryStore::new();
+        tool_dispatch_record(
+            &json!({
+                "id": "dispatch-codex",
+                "repo": "rosary",
+                "bead_id": "rosary-addressable",
+                "agent": "staging-agent",
+                "provider": "codex",
+                "work_dir": "/tmp/codex",
+                "session_ref": {
+                    "provider": "codex",
+                    "id": "thread-123"
+                }
+            }),
+            Some(&store),
+        )
+        .await
+        .expect("record codex dispatch");
+
+        let recorded = tool_agent_session_message_record(
+            &json!({
+                "id": "msg-1",
+                "repo": "rosary",
+                "bead_id": "rosary-addressable",
+                "session_ref": {
+                    "provider": "codex",
+                    "id": "thread-123"
+                },
+                "message": "please review the stored findings",
+                "payload": { "handoff_kind": "review" }
+            }),
+            Some(&store),
+        )
+        .await
+        .expect("record message");
+
+        assert_eq!(recorded["id"], "msg-1");
+        assert_eq!(recorded["dispatch_id"], "dispatch-codex");
+        assert_eq!(recorded["recorded"], true);
+
+        let got = tool_agent_run_events(
+            &json!({ "repo": "rosary", "bead_id": "rosary-addressable" }),
+            Some(&store),
+        )
+        .await
+        .expect("list events");
+
+        assert_eq!(got["count"], 1);
+        assert_eq!(got["events"][0]["event_type"], "handoff_message");
+        assert_eq!(
+            got["events"][0]["summary"],
+            "please review the stored findings"
+        );
+        assert_eq!(got["events"][0]["session_ref"]["provider"], "codex");
+        assert_eq!(got["events"][0]["payload"]["direction"], "outbound");
+        assert_eq!(got["events"][0]["payload"]["handoff_kind"], "review");
     }
 }

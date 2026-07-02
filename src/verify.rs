@@ -234,19 +234,34 @@ impl ShellCheck {
     }
 }
 
+fn verification_env_overrides(program: &str) -> Vec<(&'static str, &'static str)> {
+    let program_name = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program);
+    match program_name {
+        "cargo" => vec![("CARGO_BUILD_RUSTC_WRAPPER", "")],
+        _ => Vec::new(),
+    }
+}
+
 impl VerifyTier for ShellCheck {
     fn name(&self) -> &str {
         &self.name
     }
 
     fn check(&self, work_dir: &Path) -> Result<VerifyResult> {
-        let status = match std::process::Command::new(&self.program)
+        let mut command = std::process::Command::new(&self.program);
+        command
             .args(&self.args)
             .current_dir(work_dir)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .status()
-        {
+            .stderr(std::process::Stdio::piped());
+        for (key, value) in verification_env_overrides(&self.program) {
+            command.env(key, value);
+        }
+
+        let status = match command.status() {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 eprintln!(
@@ -796,6 +811,28 @@ mod tests {
         let result = check.check(dir.path()).unwrap();
         // Missing tool = skip, not fail
         assert_eq!(result, VerifyResult::Pass);
+    }
+
+    #[test]
+    fn cargo_verification_env_disables_sandbox_sensitive_rustc_wrapper() {
+        let overrides = verification_env_overrides("cargo");
+        assert_eq!(
+            overrides,
+            vec![("CARGO_BUILD_RUSTC_WRAPPER", "")],
+            "cargo verification should bypass inherited sccache wrappers deterministically"
+        );
+    }
+
+    #[test]
+    fn cargo_verification_env_detects_absolute_cargo_path() {
+        let overrides = verification_env_overrides("/opt/homebrew/bin/cargo");
+        assert_eq!(overrides, vec![("CARGO_BUILD_RUSTC_WRAPPER", "")]);
+    }
+
+    #[test]
+    fn non_cargo_verification_env_is_unchanged() {
+        assert!(verification_env_overrides("go").is_empty());
+        assert!(verification_env_overrides("semgrep").is_empty());
     }
 
     #[test]

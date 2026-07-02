@@ -666,6 +666,7 @@ fn fake_session(bead_id: &str, repo: &str, pid: u32) -> crate::session::SessionE
         repo: repo.to_string(),
         provider: "claude".to_string(),
         pid: Some(pid),
+        session_ref: None,
         work_dir: "/tmp/test-liveness-work".to_string(),
         started_at: chrono::Utc::now(),
         title: format!("test bead {bead_id}"),

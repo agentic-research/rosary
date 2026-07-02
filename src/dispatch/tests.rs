@@ -1,8 +1,32 @@
 //! Tests for the dispatch module.
 
 use super::*;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tempfile::TempDir;
+
+use crate::dispatch::fake::{DeterministicAgentAction, DeterministicAgentProvider};
+use crate::dispatch::providers::{
+    CodexAppServerClient, CodexAppServerRequest, CodexAppServerRuntime, CodexNativeSession,
+    CodexProvider, CodexRuntime, CodexThreadStart, CodexUnixSocketClient,
+};
+
+fn codex_gate_test_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
+
+fn clear_codex_gate_env() {
+    unsafe {
+        std::env::remove_var("RSRY_EXPERIMENTAL_CODEX");
+    }
+}
+
+fn set_codex_gate_env(value: &str) {
+    unsafe {
+        std::env::set_var("RSRY_EXPERIMENTAL_CODEX", value);
+    }
+}
 
 // -----------------------------------------------------------------------
 // MockAgentSession — fake agent that completes immediately
@@ -192,9 +216,150 @@ async fn spawn_passes_agent_native_run_spec_to_provider() {
 }
 
 #[tokio::test]
+async fn deterministic_agent_harness_exposes_native_session_and_captures_run_spec() {
+    let repo = crate::testutil::TestRepo::new();
+    let mut bead = crate::testutil::make_bead("rsry-fake1", "task", "rosary");
+    bead.owner = Some("dev-agent".into());
+
+    let provider =
+        DeterministicAgentProvider::new("codex").with_session_ref("codex", "thread-fake-1");
+    let captured = provider.captured_specs();
+
+    let mut handle = spawn(&bead, repo.path(), false, 0, &provider, None, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(handle.session.pid(), None);
+    assert_eq!(
+        handle.session.session_ref(),
+        Some(AgentSessionRef::new("codex", "thread-fake-1"))
+    );
+    assert_eq!(handle.session.try_wait().unwrap(), Some(true));
+
+    let specs = captured.lock().unwrap();
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].bead_id.as_deref(), Some("rsry-fake1"));
+    assert_eq!(specs[0].agent_name.as_deref(), Some("dev-agent"));
+    assert_eq!(specs[0].permissions, PermissionProfile::Implement);
+    assert!(specs[0].expected_mcp_tools.contains(&"rsry".to_string()));
+    assert!(specs[0].expected_mcp_tools.contains(&"mache".to_string()));
+    assert!(specs[0].expected_mcp_tools.contains(&"lectio".to_string()));
+}
+
+#[tokio::test]
+async fn deterministic_agent_harness_can_script_bead_ref_commit() {
+    let repo = crate::testutil::TestRepo::new();
+    let mut bead = crate::testutil::make_bead("rsry-fake2", "task", "rosary");
+    bead.owner = Some("dev-agent".into());
+
+    let provider = DeterministicAgentProvider::new("codex").with_action(
+        DeterministicAgentAction::CommitWithBeadRef {
+            bead_id: "rsry-fake2".into(),
+            file: "fake.rs".into(),
+            contents: "fn fake() {}\n".into(),
+        },
+    );
+
+    let _handle = spawn(&bead, repo.path(), false, 0, &provider, None, None, None)
+        .await
+        .unwrap();
+
+    let verifier = crate::verify::Verifier::new(vec![
+        Box::new(crate::verify::CommitCheck),
+        Box::new(crate::verify::WorkRefCheck),
+    ]);
+    let summary = verifier.run(repo.path()).unwrap();
+    assert!(summary.passed(), "scripted commit should pass: {summary:?}");
+}
+
+#[tokio::test]
+async fn deterministic_agent_harness_can_script_failure_and_plain_commit() {
+    let repo = crate::testutil::TestRepo::new();
+    let bead = crate::testutil::make_bead("rsry-fake3", "task", "rosary");
+
+    let provider = DeterministicAgentProvider::new("codex")
+        .failing()
+        .with_action(DeterministicAgentAction::WriteFile {
+            file: "notes/failure.txt".into(),
+            contents: "scripted failure\n".into(),
+        })
+        .with_action(DeterministicAgentAction::CommitPlain {
+            message: "test(fake): scripted plain commit".into(),
+            file: "plain.rs".into(),
+            contents: "fn plain() {}\n".into(),
+        });
+
+    let mut handle = spawn(&bead, repo.path(), false, 0, &provider, None, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(handle.session.try_wait().unwrap(), Some(false));
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("notes/failure.txt")).unwrap(),
+        "scripted failure\n"
+    );
+
+    let log = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%s"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(log.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&log.stdout).trim(),
+        "test(fake): scripted plain commit"
+    );
+}
+
+#[test]
+fn dispatch_close_condition_accepts_test_files() {
+    let mut bead = crate::testutil::make_bead("rsry-close-ok", "task", "rosary");
+    bead.description = "Implementation bead with acceptance carried by test_files.".into();
+    bead.test_files = vec!["src/dispatch/tests.rs".into()];
+
+    ensure_dispatch_close_condition(&bead).unwrap();
+}
+
+#[tokio::test]
+async fn run_rejects_unclosable_impl_bead_before_status_mutation() {
+    let repo = crate::testutil::TestRepo::new();
+    let store = crate::bead_sqlite::connect_bead_store(&repo.path().join(".beads"))
+        .await
+        .unwrap();
+    store
+        .create_bead_full(
+            "rsry-no-close",
+            "Unclosable dispatch bead",
+            "No runnable close condition here.",
+            1,
+            "task",
+            "dev-agent",
+            &["src/dispatch/mod.rs".into()],
+            &[],
+            &[],
+            Some("test"),
+            "",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let err = run("rsry-no-close", repo.path(), false, "not-a-provider")
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("no close condition"), "{err}");
+    assert_eq!(
+        store.get_status("rsry-no-close").await.unwrap().as_deref(),
+        Some("open"),
+        "dispatch must not mark an unclosable bead dispatched before rejecting it"
+    );
+}
+
+#[tokio::test]
 async fn dispatch_missing_beads_dir_errors() {
     let dir = TempDir::new().unwrap();
-    let result = run("fake-id", dir.path(), false).await;
+    let result = run("fake-id", dir.path(), false, "claude").await;
     assert!(result.is_err());
 }
 
@@ -312,6 +477,336 @@ fn provider_by_name_claude() {
     let empty = std::collections::HashMap::new();
     let p = provider_by_name("claude", &empty).unwrap();
     assert_eq!(p.name(), "claude");
+}
+
+#[test]
+fn provider_by_name_codex_requires_experimental_gate() {
+    let _guard = codex_gate_test_lock();
+    clear_codex_gate_env();
+    let empty = std::collections::HashMap::new();
+    let err = match provider_by_name("codex", &empty) {
+        Ok(_) => panic!("codex provider must be gated off by default"),
+        Err(err) => err,
+    };
+
+    assert!(err.to_string().contains("experimental"), "{err}");
+    assert!(
+        err.to_string().contains("RSRY_EXPERIMENTAL_CODEX=1"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("rosary-d6b6e6"), "{err}");
+    assert!(err.to_string().contains("rosary-2500f3"), "{err}");
+}
+
+#[test]
+fn provider_by_name_codex_returns_native_provider_when_experimental_gate_is_enabled() {
+    let _guard = codex_gate_test_lock();
+    set_codex_gate_env("1");
+    let empty = std::collections::HashMap::new();
+    let p = provider_by_name("codex", &empty).unwrap();
+    clear_codex_gate_env();
+    assert_eq!(p.name(), "codex");
+
+    let (bin, args) = p.build_command("prompt", &PermissionProfile::Implement, "system prompt");
+    assert!(
+        bin.is_empty() && args.is_empty(),
+        "Codex provider must not expose a durable CLI command path"
+    );
+}
+
+#[derive(Clone)]
+struct MockCodexRuntime {
+    captured: Arc<Mutex<Vec<CodexThreadStart>>>,
+}
+
+impl CodexRuntime for MockCodexRuntime {
+    fn start_thread(&self, start: CodexThreadStart) -> Result<CodexNativeSession> {
+        self.captured.lock().unwrap().push(start);
+        Ok(CodexNativeSession::completed_success("thread-rsry-1"))
+    }
+}
+
+#[tokio::test]
+async fn codex_provider_starts_native_thread_and_exposes_session_ref() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let provider = CodexProvider::with_runtime(Arc::new(MockCodexRuntime {
+        captured: captured.clone(),
+    }));
+    let repo = crate::testutil::TestRepo::new();
+    let mut bead = crate::testutil::make_bead("rsry-codex1", "task", "rosary");
+    bead.owner = Some("dev-agent".into());
+
+    let mut handle = spawn(&bead, repo.path(), false, 0, &provider, None, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(handle.pid(), None);
+    assert_eq!(
+        handle.session_ref(),
+        Some(AgentSessionRef::new("codex", "thread-rsry-1"))
+    );
+    assert_eq!(handle.try_wait().unwrap(), Some(true));
+
+    let starts = captured.lock().unwrap();
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0].bead_id.as_deref(), Some("rsry-codex1"));
+    assert_eq!(starts[0].agent_name.as_deref(), Some("dev-agent"));
+    assert_eq!(starts[0].work_dir, handle.work_dir);
+    assert_eq!(starts[0].permissions, PermissionProfile::Implement);
+    assert!(starts[0].prompt.contains("rsry-codex1"));
+    assert!(starts[0].system_prompt.contains(PROMPT_VERSION));
+    assert!(starts[0].mcp_servers.contains_key("rsry"));
+    assert!(starts[0].expected_mcp_tools.contains(&"lectio".to_string()));
+}
+
+#[test]
+fn codex_app_server_thread_start_maps_rosary_run_spec_to_codex_protocol() {
+    let mut mcp_servers = std::collections::BTreeMap::new();
+    mcp_servers.insert("rsry".to_string(), "http://localhost:8383/mcp".to_string());
+    let start = CodexThreadStart {
+        bead_id: Some("rosary-codex-protocol".to_string()),
+        agent_name: Some("dev-agent".to_string()),
+        prompt: "work the bead".to_string(),
+        work_dir: PathBuf::from("/tmp/rsry-codex-work"),
+        permissions: PermissionProfile::Implement,
+        system_prompt: "developer rules".to_string(),
+        mcp_servers,
+        expected_mcp_tools: vec![
+            "rsry".to_string(),
+            "mache".to_string(),
+            "lectio".to_string(),
+        ],
+        model: Some("gpt-5-codex".to_string()),
+    };
+
+    let request = CodexAppServerRequest::thread_start("rsry-thread-start-1", &start);
+    let value = serde_json::to_value(request).expect("thread/start request should serialize");
+
+    assert_eq!(value["jsonrpc"], "2.0");
+    assert_eq!(value["id"], "rsry-thread-start-1");
+    assert_eq!(value["method"], "thread/start");
+    assert_eq!(value["params"]["model"], "gpt-5-codex");
+    assert_eq!(value["params"]["cwd"], "/tmp/rsry-codex-work");
+    assert_eq!(
+        value["params"]["runtimeWorkspaceRoots"],
+        serde_json::json!(["/tmp/rsry-codex-work"])
+    );
+    assert_eq!(value["params"]["approvalPolicy"], "on-request");
+    assert_eq!(value["params"]["sandbox"], "workspace-write");
+    assert!(
+        value["params"].get("permissions").is_none(),
+        "Rosary should not depend on Codex's experimental named permission profiles"
+    );
+    assert_eq!(value["params"]["developerInstructions"], "developer rules");
+    assert_eq!(
+        value["params"]["config"]["rsry.bead_id"],
+        "rosary-codex-protocol"
+    );
+    assert_eq!(value["params"]["config"]["rsry.agent_name"], "dev-agent");
+    assert_eq!(
+        value["params"]["config"]["rsry.expected_mcp_tools"],
+        serde_json::json!(["rsry", "mache", "lectio"])
+    );
+}
+
+#[test]
+fn codex_app_server_turn_start_carries_prompt_as_text_input() {
+    let request = CodexAppServerRequest::turn_start(
+        "rsry-turn-start-1",
+        "thread-rsry-123",
+        "work the bead",
+        Path::new("/tmp/rsry-codex-work"),
+        PermissionProfile::Plan,
+        Some("gpt-5-codex".to_string()),
+    );
+    let value = serde_json::to_value(request).expect("turn/start request should serialize");
+
+    assert_eq!(value["jsonrpc"], "2.0");
+    assert_eq!(value["id"], "rsry-turn-start-1");
+    assert_eq!(value["method"], "turn/start");
+    assert_eq!(value["params"]["threadId"], "thread-rsry-123");
+    assert_eq!(value["params"]["cwd"], "/tmp/rsry-codex-work");
+    assert_eq!(
+        value["params"]["runtimeWorkspaceRoots"],
+        serde_json::json!(["/tmp/rsry-codex-work"])
+    );
+    assert_eq!(value["params"]["approvalPolicy"], "on-request");
+    assert_eq!(
+        value["params"]["sandboxPolicy"],
+        serde_json::json!({ "type": "readOnly", "networkAccess": false })
+    );
+    assert!(
+        value["params"].get("permissions").is_none(),
+        "Rosary should not depend on Codex's experimental named permission profiles"
+    );
+    assert_eq!(value["params"]["model"], "gpt-5-codex");
+    assert_eq!(
+        value["params"]["input"],
+        serde_json::json!([{ "type": "text", "text": "work the bead", "textElements": [] }])
+    );
+}
+
+#[derive(Default)]
+struct FakeCodexAppServerClient {
+    requests: Arc<Mutex<Vec<serde_json::Value>>>,
+}
+
+impl CodexAppServerClient for FakeCodexAppServerClient {
+    fn request(&self, request: CodexAppServerRequest) -> Result<serde_json::Value> {
+        let value = serde_json::to_value(request).expect("request should serialize");
+        let method = value["method"].as_str().unwrap_or_default().to_string();
+        self.requests.lock().unwrap().push(value);
+        match method.as_str() {
+            "thread/start" => Ok(serde_json::json!({
+                "thread": {
+                    "id": "thread-from-fake-app-server",
+                    "sessionId": "session-from-fake-app-server"
+                }
+            })),
+            "turn/start" => Ok(serde_json::json!({
+                "turn": {
+                    "id": "turn-from-fake-app-server"
+                }
+            })),
+            other => anyhow::bail!("unexpected codex request method {other}"),
+        }
+    }
+}
+
+#[test]
+fn codex_app_server_runtime_starts_thread_then_turn_and_returns_session_ref() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let runtime = CodexAppServerRuntime::new(Arc::new(FakeCodexAppServerClient {
+        requests: requests.clone(),
+    }));
+    let start = CodexThreadStart {
+        bead_id: Some("rosary-codex-runtime".to_string()),
+        agent_name: Some("dev-agent".to_string()),
+        prompt: "work the runtime bead".to_string(),
+        work_dir: PathBuf::from("/tmp/rsry-codex-work"),
+        permissions: PermissionProfile::Implement,
+        system_prompt: "developer rules".to_string(),
+        mcp_servers: std::collections::BTreeMap::new(),
+        expected_mcp_tools: vec!["rsry".to_string()],
+        model: None,
+    };
+
+    let session = runtime
+        .start_thread(start)
+        .expect("runtime should start codex");
+
+    assert_eq!(
+        session.session_ref(),
+        Some(AgentSessionRef::new("codex", "thread-from-fake-app-server"))
+    );
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0]["method"], "thread/start");
+    assert_eq!(captured[1]["method"], "turn/start");
+    assert_eq!(
+        captured[1]["params"]["threadId"],
+        "thread-from-fake-app-server"
+    );
+    assert_eq!(
+        captured[1]["params"]["input"][0]["text"],
+        "work the runtime bead"
+    );
+}
+
+#[test]
+fn codex_unix_socket_client_initializes_and_sends_request() {
+    let dir = TempDir::new().unwrap();
+    let socket_path = dir.path().join("codex-app-server.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut websocket = tungstenite::accept(stream).unwrap();
+
+        let initialize = read_test_ws_json(&mut websocket);
+        assert_eq!(initialize["method"], "initialize");
+        assert_eq!(initialize["params"]["clientInfo"]["name"], "rosary");
+        write_test_ws_json(
+            &mut websocket,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": initialize["id"],
+                "result": {
+                    "userAgent": "codex-test/0"
+                }
+            }),
+        );
+
+        let initialized = read_test_ws_json(&mut websocket);
+        assert_eq!(initialized["method"], "initialized");
+
+        let request = read_test_ws_json(&mut websocket);
+        assert_eq!(request["method"], "thread/start");
+        assert_eq!(request["params"]["approvalPolicy"], "on-request");
+        assert_eq!(request["params"]["sandbox"], "workspace-write");
+        write_test_ws_json(
+            &mut websocket,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "thread": {
+                        "id": "thread-from-unix-socket"
+                    }
+                }
+            }),
+        );
+    });
+
+    let mut mcp_servers = std::collections::BTreeMap::new();
+    mcp_servers.insert("rsry".to_string(), "http://localhost:8383/mcp".to_string());
+    let start = CodexThreadStart {
+        bead_id: Some("rosary-codex-socket".to_string()),
+        agent_name: Some("dev-agent".to_string()),
+        prompt: "work through socket".to_string(),
+        work_dir: PathBuf::from("/tmp/rsry-codex-work"),
+        permissions: PermissionProfile::Implement,
+        system_prompt: "developer rules".to_string(),
+        mcp_servers,
+        expected_mcp_tools: vec!["rsry".to_string()],
+        model: None,
+    };
+
+    let client = CodexUnixSocketClient::new(socket_path);
+    let response = client
+        .request(CodexAppServerRequest::thread_start(
+            "rsry-thread-start-socket",
+            &start,
+        ))
+        .expect("socket client should round-trip request");
+
+    assert_eq!(response["thread"]["id"], "thread-from-unix-socket");
+    server.join().expect("fake codex app-server should exit");
+}
+
+fn read_test_ws_json(
+    websocket: &mut tungstenite::WebSocket<std::os::unix::net::UnixStream>,
+) -> serde_json::Value {
+    loop {
+        match websocket.read().unwrap() {
+            tungstenite::Message::Text(text) => return serde_json::from_str(&text).unwrap(),
+            tungstenite::Message::Binary(bytes) => {
+                return serde_json::from_slice(&bytes).unwrap();
+            }
+            tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => continue,
+            tungstenite::Message::Close(_) | tungstenite::Message::Frame(_) => {
+                panic!("unexpected websocket control frame")
+            }
+        }
+    }
+}
+
+fn write_test_ws_json(
+    websocket: &mut tungstenite::WebSocket<std::os::unix::net::UnixStream>,
+    value: serde_json::Value,
+) {
+    websocket
+        .send(tungstenite::Message::Text(value.to_string().into()))
+        .unwrap();
 }
 
 #[test]

@@ -311,7 +311,7 @@ fn default_agent_branch_prefix() -> String {
 /// Dispatch pipeline behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchConfig {
-    /// Default agent provider: "claude", "gemini", "acp".
+    /// Default agent provider: "claude", "gemini", "acp", "codex".
     #[serde(default = "default_dispatch_provider")]
     pub provider: String,
     /// Provider for adversarial review phases.

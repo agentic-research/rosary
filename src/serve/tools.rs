@@ -208,13 +208,13 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_dispatch",
-                "description": "Dispatch an agent to work on a specific bead. Spawns a Claude/Gemini agent in the bead's repo with the appropriate agent perspective (dev-agent, staging-agent, etc.) and permissions.",
+                "description": "Dispatch an agent to work on a specific bead. Spawns an agent in the bead's repo with the appropriate agent perspective (dev-agent, staging-agent, etc.) and permissions.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "bead_id": { "type": "string", "description": "Bead ID to dispatch" },
                         "repo_path": { "type": "string", "description": "Path to repo containing the bead" },
-                        "provider": { "type": "string", "description": "Agent provider (claude, gemini, acp)", "default": "claude" },
+                        "provider": { "type": "string", "description": "Agent provider (claude, gemini, acp, codex)", "default": "claude" },
                         "agent": { "type": "string", "description": "Agent persona override (dev-agent, staging-agent, prod-agent, feature-agent, pm-agent). If omitted, uses bead owner." },
                         "isolate": { "type": "boolean", "description": "Create an isolated workspace (git worktree / jj workspace) before dispatch. Defaults to true. Set to false only for single-concurrency in-place execution.", "default": true }
                     },
@@ -405,6 +405,47 @@ pub(crate) fn tool_definitions() -> Value {
                         "scope": { "type": "string", "description": "Optional bead scope; defaults to empty repo scope" }
                     },
                     "required": ["repo", "bead_id"]
+                }
+            },
+            {
+                "name": "rsry_agent_session_addresses",
+                "description": "Resolve provider-native agent session addresses for a bead from durable dispatch records and agent run events. Normalizes Claude session_id and native session_ref so Claude Code and Codex sessions can be discovered through one read API.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo": { "type": "string", "description": "Repo name" },
+                        "bead_id": { "type": "string", "description": "Bead ID" },
+                        "scope": { "type": "string", "description": "Optional bead scope; defaults to empty repo scope" }
+                    },
+                    "required": ["repo", "bead_id"]
+                }
+            },
+            {
+                "name": "rsry_agent_session_message_record",
+                "description": "Record an outbound handoff/message for a provider-native agent session as a durable agent run event. This is the Rosary-owned mailbox layer; provider-native delivery can consume the same event stream later.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Optional stable message/event id. Defaults to msg-<uuid>." },
+                        "repo": { "type": "string", "description": "Repo name" },
+                        "bead_id": { "type": "string", "description": "Bead ID" },
+                        "scope": { "type": "string", "description": "Optional bead scope; defaults to empty repo scope" },
+                        "dispatch_id": { "type": "string", "description": "Optional dispatch id. If omitted, Rosary resolves it from repo/bead/session_ref." },
+                        "session_ref": {
+                            "type": "object",
+                            "description": "Provider-native session identity to address",
+                            "properties": {
+                                "provider": { "type": "string" },
+                                "id": { "type": "string" }
+                            },
+                            "required": ["provider", "id"]
+                        },
+                        "message": { "type": "string", "description": "Message or handoff text to persist" },
+                        "event_type": { "type": "string", "description": "Event type to record; defaults to handoff_message" },
+                        "payload": { "type": "object", "description": "Structured message metadata; must be an object", "additionalProperties": true },
+                        "created_at": { "type": "string", "description": "Optional RFC3339 timestamp; defaults to server time" }
+                    },
+                    "required": ["repo", "bead_id", "session_ref", "message"]
                 }
             },
             {
@@ -674,6 +715,8 @@ mod tests {
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(names.contains(&"rsry_agent_run_event_record"));
         assert!(names.contains(&"rsry_agent_run_events"));
+        assert!(names.contains(&"rsry_agent_session_addresses"));
+        assert!(names.contains(&"rsry_agent_session_message_record"));
 
         let record = tools
             .iter()
