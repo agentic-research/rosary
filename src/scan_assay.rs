@@ -56,6 +56,9 @@ pub async fn run_assay_scan(repos: &[RepoConfig], registry: &PluginRegistry) -> 
                     None,
                     "",
                     &[],
+                    // Structured close condition: re-run the assay; the stale
+                    // reference no longer appears (resolution predicate).
+                    "Resolved when `rsry scan --assay` no longer reports this stale ref.",
                 )
                 .await
             {

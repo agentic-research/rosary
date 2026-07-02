@@ -65,6 +65,7 @@ impl BeadStore for DoltBeadStore {
         created_by: Option<&str>,
         scope: &str,
         derived_from: &[bdr::provenance::ProvenanceRef],
+        acceptance_criteria: &str,
     ) -> Result<()> {
         self.client
             .create_bead_full(
@@ -80,6 +81,7 @@ impl BeadStore for DoltBeadStore {
                 created_by,
                 scope,
                 derived_from,
+                acceptance_criteria,
             )
             .await
     }

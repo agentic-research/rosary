@@ -94,6 +94,9 @@ fn bead_from_row(row: &rusqlite::Row<'_>, repo_name: &str) -> rusqlite::Result<B
         created_by: row.get::<_, Option<String>>("created_by").unwrap_or(None),
         scope: row.get::<_, String>("scope").unwrap_or_default(),
         derived_from,
+        acceptance_criteria: row
+            .get::<_, String>("acceptance_criteria")
+            .unwrap_or_default(),
     })
 }
 
@@ -264,6 +267,7 @@ async fn migrate_sqlite_to_dolt(
                 row.created_by.as_deref(),
                 &row.scope,
                 &[],
+                "", // sqlite→dolt migration Row doesn't carry acceptance_criteria
             )
             .await?;
 
@@ -576,14 +580,15 @@ impl BeadStore for SqliteBeadStore {
         created_by: Option<&str>,
         scope: &str,
         derived_from: &[bdr::provenance::ProvenanceRef],
+        acceptance_criteria: &str,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
 
         tx.execute(
             "INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_by, scope, created_at, updated_at)
-             VALUES (?1, ?2, ?3, '', '', '', 'open', ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))",
-            params![id, title, description, priority as i32, issue_type, created_by, scope],
+             VALUES (?1, ?2, ?3, '', ?8, '', 'open', ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))",
+            params![id, title, description, priority as i32, issue_type, created_by, scope, acceptance_criteria],
         )?;
 
         tx.execute(

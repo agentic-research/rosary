@@ -93,6 +93,7 @@ impl DoltClient {
             test_files,
             created_by: row.try_get("created_by").ok(),
             scope: row.try_get("scope").unwrap_or_default(),
+            acceptance_criteria: row.try_get("acceptance_criteria").unwrap_or_default(),
             derived_from: Self::parse_derived_from_notes(row),
         }
     }
@@ -198,6 +199,9 @@ impl DoltClient {
                             test_files,
                             created_by: row.try_get("created_by").ok(),
                             scope: row.try_get("scope").unwrap_or_default(),
+                            acceptance_criteria: row
+                                .try_get("acceptance_criteria")
+                                .unwrap_or_default(),
                             derived_from: Self::parse_derived_from_notes(row),
                         }
                     })
@@ -257,6 +261,7 @@ impl DoltClient {
                 test_files,
                 created_by: row.try_get("created_by").ok(),
                 scope: row.try_get("scope").unwrap_or_default(),
+                acceptance_criteria: row.try_get("acceptance_criteria").unwrap_or_default(),
                 derived_from: Self::parse_derived_from_notes(&row),
             }
         }))
@@ -345,6 +350,7 @@ impl DoltClient {
         created_by: Option<&str>,
         scope: &str,
         derived_from: &[bdr::provenance::ProvenanceRef],
+        acceptance_criteria: &str,
     ) -> Result<()> {
         // Scrub secrets before writing — Dolt history is append-only and hard to purge.
         let title = crate::secrets::scrub_and_warn(title, &format!("bead {id} title"));
@@ -360,11 +366,12 @@ impl DoltClient {
         // 1. Insert the bead
         query(
             r#"INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_by, scope, created_at, updated_at)
-               VALUES (?, ?, ?, '', '', '', 'open', ?, ?, ?, ?, NOW(), NOW())"#,
+               VALUES (?, ?, ?, '', ?, '', 'open', ?, ?, ?, ?, NOW(), NOW())"#,
         )
         .bind(id)
         .bind(&title)
         .bind(&description)
+        .bind(acceptance_criteria)
         .bind(priority as i32)
         .bind(issue_type)
         .bind(created_by)

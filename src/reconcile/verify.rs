@@ -626,6 +626,7 @@ impl Reconciler {
                         test_files: Vec::new(),
                         created_by: None,
                         scope: String::new(),
+                        acceptance_criteria: String::new(),
                         derived_from: vec![],
                     };
                     if let Some(client) = self.dolt_client(&repo).await

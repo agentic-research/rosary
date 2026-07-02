@@ -161,6 +161,7 @@ async fn create_bead_full_with_deps() {
             Some("test-user"),
             "",
             &[],
+            "",
         )
         .await
         .unwrap();
@@ -198,6 +199,7 @@ async fn set_files_preserves_derived_from() {
             None,
             "",
             std::slice::from_ref(&prov),
+            "",
         )
         .await
         .unwrap();
@@ -243,6 +245,7 @@ async fn update_bead_fields_preserves_derived_from() {
             None,
             "",
             std::slice::from_ref(&prov),
+            "",
         )
         .await
         .unwrap();
@@ -283,6 +286,7 @@ async fn epic_dep_does_not_block_child() {
             None,
             "",
             &[],
+            "",
         )
         .await
         .unwrap();
@@ -300,6 +304,7 @@ async fn epic_dep_does_not_block_child() {
             None,
             "",
             &[],
+            "",
         )
         .await
         .unwrap();
@@ -329,6 +334,7 @@ async fn epic_dep_does_not_block_child() {
             None,
             "",
             &[],
+            "",
         )
         .await
         .unwrap();
@@ -346,6 +352,7 @@ async fn epic_dep_does_not_block_child() {
             None,
             "",
             &[],
+            "",
         )
         .await
         .unwrap();
@@ -827,6 +834,7 @@ async fn created_by_and_scope_round_trip() {
             Some("alice"),
             "payments",
             &[],
+            "",
         )
         .await
         .unwrap();
@@ -866,6 +874,7 @@ async fn scope_appears_in_list_beads() {
             Some("bob"),
             "auth",
             &[],
+            "",
         )
         .await
         .unwrap();
@@ -903,6 +912,7 @@ async fn derived_from_round_trip() {
             None,
             "",
             &provenance,
+            "",
         )
         .await
         .unwrap();

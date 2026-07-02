@@ -193,6 +193,8 @@ pub async fn import_bead(
             created_by,
             "",
             &[],
+            // Preserve the imported close condition (structured field).
+            bead["acceptance_criteria"].as_str().unwrap_or_default(),
         )
         .await?;
 

@@ -507,6 +507,11 @@ async fn tool_bead_create(
             .unwrap_or_default()
     };
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let acceptance_criteria = args
+        .get("acceptance_criteria")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
 
     // ACI adapter: parse the JSON surface into the shared op core (bead_ops).
     let create_args = crate::bead_ops::BeadCreateArgs {
@@ -518,6 +523,7 @@ async fn tool_bead_create(
         files: str_array("files"),
         test_files: str_array("test_files"),
         depends_on: str_array("depends_on"),
+        acceptance_criteria,
         force,
     };
     // Validate BEFORE resolve_repo_client so arg errors surface as arg errors
@@ -1666,6 +1672,7 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
                         None,
                         "",
                         &spec.derived_from,
+                        &spec.close_condition_text(),
                     )
                     .await?;
 
@@ -3324,6 +3331,7 @@ mod input_validation_tests {
                 Some("test"),
                 "",
                 &[],
+                "",
             )
             .await
             .unwrap();
@@ -3369,6 +3377,7 @@ mod input_validation_tests {
                 Some("test"),
                 "",
                 &[],
+                "",
             )
             .await
             .unwrap();
@@ -3417,6 +3426,7 @@ mod input_validation_tests {
                 Some("test"),
                 "",
                 &[],
+                "",
             )
             .await
             .unwrap();
@@ -3464,6 +3474,7 @@ mod input_validation_tests {
                 Some("test"),
                 "",
                 &[],
+                "",
             )
             .await
             .unwrap();
