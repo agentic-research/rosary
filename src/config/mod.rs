@@ -358,6 +358,12 @@ pub struct DispatchConfig {
     /// Empty disables injecting `--mcp-config`.
     #[serde(default = "default_agent_mcp")]
     pub agent_mcp: BTreeMap<String, String>,
+    /// Skills every dispatch must be able to resolve by name under
+    /// `{agents_dir}/skills/{name}/SKILL.md` before spawning (rosary-cf52cf).
+    /// A missing skill fails the dispatch deterministically instead of the agent
+    /// discovering it can't find `/pr-review-kit` mid-run. Default: none.
+    #[serde(default)]
+    pub required_skills: Vec<String>,
 }
 
 fn default_dispatch_provider() -> String {
