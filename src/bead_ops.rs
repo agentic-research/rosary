@@ -118,7 +118,10 @@ pub async fn close_bead<S: BeadStore + ?Sized>(
 ) -> anyhow::Result<()> {
     if !force {
         let beads = store.list_beads(repo_name).await?;
-        if let Some(bead) = beads.iter().find(|b| b.id == id || b.id.ends_with(id))
+        let short_id_suffix = format!("-{id}");
+        if let Some(bead) = beads
+            .iter()
+            .find(|b| b.id == id || b.id.ends_with(&short_id_suffix))
             && !bead.has_verifiable_test_command()
         {
             anyhow::bail!(

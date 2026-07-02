@@ -3398,6 +3398,53 @@ mod input_validation_tests {
     }
 
     #[tokio::test]
+    async fn bead_close_unresolvable_suffix_does_not_trigger_close_gate() {
+        let repo = crate::testutil::TestRepo::new();
+        let store = crate::bead_sqlite::connect_bead_store(&repo.path().join(".beads"))
+            .await
+            .unwrap();
+        store
+            .create_bead_full(
+                "rsry-close-no-test",
+                "MCP close without close condition",
+                "No runnable close command here.",
+                1,
+                "task",
+                "dev-agent",
+                &["src/serve/handlers.rs".into()],
+                &[],
+                &[],
+                Some("test"),
+                "",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let repo_path = repo.path().to_string_lossy().to_string();
+        let args = json!({
+            "repo_path": repo_path,
+            "id": "est",
+        });
+        let err = tool_bead_close(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("bead not found: est"),
+            "unresolvable partial suffixes should fall through to the store resolver; got: {err}"
+        );
+        assert_eq!(
+            store
+                .get_status("rsry-close-no-test")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("open")
+        );
+    }
+
+    #[tokio::test]
     async fn bead_close_force_bypasses_verifiable_test_command_gate() {
         let repo = crate::testutil::TestRepo::new();
         let store = crate::bead_sqlite::connect_bead_store(&repo.path().join(".beads"))
