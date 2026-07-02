@@ -360,7 +360,7 @@ async fn verify_agent_skips_staging_agent_readonly() {
             scope: String::new(),
         },
     );
-    let result = r.verify_agent("ro-2");
+    let result = r.verify_agent("ro-2", None);
     assert!(
         result.is_none(),
         "staging-agent is read-only — verify must skip"
