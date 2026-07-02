@@ -121,7 +121,8 @@ pub(crate) fn tool_definitions() -> Value {
                     "properties": {
                         "scope": { "type": "string", "description": "Canonical scope: 'repo:<name>'. Takes priority over repo_path." },
                         "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory" },
-                        "id": { "type": "string", "description": "Bead ID to close" }
+                        "id": { "type": "string", "description": "Bead ID to close" },
+                        "force": { "type": "boolean", "description": "Skip the verifiable-test-command close gate for legacy/planning recovery" }
                     },
                     "required": ["id"]                }
             },

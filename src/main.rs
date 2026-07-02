@@ -1510,20 +1510,7 @@ async fn main() -> Result<()> {
                     cli::bead_created(&id, &args.title);
                 }
                 BeadAction::Close { id, force } => {
-                    if !force {
-                        let beads = client.list_beads(&repo_name).await?;
-                        if let Some(bead) = beads.iter().find(|b| b.id == id || b.id.ends_with(&id))
-                            && !bead.has_verifiable_test_command()
-                        {
-                            anyhow::bail!(
-                                "bead {} ({}) has no verifiable test command in its description.\n\
-                                 Add e.g. `cargo test -p <crate>` to success criteria, or pass --force to override.",
-                                bead.id,
-                                bead.issue_type
-                            );
-                        }
-                    }
-                    client.close_bead(&id).await?;
+                    bead_ops::close_bead(client.as_ref(), &id, &repo_name, force).await?;
                     cli::bead_closed(&id);
                 }
                 BeadAction::Move { id, dest } => {

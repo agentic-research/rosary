@@ -673,21 +673,18 @@ async fn tool_bead_close(
     let id = args["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("id required"))?;
+    let force = parse_bool_arg(args, "force", false);
 
     let (scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
-    client.close_bead(id).await?;
+    let repo = scope
+        .as_repo_name()
+        .expect("Repo-only scope verified by resolve_repo_client");
+    crate::bead_ops::close_bead(client, id, repo, force).await?;
 
     // Unregister the session so rsry_active stops showing it.
     // Best-effort — session may not exist if bead was closed manually.
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {
-        // `resolve_repo_client` guarantees Repo(_) here; `expect`
-        // preserves that invariant explicitly. Silently falling back
-        // to "" would register under the empty key and hide invariant
-        // breaks (Copilot #214 finding).
-        let repo = scope
-            .as_repo_name()
-            .expect("Repo-only scope verified by resolve_repo_client");
         let _ = registry.unregister(id, repo);
     }
 
@@ -3349,6 +3346,96 @@ mod input_validation_tests {
                 .as_deref(),
             Some("open"),
             "MCP dispatch must not create workspace/session state for unclosable beads"
+        );
+    }
+
+    #[tokio::test]
+    async fn bead_close_rejects_missing_verifiable_test_command() {
+        let repo = crate::testutil::TestRepo::new();
+        let store = crate::bead_sqlite::connect_bead_store(&repo.path().join(".beads"))
+            .await
+            .unwrap();
+        store
+            .create_bead_full(
+                "rsry-close-no-test",
+                "MCP close without close condition",
+                "No runnable close command here.",
+                1,
+                "task",
+                "dev-agent",
+                &["src/serve/handlers.rs".into()],
+                &[],
+                &[],
+                Some("test"),
+                "",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let repo_path = repo.path().to_string_lossy().to_string();
+        let args = json!({
+            "repo_path": repo_path,
+            "id": "rsry-close-no-test",
+        });
+        let err = tool_bead_close(&args, &empty_pool(), None)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("no verifiable test command"),
+            "{err}"
+        );
+        assert_eq!(
+            store
+                .get_status("rsry-close-no-test")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("open"),
+            "MCP close must not close an implementation bead without a close gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn bead_close_force_bypasses_verifiable_test_command_gate() {
+        let repo = crate::testutil::TestRepo::new();
+        let store = crate::bead_sqlite::connect_bead_store(&repo.path().join(".beads"))
+            .await
+            .unwrap();
+        store
+            .create_bead_full(
+                "rsry-close-force",
+                "MCP close force",
+                "No runnable close command here.",
+                1,
+                "task",
+                "dev-agent",
+                &["src/serve/handlers.rs".into()],
+                &[],
+                &[],
+                Some("test"),
+                "",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let repo_path = repo.path().to_string_lossy().to_string();
+        let args = json!({
+            "repo_path": repo_path,
+            "id": "rsry-close-force",
+            "force": true,
+        });
+        tool_bead_close(&args, &empty_pool(), None).await.unwrap();
+
+        assert_eq!(
+            store
+                .get_status("rsry-close-force")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("closed")
         );
     }
 

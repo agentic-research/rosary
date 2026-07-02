@@ -107,6 +107,31 @@ pub async fn create_bead<S: BeadStore + ?Sized>(
         .await
 }
 
+/// Close a bead through the shared CLI/MCP gate. Implementation beads must
+/// carry a runnable verification command unless the caller explicitly forces
+/// the close for legacy/planning recovery.
+pub async fn close_bead<S: BeadStore + ?Sized>(
+    store: &S,
+    id: &str,
+    repo_name: &str,
+    force: bool,
+) -> anyhow::Result<()> {
+    if !force {
+        let beads = store.list_beads(repo_name).await?;
+        if let Some(bead) = beads.iter().find(|b| b.id == id || b.id.ends_with(id))
+            && !bead.has_verifiable_test_command()
+        {
+            anyhow::bail!(
+                "bead {} ({}) has no verifiable test command in its description.\n\
+                 Add e.g. `cargo test -p <crate>` to success criteria, or pass --force/force to override.",
+                bead.id,
+                bead.issue_type
+            );
+        }
+    }
+    store.close_bead(id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
