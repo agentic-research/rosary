@@ -107,6 +107,7 @@ pub async fn move_bead(
         bead.created_by.as_deref(),
         &bead.scope,
         &derived_from,
+        &bead.acceptance_criteria, // preserve the close condition on relocate
     )
     .await
     .with_context(|| format!("creating relocated bead {new_id} in {dest_repo}"))?;
@@ -207,6 +208,7 @@ mod tests {
             Some("alice"),
             "",
             &[],
+            "",
         )
         .await
         .unwrap();

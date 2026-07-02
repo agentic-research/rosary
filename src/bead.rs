@@ -219,9 +219,19 @@ pub fn requires_close_condition(issue_type: &str) -> bool {
 /// Enforced at `rsry bead create` (fail-loud) so we can't mint an un-closable
 /// bead — the sediment root cause. Complements the `rsry bead close` gate,
 /// which checks the description alone once the bead already exists.
-pub fn has_close_condition(issue_type: &str, description: &str, test_files: &[String]) -> bool {
+pub fn has_close_condition(
+    issue_type: &str,
+    description: &str,
+    test_files: &[String],
+    acceptance_criteria: &str,
+) -> bool {
     !requires_close_condition(issue_type)
+        // Structured close condition — the primary, negation-immune signal.
+        || !acceptance_criteria.trim().is_empty()
         || !test_files.is_empty()
+        // Legacy/compat: a runnable command in the description. Narrow on
+        // purpose (commands don't appear in negations the way an intent word
+        // like "close condition" does), so no prose-scraping fragility.
         || verify::looks_like_test_command(description)
 }
 
@@ -237,16 +247,17 @@ pub fn ensure_close_condition(
     issue_type: &str,
     description: &str,
     test_files: &[String],
+    acceptance_criteria: &str,
     force: bool,
 ) -> anyhow::Result<()> {
-    if force || has_close_condition(issue_type, description, test_files) {
+    if force || has_close_condition(issue_type, description, test_files, acceptance_criteria) {
         return Ok(());
     }
     anyhow::bail!(
         "bead has no close condition — {issue_type} beads must declare how \"done\" is verified,\n\
          so an observation (PR-merge/verify) can actually close them (ADR-0010).\n\
-         Add a runnable test/build command to the description (e.g. `cargo test -p <crate>`),\n\
-         pass test_files, or force to override."
+         Set `acceptance_criteria` (a command or a resolution statement), pass\n\
+         test_files, or force to override."
     )
 }
 
@@ -322,6 +333,12 @@ pub struct Bead {
     /// Populated from the notes JSON at read time; not included in generation().
     #[serde(default)]
     pub derived_from: Vec<bdr::provenance::ProvenanceRef>,
+    /// Structured **close condition** — how "done" is verified. A runnable
+    /// command, an acceptance statement, or a resolution predicate. This is the
+    /// field the close-condition gate checks (structured presence), so it can't
+    /// be fooled by prose — unlike grepping the description. Empty = none.
+    #[serde(default)]
+    pub acceptance_criteria: String,
 }
 
 /// One comment on a bead, with audit-trail fields. Returned by
@@ -493,6 +510,11 @@ impl Bead {
             created_by: None,
             scope: String::new(),
             derived_from: vec![],
+            acceptance_criteria: value
+                .get("acceptance_criteria")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
         })
     }
 
@@ -523,10 +545,12 @@ impl Bead {
     /// runnable verification before being marked done. Research/epic/design beads
     /// are exempt — they describe work, they don't claim a behavior was shipped.
     pub fn has_verifiable_test_command(&self) -> bool {
-        if !requires_close_condition(&self.issue_type) {
-            return true; // exempt
-        }
-        verify::looks_like_test_command(&self.description)
+        has_close_condition(
+            &self.issue_type,
+            &self.description,
+            &self.test_files,
+            &self.acceptance_criteria,
+        )
     }
 }
 
@@ -899,21 +923,42 @@ mod tests {
     }
 
     #[test]
-    fn has_close_condition_requires_test_command_or_test_files() {
-        // Impl bead with no test command and no test files -> no close condition.
-        assert!(!has_close_condition("task", "just do the thing", &[]));
-        assert!(!has_close_condition("bug", "fix it", &[]));
-        // Satisfied by a runnable command in the description...
+    fn has_close_condition_checks_structure_then_falls_back() {
+        // No structure, no test files, no command -> no close condition.
+        assert!(!has_close_condition("task", "just do the thing", &[], ""));
+        // Structured acceptance_criteria satisfies it (the primary signal).
+        assert!(has_close_condition(
+            "task",
+            "just do the thing",
+            &[],
+            "Resolved when the widget renders."
+        ));
+        // Compat: a runnable command in the description...
         assert!(has_close_condition(
             "task",
             "implement X; verify with `cargo test -p rosary`",
-            &[]
+            &[],
+            ""
         ));
-        // ...or by declaring test files.
+        // ...or declared test files.
         assert!(has_close_condition(
             "feature",
             "no command here",
-            &["tests/foo.rs".to_string()]
+            &["tests/foo.rs".to_string()],
+            ""
+        ));
+    }
+
+    #[test]
+    fn close_condition_gate_is_negation_immune() {
+        // The whole point of the structured field: prose that *mentions* a close
+        // condition (esp. a negation) must NOT satisfy the gate. Substring-
+        // matching the description would wrongly pass this.
+        assert!(!has_close_condition(
+            "task",
+            "No runnable close condition here. Acceptance criteria: none yet.",
+            &[],
+            "" // empty structured field
         ));
     }
 
@@ -922,7 +967,7 @@ mod tests {
         // Planning/review beads describe work; nothing to verify at close.
         for t in ["epic", "design", "research", "review"] {
             assert!(!requires_close_condition(t));
-            assert!(has_close_condition(t, "no test command", &[]));
+            assert!(has_close_condition(t, "no test command", &[], ""));
         }
     }
 

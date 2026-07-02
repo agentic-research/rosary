@@ -340,6 +340,7 @@ pub trait BeadStore: Send + Sync {
         created_by: Option<&str>,
         scope: &str,
         derived_from: &[bdr::provenance::ProvenanceRef],
+        acceptance_criteria: &str,
     ) -> Result<()>;
 
     // ── Field updates ──

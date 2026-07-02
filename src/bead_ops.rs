@@ -45,6 +45,11 @@ pub struct BeadCreateArgs {
     pub files: Vec<String>,
     pub test_files: Vec<String>,
     pub depends_on: Vec<String>,
+    /// Structured close condition — how "done" is verified (a command or a
+    /// resolution statement). The gate checks this field's presence, so it can't
+    /// be fooled by prose. Empty falls back to test_files / a command in the
+    /// description for legacy compatibility.
+    pub acceptance_criteria: String,
     /// Escape hatch for the close-condition gate (planning/legacy beads).
     pub force: bool,
 }
@@ -63,6 +68,7 @@ impl BeadCreateArgs {
             &self.issue_type,
             &self.description,
             &self.test_files,
+            &self.acceptance_criteria,
             self.force,
         )
     }
@@ -103,6 +109,7 @@ pub async fn create_bead<S: BeadStore + ?Sized>(
             created_by,
             "",
             &[],
+            &args.acceptance_criteria,
         )
         .await
 }
@@ -154,6 +161,7 @@ mod tests {
             files: files.iter().map(|s| s.to_string()).collect(),
             test_files: test_files.iter().map(|s| s.to_string()).collect(),
             depends_on: vec![],
+            acceptance_criteria: String::new(),
             force: false,
         }
     }

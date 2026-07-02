@@ -70,6 +70,7 @@ fn make_test_bead(id: &str) -> crate::bead::Bead {
         created_by: None,
         scope: String::new(),
         derived_from: vec![],
+        acceptance_criteria: String::new(),
     }
 }
 
