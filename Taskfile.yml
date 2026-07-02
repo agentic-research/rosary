@@ -55,6 +55,22 @@ tasks:
     cmds:
       - cargo fmt
 
+  god-files:
+    desc: Report god-files via mache long_file (structural view for the breakdown campaign)
+    cmds:
+      - bash scripts/check-god-files.sh
+      - |
+        if command -v mache >/dev/null 2>&1; then
+          DB="$(mktemp -u).db"
+          mache build src "$DB" >/dev/null 2>&1 && {
+            echo "=== mache long_file (>1500) ==="
+            mache find-smells --db "$DB" --rule long_file --format ci 2>/dev/null || true
+            rm -f "$DB"
+          }
+        else
+          echo "SKIP: mache not on PATH — install for the structural view"
+        fi
+
   install:
     desc: Build, codesign, install rsry, and set up HTTP MCP service
     # Compose from the named release + lint tasks rather than reinventing
