@@ -362,6 +362,11 @@ pub async fn spawn(
     let run_spec = AgentRunSpec::new(prompt, work_dir.clone(), permissions, system_prompt)
         .with_bead_context(bead.id.clone(), bead.owner.clone());
 
+    // Deterministic tool-grant gate (rosary-ea33b5): fail loud before spawning
+    // if a required MCP tool's server isn't configured; warn for missing
+    // optional tools. Beats the agent discovering the gap mid-run.
+    run_spec.ensure_required_tools()?;
+
     let session: Box<dyn AgentSession> = if let Some(compute) = compute {
         // Container dispatch: build command, provision, exec, destroy.
         // Synchronous -- spawn() blocks for exec duration. Session is already resolved.
