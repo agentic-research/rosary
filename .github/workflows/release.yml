@@ -51,7 +51,12 @@ jobs:
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install --cask fuse-t
+        # capnp: build.rs runs capnpc codegen for schemas/cloister.capnp and
+        # needs the Cap'n Proto compiler on PATH (Linux gets it via capnproto
+        # above; the macOS runner had only fuse-t → darwin build failed).
+        run: |
+          brew install --cask fuse-t
+          brew install capnp
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -136,34 +141,30 @@ jobs:
           format: spdx-json
           output-file: release-assets/rsry.spdx.json
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.TAG }}
-          generate_release_notes: true
-          files: release-assets/*
-
-      # --- Cosign ---
+      # --- Cosign (sign BEFORE publishing) ---
+      # This repo has immutable releases enabled: once a release is published,
+      # no further assets can be attached. So we sign the binaries first and
+      # publish everything (binaries + checksums + SBOM + sigs + certs) in a
+      # single Create Release step, rather than publishing then uploading sigs.
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
       - name: Sign release artifacts
         working-directory: release-assets
         run: |
-          for f in rsry-*; do
+          for f in rsry-linux-* rsry-darwin-*; do
             [ -f "$f" ] || continue
             cosign sign-blob --yes "$f" \
               --output-signature "${f}.sig" \
               --output-certificate "${f}.cert"
           done
 
-      - name: Upload signatures to release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          files: |
-            release-assets/*.sig
-            release-assets/*.cert
+          generate_release_notes: true
+          files: release-assets/*
 
   # --- SLSA Provenance (Level 3) ---
   provenance:
@@ -177,4 +178,8 @@ jobs:
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: "${{ needs.release.outputs.hashes }}"
-      upload-assets: true
+      # Immutable releases forbid attaching assets after publish, so the
+      # provenance can't be uploaded to the release. It's still generated and
+      # recorded as a signed attestation (Rekor transparency log) — just not a
+      # downloadable release asset. Verify with `slsa-verifier` / `cosign`.
+      upload-assets: false
