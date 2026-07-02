@@ -21,13 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - name: configure git auth for private deps
-        if: ${{ secrets.LEYLINE_PAT != '' }}
-        env:
-          LEYLINE_PAT: ${{ secrets.LEYLINE_PAT }}
-        run: git config --global url."https://x-access-token:${LEYLINE_PAT}@github.com/".insteadOf "https://github.com/"
       - name: install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev capnproto
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
         with:
@@ -45,13 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - name: configure git auth for private deps
-        if: ${{ secrets.LEYLINE_PAT != '' }}
-        env:
-          LEYLINE_PAT: ${{ secrets.LEYLINE_PAT }}
-        run: git config --global url."https://x-access-token:${LEYLINE_PAT}@github.com/".insteadOf "https://github.com/"
       - name: install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev capnproto
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
         with:
@@ -67,13 +57,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - name: configure git auth for private deps
-        if: ${{ secrets.LEYLINE_PAT != '' }}
-        env:
-          LEYLINE_PAT: ${{ secrets.LEYLINE_PAT }}
-        run: git config --global url."https://x-access-token:${LEYLINE_PAT}@github.com/".insteadOf "https://github.com/"
       - name: install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev capnproto
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: rustfmt,clippy
@@ -88,4 +73,3 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
-

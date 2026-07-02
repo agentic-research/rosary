@@ -157,6 +157,9 @@ mod scan_assay_stale {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        // Close the write handle before the script is exec'd — an open writable
+        // fd on the file causes `Text file busy` (ETXTBSY) under CI timing.
+        drop(f);
 
         let plugin = PluginConfig {
             name: "test-assay".to_string(),
@@ -216,6 +219,9 @@ mod scan_assay_stale {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        // Close the write handle before the script is exec'd — an open writable
+        // fd on the file causes `Text file busy` (ETXTBSY) under CI timing.
+        drop(f);
 
         let plugin = PluginConfig {
             name: "clean-assay".to_string(),
