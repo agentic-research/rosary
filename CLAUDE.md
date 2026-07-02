@@ -167,22 +167,22 @@ File overlap is also re-checked in Phase 4 (dispatch loop) to catch beads queued
 
 ## ADRs
 
-| ADR  | Status     | Topic                                                                   |
-| ---- | ---------- | ----------------------------------------------------------------------- |
-| 0001 | Proposed   | Sprint planning protocol (Explore → Synthesize → Derive → Decompose)    |
-| 0002 | Accepted   | ACP integration (Agent Client Protocol)                                 |
-| 0004 | Accepted   | Dual state machine (bead lifecycle + pipeline phases)                   |
-| 0005 | Proposed   | Reactive persistent store ("local firebase" for agent IPC)              |
-| 0006 | Proposed   | Declarative tool registry (unified MCP/CLI/pipeline from single source) |
-| 0007 | Proposed   | BDR enrichment pipeline (mache + haiku + sqlite-vec dedup)              |
-| 0008 | Proposed   | Agent hierarchy dispatch model (dev/feature/orchestrator tiers)         |
-| 0009 | Accepted   | Cross-repo linkage — stratified acyclicity + modal evidence             |
-| 0010 | Accepted   | Observation lattice — G-set + per-field fold (substrate)                |
-| 0011 | Accepted   | Decision-of-record — authenticated-authority conflict resolution        |
-| 0012 | Accepted   | Personal/root bead substrate (storage/sync/tamper)                      |
-| 0013 | Superseded | Bead substrate — adopt bd/Dolt as shared store (superseded by 0014)     |
-| 0014 | Accepted   | Decouple rosary from bd — speak the bead format, own the store          |
-| 0015 | Proposed   | Execution-lineage capsules — durable, resumable, proof-ready envelope   |
+| ADR  | Status     | Topic                                                                                                                                                                                   |
+| ---- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0001 | Proposed   | Sprint planning protocol (Explore → Synthesize → Derive → Decompose)                                                                                                                    |
+| 0002 | Accepted   | ACP integration (Agent Client Protocol)                                                                                                                                                 |
+| 0004 | Accepted   | Dual state machine (bead lifecycle + pipeline phases)                                                                                                                                   |
+| 0005 | Proposed   | Reactive persistent store ("local firebase" for agent IPC)                                                                                                                              |
+| 0006 | Proposed   | Declarative tool registry (unified MCP/CLI/pipeline from single source)                                                                                                                 |
+| 0007 | Proposed   | BDR enrichment pipeline (mache + haiku + sqlite-vec dedup)                                                                                                                              |
+| 0008 | Proposed   | Agent hierarchy dispatch model (dev/feature/orchestrator tiers)                                                                                                                         |
+| 0009 | Accepted   | Cross-repo linkage — stratified acyclicity + modal evidence                                                                                                                             |
+| 0010 | Accepted   | Observation lattice — G-set + per-field fold (substrate; **built + unit-tested, not yet the live source of truth** — `persist_status` still is, promotion tracked as R4b/rosary-a66b3a) |
+| 0011 | Accepted   | Decision-of-record — authenticated-authority conflict resolution                                                                                                                        |
+| 0012 | Accepted   | Personal/root bead substrate (storage/sync/tamper)                                                                                                                                      |
+| 0013 | Superseded | Bead substrate — adopt bd/Dolt as shared store (superseded by 0014)                                                                                                                     |
+| 0014 | Accepted   | Decouple rosary from bd — speak the bead format, own the store                                                                                                                          |
+| 0015 | Proposed   | Execution-lineage capsules — durable, resumable, proof-ready envelope                                                                                                                   |
 
 ## BDR Hierarchy (Decade → Thread → Bead)
 
