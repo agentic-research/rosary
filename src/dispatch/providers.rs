@@ -20,6 +20,14 @@ use super::{PermissionProfile, STREAM_LOG_FILENAME};
 /// this expectation explicitly instead of inferring capabilities from prompt text.
 pub const EXPECTED_AGENT_MCP_TOOLS: &[&str] = &["rsry", "mache", "lectio"];
 
+/// The subset of [`EXPECTED_AGENT_MCP_TOOLS`] a dispatched agent CANNOT work
+/// without: the bead store (`rsry`) and code intelligence (`mache`). Their
+/// absence is a hard dispatch error. Everything else in the expected set (e.g.
+/// the still-private `lectio`) is optional — its absence only warns, so a
+/// missing tool surfaces deterministically instead of the agent discovering
+/// the gap mid-run (rosary-ea33b5, friction #2).
+pub const REQUIRED_AGENT_MCP_TOOLS: &[&str] = &["rsry", "mache"];
+
 /// Structured run request passed from Rosary's dispatcher into an agent provider.
 ///
 /// This keeps Rosary-owned facts (bead id, agent definition, workspace,
@@ -36,6 +44,8 @@ pub struct AgentRunSpec {
     pub system_prompt: String,
     pub mcp_servers: BTreeMap<String, String>,
     pub expected_mcp_tools: Vec<String>,
+    /// Subset of `expected_mcp_tools` whose absence is a hard dispatch error.
+    pub required_mcp_tools: Vec<String>,
 }
 
 impl AgentRunSpec {
@@ -57,6 +67,10 @@ impl AgentRunSpec {
                 .iter()
                 .map(|name| name.to_string())
                 .collect(),
+            required_mcp_tools: REQUIRED_AGENT_MCP_TOOLS
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
         }
     }
 
@@ -68,6 +82,53 @@ impl AgentRunSpec {
         self.bead_id = Some(bead_id.into());
         self.agent_name = agent_name;
         self
+    }
+
+    /// Required tools whose MCP server is NOT in the configured `mcp_servers`.
+    pub fn missing_required_tools(&self) -> Vec<String> {
+        self.required_mcp_tools
+            .iter()
+            .filter(|t| !self.mcp_servers.contains_key(*t))
+            .cloned()
+            .collect()
+    }
+
+    /// Expected-but-optional tools that aren't configured (advisory only).
+    pub fn missing_optional_tools(&self) -> Vec<String> {
+        self.expected_mcp_tools
+            .iter()
+            .filter(|t| !self.required_mcp_tools.contains(t) && !self.mcp_servers.contains_key(*t))
+            .cloned()
+            .collect()
+    }
+
+    /// Fail-loud tool-grant gate, run before dispatch. Warns (stderr) for each
+    /// missing *optional* tool; errors if any *required* tool's server is
+    /// unavailable — so a missing capability is surfaced deterministically
+    /// rather than discovered by the agent mid-run (rosary-ea33b5).
+    pub fn ensure_required_tools(&self) -> Result<()> {
+        let missing_optional = self.missing_optional_tools();
+        if !missing_optional.is_empty() {
+            eprintln!(
+                "[dispatch] WARNING: optional MCP tools not configured ({}); agent proceeds \
+                 without them",
+                missing_optional.join(", ")
+            );
+        }
+        let missing_required = self.missing_required_tools();
+        if !missing_required.is_empty() {
+            anyhow::bail!(
+                "required MCP tools unavailable for dispatch: {} (configured servers: {}). Add \
+                 them to `[dispatch].agent_mcp` or register the server before dispatching.",
+                missing_required.join(", "),
+                self.mcp_servers
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        Ok(())
     }
 }
 
@@ -1233,6 +1294,43 @@ fn ensure_codex_experimental_enabled() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rosary-ea33b5 (friction #2): the run spec models required vs optional
+    /// MCP tools and the dispatch gate fails loud on a missing *required* tool
+    /// while only warning on a missing *optional* one — so a missing capability
+    /// (the "lectio unavailable" incident) surfaces deterministically.
+    #[test]
+    fn run_spec_required_tool_gate_fails_on_missing_required_warns_on_optional() {
+        let mut spec = AgentRunSpec::new(
+            "p".into(),
+            PathBuf::from("/tmp"),
+            PermissionProfile::Implement,
+            "sp".into(),
+        );
+        // Pin the available servers so the test doesn't depend on host config.
+        spec.mcp_servers = BTreeMap::from([
+            ("rsry".to_string(), "http://localhost:8383/mcp".to_string()),
+            ("mache".to_string(), "http://localhost:7532/mcp".to_string()),
+        ]);
+
+        // Required (rsry, mache) present; optional (lectio) absent → warn, ok.
+        assert!(spec.missing_required_tools().is_empty());
+        assert_eq!(spec.missing_optional_tools(), vec!["lectio".to_string()]);
+        spec.ensure_required_tools()
+            .expect("missing optional tool must not fail dispatch");
+
+        // Drop a required server → hard, actionable error.
+        spec.mcp_servers.remove("mache");
+        assert_eq!(spec.missing_required_tools(), vec!["mache".to_string()]);
+        let err = spec
+            .ensure_required_tools()
+            .expect_err("missing required tool must fail dispatch");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mache") && msg.contains("required"),
+            "error must name the missing required tool; got: {msg}"
+        );
+    }
 
     /// rosary-563b3f: the agent MCP config is valid JSON with HTTP servers.
     #[test]
