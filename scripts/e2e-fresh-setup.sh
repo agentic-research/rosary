@@ -76,11 +76,13 @@ pass "rsry enable end-to-end after dolt identity is configured"
 
 # --- Phase 3: bead create + list + status, capture stderr for noise check ---
 
+# Bare create (no explicit close condition) must succeed — it gets the honest
+# PR-merge default rather than being rejected (the quickstart path).
 CREATE=$("$RSRY" bead -r "$WORK/sample" create "fresh-setup smoke" \
             --priority 2 --files README.md 2>&1)
 echo "$CREATE" | grep -q 'created' \
-    || fail "bead create output unexpected:\n$CREATE"
-pass "rsry bead create"
+    || fail "bare bead create should default a close condition, not fail:\n$CREATE"
+pass "rsry bead create (bare — defaults close condition)"
 
 LIST=$("$RSRY" bead -r "$WORK/sample" list 2>&1)
 echo "$LIST" | grep -q 'fresh-setup smoke' \
@@ -91,6 +93,15 @@ STATUS=$("$RSRY" status 2>&1)
 echo "$STATUS" | grep -q '1 bead' \
     || fail "rsry status did not report the new bead:\n$STATUS"
 pass "rsry status reports the new bead"
+
+# Recommended path: declare an explicit close condition up front (run after the
+# '1 bead' status assertion above so the count stays deterministic).
+CREATE2=$("$RSRY" bead -r "$WORK/sample" create "fresh-setup explicit" \
+            --priority 2 --files README.md \
+            --acceptance "cargo test fresh_setup" 2>&1)
+echo "$CREATE2" | grep -q 'created' \
+    || fail "bead create --acceptance output unexpected:\n$CREATE2"
+pass "rsry bead create --acceptance (explicit close condition)"
 
 # --- Phase 4: regression check — the dolt 2.x duplicate-column noise is gone ---
 
