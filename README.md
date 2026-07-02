@@ -2,8 +2,6 @@
 
 > **Experimental software.** APIs, schemas, and behaviors change without notice. Use at your own risk. Contributions welcome — expect rough edges.
 
-> **Dispatch auth: fixed (2026-06-22).** The `claude -p` dispatch regression was a **credential-propagation** bug — a stripped/daemon environment reaching the spawned `claude` — not a TTY/PTY issue (a real PTY made zero difference under test). Every spawn path now injects auth + endpoint env (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`, plus `ANTHROPIC_BASE_URL` for non-Anthropic gateways) into the agent process. Interactive and nested-Claude-Code contexts authenticate via the Max/Pro account through Keychain; for **headless/daemon** use, mint a long-lived token with `claude setup-token` and export `CLAUDE_CODE_OAUTH_TOKEN`. See [rosary-b1495c](https://github.com/agentic-research/rosary/issues?q=rosary-b1495c). (The tmux-per-agent substrate, [rosary-75555d](https://github.com/agentic-research/rosary/issues?q=rosary-75555d), is **not** an auth fix — it remains proposed for agent persistence, the pane-as-mailbox, and capture/observability.)
-
 Autonomous work orchestrator for AI agents across multiple code repos. Local-first, open source.
 
 Rosary structures work as **[beads](https://github.com/steveyegge/beads)** — small, trackable units stored in each repo (a local SQLite `beads.db`, or a per-repo [Dolt](https://www.dolthub.com/) server where concurrent access is needed). A reconciliation loop scans for ready beads, dispatches AI agents (Claude, Gemini) to execute them in isolated workspaces, verifies the results, and syncs status to [Linear](https://linear.app) for human review.
@@ -48,7 +46,7 @@ Beads are organized into **threads** (ordered progressions of related work) and 
 rsry bead create "Fix auth bug" --priority 1 --issue-type bug --files src/auth.rs
 rsry bead list
 rsry bead search "auth"
-rsry bead close rsry-abc123          # requires a verifiable test command in the description
+rsry bead close rsry-abc123          # requires a close condition (acceptance_criteria / test command)
 rsry bead close rsry-abc123 --force  # override (legacy / non-impl beads)
 ```
 
@@ -90,11 +88,14 @@ rsry run
 
 > Use `task build` / `task test` instead of raw `cargo` — the Taskfile sets `PKG_CONFIG_PATH` for the fuse-t dependency via ley-line.
 
-### Use rosary as a task tracker only
+### Use rosary as just a task tracker (optional)
 
-The dispatch + reconciler surface is currently broken (see banner above). The **bead/task surface is fully functional today** — `rsry bead *` CLI subcommands, the MCP server (`rsry serve --transport stdio`), and the Linear sync all work independently of the broken dispatch path.
+You don't have to run the dispatch loop to get value. The bead surface stands on
+its own — `rsry bead *` CLI subcommands, the MCP server (`rsry serve --transport stdio`), and Linear sync all work whether or not `rsry run` is going.
 
-If you just want issue tracking — backed by Dolt, queryable via MCP, optionally synced to Linear — you can use rosary today as a pure task tracker. Two install paths:
+If you just want issue tracking — backed by Dolt, queryable via MCP, optionally
+synced to Linear — install the binary and skip straight to `rsry enable` +
+`rsry bead`. Two install paths:
 
 **macOS** (full install — codesigns binary + sets up an HTTP MCP launchd service):
 
@@ -113,14 +114,14 @@ mkdir -p ~/.local/bin && cp target/release/rsry ~/.local/bin/rsry   # or any dir
 Then on any platform:
 
 ```bash
-# Register your repos for tracking (no dispatch loop will run)
+# Register your repos for tracking (you can start the dispatch loop later)
 rsry enable ~/code/my-app
 
 # Create / search / update / close beads via CLI
 rsry bead create "Refactor auth module" --priority 1 --type task --files src/auth.rs
 rsry bead list
 rsry bead search "auth"
-rsry bead close rsry-abc123 --force          # `--force` skips the test-command verification
+rsry bead close rsry-abc123 --force          # `--force` skips the close-condition gate
 
 # Or wire rosary as an MCP server in your AI client (Claude Code, etc.)
 rsry serve --transport stdio                 # exposes 33 bead/thread/decade tools
@@ -130,9 +131,7 @@ rsry sync                                    # one-shot
 rsry serve --transport http --port 8383      # also receives Linear webhooks
 ```
 
-The dispatch loop (`rsry run`) is the only piece that doesn't work today. Everything else is stable.
-
-Future: an explicit `--no-default-features --features task-tracker-only` build that compiles the dispatch + reconciler modules out entirely (for a smaller cross-platform binary) is tracked under [rosary-ef101c](https://github.com/agentic-research/rosary/issues?q=rosary-ef101c) — until that lands, the full binary works fine on any platform; the dispatch code is just dormant.
+Future: an explicit `--no-default-features --features task-tracker-only` build that compiles the dispatch + reconciler modules out entirely (for a smaller cross-platform binary) is tracked under [rosary-ef101c](https://github.com/agentic-research/rosary/issues?q=rosary-ef101c) — until that lands, the dispatch modules are always compiled in, and you simply choose whether to run the loop.
 
 ## MCP server
 
