@@ -311,7 +311,10 @@ pub struct NewBead {
     pub description: String,
     pub priority: u8,
     pub issue_type: String,
-    /// Assignee; empty means "unset" (callers default via `default_agent`).
+    /// Assignee. An empty string means "unset": `create_bead_full` leaves
+    /// `assignee` NULL (reads back as `None`), so it never creates a bead that
+    /// looks assigned-to-empty. Callers wanting a default assignee resolve it
+    /// (e.g. `default_agent`) before constructing `NewBead`.
     pub owner: String,
     pub files: Vec<String>,
     pub test_files: Vec<String>,

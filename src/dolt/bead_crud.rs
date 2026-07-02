@@ -335,7 +335,6 @@ impl DoltClient {
     /// Without this, create_bead + set_assignee + set_files + add_dependency
     /// each trigger a separate dolt commit (4+ commits for one bead). This
     /// wraps everything in START TRANSACTION → COMMIT for a single commit.
-    #[allow(clippy::too_many_arguments)]
     pub async fn create_bead_full(&self, bead: crate::store::NewBead) -> Result<()> {
         let crate::store::NewBead {
             id,
@@ -380,13 +379,17 @@ impl DoltClient {
         .await
         .with_context(|| format!("creating bead {id}"))?;
 
-        // 2. Set owner
-        query("UPDATE issues SET assignee = ?, updated_at = NOW() WHERE id = ?")
-            .bind(owner)
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .with_context(|| format!("setting assignee for {id}"))?;
+        // 2. Set owner — only when given. An empty owner means "unset", so we
+        // leave assignee NULL (reads back `None`, not `Some("")`) and keep
+        // reconcile's `owner.is_some()` auto-assign path working.
+        if !owner.is_empty() {
+            query("UPDATE issues SET assignee = ?, updated_at = NOW() WHERE id = ?")
+                .bind(owner)
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("setting assignee for {id}"))?;
+        }
 
         // 3. Set files and provenance if provided
         if !files.is_empty() || !test_files.is_empty() || !derived_from.is_empty() {

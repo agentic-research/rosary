@@ -841,6 +841,12 @@ async fn scope_appears_in_list_beads() {
     assert_eq!(beads.len(), 1);
     assert_eq!(beads[0].scope, "auth");
     assert_eq!(beads[0].created_by.as_deref(), Some("bob"));
+    // An omitted owner (NewBead default "") must read back as unset, NOT
+    // Some("") — otherwise reconcile's `owner.is_some()` auto-assign never fires.
+    assert_eq!(
+        beads[0].owner, None,
+        "empty owner must persist as NULL/None"
+    );
 }
 
 #[tokio::test]

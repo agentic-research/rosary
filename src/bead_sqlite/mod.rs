@@ -210,12 +210,13 @@ async fn migrate_sqlite_to_dolt(
         status: String,
         created_by: Option<String>,
         scope: String,
+        acceptance_criteria: String,
     }
 
     let rows: Vec<Row> = {
         let conn = Connection::open(sqlite_path)?;
         let mut stmt = conn.prepare(
-            "SELECT id, title, description, priority, issue_type, assignee, notes, status, created_by, scope FROM issues",
+            "SELECT id, title, description, priority, issue_type, assignee, notes, status, created_by, scope, acceptance_criteria FROM issues",
         )?;
         stmt.query_map([], |r| {
             Ok(Row {
@@ -234,6 +235,8 @@ async fn migrate_sqlite_to_dolt(
                     .unwrap_or_else(|| "open".to_string()),
                 created_by: r.get(8)?,
                 scope: r.get::<_, Option<String>>(9)?.unwrap_or_default(),
+                // Preserve the structured close condition through migration (#278).
+                acceptance_criteria: r.get::<_, Option<String>>(10)?.unwrap_or_default(),
             })
         })?
         .filter_map(|r| r.ok())
@@ -263,7 +266,7 @@ async fn migrate_sqlite_to_dolt(
                 owner: row.owner.clone(),
                 created_by: row.created_by.clone(),
                 scope: row.scope.clone(),
-                // sqlite→dolt migration Row doesn't carry acceptance_criteria
+                acceptance_criteria: row.acceptance_criteria.clone(),
                 ..Default::default()
             })
             .await?;
@@ -588,10 +591,15 @@ impl BeadStore for SqliteBeadStore {
             params![id, title, description, *priority as i32, issue_type, created_by, scope, acceptance_criteria],
         )?;
 
-        tx.execute(
-            "UPDATE issues SET assignee = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![owner, id],
-        )?;
+        // Only set assignee when an owner is given. An empty owner means
+        // "unset" — leaving assignee NULL (reads back as `None`, not
+        // `Some("")`) so reconcile's `owner.is_some()` auto-assign still fires.
+        if !owner.is_empty() {
+            tx.execute(
+                "UPDATE issues SET assignee = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![owner, id],
+            )?;
+        }
 
         if !files.is_empty() || !test_files.is_empty() || !derived_from.is_empty() {
             let notes_json = serde_json::json!({
