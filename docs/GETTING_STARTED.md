@@ -107,7 +107,7 @@ If rsry is configured as an MCP server in your Claude Code settings, you now hav
 
 To add rsry as an MCP server, add to your global Claude Code MCP config at `~/.claude/.mcp.json`:
 
-> ⚠️  Use the **global** path. Avoid project-level `.mcp.json` for trusted infrastructure
+> ⚠️ Use the **global** path. Avoid project-level `.mcp.json` for trusted infrastructure
 > like rsry — project-level entries override global ones, so a hostile project shipping
 > a `.mcp.json` with a hijacked `rsry` name can redirect a name you trust.
 

@@ -2,18 +2,18 @@
 
 **Deep Research Report** | March 25, 2026
 
----
+______________________________________________________________________
 
 ## Table of Contents
 
 1. [SBOM Standards Deep Dive](#1-sbom-standards-deep-dive)
-2. [Agent Provenance State of the Art](#2-agent-provenance-state-of-the-art)
-3. [The Trivy/Aqua Security Breach](#3-the-trivyaqua-security-breach)
-4. [BDR as Provenance Record](#4-bdr-as-provenance-record)
-5. [Signet's Role in Agent Provenance](#5-signets-role-in-agent-provenance)
-6. [Synthesis: The Agent Provenance Stack](#6-synthesis-the-agent-provenance-stack)
+1. [Agent Provenance State of the Art](#2-agent-provenance-state-of-the-art)
+1. [The Trivy/Aqua Security Breach](#3-the-trivyaqua-security-breach)
+1. [BDR as Provenance Record](#4-bdr-as-provenance-record)
+1. [Signet's Role in Agent Provenance](#5-signets-role-in-agent-provenance)
+1. [Synthesis: The Agent Provenance Stack](#6-synthesis-the-agent-provenance-stack)
 
----
+______________________________________________________________________
 
 ## 1. SBOM Standards Deep Dive
 
@@ -84,6 +84,7 @@ SLSA provides a framework for incrementally improving supply chain security, org
 **ResourceDescriptor** fields: `uri`, `digest` (sha256/sha512/gitCommit), `name`, `downloadLocation`, `mediaType`, `content` (base64), `annotations`.
 
 **SLSA levels**:
+
 - **L1**: Provenance exists (package-generation attestation).
 - **L2**: Hosted build platform generates provenance (signed).
 - **L3**: Hardened build platform, isolated builds, unforgeable provenance.
@@ -116,32 +117,35 @@ in-toto is a framework for securing the integrity of software supply chains by d
 **Custom predicates**: Organizations can define new predicate types. This is the mechanism for extending in-toto to agent provenance --- define an `AgentDispatch` predicate type with agent-specific fields.
 
 **SCAI (Software Supply Chain Attribute Integrity)**: Particularly relevant. SCAI captures functional attributes of software artifacts and their supply chain, including conditions under which attributes arise and authenticated evidence for asserted attributes. SCAI Attribute Assertions can describe:
+
 - Conditions of execution (what environment the agent ran in)
 - Evidence for claimed attributes (verification results, test outcomes)
 - Dependency graph integrity (verifiable dependency chains)
 
 **Relevance to agent provenance**: in-toto is the natural envelope format. A rosary dispatch pipeline maps directly to an in-toto layout:
+
 - **Layout**: "Bead X must be processed by scoping-agent, then dev-agent, then staging-agent"
 - **Links**: Each phase generates a link attestation with materials (input files), products (changed files), and the command (agent invocation)
 - **Verification**: The reconciler verifies that the correct sequence of agents processed the bead
 
 ### 1.5 Standards Comparison Matrix
 
-| Standard | Models | Format | Signs | Agent Fit |
-|----------|--------|--------|-------|-----------|
-| CycloneDX | Components, deps, AI models | JSON/XML/Protobuf | Optional via in-toto envelope | Inventory (what was used) |
-| SPDX | Packages, files, AI datasets | JSON/RDF/tag-value | Optional | Inventory (what was used) |
-| SLSA | Build provenance | in-toto attestation | Required (L2+) | Execution (how it was built) |
-| in-toto | Supply chain steps | JSON envelope + signature | Required | Execution (what happened) |
-| SCAI | Functional attributes | in-toto predicate | Via in-toto | Properties (what was verified) |
+| Standard  | Models                       | Format                    | Signs                         | Agent Fit                      |
+| --------- | ---------------------------- | ------------------------- | ----------------------------- | ------------------------------ |
+| CycloneDX | Components, deps, AI models  | JSON/XML/Protobuf         | Optional via in-toto envelope | Inventory (what was used)      |
+| SPDX      | Packages, files, AI datasets | JSON/RDF/tag-value        | Optional                      | Inventory (what was used)      |
+| SLSA      | Build provenance             | in-toto attestation       | Required (L2+)                | Execution (how it was built)   |
+| in-toto   | Supply chain steps           | JSON envelope + signature | Required                      | Execution (what happened)      |
+| SCAI      | Functional attributes        | in-toto predicate         | Via in-toto                   | Properties (what was verified) |
 
 **Conclusion**: No single standard covers agent provenance. The correct approach is **layered**:
-1. **in-toto envelope** for the attestation format and signature
-2. **Custom predicate** (based on SLSA Provenance schema) for agent dispatch metadata
-3. **CycloneDX AI/ML-BOM** for inventorying the agent components
-4. **SCAI** for verification attributes (test results, review verdicts)
 
----
+1. **in-toto envelope** for the attestation format and signature
+1. **Custom predicate** (based on SLSA Provenance schema) for agent dispatch metadata
+1. **CycloneDX AI/ML-BOM** for inventorying the agent components
+1. **SCAI** for verification attributes (test results, review verdicts)
+
+______________________________________________________________________
 
 ## 2. Agent Provenance State of the Art
 
@@ -152,8 +156,8 @@ in-toto is a framework for securing the integrity of software supply chains by d
 This paper proposes the definitive framework for LLM audit trails:
 
 1. **Lifecycle Framework**: Specifies event types to log, required metadata per event, and governance rationales across LLM lifecycle stages (data ingestion, training, evaluation, deployment, monitoring).
-2. **Reference Architecture**: System for capturing, storing, and utilizing audit logs with tamper evidence, privacy, and cross-organizational linkage.
-3. **Open-Source Implementation**: Python library demonstrating the audit layer within common LLM workflows.
+1. **Reference Architecture**: System for capturing, storing, and utilizing audit logs with tamper evidence, privacy, and cross-organizational linkage.
+1. **Open-Source Implementation**: Python library demonstrating the audit layer within common LLM workflows.
 
 The audit trail is defined as: *"a chronological, tamper-evident, context-rich ledger of lifecycle events and decisions that links technical provenance (models, data, training and evaluation runs, deployments, monitoring) with governance records (approvals, waivers, and attestations)."*
 
@@ -164,8 +168,8 @@ The audit trail is defined as: *"a chronological, tamper-evident, context-rich l
 TAIBOM extends SBOM principles to AI with three contributions missing from CycloneDX and SPDX:
 
 1. **Structured dependency model** tailored for AI components (datasets, model weights, training code, inference config).
-2. **Cryptographic integrity propagation**: On creation, each artifact is hashed and digitally signed with full provenance (source URI, timestamp, license). Derived artifacts must embed signed hashes of all ancestors.
-3. **Trust attestation process**: Chain-of-trust from training data through model weights to deployed inference.
+1. **Cryptographic integrity propagation**: On creation, each artifact is hashed and digitally signed with full provenance (source URI, timestamp, license). Derived artifacts must embed signed hashes of all ancestors.
+1. **Trust attestation process**: Chain-of-trust from training data through model weights to deployed inference.
 
 **Key insight**: TAIBOM demonstrates that CycloneDX and SPDX AI extensions "do not establish cryptographic links between AI components and cannot verify whether components have remained unchanged throughout the development lifecycle." TAIBOM enforces signed attestations across the full chain.
 
@@ -185,6 +189,7 @@ Covers all 10 OWASP Agentic Top 10 risks. Key provenance-related components:
 - **Certification CLI**: Produces a signed attestation on every deployment.
 
 **ASI coverage relevant to provenance**:
+
 - ASI-03 (Identity Abuse): Zero-trust credentials per agent
 - ASI-04 (Code Execution): Runtime privilege rings + sandboxing
 - ASI-09 (Trust Deficit): Full audit trails + flight recorder
@@ -201,6 +206,7 @@ The OWASP Agentic Top 10 is the definitive risk taxonomy. Provenance-relevant en
 ### 2.3 What Exists vs. What's Missing
 
 **What exists**:
+
 - SBOM standards for AI model inventory (CycloneDX AI/ML-BOM, SPDX AI Profile)
 - Build provenance standards (SLSA, in-toto)
 - Academic frameworks for LLM audit trails
@@ -211,28 +217,28 @@ The OWASP Agentic Top 10 is the definitive risk taxonomy. Provenance-relevant en
 
 1. **Agent Execution Attestation Standard**: No standard predicate type for "agent X executed tool Y on artifact Z with result W." SLSA's `buildDefinition`/`runDetails` is the closest, but needs agent-specific extensions.
 
-2. **Multi-Phase Pipeline Attestation**: No standard captures a multi-agent review pipeline (dev -> staging -> prod) as a verifiable chain. in-toto layouts come closest but need adaptation for non-deterministic agent execution.
+1. **Multi-Phase Pipeline Attestation**: No standard captures a multi-agent review pipeline (dev -> staging -> prod) as a verifiable chain. in-toto layouts come closest but need adaptation for non-deterministic agent execution.
 
-3. **Cryptographically Signed Handoff Chain**: Rosary's handoff `chain_hash()` is SHA-256 tamper-evident but not cryptographically signed. No standard defines how agent-to-agent handoffs should be attested.
+1. **Cryptographically Signed Handoff Chain**: Rosary's handoff `chain_hash()` is SHA-256 tamper-evident but not cryptographically signed. No standard defines how agent-to-agent handoffs should be attested.
 
-4. **Agent Identity Standard**: OWASP ASI-03 requires agent identity, but no standard defines how. The Microsoft toolkit uses Ed25519 + SPIFFE/SVID. Signet's bridge certificate model is more complete.
+1. **Agent Identity Standard**: OWASP ASI-03 requires agent identity, but no standard defines how. The Microsoft toolkit uses Ed25519 + SPIFFE/SVID. Signet's bridge certificate model is more complete.
 
-5. **Tool Call Attestation**: No standard captures individual tool invocations (MCP tool calls, file edits, shell commands) as attested actions within an agent session.
+1. **Tool Call Attestation**: No standard captures individual tool invocations (MCP tool calls, file edits, shell commands) as attested actions within an agent session.
 
----
+______________________________________________________________________
 
 ## 3. The Trivy/Aqua Security Breach
 
 ### 3.1 Timeline
 
-| Date | Event |
-|------|-------|
-| Late Feb 2026 | TeamPCP exploits misconfiguration in Trivy's GitHub Actions environment, extracts a privileged access token |
-| Mar 1, 2026 | Trivy team discloses incident, rotates credentials --- **but rotation was not fully comprehensive** |
+| Date               | Event                                                                                                                                                                                                                         |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Late Feb 2026      | TeamPCP exploits misconfiguration in Trivy's GitHub Actions environment, extracts a privileged access token                                                                                                                   |
+| Mar 1, 2026        | Trivy team discloses incident, rotates credentials --- **but rotation was not fully comprehensive**                                                                                                                           |
 | Mar 19, ~17:43 UTC | Attacker force-pushes 76 of 77 version tags in `aquasecurity/trivy-action` and all 7 tags in `aquasecurity/setup-trivy` to malicious commits. Compromised `aqua-bot` service account publishes malicious Trivy binary v0.69.4 |
-| Mar 19, ~20:38 UTC | Trivy team identifies and contains the attack |
-| Mar 20, 2026 | Safe versions, user guidance, and IOCs published |
-| Post-Mar 20 | Aqua Security's internal GitHub organization defaced --- all 44 repositories renamed/altered using stolen service account token |
+| Mar 19, ~20:38 UTC | Trivy team identifies and contains the attack                                                                                                                                                                                 |
+| Mar 20, 2026       | Safe versions, user guidance, and IOCs published                                                                                                                                                                              |
+| Post-Mar 20        | Aqua Security's internal GitHub organization defaced --- all 44 repositories renamed/altered using stolen service account token                                                                                               |
 
 ### 3.2 Attack Mechanics
 
@@ -243,12 +249,13 @@ The OWASP Agentic Top 10 is the definitive risk taxonomy. Provenance-relevant en
 **Tag poisoning**: The attacker force-pushed 76 version tags (of 77) to point at malicious commits. This is a **git reference attack** --- the tag names stayed the same, but the commits they pointed to changed. Any CI/CD pipeline pinning to a tag (e.g., `uses: aquasecurity/trivy-action@v3`) would silently pull the malicious version.
 
 **Payload**: The "TeamPCP Cloud Stealer":
+
 1. Runs silently before the real scanner (workflows appear to complete normally)
-2. Dumps `Runner.Worker` process memory
-3. Harvests SSH, cloud, and Kubernetes secrets
-4. Encrypts data using AES-256 + RSA-4096
-5. Exfiltrates to remote server
-6. Fallback: creates a public repository named `tpcp-docs` in the victim's GitHub account and uploads secrets there
+1. Dumps `Runner.Worker` process memory
+1. Harvests SSH, cloud, and Kubernetes secrets
+1. Encrypts data using AES-256 + RSA-4096
+1. Exfiltrates to remote server
+1. Fallback: creates a public repository named `tpcp-docs` in the victim's GitHub account and uploads secrets there
 
 **Scale**: Every CI/CD pipeline using `trivy-action` with an affected tag reference was compromised. Docker Hub images were also poisoned in a secondary wave.
 
@@ -273,7 +280,7 @@ If the `aqua-bot` service account used short-lived bridge certificates (5-minute
 
 **Fundamental lesson**: The Trivy attack succeeded because of three failures: (1) mutable references without integrity verification, (2) long-lived credentials without time bounds, and (3) incomplete credential rotation. All three are addressed by a proper provenance + identity system.
 
----
+______________________________________________________________________
 
 ## 4. BDR as Provenance Record
 
@@ -283,23 +290,23 @@ Rosary's BDR (Bead Decomposition Record) hierarchy and dispatch pipeline already
 
 **BDR Hierarchy (static provenance --- what was planned)**:
 
-| Rosary Concept | Provenance Analog | Data |
-|----------------|-------------------|------|
-| `Decade` | Project/initiative scope | `id`, `title`, `source_path`, `status`, `meta` (frontmatter with `depends_on`, `relates_to`) |
-| `Thread` | Work stream within a project | `id`, `name`, `decade_id`, `cross_repo_refs` |
-| `BeadSpec` | Work item specification | `title`, `description`, `issue_type`, `priority`, `channel`, `target_repo`, `depends_on`, `success_criteria` |
-| `BeadSpec.content_hash()` | Content-addressed identity | SHA-256 of immutable definition (title, description, type, priority, criteria) |
+| Rosary Concept            | Provenance Analog            | Data                                                                                                         |
+| ------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `Decade`                  | Project/initiative scope     | `id`, `title`, `source_path`, `status`, `meta` (frontmatter with `depends_on`, `relates_to`)                 |
+| `Thread`                  | Work stream within a project | `id`, `name`, `decade_id`, `cross_repo_refs`                                                                 |
+| `BeadSpec`                | Work item specification      | `title`, `description`, `issue_type`, `priority`, `channel`, `target_repo`, `depends_on`, `success_criteria` |
+| `BeadSpec.content_hash()` | Content-addressed identity   | SHA-256 of immutable definition (title, description, type, priority, criteria)                               |
 
 **Dispatch Pipeline (dynamic provenance --- what happened)**:
 
-| Rosary Concept | Provenance Analog | Data |
-|----------------|-------------------|------|
-| `Manifest` (`.rsry-dispatch.json`) | **Execution attestation** | `identity` (dispatch_id, bead_id, agent, provider, model, pipeline_phase, permission_profile), `session` (workspace, started/completed, duration, PID), `work` (commits, files_changed, lines), `quality` (verification_passed, tier results), `cost` (tokens, USD), `vcs` (branch, commits), `outcome` (success, error, retries) |
-| `Handoff` (`.rsry-handoff-{phase}.json`) | **Phase transition attestation** | `phase`, `from_agent`, `to_agent`, `bead_id`, `provider`, `thread_id`, `summary`, `files_changed`, `lines_changed`, `review_hints`, `verdict`, `artifacts` |
-| `Handoff.chain_hash()` | **Tamper-evident hash chain** | SHA-256 covering phase, from_agent, bead_id, summary, files_changed, previous_handoff path |
-| `DispatchRecord` | **Execution log** | `id`, `bead_ref`, `agent`, `provider`, `started_at`, `completed_at`, `outcome`, `work_dir`, `session_id` |
-| `PipelineState` | **Pipeline position** | `bead_ref`, `pipeline_phase`, `pipeline_agent`, `phase_status`, `retries`, `consecutive_reverts`, `highest_verify_tier`, `backoff_until` |
-| `Verifier` tiers | **Quality gates** | commit, bead_ref, compile, test, lint, diff-sanity, review (7 tiers for Rust) |
+| Rosary Concept                           | Provenance Analog                | Data                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Manifest` (`.rsry-dispatch.json`)       | **Execution attestation**        | `identity` (dispatch_id, bead_id, agent, provider, model, pipeline_phase, permission_profile), `session` (workspace, started/completed, duration, PID), `work` (commits, files_changed, lines), `quality` (verification_passed, tier results), `cost` (tokens, USD), `vcs` (branch, commits), `outcome` (success, error, retries) |
+| `Handoff` (`.rsry-handoff-{phase}.json`) | **Phase transition attestation** | `phase`, `from_agent`, `to_agent`, `bead_id`, `provider`, `thread_id`, `summary`, `files_changed`, `lines_changed`, `review_hints`, `verdict`, `artifacts`                                                                                                                                                                        |
+| `Handoff.chain_hash()`                   | **Tamper-evident hash chain**    | SHA-256 covering phase, from_agent, bead_id, summary, files_changed, previous_handoff path                                                                                                                                                                                                                                        |
+| `DispatchRecord`                         | **Execution log**                | `id`, `bead_ref`, `agent`, `provider`, `started_at`, `completed_at`, `outcome`, `work_dir`, `session_id`                                                                                                                                                                                                                          |
+| `PipelineState`                          | **Pipeline position**            | `bead_ref`, `pipeline_phase`, `pipeline_agent`, `phase_status`, `retries`, `consecutive_reverts`, `highest_verify_tier`, `backoff_until`                                                                                                                                                                                          |
+| `Verifier` tiers                         | **Quality gates**                | commit, bead_ref, compile, test, lint, diff-sanity, review (7 tiers for Rust)                                                                                                                                                                                                                                                     |
 
 **Bead Lifecycle (state provenance --- how state evolved)**:
 
@@ -365,7 +372,7 @@ Hash chains prove ordering within a pipeline, but there is no global ordering or
 
 **Gap**: Change `previous_handoff` from a path reference to the hex-encoded `chain_hash()` of the previous handoff. This creates a true content-addressed hash chain.
 
----
+______________________________________________________________________
 
 ## 5. Signet's Role in Agent Provenance
 
@@ -381,18 +388,18 @@ Signet provides identity and signing infrastructure with four foundational princ
 
 **Key packages relevant to agent provenance**:
 
-| Package | Provenance Role |
-|---------|-----------------|
-| `pkg/crypto/epr` | Ephemeral Proof Routines: master key signs ephemeral key, ephemeral key signs request. Two-step verification. |
-| `pkg/attest/x509` | Local CA for short-lived certificates (5-minute default). Agent dispatch certificates. |
-| `pkg/signet` | CBOR token structures: IssuerID, ConfirmationID, ExpiresAt, Nonce, EphemeralKeyID. |
-| `pkg/git` | Git commit signing/verification via CMS/PKCS#7. Agents sign their commits. |
-| `pkg/policy` | Trust policy bundles: PolicyChecker, Compiler, signed CBOR bundles with rollback protection. |
-| `pkg/sigid` | Identity context extraction: 4-entity model (Owner, Machine, Actor, Identity). |
-| `pkg/oidc` | OIDC token exchange: GitHub Actions OIDC -> signet bridge certificate. |
-| `pkg/authflow` | Pluggable auth flow registry (venturi pattern). |
-| `pkg/agent` | gRPC agent server/client for key operations. |
-| `rs/crates/sign` | Ed25519 CMS/PKCS#7 in Rust (for rosary integration). |
+| Package           | Provenance Role                                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------------------------- |
+| `pkg/crypto/epr`  | Ephemeral Proof Routines: master key signs ephemeral key, ephemeral key signs request. Two-step verification. |
+| `pkg/attest/x509` | Local CA for short-lived certificates (5-minute default). Agent dispatch certificates.                        |
+| `pkg/signet`      | CBOR token structures: IssuerID, ConfirmationID, ExpiresAt, Nonce, EphemeralKeyID.                            |
+| `pkg/git`         | Git commit signing/verification via CMS/PKCS#7. Agents sign their commits.                                    |
+| `pkg/policy`      | Trust policy bundles: PolicyChecker, Compiler, signed CBOR bundles with rollback protection.                  |
+| `pkg/sigid`       | Identity context extraction: 4-entity model (Owner, Machine, Actor, Identity).                                |
+| `pkg/oidc`        | OIDC token exchange: GitHub Actions OIDC -> signet bridge certificate.                                        |
+| `pkg/authflow`    | Pluggable auth flow registry (venturi pattern).                                                               |
+| `pkg/agent`       | gRPC agent server/client for key operations.                                                                  |
+| `rs/crates/sign`  | Ed25519 CMS/PKCS#7 in Rust (for rosary integration).                                                          |
 
 ### 5.2 The Agent Signing Chain
 
@@ -419,6 +426,7 @@ The user's Ed25519 master key is the root of trust. It lives in the signet walle
 
 **Level 1 --- Orchestrator Bridge Certificate**:
 When rosary starts a dispatch session, it obtains a short-lived bridge certificate from signet's local CA (`pkg/attest/x509`). This certificate:
+
 - Has a 5-minute default lifetime (configurable)
 - Is bound to the orchestrator's DID
 - Contains the dispatch context (bead_id, pipeline_phase) in certificate extensions
@@ -426,6 +434,7 @@ When rosary starts a dispatch session, it obtains a short-lived bridge certifica
 
 **Level 2 --- Agent Execution Attestation**:
 The orchestrator signs each dispatch manifest and handoff with the bridge certificate. This creates an in-toto-compatible attestation:
+
 - **Subject**: The dispatch artifacts (manifest, handoffs, commits)
 - **Predicate**: The dispatch metadata (agent, provider, model, files, verification results)
 - **Signature**: The orchestrator's bridge certificate
@@ -436,6 +445,7 @@ Agents running via `signet-git` sign their git commits with certificates issued 
 ### 5.3 OIDC Integration for CI/CD
 
 Signet already supports OIDC token exchange for GitHub Actions:
+
 ```
 GitHub Actions OIDC Token --> signet authority exchange-github-token --> Bridge Certificate
 ```
@@ -455,16 +465,16 @@ Signet's `pkg/policy` provides trust policy bundles with signed CBOR and rollbac
 
 Signet's `pkg/sigid` provides a 4-entity identity model that maps directly to agent dispatch:
 
-| Entity | Agent Provenance Meaning |
-|--------|--------------------------|
-| **Owner** | The user who authorized the dispatch (master key holder) |
-| **Machine** | The compute environment where the agent ran |
-| **Actor** | The agent identity (dev-agent, staging-agent, etc.) |
-| **Identity** | The cryptographic identity (DID + bridge certificate) |
+| Entity       | Agent Provenance Meaning                                 |
+| ------------ | -------------------------------------------------------- |
+| **Owner**    | The user who authorized the dispatch (master key holder) |
+| **Machine**  | The compute environment where the agent ran              |
+| **Actor**    | The agent identity (dev-agent, staging-agent, etc.)      |
+| **Identity** | The cryptographic identity (DID + bridge certificate)    |
 
 This decomposition is critical: it separates "who authorized" (Owner) from "what ran" (Actor) from "where it ran" (Machine), enabling fine-grained policy and forensics.
 
----
+______________________________________________________________________
 
 ## 6. Synthesis: The Agent Provenance Stack
 
@@ -610,28 +620,33 @@ Based on SLSA's `buildDefinition`/`runDetails` structure, adapted for agent exec
 ### 6.3 Implementation Roadmap
 
 **Phase 1: Sign what exists** (Low effort, high impact)
+
 - Sign `.rsry-dispatch.json` manifests with signet bridge certificates
 - Sign handoff files with the orchestrator's bridge certificate
 - Use `rs/crates/sign` (signet's Rust CMS/PKCS#7 crate) for in-process signing
 - Fix `chain_hash()` to reference previous handoff's content hash, not path
 
 **Phase 2: Wrap in in-toto envelopes** (Medium effort)
+
 - Define the `rosary.bot/provenance/dispatch/v1` predicate type
 - Wrap signed manifests/handoffs in DSSE envelopes
 - Produce verification-ready attestation bundles per dispatch
 
 **Phase 3: Agent identity** (Medium effort, requires signet changes)
+
 - Issue per-agent bridge certificates during dispatch
 - Agents sign their commits via `signet-git`
 - Agent identity bound to dispatch attestation
 - Policy bundles restrict agent authority to specific file scopes
 
 **Phase 4: Transparency log** (Higher effort)
+
 - Submit attestation hashes to Rekor or git-based transparency log
 - Enable third-party verification of dispatch history
 - Cross-repo attestation verification (BDR cross-repo dependencies)
 
 **Phase 5: Component inventory** (Lower priority)
+
 - Generate CycloneDX AI/ML-BOM for each dispatch
 - Include agent definition hashes, model versions, tool configurations
 - Publish alongside attestations for complete supply chain transparency
@@ -641,16 +656,17 @@ Based on SLSA's `buildDefinition`/`runDetails` structure, adapted for agent exec
 Applying this provenance stack to the Trivy scenario:
 
 1. **Signed tags** (Phase 1): Force-pushing tags would invalidate signatures.
-2. **Short-lived bridge certs** (Phase 1): The stolen `aqua-bot` token would be a 5-minute certificate, expired weeks before the March 19 attack.
-3. **in-toto layout** (Phase 2): The malicious release would fail layout verification --- wrong functionary, wrong build steps.
-4. **Transparency log** (Phase 4): The malicious release would appear in the log with a different builder identity, immediately visible to monitors.
-5. **Content-addressed references** (Phase 1): References to artifacts by content hash rather than mutable tags would make repointing impossible.
+1. **Short-lived bridge certs** (Phase 1): The stolen `aqua-bot` token would be a 5-minute certificate, expired weeks before the March 19 attack.
+1. **in-toto layout** (Phase 2): The malicious release would fail layout verification --- wrong functionary, wrong build steps.
+1. **Transparency log** (Phase 4): The malicious release would appear in the log with a different builder identity, immediately visible to monitors.
+1. **Content-addressed references** (Phase 1): References to artifacts by content hash rather than mutable tags would make repointing impossible.
 
----
+______________________________________________________________________
 
 ## Sources
 
 ### SBOM Standards
+
 - [CycloneDX Specification Overview](https://cyclonedx.org/specification/overview/)
 - [CycloneDX AI/ML-BOM](https://cyclonedx.org/capabilities/mlbom/)
 - [CycloneDX v1.7 JSON Reference](https://cyclonedx.org/docs/1.7/json/)
@@ -666,6 +682,7 @@ Applying this provenance stack to the Trivy scenario:
 - [Introduction to SLSA (Chainguard Academy)](https://edu.chainguard.dev/compliance/slsa/what-is-slsa/)
 
 ### Agent Provenance Research
+
 - [Audit Trails for Accountability in Large Language Models (arXiv 2601.20727)](https://arxiv.org/html/2601.20727v1)
 - [TAIBOM: Bringing Trustworthiness to AI-Enabled Systems (arXiv 2510.02169)](https://arxiv.org/html/2510.02169)
 - [Trusted AI Agents in the Cloud (arXiv 2512.05951)](https://arxiv.org/html/2512.05951v1)
@@ -674,6 +691,7 @@ Applying this provenance stack to the Trivy scenario:
 - [OWASP Top 10 for Agentic Applications 2026](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)
 
 ### Trivy Breach
+
 - [Aqua Security: Trivy Supply Chain Attack (official blog)](https://www.aquasec.com/blog/trivy-supply-chain-attack-what-you-need-to-know/)
 - [CrowdStrike: From Scanner to Stealer](https://www.crowdstrike.com/en-us/blog/from-scanner-to-stealer-inside-the-trivy-action-supply-chain-compromise/)
 - [Wiz: Trivy Compromised by TeamPCP](https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack)
@@ -683,6 +701,7 @@ Applying this provenance stack to the Trivy scenario:
 - [GitGuardian: Secret Exposure Analysis](https://blog.gitguardian.com/trivys-march-supply-chain-attack-shows-where-secret-exposure-hurts-most/)
 
 ### Industry Standards and Compliance
+
 - [OpenSSF: Beyond the SBOM - Ensuring Integrity with Attestations](https://openssf.org/blog/2025/03/25/beyond-the-software-bill-of-materials-sbom-ensuring-integrity-with-attestations-event-recap/)
 - [ISACA: The Growing Challenge of Auditing Agentic AI](https://www.isaca.org/resources/news-and-trends/industry-news/2025/the-growing-challenge-of-auditing-agentic-ai)
 - [AI Security 2026: Complete Guide (EU AI Act August 2026 deadline)](https://www.levo.ai/resources/blogs/ai-security-the-complete-guide-for)

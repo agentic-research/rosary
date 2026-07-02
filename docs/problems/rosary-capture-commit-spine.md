@@ -24,15 +24,15 @@ The headline finding: **most primitives already exist as types; the spine that
 connects them does not.** The backlog the user senses is "collapsible" because
 this is wiring, not greenfield.
 
-| Primitive | State | Evidence |
-|---|---|---|
-| Repo-optional scope | **built (types only)** | `src/scope.rs` `ScopeId::{Repo, External(uri), Global}`; `GLOBAL_REPO="global"`; landed in `rosary-b5da2f` (closed) |
-| Front-door bead | **filed, unbuilt** | `rosary-1db9c9` (open) "Incoming triage queue (inbox before bead classification)" — description sketches inbox/ + triage skill + decay |
-| Provenance chain on beads | **built + persisted** | `Bead.derived_from: Vec<ProvenanceRef>` (`src/bead.rs:278`); persisted via `src/bead_dolt.rs:63,78`; `ProvenanceRef::Session{transcript_path}` exists for Claude turns |
-| Capture → provenance | **built** | `src/capture.rs` `capture_from_session`→`Session`, `capture_from_code`→`Code`, set on `BeadSpec` |
-| Creator identity | **impoverished** | `Bead.created_by: Option<String>` = git `user.name` only — no human/agent kind, no session id, no observer/ingester triad (lectio has all three) |
-| Context injection at dispatch | **built for AST, not memory** | `rsry-461705` (closed) injects ley-line AST context into `AgentTask.ast_context` before dispatch |
-| Within-rosary phase context | **built** | `src/handoff.rs` `Handoff::format_for_prompt` (phase→phase only) |
+| Primitive                     | State                         | Evidence                                                                                                                                                               |
+| ----------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repo-optional scope           | **built (types only)**        | `src/scope.rs` `ScopeId::{Repo, External(uri), Global}`; `GLOBAL_REPO="global"`; landed in `rosary-b5da2f` (closed)                                                    |
+| Front-door bead               | **filed, unbuilt**            | `rosary-1db9c9` (open) "Incoming triage queue (inbox before bead classification)" — description sketches inbox/ + triage skill + decay                                 |
+| Provenance chain on beads     | **built + persisted**         | `Bead.derived_from: Vec<ProvenanceRef>` (`src/bead.rs:278`); persisted via `src/bead_dolt.rs:63,78`; `ProvenanceRef::Session{transcript_path}` exists for Claude turns |
+| Capture → provenance          | **built**                     | `src/capture.rs` `capture_from_session`→`Session`, `capture_from_code`→`Code`, set on `BeadSpec`                                                                       |
+| Creator identity              | **impoverished**              | `Bead.created_by: Option<String>` = git `user.name` only — no human/agent kind, no session id, no observer/ingester triad (lectio has all three)                       |
+| Context injection at dispatch | **built for AST, not memory** | `rsry-461705` (closed) injects ley-line AST context into `AgentTask.ast_context` before dispatch                                                                       |
+| Within-rosary phase context   | **built**                     | `src/handoff.rs` `Handoff::format_for_prompt` (phase→phase only)                                                                                                       |
 
 **The wiring gaps (verified absent):**
 
@@ -87,11 +87,11 @@ this is wiring, not greenfield.
 
 ## Requirement lattice
 
-| ID | Requirement | Parent(s) | Child(ren) |
-|----|-------------|-----------|------------|
-| R1 | Front-door queue is *workable*, not just storable (Global beads get a triage pass) | Aspiration | L1, L2, L3 |
-| R2 | Provenance survives the capture → promote hop (authorship triad + chain) | Aspiration | L4, L5, L7 |
-| R3 | Dispatched agents start from last known state (memory injection) | Aspiration | L6 |
+| ID  | Requirement                                                                        | Parent(s)  | Child(ren) |
+| --- | ---------------------------------------------------------------------------------- | ---------- | ---------- |
+| R1  | Front-door queue is *workable*, not just storable (Global beads get a triage pass) | Aspiration | L1, L2, L3 |
+| R2  | Provenance survives the capture → promote hop (authorship triad + chain)           | Aspiration | L4, L5, L7 |
+| R3  | Dispatched agents start from last known state (memory injection)                   | Aspiration | L6         |
 
 ## Dispatchable leaves
 
@@ -267,12 +267,12 @@ this is wiring, not greenfield.
 
 ## Non-leaves queue
 
-| Title | Fails property | What would unblock |
-|-------|----------------|---------------------|
-| Extract shared Rust client libs (Linear/GitHub) used by rosary + lectio + notme | #4 (output shape — crate boundary undefined), #5 (cross-repo unbounded) | Write an ADR naming the shared crate + which layer it owns (transport + types, **not** sync policy — rosary writes Linear bidirectionally, lectio only reads). Then one extraction leaf per client. |
-| Distill / dedupe-as-HDC-experiment stage | #1, #2 (belongs to lectio, not rosary; criteria are an experiment design) | Separate aspiration (`falsifiable-semantic-search`). Rosary's slice is L2's `is_dominated_by` dedup-on-triage; the HDC ranking is upstream in lectio. Don't file under this aspiration. |
-| "Auto-inject context by default?" policy | #2 (no falsifiable "done" — it's a judgment) | L6 ships the mechanism behind a flag (default off). After it's observable in real dispatches, decide the policy as a follow-up bead with acceptance = "config default flips + N dispatches show no regression." |
-| `chat-log capture → cloister CAS` (`rosary-125fc1`, open) | #3 (depends on cloister CAS contract not yet stable) | Blocked on the cloister content-addressed-storage seam. Re-evaluate once that lands; then it becomes the durable backing for L2's capture. |
+| Title                                                                           | Fails property                                                            | What would unblock                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Extract shared Rust client libs (Linear/GitHub) used by rosary + lectio + notme | #4 (output shape — crate boundary undefined), #5 (cross-repo unbounded)   | Write an ADR naming the shared crate + which layer it owns (transport + types, **not** sync policy — rosary writes Linear bidirectionally, lectio only reads). Then one extraction leaf per client.             |
+| Distill / dedupe-as-HDC-experiment stage                                        | #1, #2 (belongs to lectio, not rosary; criteria are an experiment design) | Separate aspiration (`falsifiable-semantic-search`). Rosary's slice is L2's `is_dominated_by` dedup-on-triage; the HDC ranking is upstream in lectio. Don't file under this aspiration.                         |
+| "Auto-inject context by default?" policy                                        | #2 (no falsifiable "done" — it's a judgment)                              | L6 ships the mechanism behind a flag (default off). After it's observable in real dispatches, decide the policy as a follow-up bead with acceptance = "config default flips + N dispatches show no regression." |
+| `chat-log capture → cloister CAS` (`rosary-125fc1`, open)                       | #3 (depends on cloister CAS contract not yet stable)                      | Blocked on the cloister content-addressed-storage seam. Re-evaluate once that lands; then it becomes the durable backing for L2's capture.                                                                      |
 
 ## Lattice (Mermaid)
 

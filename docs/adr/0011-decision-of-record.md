@@ -28,9 +28,9 @@ The single defensible novelty (adversary-confirmed): **bind contradiction resolu
 Given the conflicting observations (witnesses of a `⊤`), each lifted to an `AuthoritativeClaim { observation, authority, authenticated, undercuts }`:
 
 1. **GATE** — keep only `authenticated` claims (signet/quarantine-valid). Unauthenticated claims are **excluded, not down-weighted**. (Gate-not-weight: the CRDT *join* in `algebra_flat` is what must stay idempotent/associative; the gate sits strictly *after* it and never folds into it — whereas a `[0,1]` weight multiplied into the join would break both laws. Resolution itself is a terminal classifier `Set⟨Claim⟩ → Resolution`, not a lattice operation; it is order-independent and idempotent under `payload_hash` dedup — see *Known limitations*.)
-2. **UNDERCUT** — drop any claim whose `payload_hash` is undercut (with proof) by an eligible claim. Undercut removes a claim **regardless of its rank** — this is what makes resolution *defeasible*, not last-writer-wins-with-a-priority-key.
-3. **RANK** — the highest `Authority` tier among survivors wins. `Authority` is a discrete total order: `AutoIngest < AgentAssertion < Decision < HumanCorrection`. **Timestamp is not a cross-tier tiebreaker** — authority beats recency.
-4. **ESCALATE** — if two or more survivors share the top tier, return `Escalate` (venturi's "flag for human"). **Never silently latest-wins.**
+1. **UNDERCUT** — drop any claim whose `payload_hash` is undercut (with proof) by an eligible claim. Undercut removes a claim **regardless of its rank** — this is what makes resolution *defeasible*, not last-writer-wins-with-a-priority-key.
+1. **RANK** — the highest `Authority` tier among survivors wins. `Authority` is a discrete total order: `AutoIngest < AgentAssertion < Decision < HumanCorrection`. **Timestamp is not a cross-tier tiebreaker** — authority beats recency.
+1. **ESCALATE** — if two or more survivors share the top tier, return `Escalate` (venturi's "flag for human"). **Never silently latest-wins.**
 
 ### Constraints (load-bearing, from falsification)
 

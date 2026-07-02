@@ -9,8 +9,8 @@
 The first version of this doc made three claims I later found wrong or shallow:
 
 1. **`isolation_platform` is NOT sandboxing.** It's workload identity (OIDC-style tokens for cloud workload, `WorkloadToken { token, expires_at }`, with platform detection for Fly/AWS/GCP). Different concept. There's no equivalent in rosary because rosary isn't multi-tenant in that way. Removed from the "isolation" comparison; what rosary actually competes with is `crates/computer_use` (Anthropic's computer-use spec, real desktop automation) — which has no rosary analogue.
-2. **The "63-crate" framing missed the real bulk.** Crates is 343k LOC. The actual **app/** directory is **945k LOC** as a single large tree. Total Warp client ≈ 1.3M Rust LOC. So "they split aggressively" overstates it — they split the *libraries*, the app itself is monolithic.
-3. **`harness_type` is concrete, not abstract.** It's an enum: `{ Oz, ClaudeCode, OpenCode, Gemini, Codex }` (see `crates/ai/src/agent/orchestration_config.rs:184-214`). It's literally rosary's `provider` field with two more harnesses (Codex + OpenCode) and a self-harness (Oz). 1:1 alignment.
+1. **The "63-crate" framing missed the real bulk.** Crates is 343k LOC. The actual **app/** directory is **945k LOC** as a single large tree. Total Warp client ≈ 1.3M Rust LOC. So "they split aggressively" overstates it — they split the *libraries*, the app itself is monolithic.
+1. **`harness_type` is concrete, not abstract.** It's an enum: `{ Oz, ClaudeCode, OpenCode, Gemini, Codex }` (see `crates/ai/src/agent/orchestration_config.rs:184-214`). It's literally rosary's `provider` field with two more harnesses (Codex + OpenCode) and a self-harness (Oz). 1:1 alignment.
 
 ## The headline I missed: the skills crate
 
@@ -48,23 +48,23 @@ Warp open-sourced its terminal client under AGPL-3.0 + a small MIT carve-out for
 Rosary is doing the same shape of thing — agent orchestration over multi-repo work — and is structurally **deeper** in some places (provenance, cross-repo deps, Dolt-versioned beads) but **simpler than it should be** in two specific places that Warp gets right:
 
 1. **Spec PR before code PR** for feature work, with a clean two-doc gate (`PRODUCT.md` + `TECH.md`)
-2. **Explicit user-approval gate** on agent runs (`OrchestrationConfigStatus: None | Approved | Disapproved`) before auto-launch
+1. **Explicit user-approval gate** on agent runs (`OrchestrationConfigStatus: None | Approved | Disapproved`) before auto-launch
 
 ## Architecture map
 
 ### Crate layout (the relevant subset)
 
-| Warp crate | Rough rosary analogue | Note |
-|---|---|---|
-| `ai/agent/orchestration_config.rs` | `src/dispatch/`, `src/config.rs` | Warp models `RunAgentsRequest` with `harness_type` (enum: Oz/ClaudeCode/OpenCode/Gemini/Codex) + `execution_mode: Local | Remote{environment_id, worker_host}` per-run, not per-config |
-| `ai/skills/` (parsed_skill, skill_provider, parser, scope) | `agents/*.md` (flat) | **The big find** — see "headline" section above. 1,482 LOC of structured skill parsing across 6 providers and 3 scope levels. |
-| `computer_use` | (no analogue) | Anthropic's computer-use desktop automation — Action / Key / MouseButton / Screenshot. They implement the actor side. Distinct from rosary's Bash/Edit/Write tool model. |
-| `isolation_platform` | (no analogue) | **NOT sandboxing.** Workload identity (OIDC tokens for Fly/AWS/GCP). Multi-tenant auth glue rosary doesn't need yet. |
-| `ipc`, `jsonrpc` | `src/serve/mod.rs` | Wire-protocol layer |
-| `persistence` | `src/store_*.rs` | Their state store (didn't read deeply yet) |
-| `command-signatures-v2` | (none) | Just a `rust-embed` static asset bundle (7 LOC of `lib.rs`, the rest is `build.rs` + assets). Excluded from CI because it's compiled embedded data, not behaviors. |
-| `firebase` | (no analogue) | Google sign-in backend (`GetAccountInfo`, `FetchAccessToken`). Hosted-product auth glue. |
-| `app/` (945k LOC, single tree) | `src/` (~50k LOC) | Where the actual app lives. They split *libraries*; the *app* is monolithic. |
+| Warp crate                                                 | Rough rosary analogue            | Note                                                                                                                                                                     |
+| ---------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ai/agent/orchestration_config.rs`                         | `src/dispatch/`, `src/config.rs` | Warp models `RunAgentsRequest` with `harness_type` (enum: Oz/ClaudeCode/OpenCode/Gemini/Codex) + \`execution_mode: Local                                                 |
+| `ai/skills/` (parsed_skill, skill_provider, parser, scope) | `agents/*.md` (flat)             | **The big find** — see "headline" section above. 1,482 LOC of structured skill parsing across 6 providers and 3 scope levels.                                            |
+| `computer_use`                                             | (no analogue)                    | Anthropic's computer-use desktop automation — Action / Key / MouseButton / Screenshot. They implement the actor side. Distinct from rosary's Bash/Edit/Write tool model. |
+| `isolation_platform`                                       | (no analogue)                    | **NOT sandboxing.** Workload identity (OIDC tokens for Fly/AWS/GCP). Multi-tenant auth glue rosary doesn't need yet.                                                     |
+| `ipc`, `jsonrpc`                                           | `src/serve/mod.rs`               | Wire-protocol layer                                                                                                                                                      |
+| `persistence`                                              | `src/store_*.rs`                 | Their state store (didn't read deeply yet)                                                                                                                               |
+| `command-signatures-v2`                                    | (none)                           | Just a `rust-embed` static asset bundle (7 LOC of `lib.rs`, the rest is `build.rs` + assets). Excluded from CI because it's compiled embedded data, not behaviors.       |
+| `firebase`                                                 | (no analogue)                    | Google sign-in backend (`GetAccountInfo`, `FetchAccessToken`). Hosted-product auth glue.                                                                                 |
+| `app/` (945k LOC, single tree)                             | `src/` (~50k LOC)                | Where the actual app lives. They split *libraries*; the *app* is monolithic.                                                                                             |
 
 **Real scale**: 63 crates + 945k-LOC `app/` = ~**1.3M Rust LOC** total. The crate count is right-sized for their library surface; the app itself is one big tree.
 
@@ -82,11 +82,11 @@ The TECH.md spec I read (`APP-1915`) is **strikingly precise** — concrete file
 
 ### Readiness labels
 
-| Label | Means |
-|---|---|
-| `ready-to-spec` | Problem understood, design open. **Reserved for feature requests.** Next step: open a spec PR. |
-| `ready-to-implement` | Design settled, OR triaged bug. Next step: open a code PR. |
-| `needs-mocks` | Wait for design mocks. |
+| Label                | Means                                                                                          |
+| -------------------- | ---------------------------------------------------------------------------------------------- |
+| `ready-to-spec`      | Problem understood, design open. **Reserved for feature requests.** Next step: open a spec PR. |
+| `ready-to-implement` | Design settled, OR triaged bug. Next step: open a code PR.                                     |
+| `needs-mocks`        | Wait for design mocks.                                                                         |
 
 Three flat labels replace what rosary models as a dual state machine (ADR-0004). Simpler. Possibly too simple — you can't express "blocked on dep" or "deadlettered" — but for a 50k-star repo it's been enough. **Question for rosary**: are the additional states earning their complexity?
 
@@ -162,15 +162,15 @@ Warp has issues. That's it. No higher-level grouping primitive. Rosary's BDR (de
 
 ## Specific things to copy (revised priority order)
 
-| Item | Effort | Where | Status |
-|---|---|---|---|
-| **Lift the skills-crate pattern**: `ParsedSkill { path, name, description, content, line_range, provider, scope }` + `SkillProvider` enum + `SkillScope { Bundled, Home, Project }` | medium | new `src/skills.rs` or `crates/skills/`; replace static `agents/*.md` loading | — |
-| Add `DispatchApproval { None, Approved, Rejected }` field on `RepoConfig.approval`, gated by `[dispatch].require_approval` | small | `src/config.rs` | ✅ shipped in PR #180 |
-| Add `specs/<bead-id>/{PRODUCT,TECH}.md` convention to rosary self-managed repo | small | `docs/specs/` directory + `bead.spec_path` field | — |
-| Add per-run `execution_mode` override to `DispatchRecord` | small | `src/store.rs` `pub struct DispatchRecord` already exists; add field | — |
-| Extract a `presubmit` task from Taskfile that wraps `task fmt && task lint && task test` | trivial | `Taskfile.yml` | — |
-| `rsry feedback` command that auto-attaches `~/.rsry/rsry-serve.log` tail to a new bead | small | `src/main.rs` + `src/cli.rs` | — |
-| Add `ready-to-spec` / `ready-to-implement` Linear-label-equivalent to bead status | medium | `src/bead.rs` BeadState — possibly via a new `phase` enum separate from the lifecycle state | — |
+| Item                                                                                                                                                                                | Effort  | Where                                                                                       | Status                |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------- | --------------------- |
+| **Lift the skills-crate pattern**: `ParsedSkill { path, name, description, content, line_range, provider, scope }` + `SkillProvider` enum + `SkillScope { Bundled, Home, Project }` | medium  | new `src/skills.rs` or `crates/skills/`; replace static `agents/*.md` loading               | —                     |
+| Add `DispatchApproval { None, Approved, Rejected }` field on `RepoConfig.approval`, gated by `[dispatch].require_approval`                                                          | small   | `src/config.rs`                                                                             | ✅ shipped in PR #180 |
+| Add `specs/<bead-id>/{PRODUCT,TECH}.md` convention to rosary self-managed repo                                                                                                      | small   | `docs/specs/` directory + `bead.spec_path` field                                            | —                     |
+| Add per-run `execution_mode` override to `DispatchRecord`                                                                                                                           | small   | `src/store.rs` `pub struct DispatchRecord` already exists; add field                        | —                     |
+| Extract a `presubmit` task from Taskfile that wraps `task fmt && task lint && task test`                                                                                            | trivial | `Taskfile.yml`                                                                              | —                     |
+| `rsry feedback` command that auto-attaches `~/.rsry/rsry-serve.log` tail to a new bead                                                                                              | small   | `src/main.rs` + `src/cli.rs`                                                                | —                     |
+| Add `ready-to-spec` / `ready-to-implement` Linear-label-equivalent to bead status                                                                                                   | medium  | `src/bead.rs` BeadState — possibly via a new `phase` enum separate from the lifecycle state | —                     |
 
 ## Specific things to NOT copy
 

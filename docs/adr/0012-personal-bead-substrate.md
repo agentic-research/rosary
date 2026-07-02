@@ -19,6 +19,7 @@ Three axes had to be decided. The guiding constraint: **reuse infrastructure tha
 `~/.rsry/personal.db` (SQLite) is the **live working store** — same backend pattern as the orchestrator's `~/.rsry/backend.db`, zero new infra, ergonomic to query. The **durable, synced artifact** is a set of **per-bead `age`-encrypted, content-addressed blobs**. ley-line already implements exactly this CAS layer (`docs/decades/2026-merkle-cas-substrate.md`, `docs/design/013-edge-native-arena-sync.md`).
 
 **Rejected:**
+
 - *cloister-hosted only* — makes the personal store's very existence a networked dependency with a load-bearing auth model from day one. We want it usable offline on a single laptop first.
 - *ley-line peer-replicated blob only* — sync for free, but harder to introspect and couples the store to the LLO daemon being up everywhere.
 - *pure-FS / no durable layer* — per-machine, no sync.
@@ -31,6 +32,7 @@ Sync is an interface, not a single mechanism. The artifact (Axis 1's `.age` blob
 - **`R2Backend` (shared tier)** — Cloudflare R2, the *same-flavor* content-addressed store reached over private networking (the cloister Worker → R2 binding, `cloister-9d19e3`). This is the multi-machine/multi-agent shared tier; it implements the same trait, so it composes with — not competes with — the git backend.
 
 **Rejected:**
+
 - *cloister server-side merge only* — single point of failure + the auth story must be solved before anything works.
 - *ley-line CRDT peer sync only* — requires the LLO daemon running everywhere.
 - *git-crypt (whole-file encryption)* — binary diffs, unmergeable. Per-file `age` (passage-style) keeps diffs readable.
@@ -45,6 +47,7 @@ Encryption and *consent* are different jobs:
 This is the *same signet append-only primitive* ADR-0011's `resolve.rs` ships — one pattern, two uses (decision authority there, mutation consent here).
 
 **Rejected:**
+
 - *local FS perms (700) only* — no defense against a compromised local agent, which is exactly the threat the epic names.
 - *TEE / Keychain-only* — strongest locally but macOS-only; won't port to Linux rigs.
 - *gpg* — supplanted by `age` (encrypt) + a hardware signer (sign).
@@ -64,10 +67,10 @@ Almost nothing is new. It reuses: bd's git-backup, ley-line's CAS + R2 edge-sync
 ## Sequencing
 
 1. `ScopeId::Personal` + reserved scope + triage admission → **rosary-e5066e**
-2. `src/bead_personal.rs` storage module (SQLite + age blob export) → **rosary-e5066e**
-3. `SyncBackend` trait + `GitRepoBackend` (age blobs → private git repo) → **rosary-e52b24**
-4. signet attestation gate via `go-platform-signers` (fail-closed mutation consent) → **rosary-e55ec9**
-5. `R2Backend` (shared tier, Cloudflare Worker → R2) → **cloister-9d19e3** → **notme-9da488** (credential mint)
+1. `src/bead_personal.rs` storage module (SQLite + age blob export) → **rosary-e5066e**
+1. `SyncBackend` trait + `GitRepoBackend` (age blobs → private git repo) → **rosary-e52b24**
+1. signet attestation gate via `go-platform-signers` (fail-closed mutation consent) → **rosary-e55ec9**
+1. `R2Backend` (shared tier, Cloudflare Worker → R2) → **cloister-9d19e3** → **notme-9da488** (credential mint)
 
 ## Acceptance criteria
 

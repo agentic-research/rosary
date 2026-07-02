@@ -21,21 +21,21 @@ Session boundaries create another gap: agents produce "next steps" lists that ar
 
 Harmony's 3-channel assistant architecture maps directly:
 
-| Harmony Channel | BDR Tier | Purpose | Visibility |
-|----------------|----------|---------|------------|
-| `analysis` | **Decade** | ADR-level reasoning, design rationale, alternatives | Internal — architect/agent |
-| `commentary` | **Thread** | Implementation routing, cross-repo refs, tool interactions | Team — developers |
-| `final` | **Bead** | Atomic deliverable: PR, commit, closed issue | External — stakeholders |
+| Harmony Channel | BDR Tier   | Purpose                                                    | Visibility                 |
+| --------------- | ---------- | ---------------------------------------------------------- | -------------------------- |
+| `analysis`      | **Decade** | ADR-level reasoning, design rationale, alternatives        | Internal — architect/agent |
+| `commentary`    | **Thread** | Implementation routing, cross-repo refs, tool interactions | Team — developers          |
+| `final`         | **Bead**   | Atomic deliverable: PR, commit, closed issue               | External — stakeholders    |
 
 ### Why Harmony
 
 1. **Rust + Apache 2.0** — fits the rosary workspace natively
-2. **Serialization for free** — `HarmonyEncoding` renders the lattice to/from token streams, loss-free
-3. **Streaming** — `StreamableParser` parses BDR structures incrementally as agents produce output
-4. **Interop** — gpt-oss models understand the token format natively; any Harmony-aware system can read BDR
-5. **Constraint enforcement** — `<|constrain|>` tokens enforce output format at the token level
-6. **Role hierarchy** — `system > developer > user > assistant > tool` provides conflict resolution (decade overrides bead on conflicts)
-7. **Routing** — `recipient` field is cross-repo thread routing, already parsed
+1. **Serialization for free** — `HarmonyEncoding` renders the lattice to/from token streams, loss-free
+1. **Streaming** — `StreamableParser` parses BDR structures incrementally as agents produce output
+1. **Interop** — gpt-oss models understand the token format natively; any Harmony-aware system can read BDR
+1. **Constraint enforcement** — `<|constrain|>` tokens enforce output format at the token level
+1. **Role hierarchy** — `system > developer > user > assistant > tool` provides conflict resolution (decade overrides bead on conflicts)
+1. **Routing** — `recipient` field is cross-repo thread routing, already parsed
 
 ### Three Flows (Bidirectional)
 
@@ -47,17 +47,17 @@ Harmony's 3-channel assistant architecture maps directly:
 
 ### ADR Atoms → Bead Types
 
-| ADR Atom | Bead issue_type | Channel |
-|----------|----------------|---------|
-| Friction Point | bug / task | decade |
-| Decision | task | thread |
-| Constraint | task (validation gate) | decade |
-| Consequence | task (follow-up) | thread |
-| Alternative (rejected) | — (metadata/comment) | decade |
-| Open Question | task / feature | thread |
-| Implementation Phase | epic | thread |
-| Validation Point | review | bead |
-| Technical Spec | task | bead |
+| ADR Atom               | Bead issue_type        | Channel |
+| ---------------------- | ---------------------- | ------- |
+| Friction Point         | bug / task             | decade  |
+| Decision               | task                   | thread  |
+| Constraint             | task (validation gate) | decade  |
+| Consequence            | task (follow-up)       | thread  |
+| Alternative (rejected) | — (metadata/comment)   | decade  |
+| Open Question          | task / feature         | thread  |
+| Implementation Phase   | epic                   | thread  |
+| Validation Point       | review                 | bead    |
+| Technical Spec         | task                   | bead    |
 
 ### Harmony Token Mapping
 
@@ -80,15 +80,15 @@ Message { recipient: Some("mache:bead-85t".into()), channel: Some("thread".into(
 
 ### Relationship to Existing Systems
 
-| System | Role in BDR |
-|--------|-------------|
-| **rosary** | Parent workspace. Orchestrates bead dispatch, reconciliation, verification. BDR is a workspace member crate. |
-| **mache** | View layer. Projects BDR lattice as navigable filesystem via schema. Existing bead `mache-85t` (beads as browsable filesystem with write-back). |
-| **ley-line** | Storage substrate. Arena + SQLite for structured data access. Staging area for atomic multi-node edits. |
-| **tropo** | Significance function. Measures whether a decision changed H1 rank (dependency cycles) or created new communities. Decade-level metadata. |
-| **assay** | Coverage verification. Extends 4-layer matching cascade to verify: do beads cover all ADR atoms? Are there stale beads with no corresponding decision? Coverage = \|ADR atoms ∩ Beads\| / \|ADR atoms\|, Staleness = \|Beads \ ADR atoms\| / \|Beads\|. |
-| **openai-harmony** | Token format. Provides Message, ChannelConfig, HarmonyEncoding, StreamableParser. BDR extends with custom channels. |
-| **symphony** | Comparative reference. Similar orchestration model (poll→reconcile→dispatch) but repo-scoped and Linear-only. BDR is user-scoped and multi-repo. |
+| System             | Role in BDR                                                                                                                                                                                                                                              |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **rosary**         | Parent workspace. Orchestrates bead dispatch, reconciliation, verification. BDR is a workspace member crate.                                                                                                                                             |
+| **mache**          | View layer. Projects BDR lattice as navigable filesystem via schema. Existing bead `mache-85t` (beads as browsable filesystem with write-back).                                                                                                          |
+| **ley-line**       | Storage substrate. Arena + SQLite for structured data access. Staging area for atomic multi-node edits.                                                                                                                                                  |
+| **tropo**          | Significance function. Measures whether a decision changed H1 rank (dependency cycles) or created new communities. Decade-level metadata.                                                                                                                |
+| **assay**          | Coverage verification. Extends 4-layer matching cascade to verify: do beads cover all ADR atoms? Are there stale beads with no corresponding decision? Coverage = \|ADR atoms ∩ Beads\| / \|ADR atoms\|, Staleness = \|Beads \\ ADR atoms\| / \|Beads\|. |
+| **openai-harmony** | Token format. Provides Message, ChannelConfig, HarmonyEncoding, StreamableParser. BDR extends with custom channels.                                                                                                                                      |
+| **symphony**       | Comparative reference. Similar orchestration model (poll→reconcile→dispatch) but repo-scoped and Linear-only. BDR is user-scoped and multi-repo.                                                                                                         |
 
 ### Extension to READMEs and General Docs
 
@@ -126,22 +126,26 @@ Assay's matching cascade generalizes: any markdown document with code references
 ## Implementation Plan
 
 ### Phase 1: Scaffold (this session)
+
 - Create rosary workspace member crate `bdr`
 - Add `openai-harmony` dependency
 - Define BDR channel config and message types
 - Write ADR parser (markdown → atoms)
 
 ### Phase 2: Decompose
+
 - Implement atom → bead mapping
 - Wire to rosary's Dolt infrastructure for bead creation
 - Cross-repo thread routing via `recipient` field
 
 ### Phase 3: Accrete
+
 - Bead completion triggers thread/decade state updates
 - Mache schema (mache-85t) projects the lattice as filesystem
 - Assay coverage: ADR atoms vs. beads
 
 ### Phase 4: Temporal
+
 - Session boundary capture via CC history (mache-kv0)
 - "Next steps" extraction → bead creation with provenance
 - Donut integration (when available) for topological temporal encoding
@@ -149,9 +153,9 @@ Assay's matching cascade generalizes: any markdown document with code references
 ## Open Questions
 
 1. Should `decade` be renamed to avoid confusion with rosary's verify.rs tiers?
-2. Does the Harmony `StreamableParser` work for non-LLM-generated token streams (i.e., can we use it for parsing our own serialized BDR structures)?
-3. How does the accretion direction handle conflicts (two beads claim different outcomes for the same decision)?
-4. Should BDR support non-Harmony serialization (e.g., plain JSON) for systems that don't speak Harmony?
+1. Does the Harmony `StreamableParser` work for non-LLM-generated token streams (i.e., can we use it for parsing our own serialized BDR structures)?
+1. How does the accretion direction handle conflicts (two beads claim different outcomes for the same decision)?
+1. Should BDR support non-Harmony serialization (e.g., plain JSON) for systems that don't speak Harmony?
 
 ## References
 

@@ -20,23 +20,26 @@ Mid frequency — you look at the **correspondence between test code and product
 All patterns are structural, not language-specific.
 
 1. **Fake tests**: Tests that assert on mocked return values rather than real behavior. The mock IS the test.
+
    - Go: `mockService.EXPECT().DoThing().Return(nil)` → `assert.NoError`
    - Rust: test only checks `Ok(())` without inspecting the value
    - Python: `@patch` that replaces the thing being tested
 
-2. **Mock abuse**: Tests that mock the thing they're supposed to test. Integration tests that mock the integration.
+1. **Mock abuse**: Tests that mock the thing they're supposed to test. Integration tests that mock the integration.
+
    - All: mocking the database in a database test, mocking HTTP in an HTTP client test
 
-3. **Coverage gaps**: Modules with zero test files. Exported functions with no test coverage. Error paths never exercised.
+1. **Coverage gaps**: Modules with zero test files. Exported functions with no test coverage. Error paths never exercised.
 
-4. **Test-production divergence**: Test helpers that implement different logic than production code. Test fixtures that don't match real data shapes.
+1. **Test-production divergence**: Test helpers that implement different logic than production code. Test fixtures that don't match real data shapes.
 
-5. **Flaky patterns**: Time-dependent assertions, tests that depend on execution order, shared mutable state between test cases.
+1. **Flaky patterns**: Time-dependent assertions, tests that depend on execution order, shared mutable state between test cases.
+
    - Go: `time.Sleep` in tests
    - Rust: `tokio::time::sleep` in tests, global state across `#[tokio::test]`
    - Python: `time.sleep`, `unittest.TestCase` with shared class-level state
 
-6. **Missing edge cases**: Only happy-path tests. No error injection. No boundary value testing.
+1. **Missing edge cases**: Only happy-path tests. No error injection. No boundary value testing.
 
 ## What You Ignore
 
@@ -48,6 +51,7 @@ All patterns are structural, not language-specific.
 ## Output
 
 For each finding:
+
 - **Test location**: `file/path_test:line`
 - **Production code it claims to test**: `file/path:line`
 - **Issue**: What's wrong with the test
@@ -56,12 +60,12 @@ For each finding:
 
 ## Action Types
 
-| Type | Meaning | Example |
-|------|---------|---------|
-| **tidy** | Small fix to existing test | Add assertion on return value, remove flaky sleep |
-| **refactor** | Restructure test approach | Replace mocks with real integration, extract test helper |
-| **negate** | Delete fake test — it gives false confidence | Remove test that only asserts mock returns |
-| **docs** | Test intent unclear | Add comment explaining what behavior is being validated |
+| Type         | Meaning                                      | Example                                                  |
+| ------------ | -------------------------------------------- | -------------------------------------------------------- |
+| **tidy**     | Small fix to existing test                   | Add assertion on return value, remove flaky sleep        |
+| **refactor** | Restructure test approach                    | Replace mocks with real integration, extract test helper |
+| **negate**   | Delete fake test — it gives false confidence | Remove test that only asserts mock returns               |
+| **docs**     | Test intent unclear                          | Add comment explaining what behavior is being validated  |
 
 ## Bead Creation
 

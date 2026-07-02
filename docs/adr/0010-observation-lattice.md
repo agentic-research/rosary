@@ -23,11 +23,11 @@ Three forces shape the design:
    **webhook-first**, with rate-budgeted polling as fallback only, and writes
    identity-attributed via signet ephemeral certs.
 
-2. **Late, replayed, out-of-order observations.** Webhooks fail and re-send.
+1. **Late, replayed, out-of-order observations.** Webhooks fail and re-send.
    Polls double-emit during retries. Manual user input arrives whenever. The
    fold must be invariant under re-ordering and idempotent on duplicates.
 
-3. **Honest formalism.** A prior draft (rosary-45518d) called this a "CRDT
+1. **Honest formalism.** A prior draft (rosary-45518d) called this a "CRDT
    lattice" with a chain `backlog < open < ... < done`. Math review (this ADR's
    companion analysis) found that framing decorative: `BeadState` has no
    `Ord` impl, `valid_transitions()` has back-edges (`Verifying → Open`), and
@@ -68,16 +68,16 @@ replayed webhook from being counted as two distinct observations.
 
 Each field declares its algebra; the fold dispatches accordingly.
 
-| Field | Algebra | Conflict semantics |
-|-------|---------|-------------------|
+| Field              | Algebra                                                                                                             | Conflict semantics                                               |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | `pipeline_verdict` | **Chain-max** on `Dispatched < Verifying < Pass < PrOpen < Done` (the `Verdict` enum in `src/dolt/observations.rs`) | Monotone agent progress; max wins; back-step is not a transition |
-| `assignee` | LWW-register, tiebreak `(observed_at, source_id)` | Latest valid observation wins |
-| `pr_url` | LWW-register, tiebreak `(observed_at, source_id)` | Latest wins; nulled out only by explicit "unset" obs |
-| `merge_sha` | LWW-register | Latest wins; immutable in practice once set |
-| `deadline` | LWW-register | Latest wins |
-| `ahead`, `behind` | LWW-register (numeric, replaces) | Latest poll wins; not accumulated |
-| `comments` | OR-set with unique tags `(source, source_event_id)` | Add/remove are commutative; no LWW needed |
-| `labels` | OR-set | Same as comments |
+| `assignee`         | LWW-register, tiebreak `(observed_at, source_id)`                                                                   | Latest valid observation wins                                    |
+| `pr_url`           | LWW-register, tiebreak `(observed_at, source_id)`                                                                   | Latest wins; nulled out only by explicit "unset" obs             |
+| `merge_sha`        | LWW-register                                                                                                        | Latest wins; immutable in practice once set                      |
+| `deadline`         | LWW-register                                                                                                        | Latest wins                                                      |
+| `ahead`, `behind`  | LWW-register (numeric, replaces)                                                                                    | Latest poll wins; not accumulated                                |
+| `comments`         | OR-set with unique tags `(source, source_event_id)`                                                                 | Add/remove are commutative; no LWW needed                        |
+| `labels`           | OR-set                                                                                                              | Same as comments                                                 |
 
 **`pipeline_verdict` legitimately has a chain ordering** because agent runs
 within a bead are monotone — no agent ever steps a bead from `Pass` back to
@@ -207,11 +207,11 @@ pub trait Observer: Send + Sync {
 
 Three concrete observers ship in v1, ported from existing one-off code paths:
 
-| Observer | Replaces | Cadence |
-|----------|----------|---------|
-| `LinearObserver` | `linear_tracker.rs` polls + `persist_status` push | Webhook + 5min budget poll |
-| `GithubObserver` | `github_webhook.rs` + `vcs::poll_pr_status` | Webhook + 5min budget poll |
-| `BeadObserver` | direct Dolt reads from triage | OnDemand (every reconcile tick) |
+| Observer         | Replaces                                          | Cadence                         |
+| ---------------- | ------------------------------------------------- | ------------------------------- |
+| `LinearObserver` | `linear_tracker.rs` polls + `persist_status` push | Webhook + 5min budget poll      |
+| `GithubObserver` | `github_webhook.rs` + `vcs::poll_pr_status`       | Webhook + 5min budget poll      |
+| `BeadObserver`   | direct Dolt reads from triage                     | OnDemand (every reconcile tick) |
 
 Future observers (Slack, Notion, calendar, fork-state) drop in without
 changes to the fold.
@@ -241,22 +241,22 @@ guarantee.
 These tests must all pass for the substrate's framing to hold. Each maps to
 a question raised in math review.
 
-| # | Invariant | What it tests |
-|---|-----------|---------------|
-| 1 | `chain_max_idempotent` | `pipeline_verdict=Pass ⊕ pipeline_verdict=Pass = Pass` |
-| 2 | `chain_max_monotone` | `pipeline_verdict=Dispatched ⊕ pipeline_verdict=Pass = Pass` (max wins) |
-| 3 | `chain_max_unranked_ignored` | `Fail` and `Deadletter` don't advance the chain |
-| 4 | `lww_tiebreak_total` | LWW with equal `observed_at` resolved by `source_id` lex |
-| 5 | `lww_unset_explicit` | `pr_url=None` requires explicit observation; never inferred |
-| 6 | `or_set_add_remove_commute` | Comment add(c, t1) + remove(c, t1) in any order = absent |
-| 7 | `or_set_unique_tags` | Same comment from two sources is two distinct entries |
-| 8 | `dedup_before_fold` | Replaying a webhook with same `(source, source_event_id, payload_hash)` is a no-op |
-| 9 | `reorder_invariance` | `fold(perm(O)) = fold(O)` for any permutation, all field types |
-| 10 | `cross_source_status_conflict_is_top` | When two sources' derived status disagree, cross-source result is `⊤(Conflict)` with witnesses |
-| 11 | `quarantine_does_not_join` | An invalid-cert observation never appears in the derived view |
-| 12 | `quarantine_is_queryable` | Quarantined obs are surfaced via dedicated path, not silently dropped |
-| 13 | `tree_fold_deterministic` | Decade/Thread/Bead rollup is a pure function of child states |
-| 14 | `convergence_under_partition` | `fold(O₁ ∪ O₂) = merge(fold(O₁), fold(O₂))` for arbitrary partition, where `merge` is the pointwise per-field join (chain-max for chain fields, LWW tiebreak for LWW registers, set-union for OR-sets) lifted to derived views |
+| #   | Invariant                             | What it tests                                                                                                                                                                                                                  |
+| --- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | `chain_max_idempotent`                | `pipeline_verdict=Pass ⊕ pipeline_verdict=Pass = Pass`                                                                                                                                                                         |
+| 2   | `chain_max_monotone`                  | `pipeline_verdict=Dispatched ⊕ pipeline_verdict=Pass = Pass` (max wins)                                                                                                                                                        |
+| 3   | `chain_max_unranked_ignored`          | `Fail` and `Deadletter` don't advance the chain                                                                                                                                                                                |
+| 4   | `lww_tiebreak_total`                  | LWW with equal `observed_at` resolved by `source_id` lex                                                                                                                                                                       |
+| 5   | `lww_unset_explicit`                  | `pr_url=None` requires explicit observation; never inferred                                                                                                                                                                    |
+| 6   | `or_set_add_remove_commute`           | Comment add(c, t1) + remove(c, t1) in any order = absent                                                                                                                                                                       |
+| 7   | `or_set_unique_tags`                  | Same comment from two sources is two distinct entries                                                                                                                                                                          |
+| 8   | `dedup_before_fold`                   | Replaying a webhook with same `(source, source_event_id, payload_hash)` is a no-op                                                                                                                                             |
+| 9   | `reorder_invariance`                  | `fold(perm(O)) = fold(O)` for any permutation, all field types                                                                                                                                                                 |
+| 10  | `cross_source_status_conflict_is_top` | When two sources' derived status disagree, cross-source result is `⊤(Conflict)` with witnesses                                                                                                                                 |
+| 11  | `quarantine_does_not_join`            | An invalid-cert observation never appears in the derived view                                                                                                                                                                  |
+| 12  | `quarantine_is_queryable`             | Quarantined obs are surfaced via dedicated path, not silently dropped                                                                                                                                                          |
+| 13  | `tree_fold_deterministic`             | Decade/Thread/Bead rollup is a pure function of child states                                                                                                                                                                   |
+| 14  | `convergence_under_partition`         | `fold(O₁ ∪ O₂) = merge(fold(O₁), fold(O₂))` for arbitrary partition, where `merge` is the pointwise per-field join (chain-max for chain fields, LWW tiebreak for LWW registers, set-union for OR-sets) lifted to derived views |
 
 A `tests/observation_lattice.rs` integration test owns these 14. Anything
 that breaks them is a substrate bug, not a fold-rule bug.
@@ -286,15 +286,15 @@ substrate's registry interface.
    14 tests. Pipeline-phase observations stay where they are; the substrate
    provides the surface that future fields and sources plug into. No
    behavior change.
-2. **Phase 2**: register `pipeline_verdict` in the new substrate; have
+1. **Phase 2**: register `pipeline_verdict` in the new substrate; have
    `dolt/observations.rs` write through it. Logically a no-op but proves
    the registry handles the existing field.
-3. **Phase 3**: port `linear_tracker` push/pull into `LinearObserver`
+1. **Phase 3**: port `linear_tracker` push/pull into `LinearObserver`
    (writes `assignee`, `pr_url`, `labels`, `comments`). Run in shadow mode
    one week.
-4. **Phase 4**: port `github_webhook` + `vcs::poll_pr_status` into
+1. **Phase 4**: port `github_webhook` + `vcs::poll_pr_status` into
    `GithubObserver`. Same shadow mode.
-5. **Phase 5**: cut `rsry status` over to read from the derived view —
+1. **Phase 5**: cut `rsry status` over to read from the derived view —
    user-facing status is now a *derivation* over the field set, with
    cross-source conflict detection surfaced as `⊤`. Decommission the
    one-off paths.
@@ -306,6 +306,7 @@ out.
 ## Consequences
 
 **Wins:**
+
 - Single conflict-detection point. No more "Linear says X, Dolt says Y, GitHub
   says Z, who's right?" — `⊤ = Conflict` with witnesses.
 - New sources (Slack, Notion, calendar, fork-state) plug in via `Observer`
@@ -315,6 +316,7 @@ out.
   structurally prevented by the rate budget.
 
 **Costs:**
+
 - Storage growth for the observation log (mitigated by per-source retention
   and cold-archive — default 90 days hot, then move to a compressed archive
   table; configurable per source via `[observations.retention.<source>]` in

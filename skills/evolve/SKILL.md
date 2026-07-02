@@ -7,10 +7,10 @@ description: >
   Modes: --simplify (refactor only, no net new code), --security, --fe, --prune.
   Composable with /loop for cron scheduling.
 user-invocable: true
-argument-hint: "[--dry-run] [--simplify|--security|--fe|--prune] [--focus <area>]"
-allowed-tools: "*"
-version: "0.3.0"
-author: "ART Ecosystem"
+argument-hint: '[--dry-run] [--simplify|--security|--fe|--prune] [--focus <area>]'
+allowed-tools: '*'
+version: 0.3.0
+author: ART Ecosystem
 ---
 
 # /evolve — Continuous Improvement Loop
@@ -22,35 +22,37 @@ Composable: `/loop 10m /rosary:evolve --simplify` for continuous refactoring.
 
 ## Modes
 
-| Mode | Constraint | Goal |
-|------|-----------|------|
-| (default) | Fix closable beads | Ship work |
-| `--simplify` | **No net new code** — refactor only | Extract abstractions, reduce LOC |
-| `--security` | Security findings only | Audit + fix vulnerabilities |
-| `--fe` | FE consistency only | Design language, UX |
-| `--prune` | **Delete only** — dead code, stale beads | Reduce surface area |
-| `--dry-run` | Assess + plan, no changes | Preview what would happen |
+| Mode         | Constraint                               | Goal                             |
+| ------------ | ---------------------------------------- | -------------------------------- |
+| (default)    | Fix closable beads                       | Ship work                        |
+| `--simplify` | **No net new code** — refactor only      | Extract abstractions, reduce LOC |
+| `--security` | Security findings only                   | Audit + fix vulnerabilities      |
+| `--fe`       | FE consistency only                      | Design language, UX              |
+| `--prune`    | **Delete only** — dead code, stale beads | Reduce surface area              |
+| `--dry-run`  | Assess + plan, no changes                | Preview what would happen        |
 
 ## Scale — Intel before operation
 
 Evolve operates at three scales. The assessment phase determines which:
 
-| Scale | Scope | When | Intel source |
-|-------|-------|------|-------------|
-| **File** | Single file refactor | `--simplify` on small beads | LSP, mache get_impact |
-| **Repo** | Cross-file coherence | Default mode, most beads | mache get_communities, dependency graph |
-| **Ecosystem** | Cross-repo dependencies | Beads touching shared types/APIs | rosary.toml repo list, `../` traversal |
+| Scale         | Scope                   | When                             | Intel source                            |
+| ------------- | ----------------------- | -------------------------------- | --------------------------------------- |
+| **File**      | Single file refactor    | `--simplify` on small beads      | LSP, mache get_impact                   |
+| **Repo**      | Cross-file coherence    | Default mode, most beads         | mache get_communities, dependency graph |
+| **Ecosystem** | Cross-repo dependencies | Beads touching shared types/APIs | rosary.toml repo list, `../` traversal  |
 
 **Ecosystem scale** applies when:
+
 - A bead references files in multiple repos (e.g., signet cert format + rig cert minting)
 - A change in one repo breaks assumptions in another
 - Imports or configs reference external repos
 
 Scale detection is DERIVED, not configured:
+
 1. Check if `rosary.toml` exists -- if yes, read the repo map
-2. If not, check `../` for sibling repos (common monorepo/workspace pattern)
-3. Check imports/configs for cross-repo references (go.mod, Cargo.toml, package.json)
-4. If no cross-repo deps found, operate at repo scale
+1. If not, check `../` for sibling repos (common monorepo/workspace pattern)
+1. Check imports/configs for cross-repo references (go.mod, Cargo.toml, package.json)
+1. If no cross-repo deps found, operate at repo scale
 
 At ecosystem scale, the scoping-agent maps dependencies (rosary.toml OR `../` scan),
 then checks if the bead's files touch any cross-repo seams (use `rosary:seam-discovery`).
@@ -62,44 +64,45 @@ The skill works with zero config. rosary.toml is a hint, not a requirement.
 
 Agents are personas (perspective + judgment) with abilities (skills + tools):
 
-| Persona | Perspective | Skills | Constraints |
-|---------|------------|--------|-------------|
-| **scoping-agent** | Planner — enriches before expensive work | note | Haiku model, cheap |
-| **dev-agent** | Implementer — finds complexity, fixes it | simplify | Full access |
-| **principal-agent** | Does what is right, not what was asked | evolve, simplify, seam-discovery, note | Full access, Opus |
-| **skeptic-agent** | Distrusts AI output, assumes wrong until proven | note | Read-only, no Write/Edit |
-| **staging-agent** | Adversarial tester — tests test real behavior? | | Read-only |
-| **prod-agent** | Finds resource leaks, error swallowing, concurrency | note | Read-only |
-| **pm-agent** | Strategic — cross-repo overlap, scope creep, retro | note, evolve | Full access |
+| Persona             | Perspective                                         | Skills                                 | Constraints              |
+| ------------------- | --------------------------------------------------- | -------------------------------------- | ------------------------ |
+| **scoping-agent**   | Planner — enriches before expensive work            | note                                   | Haiku model, cheap       |
+| **dev-agent**       | Implementer — finds complexity, fixes it            | simplify                               | Full access              |
+| **principal-agent** | Does what is right, not what was asked              | evolve, simplify, seam-discovery, note | Full access, Opus        |
+| **skeptic-agent**   | Distrusts AI output, assumes wrong until proven     | note                                   | Read-only, no Write/Edit |
+| **staging-agent**   | Adversarial tester — tests test real behavior?      |                                        | Read-only                |
+| **prod-agent**      | Finds resource leaks, error swallowing, concurrency | note                                   | Read-only                |
+| **pm-agent**        | Strategic — cross-repo overlap, scope creep, retro  | note, evolve                           | Full access              |
 
 Mode determines which personas deploy:
 
-| Mode | Generator | Evaluator |
-|------|-----------|-----------|
-| default | dev-agent | staging-agent |
+| Mode         | Generator       | Evaluator     |
+| ------------ | --------------- | ------------- |
+| default      | dev-agent       | staging-agent |
 | `--simplify` | principal-agent | skeptic-agent |
-| `--security` | prod-agent | skeptic-agent |
-| `--fe` | dev-agent | staging-agent |
-| `--prune` | janitor-agent | skeptic-agent |
+| `--security` | prod-agent      | skeptic-agent |
+| `--fe`       | dev-agent       | staging-agent |
+| `--prune`    | janitor-agent   | skeptic-agent |
 
 ### Team Scaling — Match team size to task size
 
 The scoping-agent determines team composition. Mode selects which AGENTS,
 scale selects HOW MANY:
 
-| Bead scope | Team | Rationale |
-|------------|------|-----------|
-| 1 file | Generator solo | No coordination overhead |
-| 2-5 files, same module | Generator + evaluator | Minimal viable pipeline |
-| >5 files OR cross-module | Scoping + generator + evaluator + skeptic | Full pipeline |
-| `--simplify` (any size) | principal-agent + skeptic | Simplify always needs adversarial check |
-| `--security` (any size) | prod-agent + skeptic | Security always needs adversarial check |
+| Bead scope               | Team                                      | Rationale                               |
+| ------------------------ | ----------------------------------------- | --------------------------------------- |
+| 1 file                   | Generator solo                            | No coordination overhead                |
+| 2-5 files, same module   | Generator + evaluator                     | Minimal viable pipeline                 |
+| >5 files OR cross-module | Scoping + generator + evaluator + skeptic | Full pipeline                           |
+| `--simplify` (any size)  | principal-agent + skeptic                 | Simplify always needs adversarial check |
+| `--security` (any size)  | prod-agent + skeptic                      | Security always needs adversarial check |
 
 **How to determine scale:**
+
 1. Count files in bead scope
-2. Check if files span multiple directories (mache get_communities if available)
-3. Mode flags (`--simplify`, `--security`) override file-count logic
-4. Scoping-agent writes team composition into plan.md's `## Team` section
+1. Check if files span multiple directories (mache get_communities if available)
+1. Mode flags (`--simplify`, `--security`) override file-count logic
+1. Scoping-agent writes team composition into plan.md's `## Team` section
 
 For 1-file scale: the generator agent does its own verification (no separate evaluator).
 This avoids spawning a second agent just to re-run one lint command.
@@ -120,6 +123,7 @@ bead (contract: "what done looks like")
 ```
 
 **Critical rules:**
+
 - Agents stage changes, they do NOT commit
 - Evaluator is the gate -- no code merges without passing eval
 - File-based handoff: plan.md -> changes -> eval.md -> feedback.md
@@ -136,17 +140,19 @@ git log --oneline -20 -> recent momentum
 ```
 
 Classify each open bead:
-- **Closable now** -- small, files known, tests writable (<30 min)
+
+- **Closable now** -- small, files known, tests writable (\<30 min)
 - **Needs design** -- architecture decision, multiple approaches
 - **Blocked** -- waiting on external (CF beta, pricing decision, other repo)
 - **Stale** -- already done or superseded (auto-close these)
 
 For `--simplify` mode: ignore beads. Scan codebase for:
+
 - Duplicated patterns (mache get_communities)
 - High-complexity files (LOC > 300, many imports)
 - Unused exports, dead code paths
 - Inconsistent error handling or response shapes
-File ephemeral beads for each extraction, execute, close in same run.
+  File ephemeral beads for each extraction, execute, close in same run.
 
 ### 2. Derive the lifecycle -- Don't configure, discover
 
@@ -155,24 +161,28 @@ Do not ask the human to define these -- read the codebase and figure it out.
 If something is NOT derivable, ASK the human before proceeding.
 
 **Starting point** (derive from bead + code):
+
 - Problem statement: what does the bead describe? Read the bead description.
 - Current state: read the files the bead touches. What exists today?
 - Outcome: what should be different after? Derive from bead title + description.
 - If the bead is vague, ASK: "What does done look like for {bead-id}?"
 
 **Stopping point** (derive from existing tests + types):
+
 - Definition of done: does a test exist that would fail today and pass after?
   If yes, that's the acceptance criterion. If no, write one.
 - Acceptance criteria: typecheck passes, existing tests don't regress, new test passes.
 - If there are no tests for this area, ASK: "No tests cover {file}. Should I add one?"
 
 **Validation** (derive from the dependency graph):
+
 - What calls this code? (mache find_callers or grep)
 - What does this code call? (mache find_callees)
 - If callers > 3, the change is high-risk -- evaluator must verify each caller.
 - If the file has no callers, it might be dead code -- flag for `--prune`.
 
 **Verification and attestation** (cite sources):
+
 - Every claim in plan.md must have a citation:
   - File path + line number for code references
   - Bead ID for the work item
@@ -218,15 +228,15 @@ and pre-commit runs on commit. It never invents its own verification commands.
 
 **Probe hierarchy** (scoping-agent checks in order, uses first match per category):
 
-| Priority | File | Extract |
-|----------|------|---------|
-| 1 | Taskfile.yml | Parse task names — lint, test, check, typecheck, build |
-| 2 | Makefile | Parse targets — lint, test, check |
-| 3 | package.json | Parse scripts — test, lint, typecheck, build |
-| 4 | Cargo.toml | `cargo test`, `cargo clippy`, `cargo build` |
-| 5 | go.mod | `go test ./...`, `go vet ./...` |
-| 6 | mix.exs | `mix test`, `mix format --check-formatted` |
-| 7 | pyproject.toml | `pytest`, `ruff check .` |
+| Priority | File           | Extract                                                |
+| -------- | -------------- | ------------------------------------------------------ |
+| 1        | Taskfile.yml   | Parse task names — lint, test, check, typecheck, build |
+| 2        | Makefile       | Parse targets — lint, test, check                      |
+| 3        | package.json   | Parse scripts — test, lint, typecheck, build           |
+| 4        | Cargo.toml     | `cargo test`, `cargo clippy`, `cargo build`            |
+| 5        | go.mod         | `go test ./...`, `go vet ./...`                        |
+| 6        | mix.exs        | `mix test`, `mix format --check-formatted`             |
+| 7        | pyproject.toml | `pytest`, `ruff check .`                               |
 
 **Fast-fail layer:** Before running any of the above, the evaluator runs
 `mache get_diagnostics` on changed files. Type/syntax errors caught in
@@ -246,6 +256,7 @@ section. Downstream agents read this section — they never probe on their own.
 ### 3. Execute -- Generator -> Evaluator pipeline
 
 **Generator** (dev-agent, per bead):
+
 - Reads plan.md (including `## Verification` section)
 - Implements the fix
 - Runs ALL verify commands from plan.md's Verification section
@@ -258,6 +269,7 @@ section. Downstream agents read this section — they never probe on their own.
 - Does NOT commit
 
 **Evaluator** (staging-agent, after ALL generators finish):
+
 - Runs `mache get_diagnostics` on changed files (fast-fail — ms)
 - Re-runs ALL verify commands from plan.md independently (does NOT trust generator's output)
 - Compares its results against generator's claimed results in changes.md
@@ -277,6 +289,7 @@ fail, bead stays open with error details as a comment via rsry_bead_comment.
 ### 4. Commit -- Team lead only
 
 Only after evaluator passes ALL changes:
+
 - One commit per bead: `[bead-id] type(scope): description`
 - `git push origin main`
 - Deploy if applicable

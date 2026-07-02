@@ -20,8 +20,8 @@ Make **issue type** the unit of extensibility. Express each type as a Cap'n Prot
 Three problems show up as one:
 
 1. **Multi-session continuity (the AFK problem).** Work happens across remote sessions, mobile, phone-side claude-code, local CLI. No session knows what the others did. Sitting back down means re-reading every PR description and bead.
-2. **Cross-source drift.** Same work exists as a bead, a GitHub issue, a Linear ticket, a PR review thread, and a Slack message — with no canonical reconciliation. Hardcoded mappers per pair don't scale.
-3. **No resume story when work pauses.** Interrupting an agent — by design (interrupt mechanism), by failure, or by end-of-context — discards everything the agent learned about the problem. The next session starts cold.
+1. **Cross-source drift.** Same work exists as a bead, a GitHub issue, a Linear ticket, a PR review thread, and a Slack message — with no canonical reconciliation. Hardcoded mappers per pair don't scale.
+1. **No resume story when work pauses.** Interrupting an agent — by design (interrupt mechanism), by failure, or by end-of-context — discards everything the agent learned about the problem. The next session starts cold.
 
 Today rosary handles bead lifecycle, dispatch, semantic dedup, cross-repo linkage, observation folding (ADR-0010), structured phase-to-phase handoffs ([structured-handoff-pipeline](structured-handoff-pipeline.md)), and the plugin kind axis ([tool-constellation-substrate](tool-constellation-substrate.md)). What's missing is a **declarative spec for what work is** that the runtime materializes — plus a **session-spanning self-narrated handoff** that turns interruption from data loss into a checkpoint.
 
@@ -77,12 +77,12 @@ Inheritance merges fields from the parent; user types can add new fields, overri
 
 Each pipeline stage declares its model tier. Stages cascade from cheapest to most capable; later stages run only on items that survive earlier filters.
 
-| Tier | Model | Use |
-|------|-------|-----|
-| `needle` | Needle 26M (cactus-compute) | Classify, route, "is this worth thinking about" |
-| `qwen` | Qwen3-Coder local (vLLM/Ollama) | Synthesize, draft bead body, structured extraction |
-| `ds4` | DeepSeek V4 Flash via antirez/ds4 | Complex synthesis; benefits from on-disk KV cache for stable system prompts |
-| `claude` | Claude API or claude-code subprocess | Escalation only |
+| Tier     | Model                                | Use                                                                         |
+| -------- | ------------------------------------ | --------------------------------------------------------------------------- |
+| `needle` | Needle 26M (cactus-compute)          | Classify, route, "is this worth thinking about"                             |
+| `qwen`   | Qwen3-Coder local (vLLM/Ollama)      | Synthesize, draft bead body, structured extraction                          |
+| `ds4`    | DeepSeek V4 Flash via antirez/ds4    | Complex synthesis; benefits from on-disk KV cache for stable system prompts |
+| `claude` | Claude API or claude-code subprocess | Escalation only                                                             |
 
 Local LLMs run as subprocesses (see section 9 — llama.cpp runtime + interrupt mechanism are open questions). ds4's on-disk KV-cache-keyed-by-SHA1-of-token-IDs lets stable system prompts amortize across runs — cheap repeated invocation.
 
@@ -111,11 +111,11 @@ Concrete shape for the agent's self-rating in §5.3: report each gate's target a
 
 Trust starting tier is a function of how tight the shape is, not how many humans approved:
 
-| Shape tightness | Example | Starting tier |
-|---|---|---|
-| Hard schema, enum-only outputs | Classify P0/P1/P2/P3 | Auto-execute |
-| Structured object with validated fields | `BeadSpec` with title, scope, deps | Human-gated, ramps fast |
-| Free-form natural language | "Draft a summary paragraph" | Shadow only, rarely promotes |
+| Shape tightness                         | Example                            | Starting tier                |
+| --------------------------------------- | ---------------------------------- | ---------------------------- |
+| Hard schema, enum-only outputs          | Classify P0/P1/P2/P3               | Auto-execute                 |
+| Structured object with validated fields | `BeadSpec` with title, scope, deps | Human-gated, ramps fast      |
+| Free-form natural language              | "Draft a summary paragraph"        | Shadow only, rarely promotes |
 
 Promotion/demotion is driven by `trustSignal` findings from self-narrated handoffs (section 5.3) — gated by §3.3, since `closed` must mean "all gates hit" for trust signal to mean anything. Human review only triggers when guardrails are ambiguous or a new shape is needed — humans set goals and shape, the runtime enforces, the agents execute.
 
@@ -197,8 +197,8 @@ enum FindingCategory {
 The handoff reflog feeds three consumers:
 
 1. **Resume** — next session reads the most recent handoff for the bead and picks up from `nextMove` + `contextHooks`. The AFK problem becomes a 90-second triage instead of re-reading PR descriptions.
-2. **Trust ramp** — `selfRatings` with category `trustSignal` accumulate against the producing agent. Consistent `confidence: high` + downstream rejection demotes; consistent acceptance promotes.
-3. **Federation payload** — handoffs are canonical capnp + signed (section 4.2). Peers ingest them and merge via the lattice.
+1. **Trust ramp** — `selfRatings` with category `trustSignal` accumulate against the producing agent. Consistent `confidence: high` + downstream rejection demotes; consistent acceptance promotes.
+1. **Federation payload** — handoffs are canonical capnp + signed (section 4.2). Peers ingest them and merge via the lattice.
 
 ### 5.3 Per-type subscription
 
@@ -210,7 +210,7 @@ An interrupted agent **must** emit a handoff before its process exits, otherwise
 
 ### 5.5 Cost
 
-A handoff adds <500 tokens to the agent's closing turn — the model is already loaded with full context, so the marginal cost of "summarize what you did, what was hard, what's next" is negligible compared to a downstream third-party autopsy pass.
+A handoff adds \<500 tokens to the agent's closing turn — the model is already loaded with full context, so the marginal cost of "summarize what you did, what was hard, what's next" is negligible compared to a downstream third-party autopsy pass.
 
 ### 5.6 Recursion guard
 
@@ -220,13 +220,13 @@ Handoff emission **does not** trigger another handoff. `IssueType` for handoff-r
 
 Five tiers; same machinery, friction floor moves:
 
-| Tier | Surface | Friction |
-|---|---|---|
-| 0 (today) | Built-in types via `rsry` CLI / MCP | Zero — unchanged |
-| 1 | File `agent-spec` bead → BDR factory synthesizes capnp draft as comment → approve → lands | Conversation |
-| 2 | Author capnp directly, inherit from built-ins | Schema literacy |
-| 3 | Personal layer: drop schemas in `~/.rosary/types/` (free property of capnp import paths) | None beyond tier 2 |
-| 4 (future, not MVP) | Publish capnp via ley-line content addressing for cross-instance reuse | Federation literacy |
+| Tier                | Surface                                                                                   | Friction            |
+| ------------------- | ----------------------------------------------------------------------------------------- | ------------------- |
+| 0 (today)           | Built-in types via `rsry` CLI / MCP                                                       | Zero — unchanged    |
+| 1                   | File `agent-spec` bead → BDR factory synthesizes capnp draft as comment → approve → lands | Conversation        |
+| 2                   | Author capnp directly, inherit from built-ins                                             | Schema literacy     |
+| 3                   | Personal layer: drop schemas in `~/.rosary/types/` (free property of capnp import paths)  | None beyond tier 2  |
+| 4 (future, not MVP) | Publish capnp via ley-line content addressing for cross-instance reuse                    | Federation literacy |
 
 Built-in types keep working exactly as today. New machinery is purely additive.
 
@@ -290,11 +290,11 @@ Bounded to ~2 weeks of work. Validates the whole stack end-to-end on one real us
 These are real holes the spec acknowledges but doesn't close — flagged so they don't get implicitly decided during implementation.
 
 1. **llama.cpp runtime + interrupt mechanism wiring.** Subprocess vs library binding for llama.cpp. How interrupt signals propagate (SIGTERM trap + grace period? mid-token cancellation API?). Phase-2 detail; MVP uses synchronous calls.
-2. **Capnp schema versioning policy.** When does a field renumber require a migration vs work via capnp's own evolution rules? Probably codify in a `capnp-evolution-policy.md` separately.
-3. **Reflog retention / compaction.** Per-bead handoff reflogs grow unbounded. Compaction policy (snapshot every N handoffs? keep last K?) needs benchmarking with real data.
-4. **Trust ramp thresholds.** Concrete numbers (how many `trustSignal` rejections demote? promotion debounce?) need empirical tuning. MVP picks defaults; phase 2 makes them per-type-tunable.
-5. **OIDC scope discipline.** Signet's OIDC layer must not leak into inter-peer trust paths. Code-level enforcement (e.g., separate crates) preferred over convention.
-6. **Cost runaway guard for self-narration.** Per-type budget cap on handoff emissions per day, or just rely on the marginal cost being low? Probably leave uncapped initially with telemetry.
+1. **Capnp schema versioning policy.** When does a field renumber require a migration vs work via capnp's own evolution rules? Probably codify in a `capnp-evolution-policy.md` separately.
+1. **Reflog retention / compaction.** Per-bead handoff reflogs grow unbounded. Compaction policy (snapshot every N handoffs? keep last K?) needs benchmarking with real data.
+1. **Trust ramp thresholds.** Concrete numbers (how many `trustSignal` rejections demote? promotion debounce?) need empirical tuning. MVP picks defaults; phase 2 makes them per-type-tunable.
+1. **OIDC scope discipline.** Signet's OIDC layer must not leak into inter-peer trust paths. Code-level enforcement (e.g., separate crates) preferred over convention.
+1. **Cost runaway guard for self-narration.** Per-type budget cap on handoff emissions per day, or just rely on the marginal cost being low? Probably leave uncapped initially with telemetry.
 
 ## 10. Phase 2 (explicitly out of MVP scope)
 
@@ -312,13 +312,13 @@ These are real holes the spec acknowledges but doesn't close — flagged so they
 
 This spec is the unification point for four conversations that kept feeling like the same conversation:
 
-| Original question | How it lands here |
-|---|---|
-| Portable bead state sync | Canonical capnp bytes + content hash + passkey-signed envelope (section 4.2) |
-| Public vs private repos | Per-peer subscription + tier-4 ley-line publish opt-in (section 6) |
-| Passkey portability | Vendor E2EE sync of one credential; signet device certs for headless (section 4.3) |
-| LLM as cron / middleware | Pipeline ladder per stage, declared in issue type, deterministic guardrails post-validate (section 3) |
-| Agent factory from `(role, request)` | Dissolves into "file an issue type"; BDR machinery synthesizes (section 6, tier 1) |
-| Per-type post-mortem | Reframed as agent's self-narration before close; same machinery serves resume + trust + federation (section 5) |
-| Peer A vs Peer B with diverging workflows | ADR-0010 lattice handles divergence; per-peer view filters apply locally (section 4.4) |
-| Adoption | Tier 0 unchanged; new machinery is purely additive (section 6) |
+| Original question                         | How it lands here                                                                                              |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Portable bead state sync                  | Canonical capnp bytes + content hash + passkey-signed envelope (section 4.2)                                   |
+| Public vs private repos                   | Per-peer subscription + tier-4 ley-line publish opt-in (section 6)                                             |
+| Passkey portability                       | Vendor E2EE sync of one credential; signet device certs for headless (section 4.3)                             |
+| LLM as cron / middleware                  | Pipeline ladder per stage, declared in issue type, deterministic guardrails post-validate (section 3)          |
+| Agent factory from `(role, request)`      | Dissolves into "file an issue type"; BDR machinery synthesizes (section 6, tier 1)                             |
+| Per-type post-mortem                      | Reframed as agent's self-narration before close; same machinery serves resume + trust + federation (section 5) |
+| Peer A vs Peer B with diverging workflows | ADR-0010 lattice handles divergence; per-peer view filters apply locally (section 4.4)                         |
+| Adoption                                  | Tier 0 unchanged; new machinery is purely additive (section 6)                                                 |

@@ -15,11 +15,11 @@ Lowest frequency — you look at **cross-ecosystem architecture and technical di
 
 1. **Evaluate approaches**: When there are multiple ways to solve a problem (CF Workers vs tunnel, OAuth vs API key, hosted vs self-hosted), analyze trade-offs with evidence. No hand-waving — cite benchmarks, prior art, or concrete constraints.
 
-2. **Write ADRs**: Produce `docs/adr/NNNN-<slug>.md` following the standard format (Status, Context, Decision, Consequences). ADRs are the primary output — they become the source of truth for technical direction.
+1. **Write ADRs**: Produce `docs/adr/NNNN-<slug>.md` following the standard format (Status, Context, Decision, Consequences). ADRs are the primary output — they become the source of truth for technical direction.
 
-3. **Decompose via BDR**: After writing an ADR, run it through the BDR decomposition pipeline. The ADR's sections map to atoms (FrictionPoint, Decision, Phase, ValidationPoint), which map to BeadSpecs (decade/thread/bead), which become dispatchable work items with file scopes.
+1. **Decompose via BDR**: After writing an ADR, run it through the BDR decomposition pipeline. The ADR's sections map to atoms (FrictionPoint, Decision, Phase, ValidationPoint), which map to BeadSpecs (decade/thread/bead), which become dispatchable work items with file scopes.
 
-4. **Cross-ecosystem reasoning**: The ART ecosystem has 14+ repos. Architecture decisions often span repos (e.g., hosted MCP needs changes in rosary, signet, and mache). Map the cross-repo impact and create beads in the right repos.
+1. **Cross-ecosystem reasoning**: The ART ecosystem has 14+ repos. Architecture decisions often span repos (e.g., hosted MCP needs changes in rosary, signet, and mache). Map the cross-repo impact and create beads in the right repos.
 
 ## What You Ignore
 
@@ -33,11 +33,12 @@ Lowest frequency — you look at **cross-ecosystem architecture and technical di
 
 1. **Explore** — Scan repos for ADRs, ARCHITECTURE.md, INVESTIGATION_LOG.md, open beads. Use mache for structural analysis. Understand what exists before proposing what should exist.
 
-2. **Evaluate** — For each competing approach, build a decision matrix. Consider: complexity, dependencies, reversibility, time-to-value, ecosystem fit. Be skeptical of your own enthusiasm (paradigm-assessor mindset).
+1. **Evaluate** — For each competing approach, build a decision matrix. Consider: complexity, dependencies, reversibility, time-to-value, ecosystem fit. Be skeptical of your own enthusiasm (paradigm-assessor mindset).
 
-3. **Decide** — Write the ADR. State the decision clearly. Include what you considered and rejected, and why. The "Alternatives Considered" section is as important as the "Decision" section.
+1. **Decide** — Write the ADR. State the decision clearly. Include what you considered and rejected, and why. The "Alternatives Considered" section is as important as the "Decision" section.
 
-4. **Decompose** — Run BDR decomposition on the ADR:
+1. **Decompose** — Run BDR decomposition on the ADR:
+
    - Atoms are extracted from ADR sections (friction points, decisions, phases, validation points)
    - Atoms map to channels (decade = strategic, thread = tactical, bead = implementable)
    - BeadSpecs get file scopes, priority, issue_type, and thread grouping
@@ -89,6 +90,7 @@ Wave 2 (depends on Wave 1):
 ## Bead Creation
 
 When decomposing an ADR into beads:
+
 ```
 rsry_bead_create with:
   - title: "[ADR-NNN] <specific task>"

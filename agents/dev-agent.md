@@ -17,18 +17,20 @@ All patterns are structural, not language-specific.
 
 1. **Complexity hotspots**: Functions over 50 lines. Deeply nested conditionals (3+ levels). Functions with 5+ parameters.
 
-2. **Dead code**: Unused exports, unreachable branches, commented-out code blocks, functions only called from other dead code.
+1. **Dead code**: Unused exports, unreachable branches, commented-out code blocks, functions only called from other dead code.
+
    - Use `mcp__mache__find_callers` to verify — zero callers = dead
 
-3. **TODO/FIXME/HACK debt**: Stale TODOs (check git blame for age). HACKs that became permanent. FIXMEs never fixed.
+1. **TODO/FIXME/HACK debt**: Stale TODOs (check git blame for age). HACKs that became permanent. FIXMEs never fixed.
 
-4. **Hardcoded values**: Magic numbers, hardcoded URLs/paths/credentials, values that should be config or constants.
+1. **Hardcoded values**: Magic numbers, hardcoded URLs/paths/credentials, values that should be config or constants.
 
-5. **Copy-paste duplication**: Duplicated code blocks within the same file AND across nearby files. Functions that are 90% identical to a sibling.
+1. **Copy-paste duplication**: Duplicated code blocks within the same file AND across nearby files. Functions that are 90% identical to a sibling.
+
    - Use `mcp__mache__search` to find similar function names and repeated patterns
    - This catches the "7 upsert methods across 3 files" problem
 
-6. **Naming confusion**: Misleading names (function does more than its name suggests), single-letter variables outside tight loops, boolean parameters without context.
+1. **Naming confusion**: Misleading names (function does more than its name suggests), single-letter variables outside tight loops, boolean parameters without context.
 
 ## What You Ignore
 
@@ -40,6 +42,7 @@ All patterns are structural, not language-specific.
 ## Output
 
 For each finding:
+
 - **Location**: `file/path:line`
 - **Issue**: One-line description
 - **Severity**: low (cleanup) / medium (should fix) / high (likely bug)
@@ -47,12 +50,12 @@ For each finding:
 
 ## Action Types
 
-| Type | Meaning | Example |
-|------|---------|---------|
-| **tidy** | Small cleanup | Rename misleading variable, extract magic number to constant |
-| **refactor** | Restructure function | Break 80-line function into focused helpers |
-| **negate** | Delete code | Remove dead function, delete commented-out block, collapse wrapper |
-| **docs** | Add clarity | Document non-obvious algorithm, explain why a HACK exists |
+| Type         | Meaning              | Example                                                            |
+| ------------ | -------------------- | ------------------------------------------------------------------ |
+| **tidy**     | Small cleanup        | Rename misleading variable, extract magic number to constant       |
+| **refactor** | Restructure function | Break 80-line function into focused helpers                        |
+| **negate**   | Delete code          | Remove dead function, delete commented-out block, collapse wrapper |
+| **docs**     | Add clarity          | Document non-obvious algorithm, explain why a HACK exists          |
 
 ## Bead Creation
 

@@ -8,8 +8,7 @@ just the body content. `rsry hooks install` wraps each block in a
 `#!/bin/sh` shebang plus the marker comments below before writing it to the
 real hooks dir.
 
-The hooks dir is resolved at install time via `git rev-parse --git-path
-hooks`, so worktrees, submodules, and `core.hooksPath` overrides all route
+The hooks dir is resolved at install time via `git rev-parse --git-path hooks`, so worktrees, submodules, and `core.hooksPath` overrides all route
 to the right place — it is **not** always `.git/hooks/`.
 
 ## Layout
@@ -34,8 +33,7 @@ rsry's hooks coexist with custom team hooks without clobbering them. A
 unit test (`readme_documents_actual_marker_lines`) keeps this section in
 sync with the constants in `src/main.rs`.
 
-To customize: edit the installed hook (find the path via `rsry hooks
-status`) and put your custom logic **outside** the marker block.
+To customize: edit the installed hook (find the path via `rsry hooks status`) and put your custom logic **outside** the marker block.
 Reinstalling will only touch the marked section.
 
 To inspect: `rsry hooks status` reports whether each hook is installed,

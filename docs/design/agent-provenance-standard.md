@@ -19,15 +19,15 @@ APAS is implementation-agnostic. Rosary + signet serve as the reference implemen
 
 APAS builds on and references these existing specifications rather than reinventing them:
 
-| Spec | Source | APAS Usage |
-|------|--------|-----------|
-| Signet Token Format | `signet/docs/design/001-signet-tokens.md` | Identity tokens (CBOR + COSE/Ed25519) |
-| Signet Bridge Certificates | `signet/docs/design/004-bridge-certs.md` | Delegated identity for agents |
-| Signet Identity Model | `signet/pkg/sigid/` | 4-entity decomposition (Owner/Machine/Actor/Identity) |
-| Ley-line CMS Signing | `ley-line/rs/crates/sign/src/cms.rs` | Ed25519 CMS/PKCS#7 (RFC 5652 + RFC 8419) |
-| in-toto Statement | https://in-toto.io/Statement/v1 | Attestation envelope format |
-| DSSE | Dead Simple Signing Envelope | Signature wrapper |
-| SLSA v1.0 | https://slsa.dev/spec/v1.0 | Conformance level model |
+| Spec                       | Source                                    | APAS Usage                                            |
+| -------------------------- | ----------------------------------------- | ----------------------------------------------------- |
+| Signet Token Format        | `signet/docs/design/001-signet-tokens.md` | Identity tokens (CBOR + COSE/Ed25519)                 |
+| Signet Bridge Certificates | `signet/docs/design/004-bridge-certs.md`  | Delegated identity for agents                         |
+| Signet Identity Model      | `signet/pkg/sigid/`                       | 4-entity decomposition (Owner/Machine/Actor/Identity) |
+| Ley-line CMS Signing       | `ley-line/rs/crates/sign/src/cms.rs`      | Ed25519 CMS/PKCS#7 (RFC 5652 + RFC 8419)              |
+| in-toto Statement          | https://in-toto.io/Statement/v1           | Attestation envelope format                           |
+| DSSE                       | Dead Simple Signing Envelope              | Signature wrapper                                     |
+| SLSA v1.0                  | https://slsa.dev/spec/v1.0                | Conformance level model                               |
 
 ## 1. Problem Statement
 
@@ -43,20 +43,20 @@ AI coding agents autonomously modify source code. Current supply chain security 
 TeamPCP compromised Trivy by exploiting mutable git tag references and long-lived service account tokens. The scanner itself was replaced with a malicious version. Key lessons:
 
 1. **Mutable references are attack vectors** — content-addressed references are required
-2. **Long-lived credentials enable persistence** — short-lived, scoped credentials limit blast radius
-3. **The auditor must not be the audited** — split trust between execution and attestation
+1. **Long-lived credentials enable persistence** — short-lived, scoped credentials limit blast radius
+1. **The auditor must not be the audited** — split trust between execution and attestation
 
 ### 1.2 Why SBOMs Are Insufficient
 
 SBOMs (CycloneDX, SPDX) answer "what components are in this software?" Agent provenance answers "who decided to make this change, why, with what tools, under what authority, and can we prove it?"
 
-| Property | SBOM | Agent Provenance |
-|----------|------|-----------------|
-| Scope | Components | Decisions + Actions |
-| Temporal | Point-in-time | Causal chain |
-| Identity | Package origin | Agent + orchestrator + user |
-| Verification | Hash matching | Signature chain |
-| Trust model | Publisher attestation | Multi-party attestation |
+| Property     | SBOM                  | Agent Provenance            |
+| ------------ | --------------------- | --------------------------- |
+| Scope        | Components            | Decisions + Actions         |
+| Temporal     | Point-in-time         | Causal chain                |
+| Identity     | Package origin        | Agent + orchestrator + user |
+| Verification | Hash matching         | Signature chain             |
+| Trust model  | Publisher attestation | Multi-party attestation     |
 
 ## 2. Conformance Levels
 
@@ -255,13 +255,14 @@ The envelope is signed using DSSE (Dead Simple Signing Envelope):
 Signing uses the identity model defined in signet. APAS does not define its own
 key format — it delegates to signet's existing specifications.
 
-| Level | Key Type | Lifetime | Defined In |
-|-------|----------|----------|------------|
-| User master key | Ed25519 | Long-lived | `signet/pkg/crypto/algorithm/ed25519.go` |
-| Orchestrator bridge cert | X.509 + Ed25519 | Short-lived, per-dispatch | `signet/docs/design/004-bridge-certs.md` |
-| Agent session key | Ephemeral Ed25519 | Per-session | `signet/pkg/crypto/epr/proof.go` |
+| Level                    | Key Type          | Lifetime                  | Defined In                               |
+| ------------------------ | ----------------- | ------------------------- | ---------------------------------------- |
+| User master key          | Ed25519           | Long-lived                | `signet/pkg/crypto/algorithm/ed25519.go` |
+| Orchestrator bridge cert | X.509 + Ed25519   | Short-lived, per-dispatch | `signet/docs/design/004-bridge-certs.md` |
+| Agent session key        | Ephemeral Ed25519 | Per-session               | `signet/pkg/crypto/epr/proof.go`         |
 
 The 4-entity identity model from `signet/pkg/sigid/` decomposes identity as:
+
 - **Owner**: the human user who authorized the dispatch
 - **Machine**: the orchestrator instance (Fly machine, local Mac)
 - **Actor**: the agent persona (dev-agent, staging-agent)
@@ -333,34 +334,34 @@ H(Decade)     = SHA256(H(Thread_0) || H(Thread_1) || ... || H(Thread_k))
 
 ### 5.1 Threats Addressed
 
-| Threat | L1 | L2 | L3 | L4 |
-|--------|----|----|----|----|
-| Forged agent identity | - | Detected | Detected | Detected |
-| Tampered attestation | - | Detected | Detected | Detected |
-| Phantom bead injection | - | Detected (breaks chain) | Detected | Detected |
-| Unauthorized tool use | - | - | Prevented | Prevented |
-| Poisoned agent input | - | - | - | Detected |
-| Compromised model provider | - | - | - | Forensic only |
+| Threat                     | L1  | L2                      | L3        | L4            |
+| -------------------------- | --- | ----------------------- | --------- | ------------- |
+| Forged agent identity      | -   | Detected                | Detected  | Detected      |
+| Tampered attestation       | -   | Detected                | Detected  | Detected      |
+| Phantom bead injection     | -   | Detected (breaks chain) | Detected  | Detected      |
+| Unauthorized tool use      | -   | -                       | Prevented | Prevented     |
+| Poisoned agent input       | -   | -                       | -         | Detected      |
+| Compromised model provider | -   | -                       | -         | Forensic only |
 
 ### 5.2 Threats NOT Addressed (Red Team Findings)
 
 1. **Compromised model provider**: If the LLM itself is poisoned, the agent produces correctly-signed malicious code. APAS provides forensic trail but cannot prevent this. Mitigation: adversarial review phase with different provider.
 
-2. **Honest-but-curious agent**: An agent that signs everything correctly but exfiltrates data via tool calls. APAS L3 limits network access but cannot prevent all covert channels. Mitigation: network allowlisting + tool call audit.
+1. **Honest-but-curious agent**: An agent that signs everything correctly but exfiltrates data via tool calls. APAS L3 limits network access but cannot prevent all covert channels. Mitigation: network allowlisting + tool call audit.
 
-3. **Time-of-check-time-of-use**: File modified between attestation and commit. Mitigation: atomic workspace snapshots (jj/git stash before signing).
+1. **Time-of-check-time-of-use**: File modified between attestation and commit. Mitigation: atomic workspace snapshots (jj/git stash before signing).
 
-4. **Self-attested provenance**: The orchestrator writes its own attestations. At L1-L2, this is the fox guarding the henhouse. L3 requires separation. L4 requires external witnesses.
+1. **Self-attested provenance**: The orchestrator writes its own attestations. At L1-L2, this is the fox guarding the henhouse. L3 requires separation. L4 requires external witnesses.
 
 ## 6. Relationship to Existing Standards
 
-| Standard | Relationship |
-|----------|-------------|
-| SLSA | APAS levels parallel SLSA levels. APAS dispatch predicate extends SLSA provenance. |
-| in-toto | APAS uses in-toto Statement/v1 envelope format and DSSE signing. |
-| CycloneDX | APAS complements CycloneDX SBOM. Agent metadata could be a CycloneDX AI/ML-BOM component. |
-| SCAI | APAS verification tiers parallel SCAI attribute assertions. |
-| Sigstore | APAS signing chain is compatible with Sigstore's keyless signing model (via OIDC → ephemeral cert). |
+| Standard  | Relationship                                                                                        |
+| --------- | --------------------------------------------------------------------------------------------------- |
+| SLSA      | APAS levels parallel SLSA levels. APAS dispatch predicate extends SLSA provenance.                  |
+| in-toto   | APAS uses in-toto Statement/v1 envelope format and DSSE signing.                                    |
+| CycloneDX | APAS complements CycloneDX SBOM. Agent metadata could be a CycloneDX AI/ML-BOM component.           |
+| SCAI      | APAS verification tiers parallel SCAI attribute assertions.                                         |
+| Sigstore  | APAS signing chain is compatible with Sigstore's keyless signing model (via OIDC → ephemeral cert). |
 
 ## 7. Reference Implementation
 
@@ -386,16 +387,16 @@ H(Decade)     = SHA256(H(Thread_0) || H(Thread_1) || ... || H(Thread_k))
 
 ### 7.4 Implementation Phases
 
-| Phase | Conformance | What | Where |
-|-------|-------------|------|-------|
-| 0 (done) | L1 partial | Handoff chain hashing, manifest capture | rosary |
-| 1 | L1 complete | Fix chain_hash to use content hashes, capture tool calls | rosary |
-| 2 | L2 | Sign handoffs + manifests with Ed25519 via ley-line-sign | rosary + ley-line |
-| 3 | L2 | Agent commits signed via signet bridge certs | rosary + signet |
-| 4 | L3 | Container sandbox for agent execution | rosary + rig |
-| 5 | L3 | ACP permission mediation as trust boundary | rosary |
-| 6 | L4 | Input hashing (CLAUDE.md, bead descriptions, MCP responses) | rosary |
-| 7 | L4 | External witness (transparency log, ley-line arena) | ley-line |
+| Phase    | Conformance | What                                                        | Where             |
+| -------- | ----------- | ----------------------------------------------------------- | ----------------- |
+| 0 (done) | L1 partial  | Handoff chain hashing, manifest capture                     | rosary            |
+| 1        | L1 complete | Fix chain_hash to use content hashes, capture tool calls    | rosary            |
+| 2        | L2          | Sign handoffs + manifests with Ed25519 via ley-line-sign    | rosary + ley-line |
+| 3        | L2          | Agent commits signed via signet bridge certs                | rosary + signet   |
+| 4        | L3          | Container sandbox for agent execution                       | rosary + rig      |
+| 5        | L3          | ACP permission mediation as trust boundary                  | rosary            |
+| 6        | L4          | Input hashing (CLAUDE.md, bead descriptions, MCP responses) | rosary            |
+| 7        | L4          | External witness (transparency log, ley-line arena)         | ley-line          |
 
 ## 8. The 5 Whys
 

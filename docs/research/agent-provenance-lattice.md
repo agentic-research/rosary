@@ -6,7 +6,7 @@ This document defines the formal mathematical structure of agent provenance in r
 
 The specification grounds existing rosary infrastructure (`Handoff::chain_hash`, `BeadSpec::content_hash`, the BDR channel lattice) in a unified mathematical framework, identifies gaps, and prescribes concrete extensions.
 
----
+______________________________________________________________________
 
 ## 1. The Provenance Poset
 
@@ -16,43 +16,44 @@ Let P be a finite partially ordered set (poset) of provenance elements. Each ele
 
 **Definition 1.1 (Grade function).** Define the grade function rho: P -> {0, 1, 2, 3, 4, 5, 6, 7} as:
 
-| Grade | Element Type | Rosary Type | Example |
-|-------|-------------|-------------|---------|
-| 7 | ADR | Source markdown | `0004-dual-state-machine.md` |
-| 6 | Decade | `DecadeRecord` | `ADR-004` |
-| 5 | Thread | `ThreadRecord` | `ADR-004/implementation` |
-| 4 | Bead | `Bead` / `BeadSpec` | `rsry-abc` |
-| 3 | Pipeline Phase | `PipelineState` + `Handoff` | Phase 0 (dev-agent) |
-| 2 | Agent Action | `DispatchRecord` | Single agent execution |
-| 1 | Tool Call | Stream JSON event | `mcp__mache__search(...)` |
-| 0 | File Change | Git diff hunk | `src/reconcile.rs:420 +3/-1` |
+| Grade | Element Type   | Rosary Type                 | Example                      |
+| ----- | -------------- | --------------------------- | ---------------------------- |
+| 7     | ADR            | Source markdown             | `0004-dual-state-machine.md` |
+| 6     | Decade         | `DecadeRecord`              | `ADR-004`                    |
+| 5     | Thread         | `ThreadRecord`              | `ADR-004/implementation`     |
+| 4     | Bead           | `Bead` / `BeadSpec`         | `rsry-abc`                   |
+| 3     | Pipeline Phase | `PipelineState` + `Handoff` | Phase 0 (dev-agent)          |
+| 2     | Agent Action   | `DispatchRecord`            | Single agent execution       |
+| 1     | Tool Call      | Stream JSON event           | `mcp__mache__search(...)`    |
+| 0     | File Change    | Git diff hunk               | `src/reconcile.rs:420 +3/-1` |
 
 **Remark.** The grade ordering is *descending* by convention: higher grade = coarser granularity = more abstract. This aligns with the existing `BdrChannel::visibility_level()` where Decade=0 < Thread=1 < Bead=2, but inverts the numbering for the full 8-level hierarchy. The inversion is intentional: grade 7 is the "top" of the poset (most abstract), grade 0 is the "bottom" (most concrete).
 
 ### 1.2 Partial Order
 
-**Definition 1.2 (Containment order).** For elements a, b in P, define a <= b if and only if a is *contained within* b in the decomposition hierarchy. Formally:
+**Definition 1.2 (Containment order).** For elements a, b in P, define a \<= b if and only if a is *contained within* b in the decomposition hierarchy. Formally:
 
-- FileChange f <= ToolCall t iff f was produced by t
-- ToolCall t <= AgentAction a iff t occurred during a
-- AgentAction a <= Phase p iff a is part of pipeline phase p
-- Phase p <= Bead b iff p is a phase in the pipeline processing b
-- Bead b <= Thread th iff b is a member of th (via `HierarchyStore::add_bead_to_thread`)
-- Thread th <= Decade d iff th.decade_id = d.id
-- Decade d <= ADR r iff d was decomposed from r (via `build_decade`)
+- FileChange f \<= ToolCall t iff f was produced by t
+- ToolCall t \<= AgentAction a iff t occurred during a
+- AgentAction a \<= Phase p iff a is part of pipeline phase p
+- Phase p \<= Bead b iff p is a phase in the pipeline processing b
+- Bead b \<= Thread th iff b is a member of th (via `HierarchyStore::add_bead_to_thread`)
+- Thread th \<= Decade d iff th.decade_id = d.id
+- Decade d \<= ADR r iff d was decomposed from r (via `build_decade`)
 
 This is indeed a partial order:
 
-- **Reflexivity**: a <= a (every element contains itself).
-- **Antisymmetry**: If a <= b and b <= a, then a and b are at the same grade and mutually contained, hence a = b.
+- **Reflexivity**: a \<= a (every element contains itself).
+- **Antisymmetry**: If a \<= b and b \<= a, then a and b are at the same grade and mutually contained, hence a = b.
 - **Transitivity**: Containment composes: if a file change is within a tool call, and that tool call is within an agent action, then the file change is within the agent action.
 
 ### 1.3 Lattice Properties
 
-**Theorem 1.1.** (P, <=) is a bounded graded poset but NOT a lattice in general.
+**Theorem 1.1.** (P, \<=) is a bounded graded poset but NOT a lattice in general.
 
 **Proof sketch.** The poset is:
-- **Bounded**: We can adjoin a formal top element T (the "project" or "system") and bottom element B (the empty provenance). Every ADR <= T and B <= every FileChange.
+
+- **Bounded**: We can adjoin a formal top element T (the "project" or "system") and bottom element B (the empty provenance). Every ADR \<= T and B \<= every FileChange.
 - **Graded**: The grade function rho satisfies: if a < b and there is no c with a < c < b, then rho(b) = rho(a) + 1. This follows from the strict layering of the hierarchy.
 
 However, it is NOT a lattice because meets and joins do not always exist within the hierarchy:
@@ -61,15 +62,16 @@ However, it is NOT a lattice because meets and joins do not always exist within 
 
 **Counterexample (meet failure).** Consider two file changes f1, f2 made by different tool calls in different agent actions within the same phase. Their meet (greatest lower bound) would need to be the largest element contained in both. But f1 and f2 share no common descendant. The meet is B (bottom). This always exists because we adjoined B.
 
-**Corollary.** With the formal top T and bottom B adjoined, (P, <=) is a **bounded** poset. In the common case where the hierarchy is tree-structured (no sharing), it IS a lattice: the join is the lowest common ancestor and the meet is B for incomparable elements or the lower element for comparable ones. In practice, the hierarchy is a forest of trees (one per ADR), and adjoining T and B makes it a complete lattice.
+**Corollary.** With the formal top T and bottom B adjoined, (P, \<=) is a **bounded** poset. In the common case where the hierarchy is tree-structured (no sharing), it IS a lattice: the join is the lowest common ancestor and the meet is B for incomparable elements or the lower element for comparable ones. In practice, the hierarchy is a forest of trees (one per ADR), and adjoining T and B makes it a complete lattice.
 
 **Definition 1.3 (Provenance lattice).** Define L = P union {T, B} with:
-- B <= x for all x in P
-- x <= T for all x in P
+
+- B \<= x for all x in P
+- x \<= T for all x in P
 - join(a, b) = lowest common ancestor in the hierarchy tree (or T if in different ADRs)
 - meet(a, b) = B if a and b are incomparable; otherwise min(a, b) if comparable
 
-Then (L, <=, join, meet, B, T) is a bounded lattice.
+Then (L, \<=, join, meet, B, T) is a bounded lattice.
 
 **Remark on sharing.** The lattice structure breaks if a bead belongs to multiple threads, or a file change is produced by multiple tool calls. The current rosary implementation enforces single-parent containment (`find_thread_for_bead` returns `Option<String>`, not `Vec<String>`), which preserves the tree structure. This is a design constraint worth maintaining.
 
@@ -86,29 +88,32 @@ Bead.visibility_level()   = 2  ->  grade 4
 The visibility ordering is the *reverse* of the grade ordering by convention (more visible = more concrete = lower grade). The BDR channels are the "upper lattice" concerning work decomposition; grades 0-3 are the "lower lattice" concerning execution.
 
 **Definition 1.4 (Upper and lower lattice).** Partition L into:
+
 - Upper lattice U = {T, ADR, Decade, Thread, Bead}: work decomposition (what)
 - Lower lattice D = {Phase, Action, ToolCall, FileChange, B}: execution trace (how)
 - The interface between U and D is the Bead level (grade 4)
 
 This partition corresponds to the "dual state machine" from ADR-004: beads (U) are user-facing persistent state; pipeline phases and below (D) are infrastructure state.
 
----
+______________________________________________________________________
 
 ## 2. Provenance as a Functor
 
 ### 2.1 The Category of Provenance Elements
 
 **Definition 2.1 (Category Prov).** Define the category **Prov** whose:
+
 - Objects are elements of L (the provenance lattice)
-- Morphisms are the ordering relations: for each a <= b, there is a unique morphism iota_{a,b}: a -> b (the inclusion)
-- Composition is transitivity: iota_{b,c} . iota_{a,b} = iota_{a,c}
-- Identity is reflexivity: iota_{a,a} = id_a
+- Morphisms are the ordering relations: for each a \<= b, there is a unique morphism iota\_{a,b}: a -> b (the inclusion)
+- Composition is transitivity: iota\_{b,c} . iota\_{a,b} = iota\_{a,c}
+- Identity is reflexivity: iota\_{a,a} = id_a
 
 This is the *category of a poset*, a standard construction.
 
 ### 2.2 The Category of Attestations
 
 **Definition 2.2 (Category Att).** Define the category **Att** whose:
+
 - Objects are *signed attestations*: tuples (content_hash, agent_id, timestamp, parent_hashes, signature)
 - Morphisms are *hash inclusions*: for attestations A, B, there is a morphism A -> B if A.content_hash appears in B.parent_hashes (B attests to containing A)
 - Composition: if A's hash is in B's parents and B's hash is in C's parents, then A -> C (transitivity of attestation chain)
@@ -131,6 +136,7 @@ Attestation {
 **Definition 2.3 (Provenance functor).** Define P: **Prov** -> **Att** as:
 
 On objects:
+
 - P(FileChange) = attestation with content_hash = SHA256(diff_hunk), no parents
 - P(ToolCall) = attestation with content_hash = SHA256(tool_name || args || result), parents = {P(f).content_hash : f is a FileChange produced by this call}
 - P(AgentAction) = attestation with parents = {P(t).content_hash : t is a ToolCall in this action}
@@ -140,32 +146,33 @@ On objects:
 - P(Decade) = attestation with parents = {P(th).content_hash : th is a Thread in this decade}
 - P(ADR) = attestation with parents = {P(d).content_hash : d is a Decade from this ADR}
 
-On morphisms: For iota_{a,b}: a -> b, the functor maps to the hash inclusion P(a) -> P(b), which exists because P(a).content_hash is in P(b).parent_hashes by construction.
+On morphisms: For iota\_{a,b}: a -> b, the functor maps to the hash inclusion P(a) -> P(b), which exists because P(a).content_hash is in P(b).parent_hashes by construction.
 
 **Theorem 2.1 (Functoriality).** P preserves composition and identity.
 
 **Proof.**
-- Identity: P(id_a) maps to the identity morphism on P(a) (an attestation's hash is trivially "included" in itself).
-- Composition: If a <= b <= c, then P(a).content_hash is in P(b).parent_hashes and P(b).content_hash is in P(c).parent_hashes. By the transitive closure of hash inclusion, P(a) -> P(c). This is exactly P(iota_{a,c}) = P(iota_{b,c}) . P(iota_{a,b}).
 
-**Theorem 2.2 (Order preservation).** If a <= b in L, then P(a).content_hash is reachable from P(b) by following parent_hashes. Equivalently, P(b) "contains" the attestation for P(a).
+- Identity: P(id_a) maps to the identity morphism on P(a) (an attestation's hash is trivially "included" in itself).
+- Composition: If a \<= b \<= c, then P(a).content_hash is in P(b).parent_hashes and P(b).content_hash is in P(c).parent_hashes. By the transitive closure of hash inclusion, P(a) -> P(c). This is exactly P(iota\_{a,c}) = P(iota\_{b,c}) . P(iota\_{a,b}).
+
+**Theorem 2.2 (Order preservation).** If a \<= b in L, then P(a).content_hash is reachable from P(b) by following parent_hashes. Equivalently, P(b) "contains" the attestation for P(a).
 
 **Proof.** Direct from the definition: each P(x) at grade k includes in its parent_hashes the content hashes of all elements at grade k-1 that it contains. By induction on grade difference, any descendant's hash is reachable.
 
 ### 2.4 Relationship to Existing Code
 
-| Lattice level | Existing hash | Functor image P(x) |
-|---------------|--------------|---------------------|
-| BeadSpec (definition) | `BeadSpec::content_hash()` | Content identity, no execution parents |
-| Bead (instance) | `Bead::generation()` (SipHash, non-crypto) | Needs cryptographic upgrade |
-| Phase | `Handoff::chain_hash()` | Close, but path-linked not hash-linked |
-| Dispatch | `Manifest` (no hash) | Needs content_hash field |
-| ToolCall | Stream JSON events (no hash) | Needs per-event hashing |
-| FileChange | Git commit SHA | Already cryptographic |
+| Lattice level         | Existing hash                              | Functor image P(x)                     |
+| --------------------- | ------------------------------------------ | -------------------------------------- |
+| BeadSpec (definition) | `BeadSpec::content_hash()`                 | Content identity, no execution parents |
+| Bead (instance)       | `Bead::generation()` (SipHash, non-crypto) | Needs cryptographic upgrade            |
+| Phase                 | `Handoff::chain_hash()`                    | Close, but path-linked not hash-linked |
+| Dispatch              | `Manifest` (no hash)                       | Needs content_hash field               |
+| ToolCall              | Stream JSON events (no hash)               | Needs per-event hashing                |
+| FileChange            | Git commit SHA                             | Already cryptographic                  |
 
 **Critical gap identified**: `Handoff::chain_hash()` includes `artifacts.previous_handoff` as a *file path string*, not the *hash of the previous handoff's content*. This breaks the functor property at the Phase level: replacing the previous handoff file does not invalidate the current handoff's hash. See Section 3.2 for the fix.
 
----
+______________________________________________________________________
 
 ## 3. Hash Chain Properties
 
@@ -182,22 +189,27 @@ where children are ordered deterministically (e.g., by their own hash, or by a c
 Concretely:
 
 **Grade 0 (FileChange):**
+
 ```
 H(file_change) = SHA256(0x00 || file_path || git_blob_hash)
 ```
+
 This piggybacks on git's content-addressable storage. The git blob hash is already SHA-1 (or SHA-256 in newer git); we wrap it in our own SHA-256 for uniformity.
 
 **Grade 1 (ToolCall):**
+
 ```
 H(tool_call) = SHA256(0x01 || tool_name || "\0" || args_json || "\0" || H(fc_0) || ... || H(fc_n))
 ```
 
 **Grade 2 (AgentAction):**
+
 ```
 H(agent_action) = SHA256(0x02 || agent_id || "\0" || H(tc_0) || ... || H(tc_n))
 ```
 
 **Grade 3 (Phase):**
+
 ```
 H(phase) = SHA256(0x03 || phase_number_le32 || agent_name || "\0" || bead_id || "\0"
                    || summary || "\0" || H(action_0) || ... || H(action_n)
@@ -207,6 +219,7 @@ H(phase) = SHA256(0x03 || phase_number_le32 || agent_name || "\0" || bead_id || 
 This is the corrected version of `Handoff::chain_hash()`. The critical difference: instead of including the file path of the previous handoff, we include `H(previous_phase)` -- the actual hash of the previous phase's content. For phase 0, `H(previous_phase)` is a sentinel value (32 zero bytes).
 
 **Grade 4 (Bead):**
+
 ```
 H(bead) = SHA256(0x04 || bead_id || "\0" || content_hash(bead_spec) || "\0"
                  || H(phase_0) || H(phase_1) || ... || H(phase_n))
@@ -215,6 +228,7 @@ H(bead) = SHA256(0x04 || bead_id || "\0" || content_hash(bead_spec) || "\0"
 Note: `content_hash(bead_spec)` is the existing `BeadSpec::content_hash()` which captures the immutable definition. The bead hash additionally includes the phase hashes, capturing the full execution history.
 
 **Grade 5 (Thread):**
+
 ```
 H(thread) = SHA256(0x05 || thread_id || "\0" || H(bead_0) || H(bead_1) || ... || H(bead_m))
 ```
@@ -222,6 +236,7 @@ H(thread) = SHA256(0x05 || thread_id || "\0" || H(bead_0) || H(bead_1) || ... ||
 Beads are ordered by their position in the thread (as determined by `list_beads_in_thread`).
 
 **Grade 6 (Decade):**
+
 ```
 H(decade) = SHA256(0x06 || decade_id || "\0" || H(thread_0) || ... || H(thread_k))
 ```
@@ -229,6 +244,7 @@ H(decade) = SHA256(0x06 || decade_id || "\0" || H(thread_0) || ... || H(thread_k
 Threads are ordered alphabetically by thread_id for determinism.
 
 **Grade 7 (ADR):**
+
 ```
 H(adr) = SHA256(0x07 || adr_path || "\0" || H(decade))
 ```
@@ -263,7 +279,7 @@ This requires adding a `previous_chain_hash: Option<[u8; 32]>` field to the `Han
 
 **Theorem 3.2 (Ordering).** The hash chain encodes the temporal ordering of phases within a bead.
 
-**Proof.** Phase k's hash includes H(phase_{k-1}) as input. Reordering phases would change the hash chain: if we swap phases k and k+1, phase k+1's hash would now need to include phase k's hash (not phase k-1's), producing a different hash. The hash chain is a commitment to a specific linear order.
+**Proof.** Phase k's hash includes H(phase\_{k-1}) as input. Reordering phases would change the hash chain: if we swap phases k and k+1, phase k+1's hash would now need to include phase k's hash (not phase k-1's), producing a different hash. The hash chain is a commitment to a specific linear order.
 
 **Theorem 3.3 (Completeness).** Given H(bead), verifying it requires the complete set of phase hashes. No phase can be omitted.
 
@@ -287,7 +303,7 @@ The Merkle path is a sequence of (hash, sibling_hashes) pairs. To verify x, comp
 
 This is O(depth * max_branching_factor) = O(8 * B) where B is the maximum number of children at any level. In practice, B is small (a bead has 2-4 phases, a thread has 5-20 beads, a decade has 3-7 threads).
 
----
+______________________________________________________________________
 
 ## 4. Adversarial Model
 
@@ -300,6 +316,7 @@ We consider four adversarial capabilities, ordered by increasing power:
 **A2: Compromised agent.** One agent in the pipeline has been subverted (e.g., prompt injection, model jailbreak). The agent can produce arbitrary output within its execution sandbox. Goal: inject malicious code that passes verification.
 
 Mitigations from the lattice:
+
 - Cross-model adversarial review (Gemini reviewing Claude's work) means a compromised Claude-based dev-agent must also compromise the Gemini-based staging-agent
 - Hash chain integrity: the compromised agent's output is recorded in a signed attestation. Post-hoc audit reveals the malicious content at the exact point of injection
 - File scope isolation: the compromised agent can only modify files in the bead's scope. It cannot alter `src/auth.rs` if the bead scopes to `src/reconcile.rs`
@@ -307,6 +324,7 @@ Mitigations from the lattice:
 **A3: Phantom bead injection.** An attacker creates a bead in the `.beads/` Dolt database that was never decomposed from an ADR. This bead processes through the pipeline and produces code changes.
 
 Detection via the lattice:
+
 - Every legitimate bead has a Merkle path to an ADR: bead -> thread -> decade -> ADR
 - A phantom bead has no thread or decade parent. `find_thread_for_bead()` returns `None`
 - **Enforcement**: the dispatch gate should verify `find_thread_for_bead()` is `Some` for any bead entering the pipeline. Unaffiliated beads (created directly by users, not via BDR decomposition) are allowed but flagged differently in the provenance record.
@@ -314,6 +332,7 @@ Detection via the lattice:
 **A4: Compromised signing key.** An attacker obtains an agent's private key. They can now produce valid-looking attestations for any content.
 
 This is the most severe threat. Mitigations:
+
 - Key rotation: signing keys should be ephemeral (per-session or per-day)
 - Key escrow: the orchestrator (rosary) holds the signing keys, not the agents. Agents receive a derived session key with limited scope
 - Multi-party attestation: require attestations from multiple agents (the pipeline model already provides this -- dev, staging, prod all attest)
@@ -358,7 +377,7 @@ Goal: malicious code in production
 
 **Theorem 4.3 (Ordering violation detection).** If an attacker reorders phases in the pipeline (e.g., claims staging review happened before dev implementation), the hash chain is invalid.
 
-**Proof.** Phase k's hash includes H(phase_{k-1}) as a chained input. Reordering produces a different chain. The bead-level hash H(bead) = SHA256(... || H(phase_0) || ... || H(phase_n)) will differ from the expected value.
+**Proof.** Phase k's hash includes H(phase\_{k-1}) as a chained input. Reordering produces a different chain. The bead-level hash H(bead) = SHA256(... || H(phase_0) || ... || H(phase_n)) will differ from the expected value.
 
 ### 4.4 Residual Risks
 
@@ -366,15 +385,15 @@ The lattice does NOT prevent:
 
 1. **Compromised signing key**: If the orchestrator's signing key is compromised, valid-looking attestations can be forged. Mitigation: key rotation, HSM storage, multi-party signing.
 
-2. **Colluding agents across models**: If both the Claude-based dev-agent and the Gemini-based staging-agent are simultaneously subverted (e.g., via a shared vulnerability in their prompting), the cross-model review provides no protection. Mitigation: diverse model providers, human review gate.
+1. **Colluding agents across models**: If both the Claude-based dev-agent and the Gemini-based staging-agent are simultaneously subverted (e.g., via a shared vulnerability in their prompting), the cross-model review provides no protection. Mitigation: diverse model providers, human review gate.
 
-3. **Subtle malicious changes**: The lattice provides *integrity* (you can verify what happened) but not *semantic correctness* (you cannot prove the code does what it claims). An agent could introduce a subtle backdoor that passes all automated tests. Mitigation: human review of PRs, fuzzing, formal verification of critical paths.
+1. **Subtle malicious changes**: The lattice provides *integrity* (you can verify what happened) but not *semantic correctness* (you cannot prove the code does what it claims). An agent could introduce a subtle backdoor that passes all automated tests. Mitigation: human review of PRs, fuzzing, formal verification of critical paths.
 
-4. **Denial of provenance**: An attacker who controls the `.beads/` database could delete or corrupt provenance records. Mitigation: the Dolt backend provides git-like history (commits, branches, merge audit trail). Deleting a bead requires a Dolt commit that is itself auditable.
+1. **Denial of provenance**: An attacker who controls the `.beads/` database could delete or corrupt provenance records. Mitigation: the Dolt backend provides git-like history (commits, branches, merge audit trail). Deleting a bead requires a Dolt commit that is itself auditable.
 
-5. **Time manipulation**: If an attacker controls the system clock, timestamps in attestations are unreliable. Mitigation: use monotonic counters alongside wall-clock time; cross-reference with external time sources (git commit timestamps, Linear API timestamps).
+1. **Time manipulation**: If an attacker controls the system clock, timestamps in attestations are unreliable. Mitigation: use monotonic counters alongside wall-clock time; cross-reference with external time sources (git commit timestamps, Linear API timestamps).
 
----
+______________________________________________________________________
 
 ## 5. Verification Contravariance
 
@@ -393,9 +412,9 @@ Provenance flows *upward* (tool calls compose into actions compose into phases).
 - V(Decade) = verified iff all child threads are verified
 - V(ADR) = verified iff all child decades are verified
 
-**Theorem 5.1 (Downward propagation).** If V(x) = verified, then for all y <= x, V(y) = verified.
+**Theorem 5.1 (Downward propagation).** If V(x) = verified, then for all y \<= x, V(y) = verified.
 
-**Proof.** By induction on grade. If x is at grade g and V(x) = verified, then by definition all children of x (at grade g-1) are verified. By the induction hypothesis, all descendants of those children are also verified. Since y <= x means y is a descendant of x, V(y) = verified.
+**Proof.** By induction on grade. If x is at grade g and V(x) = verified, then by definition all children of x (at grade g-1) are verified. By the induction hypothesis, all descendants of those children are also verified. Since y \<= x means y is a descendant of x, V(y) = verified.
 
 **Theorem 5.2 (Upward propagation of failure).** If V(x) = failed for some x, then for all y >= x, V(y) != verified (it is either unverified or failed).
 
@@ -419,13 +438,14 @@ The `should_transition` function is the decision procedure for V(Decade): a deca
 In practice, verification is often partial: some beads in a thread are done, others are in progress. The accretion model handles this gracefully via `thread_progress` returning a value in [0, 1]. The verification functor can be extended to a continuous-valued version:
 
 **Definition 5.2 (Verification progress).** V_p: L -> [0, 1] defined as:
+
 - V_p(x) = 1.0 if V(x) = verified
 - V_p(x) = 0.0 if V(x) = failed or x has no children and is unverified
 - V_p(x) = (sum of V_p(child_i)) / (number of children) for internal nodes
 
 This is exactly `decade_progress` and `thread_progress` generalized to the full lattice.
 
----
+______________________________________________________________________
 
 ## 6. The "5 Whys" Decomposition
 
@@ -450,12 +470,12 @@ Because SBOMs (Software Bills of Materials) track *components* (which libraries,
 Because it requires three properties simultaneously:
 
 1. **Temporal ordering**: Phase 0 (dev) happened before Phase 1 (staging) happened before Phase 2 (prod). Hash chaining provides this.
-2. **Causal linking**: Phase 1's review was specifically of Phase 0's output, not of some other change. Parent hash inclusion provides this.
-3. **Identity binding**: The agent claiming to be "staging-agent" was actually the staging-agent, authorized by the orchestrator, running with the correct permissions. Cryptographic signatures provide this.
+1. **Causal linking**: Phase 1's review was specifically of Phase 0's output, not of some other change. Parent hash inclusion provides this.
+1. **Identity binding**: The agent claiming to be "staging-agent" was actually the staging-agent, authorized by the orchestrator, running with the correct permissions. Cryptographic signatures provide this.
 
 Existing tools provide at most two of these three. Git provides temporal ordering and (with GPG) identity binding, but not causal linking across pipeline phases. In-toto provides identity binding and causal linking for build steps, but not for the development decision chain above the build. The provenance lattice provides all three across the full hierarchy from ADR to file change.
 
----
+______________________________________________________________________
 
 ## 7. Implementation Roadmap
 
@@ -490,13 +510,13 @@ Integrate with `signet` for Ed25519 key management. Each agent execution produce
 
 Extend the stream JSON parser to hash individual tool calls and file changes. This is the most granular level and produces the most data. Consider whether the full granularity is needed or whether phase-level attestation is sufficient for most use cases.
 
----
+______________________________________________________________________
 
 ## 8. Formal Summary
 
 **The provenance lattice L** is a bounded graded poset with 8 grades (ADR through FileChange), extended to a lattice by adjoining top and bottom elements. The hierarchy is tree-structured by design (single-parent containment), which guarantees lattice properties.
 
-**The provenance functor P: Prov -> Att** maps each lattice element to a signed attestation, preserving the partial order. If a <= b, then P(a)'s hash is reachable from P(b). This is a covariant functor from the poset category to the category of hash-linked attestations.
+**The provenance functor P: Prov -> Att** maps each lattice element to a signed attestation, preserving the partial order. If a \<= b, then P(a)'s hash is reachable from P(b). This is a covariant functor from the poset category to the category of hash-linked attestations.
 
 **The verification functor V** is conceptually contravariant: verification at a higher grade implies verification at all lower grades. In practice, it is implemented as bottom-up accretion (completion events flow upward) with the invariant that downward implications hold.
 

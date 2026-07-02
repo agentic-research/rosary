@@ -8,13 +8,13 @@ repo: rosary
 
 Five tools, each a different lens on the same underlying graph of files, symbols, and repos. Rosary is the orchestrator; the others are composable inputs.
 
-| Tool | Lens |
-|------|------|
-| mache | code → symbols → references (what exists) |
-| rosary | intent → beads → file scopes (work to do, deps, dispatch) |
-| assay | docs → code refs (coverage + staleness) |
-| claude-guard | sandboxed agent chains, cost-optimized prompt cache |
-| ley-line | semantic embeddings for fuzzy doc/code match |
+| Tool         | Lens                                                      |
+| ------------ | --------------------------------------------------------- |
+| mache        | code → symbols → references (what exists)                 |
+| rosary       | intent → beads → file scopes (work to do, deps, dispatch) |
+| assay        | docs → code refs (coverage + staleness)                   |
+| claude-guard | sandboxed agent chains, cost-optimized prompt cache       |
+| ley-line     | semantic embeddings for fuzzy doc/code match              |
 
 Shared substrate: assay's tree-sitter queries derive from mache's schema. Rosary's BDR can use mache for code traversal. Claude-guard's chain YAML is the same primitive rosary's pipeline is reaching for.
 
@@ -79,7 +79,7 @@ Success when: a sample `kind = "dispatch"` plugin config loads and routes correc
 Plugins should register by dropping a TOML file — same pattern as skills and agents. Discovery locations (in priority order):
 
 1. `<repo>/.rosary/plugins/*.toml` — project-local
-2. `~/.rsry/plugins/*.toml` — user-global
+1. `~/.rsry/plugins/*.toml` — user-global
 
 A plugin file has the same shape as a `[[plugins]]` entry in config. Rosary merges discovered plugins with config-declared ones at startup; project-local plugins override user-global plugins with the same name.
 
@@ -134,9 +134,10 @@ Linear webhook is wired. The symmetric GitHub side is missing.
 ### GitHub Merge Webhook → Advance Dependents
 
 When a PR is merged on GitHub, rosary should:
+
 1. Find any bead linked to that PR (via bead metadata or PR body tag).
-2. Advance the bead to `Done`.
-3. Unblock any beads that depended on it (transition them from `Blocked` to `Open`).
+1. Advance the bead to `Done`.
+1. Unblock any beads that depended on it (transition them from `Blocked` to `Open`).
 
 The rosary-stringer GitHub App already exists (App ID + Installation ID in config). Wire a `/webhook/github` endpoint in `src/serve.rs` alongside the existing Linear webhook endpoint.
 
@@ -173,6 +174,7 @@ Success when: plugin config loads; `cargo test -p rosary plugin::assay_verdict` 
 ### Per-Bead Doc-Coverage Delta
 
 Run assay before and after a bead's PR lands. Fail the verify gate if:
+
 - Coverage drops below baseline for any entity in the bead's file_scopes.
 - New public entities in the bead's diff are uncovered by docs.
 
