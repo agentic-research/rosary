@@ -27,24 +27,23 @@ findings:
    `dolt push` into hooks. `DOLT_PUSH()`/`DOLT_PULL()` are SQL procedures, and
    `bd` already auto-pushes from app code, not hooks. The fix is to drive sync
    from rosary's loop — not to drop Dolt. ([jj #403](https://github.com/jj-vcs/jj/discussions/403), [Dolt procedures](https://www.dolthub.com/docs/sql-reference/version-control/dolt-sql-procedures))
-2. **"Dolt is heavy (server, 103MB, write tax)" — overstated.** Embedded
+1. **"Dolt is heavy (server, 103MB, write tax)" — overstated.** Embedded
    mode / DoltLite is a library; write perf ~matches MySQL; the server is a
    deployment choice, not inherent.
-3. **The "rsry sees 0, bd sees 125" bug was ours:** we read `.beads/beads.db`
+1. **The "rsry sees 0, bd sees 125" bug was ours:** we read `.beads/beads.db`
    (a SQLite file `bd` *deleted* at v0.57.0), instead of driving `bd --json` /
    connecting to the Dolt server. bd's docs say plainly: drive the CLI, don't
    read the store. The `loom-`/prefix chaos is the same root cause (co-mingling
    at the storage layer).
-4. **Flat NDJSON at rest is a documented anti-pattern.** Every mature system
+1. **Flat NDJSON at rest is a documented anti-pattern.** Every mature system
    (Fossil→SQLite, git-bug→objects+cache, Kafka→segmented+indexed) materializes
    into an indexed store; [Grite](https://github.com/neul-labs/grite) built our
    exact "git log + CRDT fold" design and was forced to add an embedded DB +
    snapshots. The maintainer's "JSON rows in SQLite" instinct is best practice.
-5. **bd is shared-infrastructure by design** — `bd setup <agent>`, `BEADS_DIR`
+1. **bd is shared-infrastructure by design** — `bd setup <agent>`, `BEADS_DIR`
    per-repo/monorepo isolation, git-free/`--stealth` (`no-git-ops`), `bd backup`
-   migrate/restore, an MCP server, and `bd ready/create/update --claim/dep/
-   prime/remember` — i.e. exactly the orchestrator surface rosary reimplemented.
-6. **Server mode over a Unix socket** gives concurrent writers, is
+   migrate/restore, an MCP server, and `bd ready/create/update --claim/dep/ prime/remember` — i.e. exactly the orchestrator surface rosary reimplemented.
+1. **Server mode over a Unix socket** gives concurrent writers, is
    sandbox-friendly ("file-level access control simpler than network
    allowlists — e.g. Claude Code", per the bd README), and lets rosary connect
    **via the MySQL client it already speaks** — so there is **no Rust-FFI
@@ -60,6 +59,7 @@ fleet's existing, working state, with lectio the exception to fix.
 ## Decision
 
 ### D1 — Adopt bd/Dolt as the shared bead substrate; rosary sits on top
+
 Do not reinvent storage/merge. `bd` (Dolt) owns the bead store and bead IDs.
 rosary integrates through the **supported seams**: drive `bd … --json` for
 mutations, and read over **MySQL** from the dolt sql-server (as it already does
@@ -67,30 +67,35 @@ for assay et al.). rosary MUST stop reading `.beads/` files directly and stop
 minting parallel `{repo}-{hex}` IDs into bd's namespace.
 
 ### D2 — Deployment: server mode over Unix socket (for orchestrated/sandboxed use)
+
 Use `bd init --server` with `--server-socket` / `BEADS_DOLT_SERVER_SOCKET` where
 concurrent writers (rosary fan-out dispatch) or sandboxing (Claude Code) matter.
 Embedded mode is fine for simple single-writer local use; orchestrated repos run
 server mode (the assay state). lectio migrates embedded → server.
 
 ### D3 — Sync from app code, never git hooks (jj-safe)
+
 `bd dolt push`/`pull` (or `DOLT_PUSH/PULL`) driven from rosary's reconcile loop /
 bd's background auto-push — not git hooks. This is the real jj fix and is needed
 regardless of backend. Beads ride `refs/dolt/data` (git-backed remote), so a
 clone + `bd dolt pull` brings them.
 
 ### D4 — cloister-packaged tools connect to an external dolt sql-server via binding
+
 Embedded Dolt cannot run inside a workerd/v8 isolate (no local FS, no in-isolate
 process). cloister-packaged Workers connect to an **external** dolt sql-server
 through a cloister **service binding**, with cloister mediating credentials
 (its purpose). This reinforces D2 (server mode), not in tension with it.
 
 ### D5 — Migration via `bd backup`
+
 Use `bd backup init/sync` + `bd init [--server]` + `bd backup restore` to move
 repos between modes and to repair stranded stores (lectio's embeddeddolt; any
 stale `beads.db`). Pin the bead prefix in `.beads/config.yaml` `issue-prefix` so
 bd mints the right namespace (fixes `loom-` at the source; both tools then agree).
 
 ### D6 — rosary's observation lattice (ADR-0010) is ON TOP, multi-source only
+
 rosary's genuinely-novel value is the **cross-repo + multi-source observation
 lattice** — beads are one of many sources (Linear, GitHub, git, sessions). That
 is a **separate** store/concern from the per-repo bead DB, and is the **only**
@@ -100,6 +105,7 @@ compute a semantic join across heterogeneous sources. It is **not** a beads
 replacement.
 
 ### D7 — bead-ID prefix is bd's concern
+
 bd owns `bd-<hash>` (or the configured `issue-prefix`) IDs. rosary stops minting
 `{repo}-{hex}` for beads. This **re-scopes** rosary-3fcd02: the prefix lives in
 bd (`.beads/config.yaml`), not a rosary central config. rosary-3f8515's
@@ -113,7 +119,7 @@ sanitizer stays useful for any rosary-owned (non-bead, lattice) IDs.
   fleet's already-working assay state.**
 - **Costs / risks:** ride bd's release cadence (it changed storage layout 3× in
   ~6 months — pin a version; driving the CLI insulates from churn). bd is
-  single-DB-per-repo and prescribes a small live working set (<~500) — cross-repo
+  single-DB-per-repo and prescribes a small live working set (\<~500) — cross-repo
   aggregation stays rosary's job (it already does this). bd footguns
   (`bd doctor --fix`) — avoid.
 - **Revises rosary-133346:** its jj+merge *symptom* analysis was right, but its
@@ -140,13 +146,13 @@ enforced, not incidental:
    `UPDATE`d. This is *why* Dolt's syntactic cell-merge of the log and the
    lattice's semantic G-set join **coincide** (both are set-union on new rows,
    no-op on existing) — the thing that makes the two layers not fight.
-2. **Dolt merges only the append-only log, never the derived projection.** If
+1. **Dolt merges only the append-only log, never the derived projection.** If
    Dolt ever 3-way-merges the materialized view, it can fabricate a state no
    source emitted. The projection is derived and disposable; only the log syncs.
-3. **Compaction must be join-preserving.** Retention/compaction may not delete
+1. **Compaction must be join-preserving.** Retention/compaction may not delete
    observations that change the fold (the chain-max, the LWW winner, live G-set
    members); it must first write a synthetic *dominating snapshot* observation.
-4. **Pin/version the `payload_hash` canonicalization** — changing it changes
+1. **Pin/version the `payload_hash` canonicalization** — changing it changes
    dedup identity and double-counts on replay.
 
 ## Theoretical review outcome (Thread #5 — resolved)
@@ -161,6 +167,7 @@ ADRs already disavow the decorative overclaims).
 
 Two real correctness defects were found in the *existing* `src/observation/`
 implementation (independent of this ADR) and filed as beads:
+
 - **LWW tie-break is not strict-total** (`algebra_lww.rs`) — distinct values
   sharing `(observed_at, source)` resolve by first-seen → cross-machine
   divergence. Fix: extend the key with `payload_hash`.

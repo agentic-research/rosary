@@ -5,10 +5,10 @@ description: >
   that should be tracked — a bug, idea, task, or observation. Synthesizes a
   bead title and description from the user's input and surrounding conversation.
   Dedup-checks against existing beads before creating.
-allowed-tools: "mcp__rsry__rsry_bead_search,mcp__rsry__rsry_bead_create,mcp__rsry__rsry_bead_comment,mcp__rsry__rsry_bead_link"
-argument-hint: "<what to file>"
-version: "0.2.0"
-author: "ART Ecosystem"
+allowed-tools: mcp__rsry__rsry_bead_search,mcp__rsry__rsry_bead_create,mcp__rsry__rsry_bead_comment,mcp__rsry__rsry_bead_link
+argument-hint: <what to file>
+version: 0.2.0
+author: ART Ecosystem
 ---
 
 # /note — Conversational Bead Capture
@@ -23,12 +23,12 @@ The old "always use rosary as the hub" rule presumed a reconciler hub-to-spoke s
 
 ### Decision rubric
 
-| User input mentions… | Target `repo_path` |
-|---|---|
-| A specific file path (`notme.bot/worker.ts`, `cloister/vault/...`, `signet/pkg/...`) | That file's repo (`~/remotes/art/notme.bot`, `~/remotes/art/cloister`, `~/github/art/signet`) |
-| A specific repo by name (`crumb is crashing`, `mache LSP is wrong`) | That repo's checkout |
-| Cross-repo coordination ("we need a way for both `cloister` and `signet` to…") | The primary repo + cross-link, OR rosary as a meta-bead |
-| Tooling / orchestration / skill itself ("rsry MCP", "the /note skill", "agent dispatch") | `~/remotes/art/rosary` (rosary is the right home for **meta** concerns about the substrate) |
+| User input mentions…                                                                     | Target `repo_path`                                                                            |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| A specific file path (`notme.bot/worker.ts`, `cloister/vault/...`, `signet/pkg/...`)     | That file's repo (`~/remotes/art/notme.bot`, `~/remotes/art/cloister`, `~/github/art/signet`) |
+| A specific repo by name (`crumb is crashing`, `mache LSP is wrong`)                      | That repo's checkout                                                                          |
+| Cross-repo coordination ("we need a way for both `cloister` and `signet` to…")           | The primary repo + cross-link, OR rosary as a meta-bead                                       |
+| Tooling / orchestration / skill itself ("rsry MCP", "the /note skill", "agent dispatch") | `~/remotes/art/rosary` (rosary is the right home for **meta** concerns about the substrate)   |
 
 ### Resolving the path
 
@@ -48,15 +48,15 @@ If the right repo isn't on disk, fall back to filing in rosary as a meta-bead wi
 ## What To Do
 
 1. **Parse the user's input** (`$ARGUMENTS`) to understand what they want filed
-2. **Pick `repo_path`** using the rubric above (file scopes win; repo names by mention win second; rosary for meta only)
-3. **Dedup check**: Run `rsry_bead_search` with the chosen `repo_path` and keywords from the input. If the work clearly spans repos, also search rosary.
-4. **If duplicate found**: Show it to the user, ask if they want to comment on it instead
-5. **If new**: Create a bead with `rsry_bead_create` at the chosen `repo_path`:
+1. **Pick `repo_path`** using the rubric above (file scopes win; repo names by mention win second; rosary for meta only)
+1. **Dedup check**: Run `rsry_bead_search` with the chosen `repo_path` and keywords from the input. If the work clearly spans repos, also search rosary.
+1. **If duplicate found**: Show it to the user, ask if they want to comment on it instead
+1. **If new**: Create a bead with `rsry_bead_create` at the chosen `repo_path`:
    - **title**: Concise, actionable (under 80 chars)
    - **description**: Synthesize from the user's input AND relevant conversation context. If the work targets a different repo than where the bead lives (rare; only for meta-beads), name the target repo in the description.
    - **issue_type**: Infer from context — `bug`, `task`, `feature`, `review`, or `epic`
    - **priority**: Default 2 unless urgency is clear (0=P0 critical, 3=low)
-6. **Confirm**: Show the user what was filed (ID + title + which repo)
+1. **Confirm**: Show the user what was filed (ID + title + which repo)
 
 ## Examples
 

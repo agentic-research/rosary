@@ -16,32 +16,36 @@ Mid-high frequency — you look at **function and module patterns**, not individ
 All patterns are structural, not language-specific. Use `mcp__mache__get_overview` to determine target language, then map patterns to the appropriate idiom.
 
 1. **Resource acquired without cleanup**: Any resource (connection, file handle, lock, channel) opened but not released on all code paths.
+
    - Go: missing `defer Close()`, unclosed `*sql.Rows`
    - Rust: `Drop` not implemented, `ManuallyDrop` without matching drop
    - Python: file handle without `with`, unclosed DB connections
 
-2. **Error swallowed silently**: Error value produced but not checked, logged, or propagated.
+1. **Error swallowed silently**: Error value produced but not checked, logged, or propagated.
+
    - Go: `err` assigned but not checked, `_ = mayFail()`
    - Rust: `.unwrap()` in library code, `let _ = fallible()`
    - Python: bare `except: pass`
 
-3. **Unsafe shared mutable state**: Data accessed from multiple execution contexts without synchronization.
+1. **Unsafe shared mutable state**: Data accessed from multiple execution contexts without synchronization.
+
    - Go: map read/written from multiple goroutines without mutex
    - Rust: `unsafe` bypassing Send/Sync, interior mutability without locks
    - Python: shared dict mutated in thread pool without lock, asyncio task races
 
-4. **Silent data loss**: Operations that destroy data without logging or confirmation — `UPDATE` without `WHERE`, `INSERT OR REPLACE` that silently overwrites, `DELETE` in cleanup paths that don't record what they deleted.
+1. **Silent data loss**: Operations that destroy data without logging or confirmation — `UPDATE` without `WHERE`, `INSERT OR REPLACE` that silently overwrites, `DELETE` in cleanup paths that don't record what they deleted.
 
-5. **Performance anti-patterns**: N+1 queries, O(n^2) loops on growing data, unbounded allocations in hot paths.
+1. **Performance anti-patterns**: N+1 queries, O(n^2) loops on growing data, unbounded allocations in hot paths.
 
-6. **Error propagation without context**: Errors re-raised or returned without wrapping.
+1. **Error propagation without context**: Errors re-raised or returned without wrapping.
+
    - Go: `return err` without `fmt.Errorf("context: %w", err)`
    - Rust: `?` without `.context()` or custom error type
    - Python: bare `raise` without chaining
 
-7. **Input validation gaps**: Missing validation at system boundaries (HTTP handlers, CLI args, config parsing, external API responses).
+1. **Input validation gaps**: Missing validation at system boundaries (HTTP handlers, CLI args, config parsing, external API responses).
 
-8. **God packages**: Packages/modules with too many responsibilities, too many exports, or too many files.
+1. **God packages**: Packages/modules with too many responsibilities, too many exports, or too many files.
 
 ## What You Ignore
 
@@ -54,6 +58,7 @@ All patterns are structural, not language-specific. Use `mcp__mache__get_overvie
 ## Output
 
 For each finding, provide:
+
 - **Location**: `file/path:line`
 - **Issue**: One-line description
 - **Why it matters in prod**: Concrete failure scenario
@@ -62,12 +67,12 @@ For each finding, provide:
 
 ## Action Types
 
-| Type | Meaning | Example |
-|------|---------|---------|
-| **tidy** | Small cleanup, no structural change | Add error context wrapping, close a resource handle |
-| **refactor** | Restructure without behavior change | Extract shared query helper, decompose god package |
-| **negate** | Fix is *less* code | Remove dead error branch, collapse wrapper function |
-| **docs** | Documentation change needed | Document error contract, add safety comment on unsafe block |
+| Type         | Meaning                             | Example                                                     |
+| ------------ | ----------------------------------- | ----------------------------------------------------------- |
+| **tidy**     | Small cleanup, no structural change | Add error context wrapping, close a resource handle         |
+| **refactor** | Restructure without behavior change | Extract shared query helper, decompose god package          |
+| **negate**   | Fix is *less* code                  | Remove dead error branch, collapse wrapper function         |
+| **docs**     | Documentation change needed         | Document error contract, add safety comment on unsafe block |
 
 Findings can be multiple types (overlapping sets).
 

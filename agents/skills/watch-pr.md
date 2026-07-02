@@ -10,9 +10,11 @@ Monitor a pull request until it is merge-ready by polling CI and review status, 
 ## Inputs
 
 The user (or dispatching agent) provides:
+
 - **PR identifier**: a PR number, URL, or `owner/repo#number`
 
 If not provided, detect from the current branch:
+
 ```bash
 gh pr view --json number,url,headRefName --jq '.number'
 ```
@@ -38,6 +40,7 @@ gh pr checks <PR> --json name,state,conclusion
 ```
 
 Classify each check:
+
 - **passing**: conclusion = SUCCESS or NEUTRAL
 - **failing**: conclusion = FAILURE or CANCELLED
 - **pending**: state = QUEUED or IN_PROGRESS
@@ -63,6 +66,7 @@ gh pr diff <PR> --name-only
 ```
 
 If the thread's file has commits newer than the review, resolve it:
+
 ```bash
 gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<ID>"}) { thread { isResolved } } }'
 ```
@@ -82,11 +86,13 @@ Only dismiss reviews where the author association is `BOT` or the login ends wit
 ### 3. Report merge-readiness
 
 When ALL of these are true:
+
 - All required checks pass
 - No unresolved review threads
 - reviewDecision = APPROVED (or no reviews required)
 
 Report:
+
 ```
 PR #<number> is merge-ready.
 - Checks: <N>/<N> passing

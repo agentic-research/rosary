@@ -24,8 +24,7 @@ Three forces hit this design at once and must be resolved together:
    B writes the consumer to test, A iterates. Standard DAG models reject this.
 
 1. **Three layers share the same algebraic shape** — mache's `ScopedRef{repo, token}`,
-   rsry's `WorkRef{repo, bead_id, scope}`, and BDR's `ProvenanceRef::Code{repo, path,
-   symbol}` all instantiate `{repo, id}`. The substrate built here generalizes.
+   rsry's `WorkRef{repo, bead_id, scope}`, and BDR's `ProvenanceRef::Code{repo, path, symbol}` all instantiate `{repo, id}`. The substrate built here generalizes.
 
 This ADR locks the data model so multiple consumers (reconciler, MCP, mache writer,
 janitor) can be implemented in parallel.
@@ -69,6 +68,7 @@ No incremental view, no cross-repo lock. Each repo's Dolt is its own consistency
 boundary; the cross-repo read is a snapshot at decision time.
 
 **Rejected alternatives:**
+
 - **CRDTs** — wrong shape. Edges are append-mostly; status is single-writer per repo.
   No concurrent-write-to-same-cell to merge.
 - **Stratified-negation Datalog / DDlog** — correct theoretical fit (readiness is

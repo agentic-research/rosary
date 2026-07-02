@@ -11,20 +11,20 @@ rosary then dispatches its own agents into isolated worktrees, advances them
 through a phase pipeline, verifies, and folds results back. The state of one
 in-flight attempt is today split across two homes with **opposite lifetimes**:
 
-| What an attempt needs | Where it lives today | Durable? |
-| --- | --- | --- |
-| Where in the pipeline (phase, status, retries) | `PipelineState` in `~/.rsry/backend.db` | yes |
-| Who ran / provider session | `DispatchRecord` (+`AgentSessionRef`) | yes |
-| Fine-grained events ("must survive interruption") | `AgentRunEvent` | yes |
-| What happened / decisions (the handoff chain) | `.rsry-handoff-{phase}.json` **in the worktree** | **no** |
-| The orchestrator plan | `.rsry-orchestrator.json` **in the worktree** | **no** |
-| Proof envelopes | DSSE files **in the worktree** (`src/dsse.rs`) | **no** |
+| What an attempt needs                             | Where it lives today                             | Durable? |
+| ------------------------------------------------- | ------------------------------------------------ | -------- |
+| Where in the pipeline (phase, status, retries)    | `PipelineState` in `~/.rsry/backend.db`          | yes      |
+| Who ran / provider session                        | `DispatchRecord` (+`AgentSessionRef`)            | yes      |
+| Fine-grained events ("must survive interruption") | `AgentRunEvent`                                  | yes      |
+| What happened / decisions (the handoff chain)     | `.rsry-handoff-{phase}.json` **in the worktree** | **no**   |
+| The orchestrator plan                             | `.rsry-orchestrator.json` **in the worktree**    | **no**   |
+| Proof envelopes                                   | DSSE files **in the worktree** (`src/dsse.rs`)   | **no**   |
 
 The failure mode this produces, confirmed in the recovery path:
 
 1. `recover_stuck_beads()` restores only the **phase pointer** "so it resumes at
    the correct phase (not phase 0)" (`src/reconcile/persistence.rs:115`).
-2. But every context read is `Handoff::read_from(&ws.work_dir, …)`
+1. But every context read is `Handoff::read_from(&ws.work_dir, …)`
    (`src/reconcile/verify.rs:241`, `src/reconcile/workspace_ops.rs:87`), and
    `recover_orchestrators()` rehydrates the `FeatureOrchestrator` by reading
    `.rsry-orchestrator.json` **from the worktree** (`src/reconcile/orchestration.rs:282`).
@@ -149,8 +149,7 @@ shaped so APAS can verify it later without a retrofit:
   fragile — key ordering and whitespace make the same record produce different
   bytes. A stable chain requires stable bytes, which is why the payload encoding is
   a decision, not an implementation detail.
-- Authority is **schema-present**: every phase-run carries `grant_id |
-  permission_profile` and a `plan_hash` / `context_pack_hash` anchor. Enforcement
+- Authority is **schema-present**: every phase-run carries `grant_id | permission_profile` and a `plan_hash` / `context_pack_hash` anchor. Enforcement
   (turning `permission_profile` from advisory into a real boundary — the parity
   doc's "prompt wording is not a permission boundary") lands in **V1.5**.
 - APAS's `dispatch/v1` predicate — canonical type
@@ -174,16 +173,16 @@ The "Job" framing from `docs/design/codex-claude-dispatch-parity.md` and the
 job-capsule handoff maps onto existing rosary nouns — we adopt **one** name per
 concept rather than a parallel vocabulary:
 
-| External / "Job" term | Rosary term | Status |
-| --- | --- | --- |
-| Job / execution envelope | **Capsule** | new (unifying key) |
-| AgentRun (one phase of one bead) | capsule **phase-run** | existing (`PipelineState` phase + `DispatchRecord`) |
-| Event log (hash-chained) | `capsule_events` | existing shape (`AgentRunEvent`) relocated + hash-linked |
-| RunProof | **proof projection** (APAS `dispatch/v1`) | existing standard |
-| ContextPack | prompt/handoff context, hash-anchored | existing (`Handoff::format_for_prompt`) |
-| PlanGrant | **authority projection** | schema V1, enforce V1.5 |
-| Fold | `fold_status` + `observation/fold.rs` | existing, extended to import |
-| Job-local bead store | — | **explicitly not V1** (see D7) |
+| External / "Job" term            | Rosary term                               | Status                                                   |
+| -------------------------------- | ----------------------------------------- | -------------------------------------------------------- |
+| Job / execution envelope         | **Capsule**                               | new (unifying key)                                       |
+| AgentRun (one phase of one bead) | capsule **phase-run**                     | existing (`PipelineState` phase + `DispatchRecord`)      |
+| Event log (hash-chained)         | `capsule_events`                          | existing shape (`AgentRunEvent`) relocated + hash-linked |
+| RunProof                         | **proof projection** (APAS `dispatch/v1`) | existing standard                                        |
+| ContextPack                      | prompt/handoff context, hash-anchored     | existing (`Handoff::format_for_prompt`)                  |
+| PlanGrant                        | **authority projection**                  | schema V1, enforce V1.5                                  |
+| Fold                             | `fold_status` + `observation/fold.rs`     | existing, extended to import                             |
+| Job-local bead store             | —                                         | **explicitly not V1** (see D7)                           |
 
 ### D7 — A job-local bead subledger is explicitly *not* the first primitive
 
@@ -286,13 +285,13 @@ capsule_artifacts         -- content-addressed pointers, not inlined blobs
 
 **`fold_status` semantics** (the fold projection of D3):
 
-| value | meaning |
-| --- | --- |
-| `pending` | proof/result captured, not yet folded by root |
-| `accepted` | root accepted the result and updated/closed the parent bead |
-| `rejected` | root rejected the result |
-| `partial` | root accepted some artifacts / filed follow-ups but did **not** close the parent |
-| `imported` | an external/portable capsule imported into the local store (**V2** — reserved) |
+| value      | meaning                                                                          |
+| ---------- | -------------------------------------------------------------------------------- |
+| `pending`  | proof/result captured, not yet folded by root                                    |
+| `accepted` | root accepted the result and updated/closed the parent bead                      |
+| `rejected` | root rejected the result                                                         |
+| `partial`  | root accepted some artifacts / filed follow-ups but did **not** close the parent |
+| `imported` | an external/portable capsule imported into the local store (**V2** — reserved)   |
 
 **Parent-loop handoff** — the field/event that closes the original nested-orchestration
 pain. A capsule emits a deliberate `parent_handoff` event (projected to
@@ -320,21 +319,21 @@ writes become artifact exports (D3) rather than a parallel store.
 
 ## Phasing
 
-| Phase | Scope |
-| --- | --- |
-| **V1** | Durable capsule + `capsules`/`capsule_events`/`capsule_artifacts` seam; hash-linked events (SHA-256); relocate handoff + plan out of the worktree; resume-from-capsule; `fold_status`. APAS-verifiable *shape*, no signing. |
-| **V1.5** | PlanGrant enforcement + stricter scope validation (permission_profile becomes a real boundary). |
-| **V2** | DSSE/APAS signing (signet bridge cert + ley-line CMS); optional job-local `.beads/` subledger + selective fold/import; `.jobs/` portable export bundle; remote capsule store. |
-| **V3** | Portable/remote capsules, cross-machine replay. |
+| Phase    | Scope                                                                                                                                                                                                                       |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **V1**   | Durable capsule + `capsules`/`capsule_events`/`capsule_artifacts` seam; hash-linked events (SHA-256); relocate handoff + plan out of the worktree; resume-from-capsule; `fold_status`. APAS-verifiable *shape*, no signing. |
+| **V1.5** | PlanGrant enforcement + stricter scope validation (permission_profile becomes a real boundary).                                                                                                                             |
+| **V2**   | DSSE/APAS signing (signet bridge cert + ley-line CMS); optional job-local `.beads/` subledger + selective fold/import; `.jobs/` portable export bundle; remote capsule store.                                               |
+| **V3**   | Portable/remote capsules, cross-machine replay.                                                                                                                                                                             |
 
 **V1 implementation order** (each step lands independently):
 
 1. Capsule tables + schema/version fields.
-2. Write handoffs + orchestrator plan to the capsule store first, worktree mirror second (Migration).
-3. Event hash chain **with golden test vectors** (D1/D5).
-4. Resume-from-capsule path.
-5. `fold_status` + `parent_handoff_summary`.
-6. *Only then* PlanGrant enforcement (V1.5) or DSSE signing (V2).
+1. Write handoffs + orchestrator plan to the capsule store first, worktree mirror second (Migration).
+1. Event hash chain **with golden test vectors** (D1/D5).
+1. Resume-from-capsule path.
+1. `fold_status` + `parent_handoff_summary`.
+1. *Only then* PlanGrant enforcement (V1.5) or DSSE signing (V2).
 
 > **Non-negotiable:** `capsule_events` are **typed and hash-linked from day one**.
 > Everything else can phase in, but a capsule whose events aren't typed+chained

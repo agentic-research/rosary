@@ -117,21 +117,21 @@ passed via environment variable or config.
 Rosary resolves the token at dispatch time in this priority order:
 
 1. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
-2. `ANTHROPIC_API_KEY` environment variable
-3. `.envrc` in the agent's working directory
-4. `.envrc` in the git repo root (for worktree dispatches)
-5. `dispatch.anthropic_api_key` in `~/.rsry/config.toml` *(wasteland / hosted rigs)*
+1. `ANTHROPIC_API_KEY` environment variable
+1. `.envrc` in the agent's working directory
+1. `.envrc` in the git repo root (for worktree dispatches)
+1. `dispatch.anthropic_api_key` in `~/.rsry/config.toml` *(wasteland / hosted rigs)*
 
 Without any of these, dispatched agents fail with "Not logged in".
 
 **Option A — per-repo `.envrc` (local development):**
 
 1. Run `claude setup-token` to generate a long-lived OAuth token (valid 1 year)
-2. Add to your repo's `.envrc`:
+1. Add to your repo's `.envrc`:
    ```bash
    export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
    ```
-3. Run `direnv allow` in the repo directory
+1. Run `direnv allow` in the repo directory
 
 **Option B — global config (wasteland / hosted rigs):**
 
@@ -164,12 +164,12 @@ command = ["assay", "verify", "--threshold", "0.8", "--format", "json"]
 
 `hook` plugin events:
 
-| Hook              | When                           | Use case                                    |
-| ----------------- | ------------------------------ | ------------------------------------------- |
-| `pipeline.triage` | Before dispatch                | Skip / reroute beads                        |
-| `pipeline.verify` | After agent completes          | Verdict pass / fail / partial               |
-| `pipeline.close`  | On bead close                  | Notify, archive, post-mortem                |
-| `assay.scan`      | On `rsry scan --assay`         | Report stale refs → P3 chore beads          |
+| Hook              | When                   | Use case                           |
+| ----------------- | ---------------------- | ---------------------------------- |
+| `pipeline.triage` | Before dispatch        | Skip / reroute beads               |
+| `pipeline.verify` | After agent completes  | Verdict pass / fail / partial      |
+| `pipeline.close`  | On bead close          | Notify, archive, post-mortem       |
+| `assay.scan`      | On `rsry scan --assay` | Report stale refs → P3 chore beads |
 
 `pipeline.verify` plugins may include `coverage: <0..1>` in their JSON output.
 When a bead's `success_criteria.doc_coverage_min` is set, rosary fails the gate
@@ -197,32 +197,32 @@ token_env = "CF_API_TOKEN"
 
 ## Environment Variables
 
-| Variable                    | Purpose                        | Config equivalent                    |
-| --------------------------- | ------------------------------ | ------------------------------------ |
-| `RSRY_CONFIG`               | Config file path               | —                                    |
-| `CLAUDE_CODE_OAUTH_TOKEN`   | Agent auth (OAuth token)       | `[dispatch] anthropic_api_key`       |
-| `ANTHROPIC_API_KEY`         | Agent auth (API key)           | `[dispatch] anthropic_api_key`       |
-| `LINEAR_API_KEY`            | Linear API key                 | `[linear] api_key`                   |
-| `LINEAR_TEAM`               | Linear team key                | `[linear] team`                      |
-| `LINEAR_WEBHOOK_SECRET`     | Webhook signing                | `[linear] webhook_secret`            |
-| `SPRITES_TOKEN`             | Sprites compute API token      | `[compute.sprites] token_env`        |
-| `GITHUB_TOKEN`              | Auth for `rsry sync --github`  | `[github] token`                     |
+| Variable                  | Purpose                       | Config equivalent              |
+| ------------------------- | ----------------------------- | ------------------------------ |
+| `RSRY_CONFIG`             | Config file path              | —                              |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Agent auth (OAuth token)      | `[dispatch] anthropic_api_key` |
+| `ANTHROPIC_API_KEY`       | Agent auth (API key)          | `[dispatch] anthropic_api_key` |
+| `LINEAR_API_KEY`          | Linear API key                | `[linear] api_key`             |
+| `LINEAR_TEAM`             | Linear team key               | `[linear] team`                |
+| `LINEAR_WEBHOOK_SECRET`   | Webhook signing               | `[linear] webhook_secret`      |
+| `SPRITES_TOKEN`           | Sprites compute API token     | `[compute.sprites] token_env`  |
+| `GITHUB_TOKEN`            | Auth for `rsry sync --github` | `[github] token`               |
 
 ## File Locations
 
-| File                                  | Purpose                                        |
-| ------------------------------------- | ---------------------------------------------- |
-| `~/.rsry/config.toml`                 | Global config                                  |
-| `~/.rsry/plugins/*.toml`              | Global plugin discovery                        |
-| `~/.rsry/dolt/rosary/`                | Backend state DB (decades, threads, pipelines) |
-| `~/.rsry/worktrees/{repo}/{bead-id}/` | Agent worktree isolation                       |
-| `{repo}/.beads/`                      | Per-repo bead store directory                   |
-| `{repo}/.beads/beads.db`              | SQLite bead store (used when no `dolt/` subdir) |
-| `{repo}/.beads/dolt/`                 | Dolt bead store (server mode)                   |
-| `{repo}/.beads/dolt-server.port`      | Dolt server port (Dolt mode only)              |
-| `{repo}/.beads/metadata.json`         | Database name + settings (Dolt mode)           |
-| `{repo}/.rosary/plugins/*.toml`       | Per-repo plugin discovery                      |
-| `{repo}/notes/<scope>/.recipients`    | age recipients allowed to decrypt that scope   |
+| File                                  | Purpose                                           |
+| ------------------------------------- | ------------------------------------------------- |
+| `~/.rsry/config.toml`                 | Global config                                     |
+| `~/.rsry/plugins/*.toml`              | Global plugin discovery                           |
+| `~/.rsry/dolt/rosary/`                | Backend state DB (decades, threads, pipelines)    |
+| `~/.rsry/worktrees/{repo}/{bead-id}/` | Agent worktree isolation                          |
+| `{repo}/.beads/`                      | Per-repo bead store directory                     |
+| `{repo}/.beads/beads.db`              | SQLite bead store (used when no `dolt/` subdir)   |
+| `{repo}/.beads/dolt/`                 | Dolt bead store (server mode)                     |
+| `{repo}/.beads/dolt-server.port`      | Dolt server port (Dolt mode only)                 |
+| `{repo}/.beads/metadata.json`         | Database name + settings (Dolt mode)              |
+| `{repo}/.rosary/plugins/*.toml`       | Per-repo plugin discovery                         |
+| `{repo}/notes/<scope>/.recipients`    | age recipients allowed to decrypt that scope      |
 | `{repo}/notes/<scope>/*.age`          | Encrypted notes (rotated via `rsry notes rotate`) |
-| `./rosary.toml`                       | Project-level config                           |
-| `./rosary-self.toml`                  | Self-management config                         |
+| `./rosary.toml`                       | Project-level config                              |
+| `./rosary-self.toml`                  | Self-management config                            |

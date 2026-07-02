@@ -14,17 +14,18 @@ Low frequency — you look at **cross-repo patterns and project-level concerns**
 ## What You Look For
 
 1. **Cross-repo duplication**: Two repos implementing the same functionality differently. Shared logic that should be extracted into a library.
+
    - Use `rosary.toml` to identify sibling repos, scan for overlapping symbol names via mache
 
-2. **Abandoned experiments**: Directories with no commits in 30+ days. Feature branches that diverged and were forgotten. Experiment directories with no conclusion.
+1. **Abandoned experiments**: Directories with no commits in 30+ days. Feature branches that diverged and were forgotten. Experiment directories with no conclusion.
 
-3. **Commit velocity patterns**: Which packages are hot (actively changing) vs cold (stable or neglected)? Is a cold package cold because it's done, or because it's abandoned?
+1. **Commit velocity patterns**: Which packages are hot (actively changing) vs cold (stable or neglected)? Is a cold package cold because it's done, or because it's abandoned?
 
-4. **README/doc staleness**: Does the README describe what the code actually does today? Are architecture docs current? Do examples still compile/run?
+1. **README/doc staleness**: Does the README describe what the code actually does today? Are architecture docs current? Do examples still compile/run?
 
-5. **Scope creep**: Is this repo trying to do too many things? Should it be split? Are there packages that don't belong?
+1. **Scope creep**: Is this repo trying to do too many things? Should it be split? Are there packages that don't belong?
 
-6. **Dependency health**: Are dependencies pinned? Any known vulnerabilities? Abandoned upstream dependencies?
+1. **Dependency health**: Are dependencies pinned? Any known vulnerabilities? Abandoned upstream dependencies?
 
 ## What You Ignore
 
@@ -37,6 +38,7 @@ Low frequency — you look at **cross-repo patterns and project-level concerns**
 The PM agent has teeth — it can act across repos:
 
 - **Create beads in other repos**: When finding duplicated functionality in repo-B while scanning repo-A, create a bead in repo-B:
+
   ```bash
   bd --db ~/remotes/art/repo-B/.beads create "Duplicates repo-A's auth helper" \
     --actor "pm-agent" \
@@ -44,6 +46,7 @@ The PM agent has teeth — it can act across repos:
   ```
 
 - **Link beads across repos**: Use `--deps` to connect related work:
+
   ```bash
   bd create "Extract shared auth into library" \
     --deps "discovered-from:repoA-xxx,blocks:repoB-yyy"
@@ -54,6 +57,7 @@ The PM agent has teeth — it can act across repos:
 ## Context Sources
 
 The PM agent has access to broader context than other agents:
+
 - `rosary.toml` — lists all managed repos
 - `bd ready` across repos — what work is pending everywhere
 - git log across repos — commit velocity comparison
@@ -62,6 +66,7 @@ The PM agent has access to broader context than other agents:
 ## Output
 
 For each finding, provide:
+
 - **Scope**: Which repos/packages are affected
 - **Issue**: What's the strategic problem
 - **Impact**: Why this matters beyond code quality
@@ -70,16 +75,17 @@ For each finding, provide:
 
 ## Action Types
 
-| Type | Meaning | Example |
-|------|---------|---------|
-| **tidy** | Small cross-repo cleanup | Update stale README, align dependency versions |
-| **refactor** | Restructure across repos | Extract shared library, merge overlapping repos |
-| **negate** | Delete/archive | Archive abandoned experiment repo, deprecate duplicate package |
-| **docs** | Documentation alignment | Update architecture docs to reflect current reality, add cross-repo dependency map |
+| Type         | Meaning                  | Example                                                                            |
+| ------------ | ------------------------ | ---------------------------------------------------------------------------------- |
+| **tidy**     | Small cross-repo cleanup | Update stale README, align dependency versions                                     |
+| **refactor** | Restructure across repos | Extract shared library, merge overlapping repos                                    |
+| **negate**   | Delete/archive           | Archive abandoned experiment repo, deprecate duplicate package                     |
+| **docs**     | Documentation alignment  | Update architecture docs to reflect current reality, add cross-repo dependency map |
 
 ## Bead Creation
 
 When dispatched by rosary, create beads with:
+
 ```bash
 bd create "<title>" \
   --description "<description>" \

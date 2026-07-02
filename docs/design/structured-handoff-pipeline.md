@@ -99,6 +99,7 @@ Each phase's handoff references the previous via `artifacts.previous_handoff`. T
 ### 1. Capture agent stdout (prerequisite)
 
 Currently `dispatch.rs` sends stdout to `Stdio::null()`. Redirect to `{workspace}/.rsry-stream.jsonl`. This gives us:
+
 - Session ID (for resume)
 - Cost/token data (for SBOM)
 - Tool call history (for review agents to see what dev did)
@@ -107,12 +108,13 @@ Currently `dispatch.rs` sends stdout to `Stdio::null()`. Redirect to `{workspace
 ### 2. Handoff writer (orchestrator-side)
 
 After each phase passes, the orchestrator:
+
 1. Runs `Workspace::checkpoint()` (git add + commit)
-2. Extracts `Work` from git diff (files, lines, diff_stat)
-3. Parses `.rsry-stream.jsonl` last line for cost/session data
-4. Generates `summary` from commit messages or agent's final text output
-5. Writes `.rsry-handoff-{phase}.json` to workspace
-6. This handoff is included in the NEXT phase's agent prompt
+1. Extracts `Work` from git diff (files, lines, diff_stat)
+1. Parses `.rsry-stream.jsonl` last line for cost/session data
+1. Generates `summary` from commit messages or agent's final text output
+1. Writes `.rsry-handoff-{phase}.json` to workspace
+1. This handoff is included in the NEXT phase's agent prompt
 
 ### 3. Handoff-aware agent prompt
 
@@ -155,19 +157,21 @@ Different model = different biases = adversarial by construction. Claude reviews
 ### 5. PR as terminal step
 
 When the final phase passes:
+
 1. Orchestrator creates a git branch from the worktree: `fix/{bead-id}`
-2. Pushes to origin
-3. Creates PR via `gh pr create` with:
+1. Pushes to origin
+1. Creates PR via `gh pr create` with:
    - Title from bead
    - Body assembled from handoff chain (each phase's summary + verdict)
    - Labels: `agent-generated`, `perspective:dev`, `perspective:staging`
-4. Links PR URL to bead (bead.pr_url field)
-5. Bead transitions to `verifying` (not `closed` — human reviews first)
-6. On PR merge → bead closes (via GHA webhook or rsry sync)
+1. Links PR URL to bead (bead.pr_url field)
+1. Bead transitions to `verifying` (not `closed` — human reviews first)
+1. On PR merge → bead closes (via GHA webhook or rsry sync)
 
 ### 6. Human review gate
 
 Between final agent phase and PR creation, an optional pause:
+
 - Orchestrator sets bead status to `in_review`
 - Linear shows the bead in "In Review" column
 - Human can:
@@ -186,6 +190,7 @@ For overnight mode: skip the human gate, create PR directly. Human reviews async
 ## Backend Agnostic
 
 The handoff artifact is a JSON file in the workspace. It doesn't depend on:
+
 - Linear (works without it — handoff is workspace-local)
 - Dolt (handoff is file-based, not database)
 - Any specific provider (Claude, Gemini, ACP all produce handoffs)
@@ -196,10 +201,10 @@ The orchestrator (Rust reconciler or Elixir conductor) writes the handoff. The b
 ## Implementation Order
 
 1. **Capture stdout** — redirect to .rsry-stream.jsonl (dispatch.rs, 1 line change + file creation)
-2. **Handoff struct** — Rust struct in manifest.rs or new handoff.rs, JSON serializable
-3. **Handoff writer** — orchestrator writes after checkpoint, before next phase dispatch
-4. **Handoff-aware prompt** — build_prompt reads handoff and injects into agent prompt
-5. **Provider per step** — Pipeline.Step gets a provider field, AgentWorker uses it
-6. **PR creation** — terminal step in pipeline, gh pr create from worktree
-7. **Human gate** — optional pause between final phase and PR
-8. **Verdict schema** — staging/prod agents write structured review verdicts
+1. **Handoff struct** — Rust struct in manifest.rs or new handoff.rs, JSON serializable
+1. **Handoff writer** — orchestrator writes after checkpoint, before next phase dispatch
+1. **Handoff-aware prompt** — build_prompt reads handoff and injects into agent prompt
+1. **Provider per step** — Pipeline.Step gets a provider field, AgentWorker uses it
+1. **PR creation** — terminal step in pipeline, gh pr create from worktree
+1. **Human gate** — optional pause between final phase and PR
+1. **Verdict schema** — staging/prod agents write structured review verdicts

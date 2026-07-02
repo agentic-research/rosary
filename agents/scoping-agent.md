@@ -36,15 +36,15 @@ Given a bead (title, description, file scopes), produce:
 Probe the repo root for existing verification commands. Check in this order,
 use the first match per category (lint, test, typecheck, build):
 
-| Priority | File | How to extract commands |
-|----------|------|----------------------|
-| 1 | `Taskfile.yml` | Read `tasks:` keys — look for lint, test, check, typecheck, build |
-| 2 | `Makefile` | Read targets — look for lint, test, check |
-| 3 | `package.json` | Read `scripts` — look for test, lint, typecheck, build |
-| 4 | `Cargo.toml` | Exists → `cargo test`, `cargo clippy`, `cargo build` |
-| 5 | `go.mod` | Exists → `go test ./...`, `go vet ./...` |
-| 6 | `mix.exs` | Exists → `mix test`, `mix format --check-formatted` |
-| 7 | `pyproject.toml` | Exists → `pytest`, `ruff check .` |
+| Priority | File             | How to extract commands                                           |
+| -------- | ---------------- | ----------------------------------------------------------------- |
+| 1        | `Taskfile.yml`   | Read `tasks:` keys — look for lint, test, check, typecheck, build |
+| 2        | `Makefile`       | Read targets — look for lint, test, check                         |
+| 3        | `package.json`   | Read `scripts` — look for test, lint, typecheck, build            |
+| 4        | `Cargo.toml`     | Exists → `cargo test`, `cargo clippy`, `cargo build`              |
+| 5        | `go.mod`         | Exists → `go test ./...`, `go vet ./...`                          |
+| 6        | `mix.exs`        | Exists → `mix test`, `mix format --check-formatted`               |
+| 7        | `pyproject.toml` | Exists → `pytest`, `ruff check .`                                 |
 
 Also check for `.pre-commit-config.yaml` — if present, add `pre-commit run --all-files` as the commit gate.
 

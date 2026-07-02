@@ -1,6 +1,7 @@
 # ADR-006: Declarative Tool Registry — Unified Source for MCP, CLI, Pipeline, and Permissions
 
 ## Status
+
 Proposed
 
 ## Context
@@ -8,8 +9,8 @@ Proposed
 Rosary has three surfaces that expose the same operations through different code paths:
 
 1. **MCP tools** (serve.rs) — 22 `tool_*` handlers with JSON schema, descriptions, and argument parsing
-2. **CLI commands** (main.rs/cli.rs) — clap subcommands with separate argument parsing and output formatting
-3. **Pipeline mapping** (dispatch.rs) — hardcoded `agent_pipeline()` match arms
+1. **CLI commands** (main.rs/cli.rs) — clap subcommands with separate argument parsing and output formatting
+1. **Pipeline mapping** (dispatch.rs) — hardcoded `agent_pipeline()` match arms
 
 These are maintained independently, leading to:
 
@@ -19,6 +20,7 @@ These are maintained independently, leading to:
 - **Permission scoping impossible**: Agent definitions can't reference tool capabilities by name because there's no canonical registry of what operations exist
 
 Mache structural analysis confirms the duplication:
+
 - `list_beads`, `add_bead_to_thread`, `find_thread_for_bead`, `active_dispatches` all have `.from_store_dolt_rs` variants (two implementations)
 - `make_bead` is defined in 4 places (queue_rs, scanner_rs, thread_rs, root)
 - SQL queries are inlined across dolt.rs and store_dolt.rs with no shared query layer
@@ -52,6 +54,7 @@ handler = "bead::create"  # maps to a Rust function
 ```
 
 From this single definition, code generation (build.rs or proc macro) produces:
+
 - MCP tool JSON schema + handler dispatch
 - clap CLI subcommand + argument parsing
 - TypeScript/Elixir client types
@@ -97,17 +100,21 @@ The tool registry generates typed schemas for the Elixir conductor boundary. Ins
 ## Alternatives Considered
 
 ### A. Proc macro on Rust functions
+
 Annotate each handler with `#[rsry_tool(name = "bead_create", ...)]` and derive everything from the annotation. **Rejected**: keeps the source of truth in Rust code, doesn't help with external config override or non-Rust consumers.
 
 ### B. OpenAPI-first
+
 Write OpenAPI YAML, generate Rust + Elixir + TS from it. **Rejected**: OpenAPI is HTTP-centric, doesn't naturally express MCP tool semantics or pipeline DAGs. Would be forcing the wrong abstraction.
 
 ### C. Keep separate, add tests for drift
+
 Write property tests that assert CLI and MCP produce identical results. **Rejected**: treats the symptom, not the cause. Still three places to edit for one capability.
 
 ## Consequences
 
 ### Positive
+
 - Adding a tool = editing one TOML section + writing one handler function
 - Pipeline changes don't require recompilation (TOML override)
 - Agent permission scopes are declarative and auditable
@@ -115,34 +122,40 @@ Write property tests that assert CLI and MCP produce identical results. **Reject
 - The tool registry IS the documentation
 
 ### Negative
+
 - Upfront investment to migrate 22 existing tools
 - Build complexity increases (code generation step)
 - TOML parsing adds a runtime dependency for tool metadata
 - Need to decide: build-time generation (build.rs) vs runtime parsing
 
 ### Risks
+
 - Over-engineering: the TOML schema could become its own DSL that's harder than Rust
 - Migration: can't do this incrementally per-tool without both systems running in parallel
 
 ## Implementation Plan
 
 ### Phase 1: Registry schema + code gen for one tool
+
 - Define the TOML schema for tool definitions
 - Implement build.rs or proc macro that generates MCP + CLI from one definition
 - Migrate `bead_create` as proof of concept
 - Validate: MCP and CLI produce identical behavior
 
 ### Phase 2: Migrate remaining tools
+
 - Move all 22 tools to declarative definitions
 - Delete the manual MCP schema construction in `tool_definitions()`
 - Delete the manual CLI argument parsing
 
 ### Phase 3: Pipeline + permissions
+
 - Move `agent_pipeline()` to TOML config
 - Generate agent permission scopes from registry
 - Wire into CC subagent frontmatter generation
 
 ### Phase 4: Elixir contracts
+
 - Generate Elixir structs from tool registry
 - Replace ad-hoc JSON parsing in conductor
 - Add contract tests (Rust output matches Elixir expectation)

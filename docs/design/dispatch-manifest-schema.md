@@ -23,6 +23,7 @@ touching git, Dolt, or the orchestrator's memory.
 ```
 
 Workspace directories follow the existing convention:
+
 - Git worktree: `{repo_parent}/.rsry-workspaces/{bead_id}/`
 - jj workspace: `{repo_parent}/.rsry-workspaces/{bead_id}/`
 - In-place: `{repo_path}/` (single-concurrency fallback)
@@ -40,7 +41,7 @@ the checkpoint commit, creating a self-describing work product.
 Integer string. Bump on breaking changes. Consumers must check this field
 before parsing. Additive fields do not require a version bump.
 
----
+______________________________________________________________________
 
 ## Concrete Schema
 
@@ -132,23 +133,23 @@ before parsing. Additive fields do not require a version bump.
 }
 ```
 
----
+______________________________________________________________________
 
 ## Field-by-Field Population Guide
 
 ### identity
 
-| Field | Source | When Available | Notes |
-|-------|--------|----------------|-------|
-| `dispatch_id` | Orchestrator generates UUID v4 | At spawn | Same as `DispatchRecord.id` in store.rs |
-| `bead_id` | `Bead.id` from Dolt scan | At spawn | The work item being addressed |
-| `repo` | `Bead.repo` | At spawn | Repo name from rosary.toml |
-| `agent` | `Bead.owner` or `dispatch::default_agent()` | At spawn | Agent perspective (dev-agent, staging-agent, etc.) |
-| `provider` | `AgentProvider::name()` | At spawn | "claude", "gemini", or "acp" |
-| `model` | Stream-json `init` event: `model` field | After init event parsed | Not available at spawn; backfill from stream-json |
-| `pipeline_phase` | `PipelineState.pipeline_phase` | At spawn | 0=dev, 1=staging, 2=prod |
-| `issue_type` | `Bead.issue_type` | At spawn | bug, feature, task, chore, review, etc. |
-| `permission_profile` | Derived from issue_type in `dispatch::spawn()` | At spawn | "read_only", "implement", or "plan" |
+| Field                | Source                                         | When Available          | Notes                                              |
+| -------------------- | ---------------------------------------------- | ----------------------- | -------------------------------------------------- |
+| `dispatch_id`        | Orchestrator generates UUID v4                 | At spawn                | Same as `DispatchRecord.id` in store.rs            |
+| `bead_id`            | `Bead.id` from Dolt scan                       | At spawn                | The work item being addressed                      |
+| `repo`               | `Bead.repo`                                    | At spawn                | Repo name from rosary.toml                         |
+| `agent`              | `Bead.owner` or `dispatch::default_agent()`    | At spawn                | Agent perspective (dev-agent, staging-agent, etc.) |
+| `provider`           | `AgentProvider::name()`                        | At spawn                | "claude", "gemini", or "acp"                       |
+| `model`              | Stream-json `init` event: `model` field        | After init event parsed | Not available at spawn; backfill from stream-json  |
+| `pipeline_phase`     | `PipelineState.pipeline_phase`                 | At spawn                | 0=dev, 1=staging, 2=prod                           |
+| `issue_type`         | `Bead.issue_type`                              | At spawn                | bug, feature, task, chore, review, etc.            |
+| `permission_profile` | Derived from issue_type in `dispatch::spawn()` | At spawn                | "read_only", "implement", or "plan"                |
 
 **Population timing:** All identity fields except `model` are known at dispatch
 time. The orchestrator pre-populates identity in memory when spawning the agent.
@@ -157,17 +158,17 @@ providers that do not emit stream-json).
 
 ### session
 
-| Field | Source | When Available | Notes |
-|-------|--------|----------------|-------|
-| `session_id` | Stream-json `init` event: `session_id` or ACP `session/new` response | After agent starts | Enables `claude --resume` for interrupted dispatches |
-| `workspace_path` | `Workspace.work_dir` | At spawn | Absolute path to the isolated worktree |
-| `work_dir` | `AgentHandle.work_dir` | At spawn | Same as workspace_path (kept for DispatchRecord compat) |
-| `repo_path` | `Workspace.repo_path` | At spawn | Original repo root (not the worktree) |
-| `vcs_kind` | `Workspace.vcs` (Jj/Git/None) | At spawn | Lowercase string: "jj", "git", "none" |
-| `started_at` | `AgentHandle.started_at` | At spawn | ISO 8601 UTC |
-| `completed_at` | `chrono::Utc::now()` when exit detected | At completion | ISO 8601 UTC |
-| `duration_ms` | Stream-json `result` event, or `completed_at - started_at` | At completion | Prefer stream-json (measures actual agent time, not wall clock) |
-| `pid` | `AgentSession::pid()` | At spawn | OS process ID; null for non-subprocess providers |
+| Field            | Source                                                               | When Available     | Notes                                                           |
+| ---------------- | -------------------------------------------------------------------- | ------------------ | --------------------------------------------------------------- |
+| `session_id`     | Stream-json `init` event: `session_id` or ACP `session/new` response | After agent starts | Enables `claude --resume` for interrupted dispatches            |
+| `workspace_path` | `Workspace.work_dir`                                                 | At spawn           | Absolute path to the isolated worktree                          |
+| `work_dir`       | `AgentHandle.work_dir`                                               | At spawn           | Same as workspace_path (kept for DispatchRecord compat)         |
+| `repo_path`      | `Workspace.repo_path`                                                | At spawn           | Original repo root (not the worktree)                           |
+| `vcs_kind`       | `Workspace.vcs` (Jj/Git/None)                                        | At spawn           | Lowercase string: "jj", "git", "none"                           |
+| `started_at`     | `AgentHandle.started_at`                                             | At spawn           | ISO 8601 UTC                                                    |
+| `completed_at`   | `chrono::Utc::now()` when exit detected                              | At completion      | ISO 8601 UTC                                                    |
+| `duration_ms`    | Stream-json `result` event, or `completed_at - started_at`           | At completion      | Prefer stream-json (measures actual agent time, not wall clock) |
+| `pid`            | `AgentSession::pid()`                                                | At spawn           | OS process ID; null for non-subprocess providers                |
 
 **Population timing:** Most session fields are available at spawn. `session_id`
 arrives with the first stream-json event or ACP session response. `completed_at`
@@ -175,13 +176,13 @@ and `duration_ms` are filled at exit.
 
 ### work
 
-| Field | Source | When Available | Notes |
-|-------|--------|----------------|-------|
-| `commits` | `git log --format=...` in workspace | After checkpoint | Array of {sha, message, author}. May be empty (agent made no changes). The checkpoint commit is included. |
-| `files_changed` | `git diff --name-only {base}..HEAD` | After checkpoint | Relative paths. Computed against `base_commit`. |
-| `lines_added` | `git diff --numstat {base}..HEAD` | After checkpoint | Sum of additions across all files |
-| `lines_removed` | `git diff --numstat {base}..HEAD` | After checkpoint | Sum of deletions across all files |
-| `diff_stat` | `git diff --stat {base}..HEAD` (last line) | After checkpoint | Human-readable summary string |
+| Field           | Source                                     | When Available   | Notes                                                                                                     |
+| --------------- | ------------------------------------------ | ---------------- | --------------------------------------------------------------------------------------------------------- |
+| `commits`       | `git log --format=...` in workspace        | After checkpoint | Array of {sha, message, author}. May be empty (agent made no changes). The checkpoint commit is included. |
+| `files_changed` | `git diff --name-only {base}..HEAD`        | After checkpoint | Relative paths. Computed against `base_commit`.                                                           |
+| `lines_added`   | `git diff --numstat {base}..HEAD`          | After checkpoint | Sum of additions across all files                                                                         |
+| `lines_removed` | `git diff --numstat {base}..HEAD`          | After checkpoint | Sum of deletions across all files                                                                         |
+| `diff_stat`     | `git diff --stat {base}..HEAD` (last line) | After checkpoint | Human-readable summary string                                                                             |
 
 **Population timing:** All work fields are populated *after* the orchestrator
 runs `workspace.checkpoint()` (which does `git add -A && git commit` or
@@ -196,13 +197,14 @@ commits appear too.
 
 ### quality
 
-| Field | Source | When Available | Notes |
-|-------|--------|----------------|-------|
-| `verification_passed` | `VerifySummary::passed()` | After verification | Boolean. True if all tiers passed OR if agent-closed via MCP (fast path). |
-| `highest_passing_tier` | `VerifySummary.highest_passing_tier` | After verification | Index into the tiers array. null if nothing passed. |
-| `tiers` | `VerifySummary.results` | After verification | Array of {name, result, detail?}. Only tiers that ran are included (verification short-circuits on first failure). |
+| Field                  | Source                               | When Available     | Notes                                                                                                              |
+| ---------------------- | ------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `verification_passed`  | `VerifySummary::passed()`            | After verification | Boolean. True if all tiers passed OR if agent-closed via MCP (fast path).                                          |
+| `highest_passing_tier` | `VerifySummary.highest_passing_tier` | After verification | Index into the tiers array. null if nothing passed.                                                                |
+| `tiers`                | `VerifySummary.results`              | After verification | Array of {name, result, detail?}. Only tiers that ran are included (verification short-circuits on first failure). |
 
 **Tier result values:**
+
 - `"pass"` -- VerifyResult::Pass
 - `"fail"` -- VerifyResult::Fail(reason), detail field contains the reason
 - `"partial"` -- VerifyResult::Partial(reason), detail field contains the reason
@@ -210,6 +212,7 @@ commits appear too.
 **Agent-closed fast path:** When the agent closes the bead via MCP
 (`is_bead_agent_closed` returns true), verification is skipped entirely.
 In this case:
+
 - `verification_passed`: true
 - `highest_passing_tier`: null
 - `tiers`: `[{"name": "agent_self_closed", "result": "pass"}]`
@@ -220,14 +223,14 @@ confidence levels.
 
 ### cost
 
-| Field | Source | When Available | Notes |
-|-------|--------|----------------|-------|
-| `total_cost_usd` | Stream-json `result` event: `total_cost_usd` | At completion | null for providers that do not report cost |
-| `input_tokens` | Stream-json `result` event: `usage.input_tokens` | At completion | Cumulative across all turns |
-| `output_tokens` | Stream-json `result` event: `usage.output_tokens` | At completion | Cumulative across all turns |
-| `cache_read_tokens` | Stream-json `result` event: `usage.cache_read_input_tokens` | At completion | Prompt caching; null if not reported |
-| `cache_write_tokens` | Stream-json `result` event: `usage.cache_creation_input_tokens` | At completion | Prompt caching; null if not reported |
-| `num_turns` | Stream-json `result` event: `num_turns` | At completion | Number of assistant turns (tool-use loops) |
+| Field                | Source                                                          | When Available | Notes                                      |
+| -------------------- | --------------------------------------------------------------- | -------------- | ------------------------------------------ |
+| `total_cost_usd`     | Stream-json `result` event: `total_cost_usd`                    | At completion  | null for providers that do not report cost |
+| `input_tokens`       | Stream-json `result` event: `usage.input_tokens`                | At completion  | Cumulative across all turns                |
+| `output_tokens`      | Stream-json `result` event: `usage.output_tokens`               | At completion  | Cumulative across all turns                |
+| `cache_read_tokens`  | Stream-json `result` event: `usage.cache_read_input_tokens`     | At completion  | Prompt caching; null if not reported       |
+| `cache_write_tokens` | Stream-json `result` event: `usage.cache_creation_input_tokens` | At completion  | Prompt caching; null if not reported       |
+| `num_turns`          | Stream-json `result` event: `num_turns`                         | At completion  | Number of assistant turns (tool-use loops) |
 
 **Population strategy:** The orchestrator must capture the agent's stdout
 (stream-json output) to extract cost fields. Currently, `ClaudeProvider`
@@ -240,30 +243,30 @@ null. ACP agents can report cost through the ACP protocol's
 
 ### vcs
 
-| Field | Source | When Available | Notes |
-|-------|--------|----------------|-------|
-| `jj_change_id` | `workspace.jj_change_id()` (reads `jj log -r @- -T change_id`) | After checkpoint | null for git-only repos or no-VCS mode |
-| `git_branch` | Deterministic: `format!("fix/{}", bead_id)` | At spawn | The branch created by `create_git_worktree()` |
-| `bookmark` | Deterministic: `format!("fix/{}", bead_id)` | After checkpoint | jj bookmark created by `workspace.jj_bookmark()` |
-| `base_commit` | `git rev-parse HEAD` before agent runs, or `git merge-base` | At spawn | The commit the worktree branched from. Critical for accurate diff. |
-| `head_commit` | `git rev-parse HEAD` after checkpoint | After checkpoint | The final commit SHA in the worktree |
+| Field          | Source                                                         | When Available   | Notes                                                              |
+| -------------- | -------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------ |
+| `jj_change_id` | `workspace.jj_change_id()` (reads `jj log -r @- -T change_id`) | After checkpoint | null for git-only repos or no-VCS mode                             |
+| `git_branch`   | Deterministic: `format!("fix/{}", bead_id)`                    | At spawn         | The branch created by `create_git_worktree()`                      |
+| `bookmark`     | Deterministic: `format!("fix/{}", bead_id)`                    | After checkpoint | jj bookmark created by `workspace.jj_bookmark()`                   |
+| `base_commit`  | `git rev-parse HEAD` before agent runs, or `git merge-base`    | At spawn         | The commit the worktree branched from. Critical for accurate diff. |
+| `head_commit`  | `git rev-parse HEAD` after checkpoint                          | After checkpoint | The final commit SHA in the worktree                               |
 
 **Population timing:** `git_branch` and `base_commit` are known at spawn.
 `jj_change_id`, `bookmark`, and `head_commit` are populated after checkpoint.
 
 ### outcome
 
-| Field | Source | When Available | Notes |
-|-------|--------|----------------|-------|
-| `success` | `AgentSession::wait()` return value + verification | At completion | True if agent exited 0 AND (verification passed OR agent-closed) |
-| `bead_closed` | `is_bead_agent_closed()` or verification pass | At completion | Whether the bead transitioned to done/closed |
-| `stop_reason` | Stream-json `result` event: `stop_reason`, or ACP `prompt/complete` | At completion | "end_turn", "max_tokens", "refusal", "cancelled", "tool_use", "timeout" |
-| `agent_closed_via_mcp` | `is_bead_agent_closed()` check | At completion | True if the agent called `rsry_bead_close` during execution |
-| `error` | Error message from agent stderr, verification failure detail, or null | At completion | null on success. On failure: first verification failure reason, or exit code description |
-| `retries` | `BeadTracker.retries` or `Pipeline.retries_used()` | At completion | Number of retries consumed for this dispatch (not cumulative) |
-| `deadlettered` | `WorkQueue.is_deadlettered()` check | At completion | Whether this dispatch exhausted retries and the bead was deadlettered |
+| Field                  | Source                                                                | When Available | Notes                                                                                    |
+| ---------------------- | --------------------------------------------------------------------- | -------------- | ---------------------------------------------------------------------------------------- |
+| `success`              | `AgentSession::wait()` return value + verification                    | At completion  | True if agent exited 0 AND (verification passed OR agent-closed)                         |
+| `bead_closed`          | `is_bead_agent_closed()` or verification pass                         | At completion  | Whether the bead transitioned to done/closed                                             |
+| `stop_reason`          | Stream-json `result` event: `stop_reason`, or ACP `prompt/complete`   | At completion  | "end_turn", "max_tokens", "refusal", "cancelled", "tool_use", "timeout"                  |
+| `agent_closed_via_mcp` | `is_bead_agent_closed()` check                                        | At completion  | True if the agent called `rsry_bead_close` during execution                              |
+| `error`                | Error message from agent stderr, verification failure detail, or null | At completion  | null on success. On failure: first verification failure reason, or exit code description |
+| `retries`              | `BeadTracker.retries` or `Pipeline.retries_used()`                    | At completion  | Number of retries consumed for this dispatch (not cumulative)                            |
+| `deadlettered`         | `WorkQueue.is_deadlettered()` check                                   | At completion  | Whether this dispatch exhausted retries and the bead was deadlettered                    |
 
----
+______________________________________________________________________
 
 ## Population Flow
 
@@ -313,7 +316,7 @@ outcome:  success, bead_closed, agent_closed_via_mcp, error, retries,
 
 Then write `.rsry-dispatch.json` to the workspace directory.
 
----
+______________________________________________________________________
 
 ## Relationship to Existing Types
 
@@ -343,7 +346,7 @@ The manifest is a strict superset of DispatchRecord. The orchestrator can
 populate DispatchRecord from the manifest, making the manifest the single
 source of truth for "what happened during this dispatch."
 
----
+______________________________________________________________________
 
 ## Open Questions for Implementation
 
@@ -352,24 +355,24 @@ source of truth for "what happened during this dispatch."
    us parse cost/session without buffering the entire stream in memory.
    The stream file itself becomes a valuable debug artifact.
 
-2. **Manifest before or after checkpoint commit?** If we write the manifest
+1. **Manifest before or after checkpoint commit?** If we write the manifest
    before checkpoint, it gets included in the commit (self-describing).
    If after, it is not in the commit but has the final SHA. Recommendation:
    write it before checkpoint so it is part of the committed work product.
    The `head_commit` field can be backfilled by re-reading after checkpoint,
    or the manifest can be amended.
 
-3. **Conductor (Elixir) parity:** The conductor has richer runtime
+1. **Conductor (Elixir) parity:** The conductor has richer runtime
    information (ACP messages, mid-execution validation results). Its
    manifest could include additional fields (tool_calls, validation_runs).
    These should be optional fields in the schema, not a separate schema.
 
-4. **Retention:** Manifests in workspaces are ephemeral (cleaned up with
+1. **Retention:** Manifests in workspaces are ephemeral (cleaned up with
    teardown). For long-term storage, the orchestrator should copy the
    manifest into Dolt (a `dispatch_manifests` table) or append it to
    `{repo}/.beads/dispatches.jsonl` before cleanup.
 
-5. **Provenance chain:** For multi-phase pipelines (dev -> staging -> prod),
+1. **Provenance chain:** For multi-phase pipelines (dev -> staging -> prod),
    each phase produces its own manifest. The `pipeline_phase` field
    distinguishes them. A `previous_dispatch_id` field could chain them
    explicitly, but pipeline phase + bead_id is sufficient for querying.

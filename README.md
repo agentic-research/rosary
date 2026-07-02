@@ -148,15 +148,15 @@ rsry serve --transport http --port 8383
 
 **31 tools** across six categories:
 
-| Category   | Tools                                                                                                                                              |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_close`, `rsry_bead_link`, `rsry_bead_import`                                |
-| Comments   | `rsry_bead_comment`, `rsry_bead_comment_list`, `rsry_bead_comment_update`, `rsry_bead_comment_delete` (audit-trail preserved; hard-delete CLI-only)|
-| Status     | `rsry_status`, `rsry_list_beads`, `rsry_scan`, `rsry_active`                                                                                       |
-| Dispatch   | `rsry_dispatch`, `rsry_run_once`, `rsry_decompose`, `rsry_pipeline_upsert`, `rsry_pipeline_query`, `rsry_dispatch_record`, `rsry_dispatch_history` |
-| Workspaces | `rsry_workspace_create`, `rsry_workspace_checkpoint`, `rsry_workspace_cleanup`, `rsry_workspace_merge`                                             |
-| Hierarchy  | `rsry_decade_list`, `rsry_thread_list`, `rsry_thread_assign`, `rsry_thread_reparent`                                                               |
-| Repos      | `rsry_repo_register`, `rsry_repo_list`                                                                                                             |
+| Category   | Tools                                                                                                                                               |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_close`, `rsry_bead_link`, `rsry_bead_import`                                 |
+| Comments   | `rsry_bead_comment`, `rsry_bead_comment_list`, `rsry_bead_comment_update`, `rsry_bead_comment_delete` (audit-trail preserved; hard-delete CLI-only) |
+| Status     | `rsry_status`, `rsry_list_beads`, `rsry_scan`, `rsry_active`                                                                                        |
+| Dispatch   | `rsry_dispatch`, `rsry_run_once`, `rsry_decompose`, `rsry_pipeline_upsert`, `rsry_pipeline_query`, `rsry_dispatch_record`, `rsry_dispatch_history`  |
+| Workspaces | `rsry_workspace_create`, `rsry_workspace_checkpoint`, `rsry_workspace_cleanup`, `rsry_workspace_merge`                                              |
+| Hierarchy  | `rsry_decade_list`, `rsry_thread_list`, `rsry_thread_assign`, `rsry_thread_reparent`                                                                |
+| Repos      | `rsry_repo_register`, `rsry_repo_list`                                                                                                              |
 
 ## Config
 
@@ -203,6 +203,7 @@ rsry sync              # push + pull + reconcile
 ```
 
 Webhooks for real-time updates: `rsry serve --transport http` exposes:
+
 - `/webhook` — Linear bead status sync
 - `/webhook/github` — GitHub merge events advance the linked bead and unblock dependents
 
@@ -229,12 +230,12 @@ Refuses to rotate to an empty recipient list (would brick the scope). Atomic wri
 
 Plugins extend rosary along a `kind` axis declared in `~/.rsry/plugins/*.toml` or `<repo>/.rosary/plugins/*.toml`:
 
-| Kind         | Purpose                                                                |
-| ------------ | ---------------------------------------------------------------------- |
+| Kind         | Purpose                                                                  |
+| ------------ | ------------------------------------------------------------------------ |
 | `hook`       | Pipeline hook (default) — runs at `pipeline.triage` / `verify` / `close` |
-| `mcp`        | Outbound MCP server — rosary connects as a client (planned)            |
-| `dispatch`   | Alternative `AgentProvider` (e.g. local model, sprites)                |
-| `state_sink` | Mirrors bead state to an external system (planned)                     |
+| `mcp`        | Outbound MCP server — rosary connects as a client (planned)              |
+| `dispatch`   | Alternative `AgentProvider` (e.g. local model, sprites)                  |
+| `state_sink` | Mirrors bead state to an external system (planned)                       |
 
 Verify-tier plugins can return a `coverage: f64`. When a bead has `doc_coverage_min` in its success criteria, rosary fails the gate if the plugin reports coverage below the threshold (e.g. `assay` for doc-coverage delta).
 
@@ -297,7 +298,7 @@ The pipeline is two steps:
 1. **krust + cargo-zigbuild** cross-compiles `rsry` to
    `aarch64-unknown-linux-musl` (`target/krust/.../release/rsry`, ~19MB
    static).
-2. **`image.Dockerfile`** drops that binary onto
+1. **`image.Dockerfile`** drops that binary onto
    `gcr.io/distroless/static-debian12:nonroot` (no shell, no package
    manager, nonroot uid 65532) — a single `COPY`, no Rust toolchain in
    the container.

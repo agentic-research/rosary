@@ -17,20 +17,20 @@ sql-servers. Lived experience reversed that call:
    rosary's storage to bd means inheriting that churn. A concrete casualty:
    `ley-line-open`'s 227 beads became unreadable *via the `bd` CLI* after the
    1.0.0 upgrade (rosary still reads them fine — see below).
-2. **rosary already doesn't depend on bd.** Verified 2026-06-24: rosary invokes
+1. **rosary already doesn't depend on bd.** Verified 2026-06-24: rosary invokes
    the `bd` binary **zero** times at runtime (it only ever spawns `dolt` and
    `claude`). All bead I/O goes through `connect_bead_store()` in
    `src/bead_sqlite.rs`, which is pure Rust: a `DoltBeadStore` (MySQL wire to a
    per-repo dolt sql-server) when `.beads/dolt/` exists, otherwise a
    `SqliteBeadStore` reading `.beads/beads.db` directly via rusqlite. So "adopt
    bd as the owner" would have *added* a dependency rosary does not currently have.
-3. **No clean Rust seam into bd.** The upstream Go package
+1. **No clean Rust seam into bd.** The upstream Go package
    (`github.com/steveyegge/beads`) re-exports the model but its `Open()` requires
    CGO + embedded Dolt or a running Dolt server — i.e. depending on it re-couples
    to Dolt. There is **no official Rust binding**; DoltLite (the embedded,
    serverless engine) is a C library with **no Rust binding** either. The
    on-disk `.beads/issues.jsonl` file is **deprecated** for live integration.
-4. **The stable thing is the *format*, not the tool.** Upstream documents a
+1. **The stable thing is the *format*, not the tool.** Upstream documents a
    versioned bead JSON contract (`docs/JSON_SCHEMA.md`, carrying an integer
    `schema_version`, additive-change discipline). Beads is **MIT-licensed**, so
    speaking/implementing that contract ourselves is fine.
@@ -41,12 +41,14 @@ the bead format without *being* (or depending on) bd.**
 ## Decision
 
 ### D1 — rosary's own store is the source of truth
+
 rosary keeps owning its bead store via `connect_bead_store()`: `SqliteBeadStore`
 (`.beads/beads.db`, no server, no Dolt, no git — the default for single-user
 local repos) or `DoltBeadStore` (per-repo dolt sql-server over MySQL). rosary does
 **not** take a runtime dependency on the `bd` binary.
 
 ### D2 — interop is via the documented bead JSON contract
+
 "Speaking beads" means emitting/ingesting the documented bead JSON shape
 (upstream `docs/JSON_SCHEMA.md`): parse leniently and additively, carry
 `schema_version`. rosary's `Bead` model (`src/bead.rs`) is the internal type;
@@ -54,18 +56,21 @@ a thin (de)serialization layer maps it to/from the contract for import/export an
 for any external consumer.
 
 ### D3 — `bd` is an optional adapter, never a hard dependency
+
 If live round-trip with a `bd`-managed repo is ever required, it goes behind an
 **optional adapter** that shells `bd … --json` (the upstream-recommended,
 version-tolerant surface). This adapter is opt-in and isolated; nothing in
 rosary's core path requires it.
 
 ### D4 — Dolt-server mode is an option, not a mandate
+
 Per-repo Dolt server mode stays available and is the right choice **only** where
 it earns its keep: concurrent writers (fan-out dispatch) or cloister/multi-machine
 sharing. Single-user local repos use plain SQLite `beads.db`. Rosary must not
 require every repo to run a `dolt sql-server`.
 
 ### D5 — consumers (incl. cloister) integrate through rosary, not bd's storage
+
 External consumers that need bead data go through rosary's interface (its MCP/HTTP
 API and the JSON contract), **not** a direct binding to per-repo Dolt sql-servers.
 This revises [ADR-0013](0013-bead-substrate-layering.md) D4 (which had cloister
