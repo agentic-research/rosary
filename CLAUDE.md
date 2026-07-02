@@ -48,17 +48,18 @@ task all            # fmt + check + lint + test
 | File                           | Purpose                                                                                                                                                      |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | src/serve/mod.rs               | MCP server (stdio + HTTP) + Linear/GitHub webhook handlers                                                                                                   |
-| src/serve/handlers.rs          | MCP tool implementations (31 tools)                                                                                                                          |
+| src/serve/handlers.rs          | MCP tool implementations (39 tools)                                                                                                                          |
 | src/serve/github_webhook.rs    | GitHub merge webhook → advance bead + unblock dependents                                                                                                     |
 | src/reconcile/mod.rs           | Reconciliation loop: scan → triage → dispatch → verify                                                                                                       |
 | src/bead.rs                    | Bead model, BeadState enum, Comment struct (audit-trail), Linear type mapping                                                                                |
-| src/bead_sqlite.rs             | `connect_bead_store` — the single entry point for ALL bead I/O; `SqliteBeadStore` reads `.beads/beads.db` directly (rusqlite) when there's no `.beads/dolt/` |
+| src/bead_ops.rs                | Shared bead-op core (the API in CLI↔MCP): BeadCreateArgs + validate/create/close gates enforced 1:1 across `rsry bead` (CLI) and `rsry_bead_*` (MCP)         |
+| src/bead_sqlite/mod.rs         | `connect_bead_store` — the single entry point for ALL bead I/O; `SqliteBeadStore` reads `.beads/beads.db` directly (rusqlite) when there's no `.beads/dolt/` |
 | src/bead_dolt.rs               | `DoltBeadStore` — `BeadStore` over the Dolt MySQL client (used when `.beads/dolt/` exists)                                                                   |
 | src/dispatch/mod.rs            | Agent dispatch, pipeline mapping, execution                                                                                                                  |
 | src/dispatch/providers.rs      | AgentProvider trait — claude / gemini / plugin-kind="dispatch" backends                                                                                      |
 | src/dispatch/sweep.rs          | Orphan-dispatch detection — self-heals stuck `Dispatched` beads (rosary-67c43d)                                                                              |
 | src/epic.rs                    | Semantic clustering, dedup, file overlap detection                                                                                                           |
-| src/dolt.rs                    | Dolt client (per-repo beads, server mode) — used only when `.beads/dolt/` exists                                                                             |
+| src/dolt/mod.rs                | Dolt client (per-repo beads, server mode) — used only when `.beads/dolt/` exists                                                                             |
 | src/store_dolt.rs              | Dolt backend for orchestrator state (pipeline, dispatches, cross-repo deps)                                                                                  |
 | src/store.rs                   | Backend-agnostic store traits (HierarchyStore, DispatchStore, LinkageStore)                                                                                  |
 | src/observation/mod.rs         | ADR-0010 substrate: Observation, FieldName, FieldAlgebra, Observer trait                                                                                     |
@@ -70,12 +71,12 @@ task all            # fmt + check + lint + test
 | src/observation/tree_fold.rs   | BDR Decade ⊃ Thread ⊃ Bead catamorphism (rollup status)                                                                                                      |
 | src/observation/quarantine.rs  | Cert-validity filter + queryable quarantine surface                                                                                                          |
 | src/handoff.rs                 | Structured context transfer between pipeline phases                                                                                                          |
-| src/workspace.rs               | Git/jj worktree creation and isolation                                                                                                                       |
+| src/workspace/mod.rs           | Git/jj worktree creation and isolation                                                                                                                       |
 | src/linear.rs                  | Linear sync CLI (`rsry sync`)                                                                                                                                |
 | src/linear_tracker.rs          | IssueTracker trait impl for Linear (cached states, configurable)                                                                                             |
 | src/github_mirror.rs           | `rsry sync --github` — bead context → PR comment                                                                                                             |
 | src/sync.rs                    | Backend-agnostic sync engine                                                                                                                                 |
-| src/config.rs                  | Configuration (repos, linear, http, tunnel, backend, plugins)                                                                                                |
+| src/config/mod.rs              | Configuration (repos, linear, http, tunnel, backend, plugins)                                                                                                |
 | src/plugin.rs                  | Plugin registry + PluginKind axis (Hook / Mcp / Dispatch / StateSink)                                                                                        |
 | src/pool.rs                    | Connection pool for multi-repo Dolt access                                                                                                                   |
 | src/main.rs                    | CLI entry + shared helpers (`generate_bead_id`, `resolve_beads_dir`)                                                                                         |
@@ -111,10 +112,10 @@ Pipeline mapping: issue_type → agent sequence (dispatch.rs `agent_pipeline()`)
 
 ## Beads (Issue Tracking)
 
-Beads are the distributed work tracking system. Each repo has `.beads/` with either a Dolt database (`.beads/dolt/`, server mode) or a SQLite `beads.db` (the default for single-user/local repos). Rosary reads/writes both in-process via `connect_bead_store` (`src/bead_sqlite.rs`) — it never invokes the `bd` CLI. See [ADR-0014](docs/adr/0014-decouple-rosary-from-bd.md).
+Beads are the distributed work tracking system. Each repo has `.beads/` with either a Dolt database (`.beads/dolt/`, server mode) or a SQLite `beads.db` (the default for single-user/local repos). Rosary reads/writes both in-process via `connect_bead_store` (`src/bead_sqlite/mod.rs`) — it never invokes the `bd` CLI. See [ADR-0014](docs/adr/0014-decouple-rosary-from-bd.md).
 
 ```bash
-# MCP tools (via rsry serve) — 31 tools
+# MCP tools (via rsry serve) — 39 tools
 # Beads
 rsry_bead_create / rsry_bead_update / rsry_bead_search / rsry_bead_close
 rsry_bead_comment / rsry_bead_comment_list / rsry_bead_comment_update / rsry_bead_comment_delete
@@ -181,6 +182,7 @@ File overlap is also re-checked in Phase 4 (dispatch loop) to catch beads queued
 | 0012 | Accepted   | Personal/root bead substrate (storage/sync/tamper)                      |
 | 0013 | Superseded | Bead substrate — adopt bd/Dolt as shared store (superseded by 0014)     |
 | 0014 | Accepted   | Decouple rosary from bd — speak the bead format, own the store          |
+| 0015 | Proposed   | Execution-lineage capsules — durable, resumable, proof-ready envelope   |
 
 ## BDR Hierarchy (Decade → Thread → Bead)
 
@@ -219,7 +221,7 @@ if the plugin reports coverage below the threshold.
 
 ## MCP Integration
 
-Rosary exposes 31 MCP tools via `rsry serve`. Accessible from:
+Rosary exposes 39 MCP tools via `rsry serve`. Accessible from:
 
 - Claude Code (stdio transport, configured in MCP settings)
 - Claude web (HTTP transport via tunnel)
