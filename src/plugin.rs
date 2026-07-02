@@ -932,6 +932,9 @@ mod assay_delta {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        // Close the write handle before the script is exec'd — an open writable
+        // fd on the file causes `Text file busy` (ETXTBSY) under CI timing.
+        drop(f);
         // Leak the tempdir so the script survives the test scope.
         std::mem::forget(dir);
         PluginConfig {
