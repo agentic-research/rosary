@@ -51,9 +51,22 @@ pub(crate) async fn get_client<'a>(repo_path: &str, pool: &'a RepoPool) -> Resul
     }
     let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
     let beads_dir = crate::resolve_beads_dir(&root);
-    Ok(StoreRef::Owned(
-        crate::bead_sqlite::connect_bead_store(&beads_dir).await?,
-    ))
+    // The repo isn't in the pool, so we open its store ad hoc from the path.
+    // If that fails (path missing, or read-only from this workspace — the
+    // `repo:agents` friction #5), surface a DETERMINISTIC, actionable error
+    // instead of leaking a raw filesystem errno up through MCP.
+    let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "repo `{name}` is not registered in the pool and its bead store at {} could not \
+                 be opened (the path may be missing, or read-only from this workspace). Register \
+                 the repo with rsry_repo_register, or pass a repo_path whose `.beads/` is writable \
+                 from here.",
+                beads_dir.display()
+            )
+        })?;
+    Ok(StoreRef::Owned(store))
 }
 
 pub(crate) enum StoreRef<'a> {
@@ -4086,6 +4099,30 @@ mod input_validation_tests {
         assert!(
             msg.contains("rsry_repo_register") || msg.contains("repo_path"),
             "error must surface the two recovery paths; got: {msg}"
+        );
+    }
+
+    /// rosary-ea412f (friction #5): filing into an unregistered repo whose
+    /// `.beads/` store can't be opened (missing / read-only from this
+    /// workspace, e.g. `repo:agents`) must fail with a DETERMINISTIC
+    /// "not registered → register it" message, not a raw filesystem errno.
+    #[tokio::test]
+    async fn get_client_unregistered_unwritable_repo_gives_deterministic_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("agents");
+        std::fs::create_dir(&repo).unwrap();
+        // Block the store: put a regular file where `.beads/` must be a dir, so
+        // connect_bead_store fails deterministically on every platform.
+        std::fs::write(repo.join(".beads"), b"not a directory").unwrap();
+
+        let err = match get_client(repo.to_str().unwrap(), &empty_pool()).await {
+            Ok(_) => panic!("opening a blocked bead store must fail"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not registered") && msg.contains("rsry_repo_register"),
+            "must be a deterministic 'register the repo' error, not a raw FS error; got: {msg}"
         );
     }
 
