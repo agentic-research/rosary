@@ -218,8 +218,9 @@ rsry bead create "Fix flaky retry backoff" --files src/retry.rs \
 `--acceptance` takes either a runnable command or a resolution statement.
 Planning beads (`epic`/`design`/`research`/`review`) are exempt — they describe
 work rather than ship a verifiable behavior. `rsry bead close` enforces the same
-condition, so a bead authored with `--force` (no condition) must declare one at
-close time.
+condition: a bead authored with `--force` (no condition) must either gain one
+before it closes, or be closed with `rsry bead close --force` to bypass the gate
+deliberately.
 
 ## Mache: structural code intelligence
 

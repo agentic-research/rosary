@@ -244,9 +244,11 @@ pub fn has_close_condition(
 /// guaranteeing the ADR-0010 invariant — no bead exists without a declared way
 /// to close it. Callers who want something sharper pass `acceptance_criteria`,
 /// `test_files`, or a runnable command in the description.
-pub const DEFAULT_PR_MERGE_CLOSE_CONDITION: &str = "Resolved when the linked PR merges — rosary's default close signal \
-     (the GitHub merge webhook advances the bead). Set a specific \
-     acceptance_criteria to override.";
+pub const DEFAULT_PR_MERGE_CLOSE_CONDITION: &str = concat!(
+    "Resolved when the linked PR merges — rosary's default close signal ",
+    "(the GitHub merge webhook advances the bead). ",
+    "Set a specific acceptance_criteria to override.",
+);
 
 /// Resolve the `acceptance_criteria` to persist for a *newly authored* bead.
 ///
@@ -999,6 +1001,35 @@ mod tests {
             &[],
             "" // empty structured field
         ));
+    }
+
+    #[test]
+    fn resolve_acceptance_criteria_defaults_only_when_needed() {
+        // Bare gated impl bead → honest PR-merge default (no double-spacing from
+        // the concat! literal).
+        let d = resolve_acceptance_criteria("task", "just do it", &[], "", false);
+        assert_eq!(d, DEFAULT_PR_MERGE_CLOSE_CONDITION);
+        assert!(
+            !d.contains("  "),
+            "default must not contain double spaces: {d:?}"
+        );
+        // Explicit wins verbatim.
+        assert_eq!(
+            resolve_acceptance_criteria("task", "d", &[], "closes when X", false),
+            "closes when X"
+        );
+        // Already-satisfied (command / test_files / exempt) → no synthesized text.
+        assert_eq!(
+            resolve_acceptance_criteria("task", "run cargo test", &[], "", false),
+            ""
+        );
+        assert_eq!(
+            resolve_acceptance_criteria("task", "d", &["t.rs".into()], "", false),
+            ""
+        );
+        assert_eq!(resolve_acceptance_criteria("epic", "d", &[], "", false), "");
+        // Force opts out of the default.
+        assert_eq!(resolve_acceptance_criteria("task", "d", &[], "", true), "");
     }
 
     #[test]
