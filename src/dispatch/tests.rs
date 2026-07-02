@@ -556,6 +556,28 @@ async fn codex_provider_starts_native_thread_and_exposes_session_ref() {
     assert!(starts[0].expected_mcp_tools.contains(&"lectio".to_string()));
 }
 
+/// rosary-d6d1bb: the Codex provider has NO CLI shell-out path. The
+/// unstructured `spawn_agent` seam (the `build_command`/CLI equivalent) must
+/// refuse, so codex can only run via the native structured `spawn_run` that
+/// yields a persistable `AgentSessionRef`. "Do not shell out for Codex" is
+/// enforced by construction, not prompt convention — registering the provider
+/// therefore can't produce a durable-session-less dispatch.
+#[test]
+fn codex_provider_has_no_cli_shell_out_path() {
+    let provider = CodexProvider::with_runtime(Arc::new(MockCodexRuntime {
+        captured: Arc::new(Mutex::new(Vec::new())),
+    }));
+    let repo = crate::testutil::TestRepo::new();
+    let err = match provider.spawn_agent("prompt", repo.path(), &PermissionProfile::Implement, "") {
+        Ok(_) => panic!("codex must refuse the CLI shell-out path"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("structured spawn_run"),
+        "codex should point callers at spawn_run; got: {err}"
+    );
+}
+
 #[test]
 fn codex_app_server_thread_start_maps_rosary_run_spec_to_codex_protocol() {
     let mut mcp_servers = std::collections::BTreeMap::new();
