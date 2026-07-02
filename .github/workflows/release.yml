@@ -42,8 +42,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Configure git auth for private deps
-        run: git config --global url."https://x-access-token:${{ secrets.LEYLINE_PAT }}@github.com/".insteadOf "https://github.com/"
+      # leyline-vcs is pulled from the PUBLIC agentic-research/ley-line-open,
+      # so no git auth / LEYLINE_PAT is needed (rosary-7b1191).
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'

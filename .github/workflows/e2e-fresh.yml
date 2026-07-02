@@ -48,15 +48,8 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      # The e2e image's `cargo build` step pulls leyline-vcs from
-      # agentic-research/ley-line-open. On runs where the repo is public this
-      # is a no-op; for private deps the LEYLINE_PAT secret is injected the
-      # same way as the other CI jobs in ci.yml.
-      - name: configure git auth for private deps
-        if: ${{ secrets.LEYLINE_PAT != '' }}
-        env:
-          LEYLINE_PAT: ${{ secrets.LEYLINE_PAT }}
-        run: git config --global url."https://x-access-token:${LEYLINE_PAT}@github.com/".insteadOf "https://github.com/"
+      # leyline-vcs is pulled from the PUBLIC agentic-research/ley-line-open,
+      # so no git auth / LEYLINE_PAT is needed (rosary-7b1191).
 
       - uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
         with:
