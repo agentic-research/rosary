@@ -349,13 +349,16 @@ fn bead_close() {
         "close output should confirm: {stdout}"
     );
 
-    // Without --force, an impl bead with no test command should be refused.
-    let id2 = sandbox.create_bead("Block me");
+    // A deliberately forced, condition-less impl bead should still be refused
+    // at close time unless close itself is forced.
+    let stdout2 = sandbox.run_ok(&["bead", "create", "Block me", "-f", "src/main.rs", "--force"]);
+    let id2 = extract_bead_id(&stdout2)
+        .unwrap_or_else(|| panic!("could not extract bead ID from: {stdout2}"));
     let out = sandbox.run(&["bead", "close", &id2]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !out.status.success(),
-        "close without --force should fail when description has no test command: stderr={stderr}"
+        "close without --force should fail when bead has no close condition: stderr={stderr}"
     );
     assert!(
         stderr.contains("verifiable test command"),

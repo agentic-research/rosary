@@ -22,19 +22,19 @@ classifies what should become deterministic before Codex fan-out becomes routine
 
 ## Friction Summary
 
-| Incident | What Happened | Classification | Deterministic Replacement |
-| --- | --- | --- | --- |
-| Skill existed but was not discoverable | `/pr-review-kit` existed at `~/github/jamestexas/agents/skills/pr-review-kit/SKILL.md`, but Codex did not advertise it as an available skill. The orchestrator had to find and pass the file manually. | Discovery nondeterminism | Register skill roots and agent definitions as explicit Rosary/Codex capabilities; test that named skills resolve before dispatch. |
-| Expected MCP tool was unavailable | The user expected rsry, mache, and lectio. rsry and mache were available; lectio was not exposed in this session. | Tool-grant nondeterminism | Model expected and available MCP tools separately in `AgentRunSpec`; dispatch should warn or fail according to issue-type policy when required tools are absent. |
-| Review scope boundaries sounded optional | Fresh-eyes review found no blockers but noted Codex provider registration and `AgentSessionRef` persistence were out of scope. In prose, those could be forgotten. | Review-to-backlog loss | Convert every scoped-out edge case into a bead with owner, dependencies, files, tests, and acceptance criteria. |
-| Same-repo dependency link required legacy path | `rsry_bead_link(scope="repo:rosary", ...)` failed and required `repo_path`. The workaround succeeded, but the canonical scope API was not enough. | MCP ergonomics nondeterminism | Scope-only operations should resolve through the registered repo pool. Add MCP handler tests for scope-only same-repo links. |
-| Agents repo could not receive a bead | `repo:agents` was not loaded in the rsry repo pool, and direct `repo_path` access hit a read-only filesystem error from this workspace. | Repo-discovery nondeterminism | Register all orchestration-critical repos in the repo pool, including `agents`, or expose a deterministic cross-repo filing fallback. |
-| Semgrep failed before scanning | `task lint` got through clippy, then Semgrep failed during system X509 trust initialization before evaluating rules. Metrics/version flags did not prevent the failure. | Environment nondeterminism | Make Semgrep execution hermetic or degrade explicitly when the scanner cannot initialize. Preserve clippy and Semgrep as separate verification observations. |
-| `sccache` wrapper failed in sandbox | Cargo commands initially failed because the inherited `RUSTC_WRAPPER=sccache` could not execute in the sandbox. `RUSTC_WRAPPER=` was required for verification. | Environment nondeterminism | Record build environment in verification artifacts; provide Rosary task wrappers that normalize known sandbox-sensitive env vars. |
-| Build hash was stale after amend | `rsry --version` reported the pre-amend hash until the package was cleaned and rebuilt. | Build artifact nondeterminism | Verification should record both git SHA and binary-reported SHA, and fail if they disagree for release/PR attestations. |
-| PR body shell interpolation | An inline `gh pr create --body "..."` command interpreted Markdown backticks in the PR body as shell command substitution. The PR was created, but the body needed replacement via `--body-file`. | Shell transport nondeterminism | Use file-backed PR/comment bodies for generated review and PR artifacts; treat shell strings as unsafe transport for rich Markdown. |
-| Fresh-eyes review required manual prompt assembly | Codex subagent review worked, but only after the orchestrator manually supplied the kit and agent instructions. | Prompt-convention reliance | A review dispatch should reference a named review harness and immutable skill digest rather than relying on prompt assembly. |
-| PR and GitHub checks were tempting as truth | GitHub PR state was useful, but review history and verification should not disappear if GitHub threads/checks are edited, resolved, or unavailable. | External projection risk | Rosary should store review matrices and verification results as first-class observations; GitHub is a projection. |
+| Incident                                          | What Happened                                                                                                                                                                                          | Classification                 | Deterministic Replacement                                                                                                                                        |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Skill existed but was not discoverable            | `/pr-review-kit` existed at `~/github/jamestexas/agents/skills/pr-review-kit/SKILL.md`, but Codex did not advertise it as an available skill. The orchestrator had to find and pass the file manually. | Discovery nondeterminism       | Register skill roots and agent definitions as explicit Rosary/Codex capabilities; test that named skills resolve before dispatch.                                |
+| Expected MCP tool was unavailable                 | The user expected rsry, mache, and lectio. rsry and mache were available; lectio was not exposed in this session.                                                                                      | Tool-grant nondeterminism      | Model expected and available MCP tools separately in `AgentRunSpec`; dispatch should warn or fail according to issue-type policy when required tools are absent. |
+| Review scope boundaries sounded optional          | Fresh-eyes review found no blockers but noted Codex provider registration and `AgentSessionRef` persistence were out of scope. In prose, those could be forgotten.                                     | Review-to-backlog loss         | Convert every scoped-out edge case into a bead with owner, dependencies, files, tests, and acceptance criteria.                                                  |
+| Same-repo dependency link required legacy path    | `rsry_bead_link(scope="repo:rosary", ...)` failed and required `repo_path`. The workaround succeeded, but the canonical scope API was not enough.                                                      | MCP ergonomics nondeterminism  | Scope-only operations should resolve through the registered repo pool. Add MCP handler tests for scope-only same-repo links.                                     |
+| Agents repo could not receive a bead              | `repo:agents` was not loaded in the rsry repo pool, and direct `repo_path` access hit a read-only filesystem error from this workspace.                                                                | Repo-discovery nondeterminism  | Register all orchestration-critical repos in the repo pool, including `agents`, or expose a deterministic cross-repo filing fallback.                            |
+| Semgrep failed before scanning                    | `task lint` got through clippy, then Semgrep failed during system X509 trust initialization before evaluating rules. Metrics/version flags did not prevent the failure.                                | Environment nondeterminism     | Make Semgrep execution hermetic or degrade explicitly when the scanner cannot initialize. Preserve clippy and Semgrep as separate verification observations.     |
+| `sccache` wrapper failed in sandbox               | Cargo commands initially failed because the inherited `RUSTC_WRAPPER=sccache` could not execute in the sandbox. `RUSTC_WRAPPER=` was required for verification.                                        | Environment nondeterminism     | Record build environment in verification artifacts; provide Rosary task wrappers that normalize known sandbox-sensitive env vars.                                |
+| Build hash was stale after amend                  | `rsry --version` reported the pre-amend hash until the package was cleaned and rebuilt.                                                                                                                | Build artifact nondeterminism  | Verification should record both git SHA and binary-reported SHA, and fail if they disagree for release/PR attestations.                                          |
+| PR body shell interpolation                       | An inline `gh pr create --body "..."` command interpreted Markdown backticks in the PR body as shell command substitution. The PR was created, but the body needed replacement via `--body-file`.      | Shell transport nondeterminism | Use file-backed PR/comment bodies for generated review and PR artifacts; treat shell strings as unsafe transport for rich Markdown.                              |
+| Fresh-eyes review required manual prompt assembly | Codex subagent review worked, but only after the orchestrator manually supplied the kit and agent instructions.                                                                                        | Prompt-convention reliance     | A review dispatch should reference a named review harness and immutable skill digest rather than relying on prompt assembly.                                     |
+| PR and GitHub checks were tempting as truth       | GitHub PR state was useful, but review history and verification should not disappear if GitHub threads/checks are edited, resolved, or unavailable.                                                    | External projection risk       | Rosary should store review matrices and verification results as first-class observations; GitHub is a projection.                                                |
 
 ## Determinism Classes
 
@@ -78,16 +78,16 @@ permission profile, bead dependency, or review artifact.
 
 ## Conversion Rules
 
-| LLM Rule | Deterministic Form | Test Shape |
-| --- | --- | --- |
-| Use this skill | Skill reference by name + resolved path + content digest | Dispatch fails if required skill cannot resolve. |
-| Use these MCP tools | `required_tools` and `optional_tools` in run spec | Fake provider captures grants; missing required tool produces a clear error. |
-| Keep agent read-only | Permission profile enforced by provider/sandbox/tool grants | Read-only fake provider cannot receive write-capable grants. |
-| Do not shell out for Codex | Native provider has no durable `build_command` path | `provider_by_name("codex")` has no CLI command durable path. |
-| Preserve review history | Review matrix stored as Rosary artifact/observation | Store round trip keeps reviewer, SHA, evidence, verdict. |
-| PR is a container | WorkRef + commit SHA + patch/PR metadata in review artifact | GitHub PR state can vanish while Rosary review remains queryable. |
-| Run CI | Named recipe, e.g. `task ci`, plus environment capture | Verification artifact records recipe, exit status, logs, binary SHA. |
-| Follow up later | Bead with dependency edge and file/test scopes | Review notes cannot close without linked follow-up beads. |
+| LLM Rule                   | Deterministic Form                                          | Test Shape                                                                   |
+| -------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Use this skill             | Skill reference by name + resolved path + content digest    | Dispatch fails if required skill cannot resolve.                             |
+| Use these MCP tools        | `required_tools` and `optional_tools` in run spec           | Fake provider captures grants; missing required tool produces a clear error. |
+| Keep agent read-only       | Permission profile enforced by provider/sandbox/tool grants | Read-only fake provider cannot receive write-capable grants.                 |
+| Do not shell out for Codex | Native provider has no durable `build_command` path         | `provider_by_name("codex")` has no CLI command durable path.                 |
+| Preserve review history    | Review matrix stored as Rosary artifact/observation         | Store round trip keeps reviewer, SHA, evidence, verdict.                     |
+| PR is a container          | WorkRef + commit SHA + patch/PR metadata in review artifact | GitHub PR state can vanish while Rosary review remains queryable.            |
+| Run CI                     | Named recipe, e.g. `task ci`, plus environment capture      | Verification artifact records recipe, exit status, logs, binary SHA.         |
+| Follow up later            | Bead with dependency edge and file/test scopes              | Review notes cannot close without linked follow-up beads.                    |
 
 ## Required Follow-Up Beads
 
@@ -151,10 +151,10 @@ This friction class is addressed when:
 
 1. A Codex worker can request `pr-review-kit` by name and fail deterministically
    if it is missing.
-2. A dispatch record can persist a provider-native session reference even when
+1. A dispatch record can persist a provider-native session reference even when
    `pid=None`.
-3. A review artifact survives without GitHub and can be queried from Rosary.
-4. `task ci` results can be recorded as verification observations with the
+1. A review artifact survives without GitHub and can be queried from Rosary.
+1. `task ci` results can be recorded as verification observations with the
    reviewed commit SHA and environment summary.
-5. Every review "out of scope" item either links to a bead or is explicitly
+1. Every review "out of scope" item either links to a bead or is explicitly
    marked as intentionally discarded.

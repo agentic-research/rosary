@@ -697,6 +697,46 @@ async fn verify_completed_verify_fail_retries() {
     assert_eq!(result.status_updates[1].2, "open", "retry reopens bead");
 }
 
+/// dev-agent exits successfully and commit references the bead, but the bead's
+/// runnable close condition fails → verification fails → Retry.
+#[tokio::test]
+async fn verify_completed_close_condition_failure_retries() {
+    let test_repo = crate::testutil::TestRepo::new();
+    test_repo.commit_with_bead_ref("bug-cc", "good.rs", "fn good() {}");
+
+    let mut r = reconciler_with_bead("bug-cc", "test-repo", "bug", "dev-agent", 0).await;
+    r.completed_work_dirs.insert(
+        "bug-cc".to_string(),
+        (test_repo.path().to_path_buf(), "test-repo".to_string()),
+    );
+    r.repo_info.insert(
+        "test-repo".to_string(),
+        (test_repo.path().to_path_buf(), "unknown".to_string()),
+    );
+
+    let mut bead = crate::testutil::make_bead("bug-cc", "bug", "test-repo");
+    bead.acceptance_criteria =
+        "Close condition: cargo test --manifest-path /definitely/missing".to_string();
+    let beads = vec![bead];
+    let thread_map = std::collections::HashMap::new();
+
+    let result = r
+        .verify_completed(&[("bug-cc".to_string(), true)], &beads, &thread_map)
+        .await;
+
+    assert_eq!(result.passed, 0);
+    assert_eq!(result.failed, 1, "close-condition failure → retry");
+    assert_eq!(result.deadlettered, 0);
+    assert_eq!(result.phase_advances.len(), 0, "no advance on verify fail");
+    assert_eq!(
+        r.trackers
+            .get("bug-cc")
+            .and_then(|tracker| tracker.highest_tier),
+        Some(1),
+        "commit and bead_ref pass, close-condition fails"
+    );
+}
+
 /// Agent process exits non-zero → Retry (regardless of verify).
 #[tokio::test]
 async fn verify_completed_exit_failure_retries() {
@@ -1009,7 +1049,7 @@ async fn verify_agent_readonly_vs_readwrite() {
     let mut r = reconciler_with_bead("ro-1", "repo", "bug", "scoping-agent", 0).await;
 
     // ReadOnly agent → verify_agent returns None (skip)
-    let result = r.verify_agent("ro-1");
+    let result = r.verify_agent("ro-1", None);
     assert!(
         result.is_none(),
         "scoping-agent (ReadOnly) should skip verification"
@@ -1018,7 +1058,7 @@ async fn verify_agent_readonly_vs_readwrite() {
     // dev-agent with no work_dir → verify_agent returns None (no work_dir)
     // but NOT because it was skipped as ReadOnly
     let mut r2 = reconciler_with_bead("rw-1", "repo", "bug", "dev-agent", 0).await;
-    let result2 = r2.verify_agent("rw-1");
+    let result2 = r2.verify_agent("rw-1", None);
     assert!(
         result2.is_none(),
         "dev-agent without work_dir returns None (not found, not skipped)"
@@ -1032,7 +1072,7 @@ async fn verify_agent_readonly_vs_readwrite() {
         "rw-2".to_string(),
         (test_repo.path().to_path_buf(), "repo".to_string()),
     );
-    let result3 = r3.verify_agent("rw-2");
+    let result3 = r3.verify_agent("rw-2", None);
     assert!(
         result3.is_some(),
         "dev-agent WITH work_dir should run verifier"

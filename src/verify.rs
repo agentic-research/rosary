@@ -6,6 +6,9 @@
 use anyhow::Result;
 use std::path::Path;
 
+mod close_condition;
+use close_condition::CloseConditionCheck;
+
 /// Result of a single verification tier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyResult {
@@ -85,7 +88,14 @@ impl Verifier {
     }
 
     /// Build the default verification pipeline for a given language.
+    #[allow(dead_code)] // API surface for callers that do not have bead context.
     pub fn for_language(lang: &str) -> Self {
+        Self::for_language_with_close_condition(lang, None)
+    }
+
+    /// Build the default verification pipeline and include a bead-specific
+    /// runnable close condition when one is declared.
+    pub fn for_language_with_close_condition(lang: &str, close_condition: Option<&str>) -> Self {
         let mut tiers: Vec<Box<dyn VerifyTier>> =
             vec![Box::new(CommitCheck), Box::new(WorkRefCheck)];
 
@@ -119,6 +129,12 @@ impl Verifier {
             _ => {
                 // Generic: just check for a commit
             }
+        }
+
+        if let Some(close_condition) = close_condition
+            && let Some(tier) = CloseConditionCheck::from_text(close_condition)
+        {
+            tiers.push(Box::new(tier));
         }
 
         tiers.push(Box::new(DiffSanityCheck {
@@ -1123,6 +1139,25 @@ mod tests {
         assert_eq!(summary.highest_passing_tier, Some(0)); // only commit
         let (name, _) = summary.first_failure().unwrap();
         assert_eq!(name, "bead_ref");
+    }
+
+    #[test]
+    fn close_condition_tier_is_inserted_before_diff_and_review() {
+        let verifier =
+            Verifier::for_language_with_close_condition("unknown", Some("cargo test --help"));
+        let names: Vec<_> = verifier.tiers.iter().map(|tier| tier.name()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "commit",
+                "bead_ref",
+                "close-condition",
+                "diff-sanity",
+                "mache-blast-radius",
+                "mache-duplication",
+                "review",
+            ]
+        );
     }
 
     fn run_git(dir: &Path, args: &[&str]) {

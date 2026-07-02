@@ -78,7 +78,11 @@ impl Reconciler {
     /// Run verification tiers on an agent's work directory.
     /// Returns None (skip verification) for ReadOnly agents — they produce
     /// research/comments, not code changes.
-    pub(super) fn verify_agent(&mut self, bead_id: &str) -> Option<VerifySummary> {
+    pub(super) fn verify_agent(
+        &mut self,
+        bead_id: &str,
+        close_condition: Option<&str>,
+    ) -> Option<VerifySummary> {
         // Skip verification for ReadOnly agents (scoping-agent, staging-agent review)
         // They don't write code — their output is bead comments, not commits.
         let is_readonly = self
@@ -100,7 +104,7 @@ impl Reconciler {
             .map(|(_, l)| l.as_str())
             .unwrap_or("unknown");
 
-        let mut verifier = Verifier::for_language(lang);
+        let mut verifier = Verifier::for_language_with_close_condition(lang, close_condition);
         let ctx = crate::plugin::PluginContext::new(bead_id, &repo);
         for tier in self.plugin_registry.verify_tiers(ctx) {
             verifier.push(tier);

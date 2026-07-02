@@ -70,8 +70,13 @@ impl Reconciler {
 
         let retries = self.trackers.get(bead_id).map(|t| t.retries).unwrap_or(0);
 
+        let close_condition = beads
+            .iter()
+            .find(|b| b.id == bead_id)
+            .map(close_condition_text);
+
         let (verify_passed, verify_summary) = if exit_success {
-            let vs = self.verify_agent(bead_id);
+            let vs = self.verify_agent(bead_id, close_condition.as_deref());
             match &vs {
                 Some(v) if v.passed() => (Some(true), vs),
                 Some(_) => (Some(false), vs),
@@ -516,8 +521,20 @@ impl Reconciler {
                 continue;
             }
 
-            let empty_beads: Vec<crate::bead::Bead> = Vec::new();
             let thread_map: HashMap<String, String> = HashMap::new();
+            let mut completed_beads = Vec::new();
+            for (bead_id, _) in &completed {
+                let repo = self
+                    .trackers
+                    .get(bead_id.as_str())
+                    .map(|t| t.repo.clone())
+                    .unwrap_or_default();
+                if let Some(client) = self.dolt_client(&repo).await
+                    && let Ok(Some(bead)) = client.get_bead(bead_id, &repo).await
+                {
+                    completed_beads.push(bead);
+                }
+            }
 
             for (bead_id, exit_success) in &completed {
                 let repo = self
@@ -559,7 +576,7 @@ impl Reconciler {
                 }
 
                 let (action, verify_summary) =
-                    self.verify_and_decide(bead_id, *exit_success, &empty_beads);
+                    self.verify_and_decide(bead_id, *exit_success, &completed_beads);
 
                 let outcome = self
                     .execute_action(
@@ -722,5 +739,13 @@ impl Reconciler {
         }
 
         Ok(())
+    }
+}
+
+fn close_condition_text(bead: &crate::bead::Bead) -> String {
+    match (bead.acceptance_criteria.trim(), bead.description.trim()) {
+        ("", description) => description.to_string(),
+        (acceptance_criteria, "") => acceptance_criteria.to_string(),
+        (acceptance_criteria, description) => format!("{acceptance_criteria}\n{description}"),
     }
 }
