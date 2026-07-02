@@ -652,7 +652,7 @@ fn tree_fold_deterministic() {
 #[test]
 fn convergence_under_partition() {
     let w = workref("b1");
-    let half1 = vec![
+    let half1 = [
         obs(
             &w,
             "linear",
@@ -670,7 +670,7 @@ fn convergence_under_partition() {
             at(2000),
         ),
     ];
-    let half2 = vec![obs(
+    let half2 = [obs(
         &w,
         "github",
         "e3",

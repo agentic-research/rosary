@@ -515,7 +515,7 @@ pub(crate) mod tests {
                 continue;
             }
             visited.insert(node.bead_id.clone());
-            for dep in deps.iter().filter(|d| &d.from == &node) {
+            for dep in deps.iter().filter(|d| d.from == node) {
                 stack.push(dep.to.clone());
             }
         }
@@ -741,16 +741,14 @@ pub(crate) mod tests {
         async fn add_dependency(&self, dep: &CrossRepoDep) -> Result<()> {
             let mut deps = self.deps.lock().unwrap();
             // Same-repo cycle check: reject if to→from path exists
-            if dep.from.repo == dep.to.repo {
-                if can_reach(&deps, &dep.to, &dep.from) {
-                    anyhow::bail!(
-                        "cycle: adding {}/{} → {}/{} would create a per-repo cycle",
-                        dep.from.repo,
-                        dep.from.bead_id,
-                        dep.to.repo,
-                        dep.to.bead_id
-                    );
-                }
+            if dep.from.repo == dep.to.repo && can_reach(&deps, &dep.to, &dep.from) {
+                anyhow::bail!(
+                    "cycle: adding {}/{} → {}/{} would create a per-repo cycle",
+                    dep.from.repo,
+                    dep.from.bead_id,
+                    dep.to.repo,
+                    dep.to.bead_id
+                );
             }
             if !deps.iter().any(|d| d.from == dep.from && d.to == dep.to) {
                 deps.push(dep.clone());

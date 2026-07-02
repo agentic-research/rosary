@@ -342,11 +342,11 @@ mod tests {
             root.set_tool_name(tool);
             root.set_arguments_json(args_json);
         }
-        let words = capnp::serialize::write_message_to_words(&builder);
+
         // write_message_to_words returns a Vec<u8> with the standard segment-table
         // framing already prepended — the same bytes a peer would read with
         // `serialize::try_read_message`.
-        words
+        capnp::serialize::write_message_to_words(&builder)
     }
 
     fn build_call_typed(tool: &str, args: serde_json::Value) -> Vec<u8> {
