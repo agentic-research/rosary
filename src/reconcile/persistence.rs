@@ -87,6 +87,12 @@ impl Reconciler {
     /// This runs alongside persist_status — both the mutable cell AND the
     /// append-only observation are written. Once we validate the lattice
     /// produces identical status, persist_status can be removed.
+    ///
+    /// R4b step 1 (rosary-a66b3a): the verdict is now recorded as a REAL
+    /// [`crate::observation::Observation`] (canonical JSON) rather than a
+    /// flattened `format!` string, so review/CI history is a structured,
+    /// queryable record. A later slice folds these through the `FieldAlgebra`
+    /// registry and flips the read path off `persist_status`.
     pub(super) async fn append_observation(
         &mut self,
         bead_id: &str,
@@ -97,8 +103,26 @@ impl Reconciler {
         detail: &str,
     ) {
         if let Some(client) = self.dolt_client(repo).await {
-            let event_detail =
-                format!("phase={phase} agent={agent} verdict={verdict:?} detail={detail}");
+            let obs = crate::observation::Observation::pipeline_verdict(
+                crate::store::WorkRef {
+                    repo: repo.to_string(),
+                    scope: String::new(),
+                    bead_id: bead_id.to_string(),
+                },
+                crate::observation::Source::new("rosary"),
+                format!("phase{phase}:{agent}"),
+                verdict.into(),
+                chrono::Utc::now(),
+            );
+            // Store the structured observation + the human detail. Falls back to
+            // the legacy flat string only if serialization somehow fails.
+            let event_detail = serde_json::to_string(&serde_json::json!({
+                "observation": obs,
+                "detail": detail,
+            }))
+            .unwrap_or_else(|_| {
+                format!("phase={phase} agent={agent} verdict={verdict:?} detail={detail}")
+            });
             client
                 .log_event(bead_id, "observation", &event_detail)
                 .await;
