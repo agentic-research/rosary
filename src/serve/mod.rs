@@ -33,8 +33,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::RwLock;
 
@@ -309,7 +310,10 @@ pub async fn run_ipc_call(
 pub(crate) struct AppState {
     pub pool: Arc<RepoPool>,
     pub config_path: Arc<str>,
-    pub sessions: Arc<RwLock<HashSet<String>>>,
+    /// Live MCP sessions → last-activity time. Swept on new-session insert so
+    /// orphaned sessions (client disconnected without DELETE) can't grow
+    /// unboundedly (rosary-42d1bb).
+    pub sessions: Arc<RwLock<HashMap<String, Instant>>>,
     /// Linear webhook signing secret (from config or env).
     pub webhook_secret: Option<Arc<str>>,
     /// GitHub webhook signing secret (from config or env).
@@ -384,10 +388,24 @@ fn validate_accept(
     Ok(())
 }
 
-/// Validate session ID is present and known.
+/// Sessions idle longer than this are swept (last-activity TTL). Generous so
+/// long-lived interactive sessions survive; bounds memory from orphaned
+/// sessions whose clients disconnected without a DELETE (rosary-42d1bb).
+const SESSION_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// Drop sessions whose last activity is older than `ttl`. Returns the count
+/// evicted. Pure (takes `now`) so it's unit-testable.
+fn sweep_expired(sessions: &mut HashMap<String, Instant>, now: Instant, ttl: Duration) -> usize {
+    let before = sessions.len();
+    sessions.retain(|_, &mut last| now.duration_since(last) < ttl);
+    before - sessions.len()
+}
+
+/// Validate session ID is present and known, and touch its last-activity time
+/// (so active sessions aren't swept).
 async fn validate_session(
     headers: &axum::http::HeaderMap,
-    sessions: &RwLock<HashSet<String>>,
+    sessions: &RwLock<HashMap<String, Instant>>,
 ) -> std::result::Result<(), axum::response::Response> {
     use axum::response::IntoResponse;
     let session_id = headers.get("mcp-session-id").and_then(|v| v.to_str().ok());
@@ -398,7 +416,9 @@ async fn validate_session(
         )
             .into_response()),
         Some(id) => {
-            if sessions.read().await.contains(id) {
+            let mut guard = sessions.write().await;
+            if let Some(last) = guard.get_mut(id) {
+                *last = Instant::now(); // touch → last-activity TTL
                 Ok(())
             } else {
                 Err((axum::http::StatusCode::NOT_FOUND, "Unknown session").into_response())
@@ -508,7 +528,15 @@ fn handle_mcp_post(
 
         if is_initialize {
             let session_id = uuid::Uuid::new_v4().to_string();
-            state.sessions.write().await.insert(session_id.clone());
+            {
+                let mut guard = state.sessions.write().await;
+                let now = Instant::now();
+                let evicted = sweep_expired(&mut guard, now, SESSION_TTL);
+                if evicted > 0 {
+                    eprintln!("[rsry-mcp] swept {evicted} idle session(s)");
+                }
+                guard.insert(session_id.clone(), now);
+            }
             eprintln!("[rsry-mcp] new session: {session_id}");
             return json_response(
                 axum::http::StatusCode::OK,
@@ -534,7 +562,7 @@ async fn handle_mcp_delete(
     let session_id = headers.get("mcp-session-id").and_then(|v| v.to_str().ok());
     match session_id {
         Some(id) => {
-            if state.sessions.write().await.remove(id) {
+            if state.sessions.write().await.remove(id).is_some() {
                 eprintln!("[rsry-mcp] session terminated: {id}");
                 axum::http::StatusCode::OK
             } else {
@@ -588,7 +616,7 @@ async fn run_http(config_path: &str, port: u16) -> Result<()> {
     let state = AppState {
         pool: pool.clone(),
         config_path: Arc::from(config_path),
-        sessions: Arc::new(RwLock::new(HashSet::new())),
+        sessions: Arc::new(RwLock::new(HashMap::new())),
         webhook_secret: webhook_secret.map(|s| Arc::from(s.as_str())),
         github_webhook_secret: github_webhook_secret.map(|s| Arc::from(s.as_str())),
         backend,
@@ -916,6 +944,22 @@ mod tests {
     }
 
     #[test]
+    fn sweep_expired_drops_only_idle_sessions() {
+        // rosary-42d1bb: orphaned sessions must not accumulate unboundedly.
+        let now = Instant::now();
+        let future = now + SESSION_TTL + Duration::from_secs(1);
+        let mut sessions = HashMap::new();
+        sessions.insert("idle".to_string(), now); // last activity: now
+        sessions.insert("fresh".to_string(), future); // touched at `future`
+
+        let evicted = sweep_expired(&mut sessions, future, SESSION_TTL);
+
+        assert_eq!(evicted, 1, "only the idle session is evicted");
+        assert!(sessions.contains_key("fresh"), "active session survives");
+        assert!(!sessions.contains_key("idle"), "idle session swept");
+    }
+
+    #[test]
     fn validate_origin_allows_no_origin() {
         let headers = axum::http::HeaderMap::new();
         assert!(validate_origin(&headers).is_ok());
@@ -963,14 +1007,14 @@ mod tests {
 
     #[tokio::test]
     async fn validate_session_rejects_missing() {
-        let sessions = RwLock::new(HashSet::new());
+        let sessions = RwLock::new(HashMap::new());
         let headers = axum::http::HeaderMap::new();
         assert!(validate_session(&headers, &sessions).await.is_err());
     }
 
     #[tokio::test]
     async fn validate_session_rejects_unknown() {
-        let sessions = RwLock::new(HashSet::new());
+        let sessions = RwLock::new(HashMap::new());
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("mcp-session-id", "unknown-id".parse().unwrap());
         assert!(validate_session(&headers, &sessions).await.is_err());
@@ -978,7 +1022,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_session_accepts_known() {
-        let sessions = RwLock::new(HashSet::from(["abc-123".to_string()]));
+        let sessions = RwLock::new(HashMap::from([("abc-123".to_string(), Instant::now())]));
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("mcp-session-id", "abc-123".parse().unwrap());
         assert!(validate_session(&headers, &sessions).await.is_ok());
@@ -993,7 +1037,7 @@ mod tests {
         let state = AppState {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
-            sessions: Arc::new(RwLock::new(HashSet::new())),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
             webhook_secret: None,
             github_webhook_secret: None,
             backend: None,
@@ -1030,7 +1074,7 @@ mod tests {
         let state = AppState {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
-            sessions: Arc::new(RwLock::new(HashSet::new())),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
             webhook_secret: None,
             github_webhook_secret: None,
             backend: None,
@@ -1064,7 +1108,10 @@ mod tests {
         let state = AppState {
             pool: Arc::new(RepoPool::empty()),
             config_path: Arc::from("test.toml"),
-            sessions: Arc::new(RwLock::new(HashSet::from(["sess-1".to_string()]))),
+            sessions: Arc::new(RwLock::new(HashMap::from([(
+                "sess-1".to_string(),
+                Instant::now(),
+            )]))),
             webhook_secret: None,
             github_webhook_secret: None,
             backend: None,
