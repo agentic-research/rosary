@@ -218,6 +218,25 @@ impl PipelineVerdictValue {
     }
 }
 
+/// Map the substrate's `dolt::observations::Verdict` (what the reconciler emits
+/// today) onto the lattice's `PipelineVerdictValue`. This is the bridge that
+/// lets `append_observation` construct a real [`Observation`] instead of
+/// flattening the verdict to a string (rosary-a66b3a / R4b, step 1).
+impl From<crate::dolt::observations::Verdict> for PipelineVerdictValue {
+    fn from(v: crate::dolt::observations::Verdict) -> Self {
+        use crate::dolt::observations::Verdict as V;
+        match v {
+            V::Dispatched => PipelineVerdictValue::Dispatched,
+            V::Verifying => PipelineVerdictValue::Verifying,
+            V::Pass => PipelineVerdictValue::Pass,
+            V::PrOpen => PipelineVerdictValue::PrOpen,
+            V::Done => PipelineVerdictValue::Done,
+            V::Fail => PipelineVerdictValue::Fail,
+            V::Deadletter => PipelineVerdictValue::Deadletter,
+        }
+    }
+}
+
 // ── Identity attestation (signet cert) ──────────────────────────────────
 
 /// Stub for the signet ephemeral cert attached to user-authored observations.
@@ -266,6 +285,35 @@ pub struct Observation {
 }
 
 impl Observation {
+    /// Construct a real `PipelineVerdict` observation about a work item — the
+    /// primitive the reconciler's `append_observation` uses to record an
+    /// agent-pipeline verdict as a first-class, folded-later `Observation`
+    /// instead of a flattened `format!` string (rosary-a66b3a / R4b, step 1).
+    ///
+    /// `payload_hash` is computed canonically so replays of the same
+    /// `(source, field, value)` dedup correctly.
+    pub fn pipeline_verdict(
+        work_item: WorkRef,
+        source: Source,
+        source_event_id: impl Into<String>,
+        verdict: PipelineVerdictValue,
+        observed_at: DateTime<Utc>,
+    ) -> Self {
+        let field = FieldName::PipelineVerdict;
+        let value = FieldValue::PipelineVerdict(verdict);
+        let payload_hash = Observation::compute_payload_hash(&source, &field, &value);
+        Observation {
+            work_item,
+            source,
+            source_event_id: source_event_id.into(),
+            field,
+            value,
+            observed_at,
+            cert: None,
+            payload_hash,
+        }
+    }
+
     /// The dedup key. Two observations with the same key are the same event;
     /// the second insertion is a no-op (ADR-0010 invariant 8).
     pub fn dedup_key(&self) -> DedupKey {
@@ -431,6 +479,61 @@ mod tests {
             scope: String::new(),
             bead_id: "rosary-97660c".to_string(),
         }
+    }
+
+    /// R4b step 1: every substrate `Verdict` maps onto a lattice
+    /// `PipelineVerdictValue` (so `append_observation` can build a real
+    /// `Observation` instead of a flattened string).
+    #[test]
+    fn verdict_maps_to_pipeline_verdict_value() {
+        use crate::dolt::observations::Verdict as V;
+        let cases = [
+            (V::Dispatched, PipelineVerdictValue::Dispatched),
+            (V::Verifying, PipelineVerdictValue::Verifying),
+            (V::Pass, PipelineVerdictValue::Pass),
+            (V::PrOpen, PipelineVerdictValue::PrOpen),
+            (V::Done, PipelineVerdictValue::Done),
+            (V::Fail, PipelineVerdictValue::Fail),
+            (V::Deadletter, PipelineVerdictValue::Deadletter),
+        ];
+        for (v, expected) in cases {
+            assert_eq!(PipelineVerdictValue::from(v), expected);
+        }
+    }
+
+    /// The `pipeline_verdict` constructor produces a well-formed, content-hashed
+    /// `Observation` whose dedup key is stable across identical rebuilds.
+    #[test]
+    fn pipeline_verdict_observation_is_well_formed_and_dedup_stable() {
+        let at = chrono::Utc::now();
+        let mk = || {
+            Observation::pipeline_verdict(
+                sample_workref(),
+                Source::new("rosary"),
+                "phase2:dev-agent",
+                PipelineVerdictValue::Pass,
+                at,
+            )
+        };
+        let obs = mk();
+        assert_eq!(obs.field, FieldName::PipelineVerdict);
+        assert_eq!(
+            obs.value,
+            FieldValue::PipelineVerdict(PipelineVerdictValue::Pass)
+        );
+        assert!(!obs.payload_hash.is_empty());
+        assert!(obs.cert.is_none());
+        // Same (source, event_id, payload) → same dedup key (replay-safe).
+        assert_eq!(mk().dedup_key(), obs.dedup_key());
+        // A different verdict changes the content hash.
+        let other = Observation::pipeline_verdict(
+            sample_workref(),
+            Source::new("rosary"),
+            "phase2:dev-agent",
+            PipelineVerdictValue::Fail,
+            at,
+        );
+        assert_ne!(other.payload_hash, obs.payload_hash);
     }
 
     fn sample_observation() -> Observation {
