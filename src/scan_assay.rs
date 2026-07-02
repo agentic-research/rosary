@@ -43,23 +43,21 @@ pub async fn run_assay_scan(repos: &[RepoConfig], registry: &PluginRegistry) -> 
             let id = crate::generate_bead_id(&title);
 
             match store
-                .create_bead_full(
-                    &id,
-                    &title,
-                    &description,
-                    3, // P3
-                    "chore",
-                    "dev-agent",
-                    std::slice::from_ref(&stale_ref.source_file),
-                    &[],
-                    &[],
-                    None,
-                    "",
-                    &[],
+                .create_bead_full(crate::store::NewBead {
+                    id: id.clone(),
+                    title: title.clone(),
+                    description: description.clone(),
+                    priority: 3, // P3
+                    issue_type: "chore".to_string(),
+                    owner: "dev-agent".to_string(),
+                    files: vec![stale_ref.source_file.clone()],
                     // Structured close condition: re-run the assay; the stale
                     // reference no longer appears (resolution predicate).
-                    "Resolved when `rsry scan --assay` no longer reports this stale ref.",
-                )
+                    acceptance_criteria:
+                        "Resolved when `rsry scan --assay` no longer reports this stale ref."
+                            .to_string(),
+                    ..Default::default()
+                })
                 .await
             {
                 Ok(()) => {

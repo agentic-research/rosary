@@ -148,21 +148,19 @@ async fn create_bead_full_with_deps() {
         .await
         .unwrap();
     store
-        .create_bead_full(
-            "main-1",
-            "Main",
-            "desc",
-            1,
-            "feature",
-            "agent",
-            &["src/main.rs".into()],
-            &["src/main_test.rs".into()],
-            &["dep-1".into()],
-            Some("test-user"),
-            "",
-            &[],
-            "",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "main-1".into(),
+            title: "Main".into(),
+            description: "desc".into(),
+            priority: 1,
+            issue_type: "feature".into(),
+            owner: "agent".into(),
+            files: vec!["src/main.rs".into()],
+            test_files: vec!["src/main_test.rs".into()],
+            depends_on: vec!["dep-1".into()],
+            created_by: Some("test-user".into()),
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -186,21 +184,17 @@ async fn set_files_preserves_derived_from() {
         summary: Some("origin session".into()),
     };
     store
-        .create_bead_full(
-            "b1",
-            "T",
-            "d",
-            1,
-            "feature",
-            "agent",
-            &["a.rs".into()],
-            &[],
-            &[],
-            None,
-            "",
-            std::slice::from_ref(&prov),
-            "",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "b1".into(),
+            title: "T".into(),
+            description: "d".into(),
+            priority: 1,
+            issue_type: "feature".into(),
+            owner: "agent".into(),
+            files: vec!["a.rs".into()],
+            derived_from: vec![prov.clone()],
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -232,21 +226,17 @@ async fn update_bead_fields_preserves_derived_from() {
         id: "ADR-007".into(),
     };
     store
-        .create_bead_full(
-            "u1",
-            "T",
-            "d",
-            2,
-            "feature",
-            "agent",
-            &["x.rs".into()],
-            &[],
-            &[],
-            None,
-            "",
-            std::slice::from_ref(&prov),
-            "",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "u1".into(),
+            title: "T".into(),
+            description: "d".into(),
+            priority: 2,
+            issue_type: "feature".into(),
+            owner: "agent".into(),
+            files: vec!["x.rs".into()],
+            derived_from: vec![prov.clone()],
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -273,39 +263,28 @@ async fn epic_dep_does_not_block_child() {
     // Counting it as a blocking dep deadlocks the child. (rosary-199cc4)
     let store = test_store();
     store
-        .create_bead_full(
-            "epic-1",
-            "Epic",
-            "d",
-            1,
-            "epic",
-            "agent",
-            &[],
-            &[],
-            &[],
-            None,
-            "",
-            &[],
-            "",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "epic-1".into(),
+            title: "Epic".into(),
+            description: "d".into(),
+            priority: 1,
+            issue_type: "epic".into(),
+            owner: "agent".into(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     store
-        .create_bead_full(
-            "child-1",
-            "Child",
-            "d",
-            1,
-            "feature",
-            "agent",
-            &[],
-            &[],
-            &["epic-1".into()],
-            None,
-            "",
-            &[],
-            "",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "child-1".into(),
+            title: "Child".into(),
+            description: "d".into(),
+            priority: 1,
+            issue_type: "feature".into(),
+            owner: "agent".into(),
+            depends_on: vec!["epic-1".into()],
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -321,39 +300,28 @@ async fn epic_dep_does_not_block_child() {
 
     // Regression guard: a non-epic open dep STILL blocks (don't over-broaden).
     store
-        .create_bead_full(
-            "task-dep",
-            "Task",
-            "d",
-            1,
-            "task",
-            "agent",
-            &[],
-            &[],
-            &[],
-            None,
-            "",
-            &[],
-            "",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "task-dep".into(),
+            title: "Task".into(),
+            description: "d".into(),
+            priority: 1,
+            issue_type: "task".into(),
+            owner: "agent".into(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     store
-        .create_bead_full(
-            "child-2",
-            "Child2",
-            "d",
-            1,
-            "feature",
-            "agent",
-            &[],
-            &[],
-            &["task-dep".into()],
-            None,
-            "",
-            &[],
-            "",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "child-2".into(),
+            title: "Child2".into(),
+            description: "d".into(),
+            priority: 1,
+            issue_type: "feature".into(),
+            owner: "agent".into(),
+            depends_on: vec!["task-dep".into()],
+            ..Default::default()
+        })
         .await
         .unwrap();
     let child2 = store.get_bead("child-2", "repo").await.unwrap().unwrap();
@@ -821,21 +789,17 @@ async fn update_bead_fields() {
 async fn created_by_and_scope_round_trip() {
     let store = test_store();
     store
-        .create_bead_full(
-            "s-1",
-            "Scoped bead",
-            "desc",
-            2,
-            "task",
-            "agent",
-            &[],
-            &[],
-            &[],
-            Some("alice"),
-            "payments",
-            &[],
-            "",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "s-1".into(),
+            title: "Scoped bead".into(),
+            description: "desc".into(),
+            priority: 2,
+            issue_type: "task".into(),
+            owner: "agent".into(),
+            created_by: Some("alice".into()),
+            scope: "payments".into(),
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -861,21 +825,15 @@ async fn scope_defaults_to_empty_for_simple_create() {
 async fn scope_appears_in_list_beads() {
     let store = test_store();
     store
-        .create_bead_full(
-            "ls-1",
-            "Listed bead",
-            "",
-            2,
-            "task",
-            "",
-            &[],
-            &[],
-            &[],
-            Some("bob"),
-            "auth",
-            &[],
-            "",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "ls-1".into(),
+            title: "Listed bead".into(),
+            priority: 2,
+            issue_type: "task".into(),
+            created_by: Some("bob".into()),
+            scope: "auth".into(),
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -883,6 +841,12 @@ async fn scope_appears_in_list_beads() {
     assert_eq!(beads.len(), 1);
     assert_eq!(beads[0].scope, "auth");
     assert_eq!(beads[0].created_by.as_deref(), Some("bob"));
+    // An omitted owner (NewBead default "") must read back as unset, NOT
+    // Some("") — otherwise reconcile's `owner.is_some()` auto-assign never fires.
+    assert_eq!(
+        beads[0].owner, None,
+        "empty owner must persist as NULL/None"
+    );
 }
 
 #[tokio::test]
@@ -899,21 +863,16 @@ async fn derived_from_round_trip() {
         },
     ];
     store
-        .create_bead_full(
-            "prov-1",
-            "Provenance bead",
-            "desc",
-            2,
-            "task",
-            "agent",
-            &[],
-            &[],
-            &[],
-            None,
-            "",
-            &provenance,
-            "",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "prov-1".into(),
+            title: "Provenance bead".into(),
+            description: "desc".into(),
+            priority: 2,
+            issue_type: "task".into(),
+            owner: "agent".into(),
+            derived_from: provenance.clone(),
+            ..Default::default()
+        })
         .await
         .unwrap();
 

@@ -299,6 +299,59 @@ pub trait UserRepoStore: Send + Sync {
 
 /// Per-repo bead storage — CRUD, search, dependencies, comments, events.
 ///
+/// Owned inputs for authoring a bead — replaces the old 13-positional-arg
+/// `create_bead_full`. Callers set the fields they care about and rely on
+/// `Default` for the rest (e.g. `scope`, `depends_on`, `derived_from`), so no
+/// more `""` / `&[]` positional sentinels, and adding a field is one struct
+/// member instead of ~25 call-site edits.
+#[derive(Debug, Clone)]
+pub struct NewBead {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    /// Priority band (0 = P0 highest … 3 = P3). Defaults to **2**, not 0 —
+    /// a derived `Default` would silently make omitted-priority beads P0.
+    pub priority: u8,
+    /// Defaults to `"task"` when omitted (matches the store's read default).
+    pub issue_type: String,
+    /// Assignee. An empty string means "unset": `create_bead_full` leaves
+    /// `assignee` NULL (reads back as `None`), so it never creates a bead that
+    /// looks assigned-to-empty. Callers wanting a default assignee resolve it
+    /// (e.g. `default_agent`) before constructing `NewBead`.
+    pub owner: String,
+    pub files: Vec<String>,
+    pub test_files: Vec<String>,
+    pub depends_on: Vec<String>,
+    pub created_by: Option<String>,
+    pub scope: String,
+    pub derived_from: Vec<bdr::provenance::ProvenanceRef>,
+    /// Structured close condition (ADR-0010) — checked by the gate.
+    pub acceptance_criteria: String,
+}
+
+impl Default for NewBead {
+    /// Hand-written (not derived) so an omitted `priority` defaults to P2 and
+    /// an omitted `issue_type` to `"task"` — matching the schema/read defaults.
+    /// A derived `Default` would give `priority = 0` (P0) and `issue_type = ""`.
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            title: String::new(),
+            description: String::new(),
+            priority: 2,
+            issue_type: "task".into(),
+            owner: String::new(),
+            files: Vec::new(),
+            test_files: Vec::new(),
+            depends_on: Vec::new(),
+            created_by: None,
+            scope: String::new(),
+            derived_from: Vec::new(),
+            acceptance_criteria: String::new(),
+        }
+    }
+}
+
 /// Each repo has its own BeadStore (SQLite file or Dolt server).
 /// Implementations: [`crate::bead_sqlite::SqliteBeadStore`],
 /// [`crate::bead_dolt::DoltBeadStore`].
@@ -325,23 +378,7 @@ pub trait BeadStore: Send + Sync {
         priority: u8,
         issue_type: &str,
     ) -> Result<()>;
-    #[allow(clippy::too_many_arguments)]
-    async fn create_bead_full(
-        &self,
-        id: &str,
-        title: &str,
-        description: &str,
-        priority: u8,
-        issue_type: &str,
-        owner: &str,
-        files: &[String],
-        test_files: &[String],
-        depends_on: &[String],
-        created_by: Option<&str>,
-        scope: &str,
-        derived_from: &[bdr::provenance::ProvenanceRef],
-        acceptance_criteria: &str,
-    ) -> Result<()>;
+    async fn create_bead_full(&self, bead: NewBead) -> Result<()>;
 
     // ── Field updates ──
     async fn update_bead_fields(
