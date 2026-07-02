@@ -5,6 +5,12 @@
 failed=0
 for file in "$@"; do
     basename=$(basename "$file")
+    # Allowlist: names where a Rule-1 keyword is a FEATURE name, not a
+    # versioned/backup COPY of another file (e.g. `rsry bead backup` lives in
+    # bead_backup.rs — the module, not a backup of bead.rs).
+    case "$basename" in
+        bead_backup.rs) continue ;;
+    esac
     if echo "$basename" | grep -qE '_v[0-9]+\.|_final\.|_old\.|_backup\.|_copy\.'; then
         echo "ERROR: Golden Rule 1 violation — versioned filename: $file"
         echo "  Use configuration to manage variants. Git provides version control."

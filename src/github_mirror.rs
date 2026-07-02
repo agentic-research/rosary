@@ -147,7 +147,7 @@ pub async fn sync_beads_to_github(beads: &[Bead], token: &str) -> Result<u32> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod github_mirror {
+mod tests {
     use super::*;
     use axum::{Json, Router, extract::Path, routing::post};
     use std::sync::{Arc, Mutex};

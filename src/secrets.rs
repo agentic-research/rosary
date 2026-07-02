@@ -232,11 +232,8 @@ mod tests {
 
     #[test]
     fn multiple_secrets_in_one_string() {
-        let input = format!(
-            "key={} and token=ghp_{}",
-            format!("sk-{}", "x".repeat(25)),
-            "B".repeat(40)
-        );
+        let sk = format!("sk-{}", "x".repeat(25));
+        let input = format!("key={sk} and token=ghp_{}", "B".repeat(40));
         let (out, kinds) = scrub(&input);
         assert!(out.contains("[REDACTED]"));
         assert!(kinds.len() >= 2);

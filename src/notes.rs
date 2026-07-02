@@ -298,7 +298,7 @@ mod rotation {
     fn write_recipients_then_read_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".recipients");
-        write_recipients(&path, &vec!["age1x".to_string(), "age1y".to_string()]).unwrap();
+        write_recipients(&path, &["age1x".to_string(), "age1y".to_string()]).unwrap();
         let back = read_recipients(&path).unwrap();
         assert_eq!(back, vec!["age1x", "age1y"]);
     }
@@ -358,7 +358,9 @@ mod rotation {
 
         // Encrypt a sample file with rec1.
         let sample_plain = b"the quick brown fox";
-        let ciphertext = age_encrypt(&[rec1.clone()], sample_plain).await.unwrap();
+        let ciphertext = age_encrypt(std::slice::from_ref(&rec1), sample_plain)
+            .await
+            .unwrap();
         let sample_path = scope_dir.join("note1.age");
         std::fs::write(&sample_path, &ciphertext).unwrap();
 
@@ -366,7 +368,7 @@ mod rotation {
         let opts = RotateOpts {
             repo_root: dir.path(),
             scope: "work",
-            add_recipients: &[rec2.clone()],
+            add_recipients: std::slice::from_ref(&rec2),
             remove_recipients: &[],
             identity: Some(&id1_path),
         };
