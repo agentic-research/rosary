@@ -1188,6 +1188,15 @@ pub(crate) fn agent_mcp_servers() -> BTreeMap<String, String> {
         .unwrap_or_else(crate::config::default_agent_mcp)
 }
 
+/// Skills every dispatch must resolve before spawn, from
+/// `[dispatch].required_skills` (rosary-cf52cf). Empty by default.
+pub(crate) fn dispatch_required_skills() -> Vec<String> {
+    crate::config::load_global()
+        .ok()
+        .and_then(|c| c.dispatch.map(|d| d.required_skills))
+        .unwrap_or_default()
+}
+
 /// Claude settings overlay passed via `--settings` at every dispatch spawn that
 /// injects MCP config (rosary-563b3f). Without it, a per-project
 /// `disabledMcpServers` entry in the user's `~/.claude.json` (e.g. the human

@@ -367,6 +367,22 @@ pub async fn spawn(
     // optional tools. Beats the agent discovering the gap mid-run.
     run_spec.ensure_required_tools()?;
 
+    // Skill-discovery gate (rosary-cf52cf): every `[dispatch].required_skills`
+    // entry must resolve by name (SKILL.md + digest) before we launch, so a
+    // missing skill (the `/pr-review-kit` friction) is a deterministic
+    // pre-dispatch error, not a mid-run surprise. Default empty → no-op.
+    let required_skills = crate::dispatch::providers::dispatch_required_skills();
+    if !required_skills.is_empty() {
+        let dir = agents_dir.ok_or_else(|| {
+            anyhow::anyhow!(
+                "[dispatch].required_skills is set but no agents_dir resolved — cannot verify \
+                 skills before dispatch"
+            )
+        })?;
+        crate::skills::resolve_required_skills(dir, &required_skills)
+            .context("resolving [dispatch].required_skills before dispatch")?;
+    }
+
     let session: Box<dyn AgentSession> = if let Some(compute) = compute {
         // Container dispatch: build command, provision, exec, destroy.
         // Synchronous -- spawn() blocks for exec duration. Session is already resolved.
