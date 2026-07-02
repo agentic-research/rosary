@@ -94,21 +94,22 @@ pub async fn move_bead(
         .filter(|o| !o.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| crate::dispatch::default_agent(&bead.issue_type).to_string());
-    dest.create_bead_full(
-        new_id,
-        &bead.title,
-        &bead.description,
-        bead.priority,
-        &bead.issue_type,
-        &owner,
-        &bead.files,
-        &bead.test_files,
-        &[], // deps become cross-repo on move; surfaced below, not re-created here
-        bead.created_by.as_deref(),
-        &bead.scope,
-        &derived_from,
-        &bead.acceptance_criteria, // preserve the close condition on relocate
-    )
+    dest.create_bead_full(crate::store::NewBead {
+        id: new_id.to_string(),
+        title: bead.title.clone(),
+        description: bead.description.clone(),
+        priority: bead.priority,
+        issue_type: bead.issue_type.clone(),
+        owner: owner.to_string(),
+        files: bead.files.clone(),
+        test_files: bead.test_files.clone(),
+        // deps become cross-repo on move; surfaced below, not re-created here
+        created_by: bead.created_by.clone(),
+        scope: bead.scope.clone(),
+        derived_from,
+        acceptance_criteria: bead.acceptance_criteria.clone(), // preserve on relocate
+        ..Default::default()
+    })
     .await
     .with_context(|| format!("creating relocated bead {new_id} in {dest_repo}"))?;
 
@@ -195,21 +196,17 @@ mod tests {
     async fn move_relocates_bead_losslessly() {
         let src = store();
         let dst = store();
-        src.create_bead_full(
-            "mache-lbn6",
-            "LLO cousin epic",
-            "body text",
-            1,
-            "epic",
-            "feature-agent",
-            &["a.rs".to_string()],
-            &[],
-            &[],
-            Some("alice"),
-            "",
-            &[],
-            "",
-        )
+        src.create_bead_full(crate::store::NewBead {
+            id: "mache-lbn6".into(),
+            title: "LLO cousin epic".into(),
+            description: "body text".into(),
+            priority: 1,
+            issue_type: "epic".into(),
+            owner: "feature-agent".into(),
+            files: vec!["a.rs".to_string()],
+            created_by: Some("alice".into()),
+            ..Default::default()
+        })
         .await
         .unwrap();
         src.add_comment("mache-lbn6", "first note", "bob")

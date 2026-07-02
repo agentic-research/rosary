@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::bead::{Bead, BeadUpdate};
-use crate::store::BeadStore;
+use crate::store::{BeadStore, NewBead};
 
 /// Parse files and test_files from the notes JSON column.
 /// Shared between SQLite and Dolt implementations.
@@ -254,21 +254,18 @@ async fn migrate_sqlite_to_dolt(
             crate::secrets::scrub_and_warn(&row.description, &format!("migrating {}", row.id));
 
         client
-            .create_bead_full(
-                &row.id,
-                &title,
-                &description,
-                row.priority,
-                &row.issue_type,
-                &row.owner,
-                &[],
-                &[],
-                &[],
-                row.created_by.as_deref(),
-                &row.scope,
-                &[],
-                "", // sqlite→dolt migration Row doesn't carry acceptance_criteria
-            )
+            .create_bead_full(NewBead {
+                id: row.id.clone(),
+                title,
+                description,
+                priority: row.priority,
+                issue_type: row.issue_type.clone(),
+                owner: row.owner.clone(),
+                created_by: row.created_by.clone(),
+                scope: row.scope.clone(),
+                // sqlite→dolt migration Row doesn't carry acceptance_criteria
+                ..Default::default()
+            })
             .await?;
 
         // Preserve status if not open.
@@ -566,29 +563,29 @@ impl BeadStore for SqliteBeadStore {
         Ok(())
     }
 
-    async fn create_bead_full(
-        &self,
-        id: &str,
-        title: &str,
-        description: &str,
-        priority: u8,
-        issue_type: &str,
-        owner: &str,
-        files: &[String],
-        test_files: &[String],
-        depends_on: &[String],
-        created_by: Option<&str>,
-        scope: &str,
-        derived_from: &[bdr::provenance::ProvenanceRef],
-        acceptance_criteria: &str,
-    ) -> Result<()> {
+    async fn create_bead_full(&self, bead: NewBead) -> Result<()> {
+        let NewBead {
+            id,
+            title,
+            description,
+            priority,
+            issue_type,
+            owner,
+            files,
+            test_files,
+            depends_on,
+            created_by,
+            scope,
+            derived_from,
+            acceptance_criteria,
+        } = &bead;
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
 
         tx.execute(
             "INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_by, scope, created_at, updated_at)
              VALUES (?1, ?2, ?3, '', ?8, '', 'open', ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))",
-            params![id, title, description, priority as i32, issue_type, created_by, scope, acceptance_criteria],
+            params![id, title, description, *priority as i32, issue_type, created_by, scope, acceptance_criteria],
         )?;
 
         tx.execute(

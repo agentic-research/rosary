@@ -94,23 +94,21 @@ pub async fn create_bead<S: BeadStore + ?Sized>(
     created_by: Option<&str>,
 ) -> anyhow::Result<()> {
     args.validate()?;
-    let owner = args.resolved_owner();
     store
-        .create_bead_full(
-            id,
-            &args.title,
-            &args.description,
-            args.priority,
-            &args.issue_type,
-            &owner,
-            &args.files,
-            &args.test_files,
-            &args.depends_on,
-            created_by,
-            "",
-            &[],
-            &args.acceptance_criteria,
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: id.to_string(),
+            title: args.title.clone(),
+            description: args.description.clone(),
+            priority: args.priority,
+            issue_type: args.issue_type.clone(),
+            owner: args.resolved_owner(),
+            files: args.files.clone(),
+            test_files: args.test_files.clone(),
+            depends_on: args.depends_on.clone(),
+            created_by: created_by.map(str::to_string),
+            acceptance_criteria: args.acceptance_criteria.clone(),
+            ..Default::default()
+        })
         .await
 }
 

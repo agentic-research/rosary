@@ -176,26 +176,27 @@ pub async fn import_bead(
 
     let id = crate::generate_bead_id(repo_name);
     client
-        .create_bead_full(
-            &id,
-            title,
-            description,
+        .create_bead_full(crate::store::NewBead {
+            id: id.clone(),
+            title: title.to_string(),
+            description: description.to_string(),
             priority,
-            issue_type,
-            owner,
-            &files,
-            &test_files,
+            issue_type: issue_type.to_string(),
+            owner: owner.to_string(),
+            files,
+            test_files,
             // Dependency edges are NOT re-wired: exported dep ids reference the
             // SOURCE store, and this importer mints fresh ids, so wiring them
             // would create dangling/phantom blockers. Faithful dep restore
             // needs `bd init --from-jsonl` (id-preserving) — see fn doc.
-            &[],
-            created_by,
-            "",
-            &[],
+            created_by: created_by.map(str::to_string),
             // Preserve the imported close condition (structured field).
-            bead["acceptance_criteria"].as_str().unwrap_or_default(),
-        )
+            acceptance_criteria: bead["acceptance_criteria"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            ..Default::default()
+        })
         .await?;
 
     // Re-attach comment bodies (with original author) — previously dropped.

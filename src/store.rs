@@ -299,6 +299,30 @@ pub trait UserRepoStore: Send + Sync {
 
 /// Per-repo bead storage — CRUD, search, dependencies, comments, events.
 ///
+/// Owned inputs for authoring a bead — replaces the old 13-positional-arg
+/// `create_bead_full`. Callers set the fields they care about and rely on
+/// `Default` for the rest (e.g. `scope`, `depends_on`, `derived_from`), so no
+/// more `""` / `&[]` positional sentinels, and adding a field is one struct
+/// member instead of ~25 call-site edits.
+#[derive(Debug, Clone, Default)]
+pub struct NewBead {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub priority: u8,
+    pub issue_type: String,
+    /// Assignee; empty means "unset" (callers default via `default_agent`).
+    pub owner: String,
+    pub files: Vec<String>,
+    pub test_files: Vec<String>,
+    pub depends_on: Vec<String>,
+    pub created_by: Option<String>,
+    pub scope: String,
+    pub derived_from: Vec<bdr::provenance::ProvenanceRef>,
+    /// Structured close condition (ADR-0010) — checked by the gate.
+    pub acceptance_criteria: String,
+}
+
 /// Each repo has its own BeadStore (SQLite file or Dolt server).
 /// Implementations: [`crate::bead_sqlite::SqliteBeadStore`],
 /// [`crate::bead_dolt::DoltBeadStore`].
@@ -325,23 +349,7 @@ pub trait BeadStore: Send + Sync {
         priority: u8,
         issue_type: &str,
     ) -> Result<()>;
-    #[allow(clippy::too_many_arguments)]
-    async fn create_bead_full(
-        &self,
-        id: &str,
-        title: &str,
-        description: &str,
-        priority: u8,
-        issue_type: &str,
-        owner: &str,
-        files: &[String],
-        test_files: &[String],
-        depends_on: &[String],
-        created_by: Option<&str>,
-        scope: &str,
-        derived_from: &[bdr::provenance::ProvenanceRef],
-        acceptance_criteria: &str,
-    ) -> Result<()>;
+    async fn create_bead_full(&self, bead: NewBead) -> Result<()>;
 
     // ── Field updates ──
     async fn update_bead_fields(

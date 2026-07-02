@@ -336,22 +336,22 @@ impl DoltClient {
     /// each trigger a separate dolt commit (4+ commits for one bead). This
     /// wraps everything in START TRANSACTION → COMMIT for a single commit.
     #[allow(clippy::too_many_arguments)]
-    pub async fn create_bead_full(
-        &self,
-        id: &str,
-        title: &str,
-        description: &str,
-        priority: u8,
-        issue_type: &str,
-        owner: &str,
-        files: &[String],
-        test_files: &[String],
-        depends_on: &[String],
-        created_by: Option<&str>,
-        scope: &str,
-        derived_from: &[bdr::provenance::ProvenanceRef],
-        acceptance_criteria: &str,
-    ) -> Result<()> {
+    pub async fn create_bead_full(&self, bead: crate::store::NewBead) -> Result<()> {
+        let crate::store::NewBead {
+            id,
+            title,
+            description,
+            priority,
+            issue_type,
+            owner,
+            files,
+            test_files,
+            depends_on,
+            created_by,
+            scope,
+            derived_from,
+            acceptance_criteria,
+        } = &bead;
         // Scrub secrets before writing — Dolt history is append-only and hard to purge.
         let title = crate::secrets::scrub_and_warn(title, &format!("bead {id} title"));
         let description =
@@ -372,9 +372,9 @@ impl DoltClient {
         .bind(&title)
         .bind(&description)
         .bind(acceptance_criteria)
-        .bind(priority as i32)
+        .bind(*priority as i32)
         .bind(issue_type)
-        .bind(created_by)
+        .bind(created_by.as_deref())
         .bind(scope)
         .execute(&mut *tx)
         .await

@@ -51,39 +51,8 @@ impl BeadStore for DoltBeadStore {
             .await
     }
 
-    async fn create_bead_full(
-        &self,
-        id: &str,
-        title: &str,
-        description: &str,
-        priority: u8,
-        issue_type: &str,
-        owner: &str,
-        files: &[String],
-        test_files: &[String],
-        depends_on: &[String],
-        created_by: Option<&str>,
-        scope: &str,
-        derived_from: &[bdr::provenance::ProvenanceRef],
-        acceptance_criteria: &str,
-    ) -> Result<()> {
-        self.client
-            .create_bead_full(
-                id,
-                title,
-                description,
-                priority,
-                issue_type,
-                owner,
-                files,
-                test_files,
-                depends_on,
-                created_by,
-                scope,
-                derived_from,
-                acceptance_criteria,
-            )
-            .await
+    async fn create_bead_full(&self, bead: crate::store::NewBead) -> Result<()> {
+        self.client.create_bead_full(bead).await
     }
 
     async fn update_bead_fields(&self, id: &str, update: &BeadUpdate) -> Result<Vec<String>> {

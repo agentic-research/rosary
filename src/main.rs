@@ -1331,21 +1331,20 @@ async fn main() -> Result<()> {
                         let id = generate_bead_id(&decompose_repo_name);
                         let owner = dispatch::default_agent(&spec.issue_type);
                         client
-                            .create_bead_full(
-                                &id,
-                                &spec.title,
-                                &desc,
-                                spec.priority,
-                                &spec.issue_type,
-                                owner,
-                                &[], // file scopes set by code-reader agent post-dispatch
-                                &[],
-                                &[], // depends_on: ADR-level refs can't map to bead IDs yet
-                                created_by.as_deref(),
-                                "",
-                                &spec.derived_from,
-                                &spec.close_condition_text(),
-                            )
+                            .create_bead_full(store::NewBead {
+                                id: id.clone(),
+                                title: spec.title.clone(),
+                                description: desc,
+                                priority: spec.priority,
+                                issue_type: spec.issue_type.clone(),
+                                owner: owner.to_string(),
+                                // file scopes set by code-reader agent post-dispatch;
+                                // depends_on: ADR-level refs can't map to bead IDs yet
+                                created_by: created_by.clone(),
+                                derived_from: spec.derived_from.clone(),
+                                acceptance_criteria: spec.close_condition_text(),
+                                ..Default::default()
+                            })
                             .await?;
 
                         // Assign to thread in backend lattice.
@@ -1436,21 +1435,18 @@ async fn main() -> Result<()> {
                     let id = generate_bead_id(&repo_name);
                     let owner = dispatch::default_agent(&spec.issue_type);
                     client
-                        .create_bead_full(
-                            &id,
-                            &spec.title,
-                            &desc,
-                            spec.priority,
-                            &spec.issue_type,
-                            owner,
-                            &[],
-                            &[],
-                            &[],
-                            created_by.as_deref(),
-                            "",
-                            &spec.derived_from,
-                            &spec.close_condition_text(),
-                        )
+                        .create_bead_full(store::NewBead {
+                            id: id.clone(),
+                            title: spec.title.clone(),
+                            description: desc,
+                            priority: spec.priority,
+                            issue_type: spec.issue_type.clone(),
+                            owner: owner.to_string(),
+                            created_by: created_by.clone(),
+                            derived_from: spec.derived_from.clone(),
+                            acceptance_criteria: spec.close_condition_text(),
+                            ..Default::default()
+                        })
                         .await?;
                     created += 1;
                 }

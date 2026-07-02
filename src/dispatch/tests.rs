@@ -327,21 +327,17 @@ async fn run_rejects_unclosable_impl_bead_before_status_mutation() {
         .await
         .unwrap();
     store
-        .create_bead_full(
-            "rsry-no-close",
-            "Unclosable dispatch bead",
-            "No runnable close condition here.",
-            1,
-            "task",
-            "dev-agent",
-            &["src/dispatch/mod.rs".into()],
-            &[],
-            &[],
-            Some("test"),
-            "",
-            &[],
-            "",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "rsry-no-close".into(),
+            title: "Unclosable dispatch bead".into(),
+            description: "No runnable close condition here.".into(),
+            priority: 1,
+            issue_type: "task".into(),
+            owner: "dev-agent".into(),
+            files: vec!["src/dispatch/mod.rs".into()],
+            created_by: Some("test".into()),
+            ..Default::default()
+        })
         .await
         .unwrap();
 
