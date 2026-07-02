@@ -5,6 +5,21 @@
 **Depends on:** ADR-0005 (reactive store), ADR-0009 (cross-repo linkage)
 **Relates to:** rosary-7023a9 (substrate bead), rosary-45518d (CRDT-lattice draft superseded)
 
+> **Implementation status (2026-07-02): built, not yet source of truth.**
+> The lattice substrate exists and is unit-tested — per-field algebras, `fold`,
+> `tree_fold`, quarantine, and the registry all live under `src/observation/*`.
+> But it is **not on a live read path yet.** `persist_status` (a mutable cell)
+> remains the source of truth; `append_observation` (src/reconcile/persistence.rs)
+> currently dual-writes a flattened verdict string to the event log rather than
+> constructing `Observation` values and folding through the `FieldAlgebra`
+> registry. Promotion — build real `Observation`s, fold behind a flag, prove the
+> folded status matches `persist_status` across the corpus, then flip the read
+> path and delete `persist_status` — is tracked as **rosary-a66b3a (R4b)** and
+> depends on the close-condition execution tier (**rosary-a57429 / R1**, landed
+> in #285): a fold cannot legitimately close a bead against a "done" that was
+> declared but never checked. Treat the sections below as the design target, not
+> a description of the current read path.
+
 ## Context
 
 Today rosary treats `Bead` as the source of truth and pushes derived state into
