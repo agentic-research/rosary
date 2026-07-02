@@ -619,6 +619,7 @@ pub(crate) fn ensure_dispatch_close_condition(bead: &Bead) -> Result<()> {
         &bead.issue_type,
         &bead.description,
         &bead.test_files,
+        &bead.acceptance_criteria,
         false,
     )
 }

@@ -279,6 +279,7 @@ mod tests {
             created_by: None,
             scope: String::new(),
             derived_from: vec![],
+            acceptance_criteria: String::new(),
         }
     }
 

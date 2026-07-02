@@ -451,6 +451,11 @@ enum BeadAction {
         /// Test files to validate the change (comma-separated)
         #[arg(long, value_delimiter = ',')]
         test_files: Vec<String>,
+        /// Close condition: how "done" is verified (a command or a resolution
+        /// statement). The structured close-condition field — preferred over
+        /// baking it into the description.
+        #[arg(long, default_value = "")]
+        acceptance: String,
         /// Skip the close-condition check (for planning/legacy beads)
         #[arg(long)]
         force: bool,
@@ -1326,20 +1331,20 @@ async fn main() -> Result<()> {
                         let id = generate_bead_id(&decompose_repo_name);
                         let owner = dispatch::default_agent(&spec.issue_type);
                         client
-                            .create_bead_full(
-                                &id,
-                                &spec.title,
-                                &desc,
-                                spec.priority,
-                                &spec.issue_type,
-                                owner,
-                                &[], // file scopes set by code-reader agent post-dispatch
-                                &[],
-                                &[], // depends_on: ADR-level refs can't map to bead IDs yet
-                                created_by.as_deref(),
-                                "",
-                                &spec.derived_from,
-                            )
+                            .create_bead_full(store::NewBead {
+                                id: id.clone(),
+                                title: spec.title.clone(),
+                                description: desc,
+                                priority: spec.priority,
+                                issue_type: spec.issue_type.clone(),
+                                owner: owner.to_string(),
+                                // file scopes set by code-reader agent post-dispatch;
+                                // depends_on: ADR-level refs can't map to bead IDs yet
+                                created_by: created_by.clone(),
+                                derived_from: spec.derived_from.clone(),
+                                acceptance_criteria: spec.close_condition_text(),
+                                ..Default::default()
+                            })
                             .await?;
 
                         // Assign to thread in backend lattice.
@@ -1430,20 +1435,18 @@ async fn main() -> Result<()> {
                     let id = generate_bead_id(&repo_name);
                     let owner = dispatch::default_agent(&spec.issue_type);
                     client
-                        .create_bead_full(
-                            &id,
-                            &spec.title,
-                            &desc,
-                            spec.priority,
-                            &spec.issue_type,
-                            owner,
-                            &[],
-                            &[],
-                            &[],
-                            created_by.as_deref(),
-                            "",
-                            &spec.derived_from,
-                        )
+                        .create_bead_full(store::NewBead {
+                            id: id.clone(),
+                            title: spec.title.clone(),
+                            description: desc,
+                            priority: spec.priority,
+                            issue_type: spec.issue_type.clone(),
+                            owner: owner.to_string(),
+                            created_by: created_by.clone(),
+                            derived_from: spec.derived_from.clone(),
+                            acceptance_criteria: spec.close_condition_text(),
+                            ..Default::default()
+                        })
                         .await?;
                     created += 1;
                 }
@@ -1489,6 +1492,7 @@ async fn main() -> Result<()> {
                     issue_type,
                     files,
                     test_files,
+                    acceptance,
                     force,
                 } => {
                     let id = generate_bead_id(&repo_name);
@@ -1503,6 +1507,7 @@ async fn main() -> Result<()> {
                         files,
                         test_files,
                         depends_on: vec![], // CLI doesn't support depends_on yet
+                        acceptance_criteria: acceptance,
                         force,
                     };
                     bead_ops::create_bead(client.as_ref(), &id, &args, created_by.as_deref())
@@ -2863,6 +2868,7 @@ mod tests {
             issue_type: "bug".to_string(),
             files: vec!["src/widget.rs".to_string()],
             test_files: vec![],
+            acceptance: String::new(),
             force: false,
         };
         assert!(matches!(create, BeadAction::Create { priority: 1, .. }));

@@ -81,6 +81,7 @@ async fn severity_floor_blocks_p3_with_min_priority_2() {
         created_by: None,
         scope: String::new(),
         derived_from: vec![],
+        acceptance_criteria: String::new(),
     };
 
     let config = ReconcilerConfig::default();
@@ -258,6 +259,7 @@ async fn failed_bead_retries_despite_same_generation() {
         created_by: None,
         scope: String::new(),
         derived_from: vec![],
+        acceptance_criteria: String::new(),
     };
 
     // The bead should still be triageable despite same generation
@@ -308,6 +310,7 @@ fn blocked_bead_filtered_by_triage() {
         created_by: None,
         scope: String::new(),
         derived_from: vec![],
+        acceptance_criteria: String::new(),
     };
 
     // is_blocked returns true for open beads with deps
@@ -346,6 +349,7 @@ fn self_managed_repo_gets_score_boost() {
         created_by: None,
         scope: String::new(),
         derived_from: vec![],
+        acceptance_criteria: String::new(),
     };
 
     let base_score = queue::triage_score(&bead, 0, now);

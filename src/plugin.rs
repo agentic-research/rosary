@@ -49,7 +49,6 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 
@@ -182,23 +181,53 @@ fn parse_hook_output(raw: &str, plugin_name: &str) -> Result<HookOutput> {
 
 // ── Transport ─────────────────────────────────────────────────────────────────
 
+/// Spawn a subprocess, retrying transient `ETXTBSY` ("Text file busy").
+///
+/// When one thread has a plugin script open for writing, a *different* thread
+/// doing `fork()`+`exec()` momentarily inherits that writable fd across the
+/// fork — so exec'ing an unrelated freshly-written script can fail with
+/// ETXTBSY even though this thread closed its own handle. The window is tiny;
+/// a couple of retries with a short backoff clears it deterministically.
+fn spawn_retry_etxtbsy(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    for attempt in 0..5 {
+        match cmd.spawn() {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                std::thread::sleep(std::time::Duration::from_millis(10 * (attempt + 1)));
+            }
+            other => return other,
+        }
+    }
+    cmd.spawn()
+}
+
+/// Write the payload to a child's stdin, tolerating `BrokenPipe`.
+///
+/// A backend that legitimately exits without draining its stdin (e.g. it
+/// makes its decision from argv, or is a fast no-op) closes the read end
+/// before we finish writing — `write_all` then returns `EPIPE`. That's not a
+/// failure: the child's *exit status* is the source of truth, so a broken
+/// pipe on the payload write is swallowed. All other write errors propagate.
+fn write_stdin_tolerating_epipe(mut w: impl std::io::Write, bytes: &[u8]) -> std::io::Result<()> {
+    match w.write_all(bytes) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    }
+}
+
 fn call_subprocess(command: &[String], input_json: &str) -> Result<String> {
     let (prog, args) = command.split_first().context("plugin command is empty")?;
 
-    let mut child = std::process::Command::new(prog)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit()) // let TUIs render to the terminal
-        .spawn()
-        .with_context(|| format!("spawning plugin '{prog}'"))?;
+    let mut child = spawn_retry_etxtbsy(
+        std::process::Command::new(prog)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit()), // let TUIs render to the terminal
+    )
+    .with_context(|| format!("spawning plugin '{prog}'"))?;
 
     // nosemgrep: blocking-subprocess-in-async — plugin hooks are called from sync VerifyTier::check
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input_json.as_bytes())?;
+    write_stdin_tolerating_epipe(child.stdin.take().unwrap(), input_json.as_bytes())?;
 
     let out = child
         .wait_with_output()
@@ -370,20 +399,19 @@ impl AgentProvider for PluginDispatchProvider {
             .split_first()
             .context("dispatch plugin command is empty")?;
 
-        let mut child = std::process::Command::new(prog)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .with_context(|| format!("spawning dispatch plugin '{}'", self.plugin.name))?;
+        let mut child = spawn_retry_etxtbsy(
+            std::process::Command::new(prog)
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit()),
+        )
+        .with_context(|| format!("spawning dispatch plugin '{}'", self.plugin.name))?;
 
-        // Write payload then close stdin so the plugin sees EOF.
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(json.as_bytes())
+        // Write payload then close stdin so the plugin sees EOF. Tolerate a
+        // broken pipe: a backend that exits without reading stdin is fine —
+        // its exit status decides success (see `write_stdin_tolerating_epipe`).
+        write_stdin_tolerating_epipe(child.stdin.take().unwrap(), json.as_bytes())
             .with_context(|| format!("writing to dispatch plugin '{}'", self.plugin.name))?;
 
         Ok(Box::new(StdCliSession::new(child)))
@@ -927,14 +955,16 @@ mod assay_delta {
         let script = dir.path().join("assay.sh");
         let mut f = std::fs::File::create(&script).unwrap();
         writeln!(f, "#!/bin/sh\necho '{output_json}'").unwrap();
+        // Flush + close the write handle BEFORE marking the file executable and
+        // BEFORE it's exec'd — a still-open writable fd causes `Text file busy`
+        // (ETXTBSY) under CI timing. sync_all + drop guarantees the fd is gone.
+        f.sync_all().unwrap();
+        drop(f);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        // Close the write handle before the script is exec'd — an open writable
-        // fd on the file causes `Text file busy` (ETXTBSY) under CI timing.
-        drop(f);
         // Leak the tempdir so the script survives the test scope.
         std::mem::forget(dir);
         PluginConfig {

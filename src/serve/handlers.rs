@@ -507,6 +507,11 @@ async fn tool_bead_create(
             .unwrap_or_default()
     };
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let acceptance_criteria = args
+        .get("acceptance_criteria")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
 
     // ACI adapter: parse the JSON surface into the shared op core (bead_ops).
     let create_args = crate::bead_ops::BeadCreateArgs {
@@ -518,6 +523,7 @@ async fn tool_bead_create(
         files: str_array("files"),
         test_files: str_array("test_files"),
         depends_on: str_array("depends_on"),
+        acceptance_criteria,
         force,
     };
     // Validate BEFORE resolve_repo_client so arg errors surface as arg errors
@@ -1653,20 +1659,17 @@ async fn tool_decompose(args: &Value) -> Result<Value> {
                 let id = crate::generate_bead_id(&repo_name);
                 let owner = crate::dispatch::default_agent(&spec.issue_type);
                 client
-                    .create_bead_full(
-                        &id,
-                        &spec.title,
-                        &desc,
-                        spec.priority,
-                        &spec.issue_type,
-                        owner,
-                        &[],
-                        &[],
-                        &[],
-                        None,
-                        "",
-                        &spec.derived_from,
-                    )
+                    .create_bead_full(crate::store::NewBead {
+                        id: id.clone(),
+                        title: spec.title.clone(),
+                        description: desc,
+                        priority: spec.priority,
+                        issue_type: spec.issue_type.clone(),
+                        owner: owner.to_string(),
+                        derived_from: spec.derived_from.clone(),
+                        acceptance_criteria: spec.close_condition_text(),
+                        ..Default::default()
+                    })
                     .await?;
 
                 if let Some(ref b) = backend {
@@ -3292,16 +3295,21 @@ mod input_validation_tests {
     }
 
     #[tokio::test]
-    async fn create_rejects_missing_close_condition() {
-        // Impl bead, no test command in description, no test_files → fail-loud,
-        // 1:1 with `rsry bead create` (this is the smell-fix: MCP enforces too).
+    async fn create_defaults_missing_close_condition_rather_than_rejecting() {
+        // A missing close condition no longer fails authoring — it's defaulted
+        // (PR-merge) so bare create works, 1:1 across CLI + MCP. Validation
+        // passes it through; the only error here is the fake repo's store
+        // access, NOT a "no close condition" rejection.
         let args = json!({
             "repo_path": FAKE_REPO, "title": "T", "issue_type": "task", "files": ["a.rs"]
         });
         let err = tool_bead_create(&args, &empty_pool(), None)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("no close condition"), "{err}");
+        assert!(
+            !err.to_string().contains("no close condition"),
+            "missing close condition must be defaulted, not rejected: {err}"
+        );
     }
 
     #[tokio::test]
@@ -3311,20 +3319,17 @@ mod input_validation_tests {
             .await
             .unwrap();
         store
-            .create_bead_full(
-                "rsry-mcp-no-close",
-                "MCP dispatch without close condition",
-                "No runnable close condition here.",
-                1,
-                "task",
-                "dev-agent",
-                &["src/serve/handlers.rs".into()],
-                &[],
-                &[],
-                Some("test"),
-                "",
-                &[],
-            )
+            .create_bead_full(crate::store::NewBead {
+                id: "rsry-mcp-no-close".into(),
+                title: "MCP dispatch without close condition".into(),
+                description: "No runnable close condition here.".into(),
+                priority: 1,
+                issue_type: "task".into(),
+                owner: "dev-agent".into(),
+                files: vec!["src/serve/handlers.rs".into()],
+                created_by: Some("test".into()),
+                ..Default::default()
+            })
             .await
             .unwrap();
 
@@ -3356,20 +3361,17 @@ mod input_validation_tests {
             .await
             .unwrap();
         store
-            .create_bead_full(
-                "rsry-close-no-test",
-                "MCP close without close condition",
-                "No runnable close command here.",
-                1,
-                "task",
-                "dev-agent",
-                &["src/serve/handlers.rs".into()],
-                &[],
-                &[],
-                Some("test"),
-                "",
-                &[],
-            )
+            .create_bead_full(crate::store::NewBead {
+                id: "rsry-close-no-test".into(),
+                title: "MCP close without close condition".into(),
+                description: "No runnable close command here.".into(),
+                priority: 1,
+                issue_type: "task".into(),
+                owner: "dev-agent".into(),
+                files: vec!["src/serve/handlers.rs".into()],
+                created_by: Some("test".into()),
+                ..Default::default()
+            })
             .await
             .unwrap();
 
@@ -3404,20 +3406,17 @@ mod input_validation_tests {
             .await
             .unwrap();
         store
-            .create_bead_full(
-                "rsry-close-no-test",
-                "MCP close without close condition",
-                "No runnable close command here.",
-                1,
-                "task",
-                "dev-agent",
-                &["src/serve/handlers.rs".into()],
-                &[],
-                &[],
-                Some("test"),
-                "",
-                &[],
-            )
+            .create_bead_full(crate::store::NewBead {
+                id: "rsry-close-no-test".into(),
+                title: "MCP close without close condition".into(),
+                description: "No runnable close command here.".into(),
+                priority: 1,
+                issue_type: "task".into(),
+                owner: "dev-agent".into(),
+                files: vec!["src/serve/handlers.rs".into()],
+                created_by: Some("test".into()),
+                ..Default::default()
+            })
             .await
             .unwrap();
 
@@ -3451,20 +3450,17 @@ mod input_validation_tests {
             .await
             .unwrap();
         store
-            .create_bead_full(
-                "rsry-close-force",
-                "MCP close force",
-                "No runnable close command here.",
-                1,
-                "task",
-                "dev-agent",
-                &["src/serve/handlers.rs".into()],
-                &[],
-                &[],
-                Some("test"),
-                "",
-                &[],
-            )
+            .create_bead_full(crate::store::NewBead {
+                id: "rsry-close-force".into(),
+                title: "MCP close force".into(),
+                description: "No runnable close command here.".into(),
+                priority: 1,
+                issue_type: "task".into(),
+                owner: "dev-agent".into(),
+                files: vec!["src/serve/handlers.rs".into()],
+                created_by: Some("test".into()),
+                ..Default::default()
+            })
             .await
             .unwrap();
 

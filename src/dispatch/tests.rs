@@ -327,20 +327,17 @@ async fn run_rejects_unclosable_impl_bead_before_status_mutation() {
         .await
         .unwrap();
     store
-        .create_bead_full(
-            "rsry-no-close",
-            "Unclosable dispatch bead",
-            "No runnable close condition here.",
-            1,
-            "task",
-            "dev-agent",
-            &["src/dispatch/mod.rs".into()],
-            &[],
-            &[],
-            Some("test"),
-            "",
-            &[],
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "rsry-no-close".into(),
+            title: "Unclosable dispatch bead".into(),
+            description: "No runnable close condition here.".into(),
+            priority: 1,
+            issue_type: "task".into(),
+            owner: "dev-agent".into(),
+            files: vec!["src/dispatch/mod.rs".into()],
+            created_by: Some("test".into()),
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -949,6 +946,7 @@ fn build_prompt_includes_title_and_description() {
         created_by: None,
         scope: String::new(),
         derived_from: vec![],
+        acceptance_criteria: String::new(),
     };
 
     let prompt = build_prompt(&bead, "/tmp/test-repo", None, None);
@@ -1007,6 +1005,7 @@ fn build_prompt_uses_workspace_for_repo_line() {
         created_by: None,
         scope: String::new(),
         derived_from: vec![],
+        acceptance_criteria: String::new(),
     };
 
     let ws = PathBuf::from("/home/user/.rsry/worktrees/myrepo/iso-1");
@@ -1054,6 +1053,7 @@ fn build_prompt_varies_framing_by_agent() {
         created_by: None,
         scope: String::new(),
         derived_from: vec![],
+        acceptance_criteria: String::new(),
     };
 
     // Default (dev-agent) framing

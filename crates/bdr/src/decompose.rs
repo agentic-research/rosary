@@ -58,6 +58,24 @@ pub struct SuccessCriterion {
 }
 
 impl BeadSpec {
+    /// Structured close-condition text for the bead's `acceptance_criteria`
+    /// field — built from the success criteria (command preferred, else the
+    /// description, plus any threshold). Empty when the spec declares none.
+    pub fn close_condition_text(&self) -> String {
+        self.success_criteria
+            .iter()
+            .map(|sc| {
+                let base = sc.command.clone().unwrap_or_else(|| sc.description.clone());
+                match &sc.threshold {
+                    Some(t) => format!("{base} ({t})"),
+                    None => base,
+                }
+            })
+            .filter(|s| !s.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
     /// Content hash of the immutable bead definition.
     ///
     /// Covers: title, description, issue_type, priority, success_criteria.

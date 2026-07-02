@@ -198,6 +198,30 @@ The default is 3 concurrent dispatches. Start with 1 (`max_concurrent = 1` in co
 
 See [glossary.md](glossary.md) for the full term reference.
 
+### Authoring a bead
+
+Every bead needs a **close condition** — a declared way to know it's done, so
+an observation (a merged PR, a passing test) can actually close it (ADR-0010).
+You don't have to spell one out for quick capture: an implementation bead
+created without one defaults to the honest PR-merge signal (rosary's GitHub
+merge webhook advances the bead when its linked PR merges).
+
+```bash
+# Frictionless — gets the PR-merge default close condition:
+rsry bead create "Fix flaky retry backoff" --files src/retry.rs
+
+# Recommended — declare a sharper close condition up front:
+rsry bead create "Fix flaky retry backoff" --files src/retry.rs \
+    --acceptance "cargo test retry::backoff_is_bounded"
+```
+
+`--acceptance` takes either a runnable command or a resolution statement.
+Planning beads (`epic`/`design`/`research`/`review`) are exempt — they describe
+work rather than ship a verifiable behavior. `rsry bead close` enforces the same
+condition: a bead authored with `--force` (no condition) must either gain one
+before it closes, or be closed with `rsry bead close --force` to bypass the gate
+deliberately.
+
 ## Mache: structural code intelligence
 
 Mache gives you (and Claude) structural understanding of codebases. Instead of grepping through thousands of files, you get:

@@ -93,6 +93,7 @@ impl DoltClient {
             test_files,
             created_by: row.try_get("created_by").ok(),
             scope: row.try_get("scope").unwrap_or_default(),
+            acceptance_criteria: row.try_get("acceptance_criteria").unwrap_or_default(),
             derived_from: Self::parse_derived_from_notes(row),
         }
     }
@@ -198,6 +199,9 @@ impl DoltClient {
                             test_files,
                             created_by: row.try_get("created_by").ok(),
                             scope: row.try_get("scope").unwrap_or_default(),
+                            acceptance_criteria: row
+                                .try_get("acceptance_criteria")
+                                .unwrap_or_default(),
                             derived_from: Self::parse_derived_from_notes(row),
                         }
                     })
@@ -257,6 +261,7 @@ impl DoltClient {
                 test_files,
                 created_by: row.try_get("created_by").ok(),
                 scope: row.try_get("scope").unwrap_or_default(),
+                acceptance_criteria: row.try_get("acceptance_criteria").unwrap_or_default(),
                 derived_from: Self::parse_derived_from_notes(&row),
             }
         }))
@@ -330,22 +335,22 @@ impl DoltClient {
     /// Without this, create_bead + set_assignee + set_files + add_dependency
     /// each trigger a separate dolt commit (4+ commits for one bead). This
     /// wraps everything in START TRANSACTION → COMMIT for a single commit.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create_bead_full(
-        &self,
-        id: &str,
-        title: &str,
-        description: &str,
-        priority: u8,
-        issue_type: &str,
-        owner: &str,
-        files: &[String],
-        test_files: &[String],
-        depends_on: &[String],
-        created_by: Option<&str>,
-        scope: &str,
-        derived_from: &[bdr::provenance::ProvenanceRef],
-    ) -> Result<()> {
+    pub async fn create_bead_full(&self, bead: crate::store::NewBead) -> Result<()> {
+        let crate::store::NewBead {
+            id,
+            title,
+            description,
+            priority,
+            issue_type,
+            owner,
+            files,
+            test_files,
+            depends_on,
+            created_by,
+            scope,
+            derived_from,
+            acceptance_criteria,
+        } = &bead;
         // Scrub secrets before writing — Dolt history is append-only and hard to purge.
         let title = crate::secrets::scrub_and_warn(title, &format!("bead {id} title"));
         let description =
@@ -360,26 +365,31 @@ impl DoltClient {
         // 1. Insert the bead
         query(
             r#"INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_by, scope, created_at, updated_at)
-               VALUES (?, ?, ?, '', '', '', 'open', ?, ?, ?, ?, NOW(), NOW())"#,
+               VALUES (?, ?, ?, '', ?, '', 'open', ?, ?, ?, ?, NOW(), NOW())"#,
         )
         .bind(id)
         .bind(&title)
         .bind(&description)
-        .bind(priority as i32)
+        .bind(acceptance_criteria)
+        .bind(*priority as i32)
         .bind(issue_type)
-        .bind(created_by)
+        .bind(created_by.as_deref())
         .bind(scope)
         .execute(&mut *tx)
         .await
         .with_context(|| format!("creating bead {id}"))?;
 
-        // 2. Set owner
-        query("UPDATE issues SET assignee = ?, updated_at = NOW() WHERE id = ?")
-            .bind(owner)
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .with_context(|| format!("setting assignee for {id}"))?;
+        // 2. Set owner — only when given. An empty owner means "unset", so we
+        // leave assignee NULL (reads back `None`, not `Some("")`) and keep
+        // reconcile's `owner.is_some()` auto-assign path working.
+        if !owner.is_empty() {
+            query("UPDATE issues SET assignee = ?, updated_at = NOW() WHERE id = ?")
+                .bind(owner)
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("setting assignee for {id}"))?;
+        }
 
         // 3. Set files and provenance if provided
         if !files.is_empty() || !test_files.is_empty() || !derived_from.is_empty() {
