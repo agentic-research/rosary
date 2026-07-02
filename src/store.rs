@@ -304,12 +304,15 @@ pub trait UserRepoStore: Send + Sync {
 /// `Default` for the rest (e.g. `scope`, `depends_on`, `derived_from`), so no
 /// more `""` / `&[]` positional sentinels, and adding a field is one struct
 /// member instead of ~25 call-site edits.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct NewBead {
     pub id: String,
     pub title: String,
     pub description: String,
+    /// Priority band (0 = P0 highest … 3 = P3). Defaults to **2**, not 0 —
+    /// a derived `Default` would silently make omitted-priority beads P0.
     pub priority: u8,
+    /// Defaults to `"task"` when omitted (matches the store's read default).
     pub issue_type: String,
     /// Assignee. An empty string means "unset": `create_bead_full` leaves
     /// `assignee` NULL (reads back as `None`), so it never creates a bead that
@@ -324,6 +327,29 @@ pub struct NewBead {
     pub derived_from: Vec<bdr::provenance::ProvenanceRef>,
     /// Structured close condition (ADR-0010) — checked by the gate.
     pub acceptance_criteria: String,
+}
+
+impl Default for NewBead {
+    /// Hand-written (not derived) so an omitted `priority` defaults to P2 and
+    /// an omitted `issue_type` to `"task"` — matching the schema/read defaults.
+    /// A derived `Default` would give `priority = 0` (P0) and `issue_type = ""`.
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            title: String::new(),
+            description: String::new(),
+            priority: 2,
+            issue_type: "task".into(),
+            owner: String::new(),
+            files: Vec::new(),
+            test_files: Vec::new(),
+            depends_on: Vec::new(),
+            created_by: None,
+            scope: String::new(),
+            derived_from: Vec::new(),
+            acceptance_criteria: String::new(),
+        }
+    }
 }
 
 /// Each repo has its own BeadStore (SQLite file or Dolt server).
