@@ -49,7 +49,6 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 
@@ -201,6 +200,20 @@ fn spawn_retry_etxtbsy(cmd: &mut std::process::Command) -> std::io::Result<std::
     cmd.spawn()
 }
 
+/// Write the payload to a child's stdin, tolerating `BrokenPipe`.
+///
+/// A backend that legitimately exits without draining its stdin (e.g. it
+/// makes its decision from argv, or is a fast no-op) closes the read end
+/// before we finish writing — `write_all` then returns `EPIPE`. That's not a
+/// failure: the child's *exit status* is the source of truth, so a broken
+/// pipe on the payload write is swallowed. All other write errors propagate.
+fn write_stdin_tolerating_epipe(mut w: impl std::io::Write, bytes: &[u8]) -> std::io::Result<()> {
+    match w.write_all(bytes) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    }
+}
+
 fn call_subprocess(command: &[String], input_json: &str) -> Result<String> {
     let (prog, args) = command.split_first().context("plugin command is empty")?;
 
@@ -214,11 +227,7 @@ fn call_subprocess(command: &[String], input_json: &str) -> Result<String> {
     .with_context(|| format!("spawning plugin '{prog}'"))?;
 
     // nosemgrep: blocking-subprocess-in-async — plugin hooks are called from sync VerifyTier::check
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input_json.as_bytes())?;
+    write_stdin_tolerating_epipe(child.stdin.take().unwrap(), input_json.as_bytes())?;
 
     let out = child
         .wait_with_output()
@@ -399,12 +408,10 @@ impl AgentProvider for PluginDispatchProvider {
         )
         .with_context(|| format!("spawning dispatch plugin '{}'", self.plugin.name))?;
 
-        // Write payload then close stdin so the plugin sees EOF.
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(json.as_bytes())
+        // Write payload then close stdin so the plugin sees EOF. Tolerate a
+        // broken pipe: a backend that exits without reading stdin is fine —
+        // its exit status decides success (see `write_stdin_tolerating_epipe`).
+        write_stdin_tolerating_epipe(child.stdin.take().unwrap(), json.as_bytes())
             .with_context(|| format!("writing to dispatch plugin '{}'", self.plugin.name))?;
 
         Ok(Box::new(StdCliSession::new(child)))
