@@ -1223,8 +1223,10 @@ fn ensure_codex_experimental_enabled() -> Result<()> {
 
     anyhow::bail!(
         "codex provider is experimental and disabled by default; set RSRY_EXPERIMENTAL_CODEX=1 \
-         to opt in. Native session durability and live app-server validation are tracked in \
-         rosary-d6b6e6 and rosary-2500f3."
+         to opt in. Its native session contract is now durable — every codex session persists an \
+         AgentSessionRef (rosary-d6b6e6, shipped in #249) and it has no CLI shell-out path — so \
+         enabling it cannot silently lose session state. The remaining opt-in reason is live \
+         app-server validation against a real socket (rosary-2500f3)."
     )
 }
 
