@@ -954,19 +954,12 @@ async fn tool_bead_link(
         // `cross_repo` instead (rosary-b5da2f PR 4).
         match scope.as_repo_name() {
             Some(_repo_name) => {
-                // Prefer the explicit `repo_path` arg (existing call sites).
-                // Fall back to a pool lookup by repo name when only `scope`
-                // was provided — full path resolution from name lives in a
-                // later PR.
-                let repo_path = args
-                    .get("repo_path")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "same-repo dep requires `repo_path` (path lookup from scope name is a follow-up; pass `repo_path` for now or use `cross_repo` for cross-scope deps)"
-                        )
-                    })?;
-                let client_ref = get_client(repo_path, pool).await?;
+                // Resolve the per-repo store from `scope` alone (pool lookup by
+                // name) OR an explicit `repo_path`. `resolve_repo_client` owns
+                // the precedence, the scope/path-mismatch guard, and the
+                // repo_path fallback — so `rsry_bead_link(scope="repo:rosary")`
+                // works without also passing `repo_path` (rosary-d7a98e).
+                let (_scope, client_ref) = resolve_repo_client(args, pool).await?;
                 let client = client_ref.as_store();
                 if remove {
                     client.remove_dependency(id, depends_on).await?;
@@ -3666,6 +3659,56 @@ mod input_validation_tests {
             deps.iter().any(|d| d.to.bead_id == "signet-9605a3"),
             "cross-repo dep must land in LinkageStore when scope was used; got: {deps:?}"
         );
+    }
+
+    /// rosary-d7a98e: a *same-repo* dep expressed with `scope` alone (no
+    /// `repo_path`) must resolve the per-repo store through the pool — the
+    /// canonical scope API was previously not enough for same-repo links, which
+    /// still demanded `repo_path`.
+    #[tokio::test]
+    async fn link_scope_only_resolves_same_repo_dep_via_pool() {
+        let repo = crate::testutil::TestRepo::new();
+        let beads_dir = repo.path().join(".beads");
+        // Seed the two beads (add_dependency resolves both ids).
+        {
+            let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
+                .await
+                .unwrap();
+            for id in ["myrepo-a", "myrepo-b"] {
+                store
+                    .create_bead_full(crate::store::NewBead {
+                        id: id.into(),
+                        title: id.into(),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
+            .await
+            .unwrap();
+        let pool = crate::pool::RepoPool::from_client("myrepo", repo.path().to_path_buf(), store);
+
+        // Scope only — no `repo_path`. `depends_on` carries the calling repo's
+        // prefix so it stays a same-repo (not cross-repo) link.
+        let args = json!({
+            "scope": "repo:myrepo",
+            "id": "myrepo-a",
+            "depends_on": "myrepo-b",
+        });
+        let result = tool_bead_link(&args, &pool, None).await;
+        assert!(
+            result.is_ok(),
+            "scope-only same-repo link must resolve via the pool; got: {result:?}"
+        );
+
+        // The dep landed in the pooled per-repo store.
+        let store2 = crate::bead_sqlite::connect_bead_store(&beads_dir)
+            .await
+            .unwrap();
+        let deps = store2.get_dependencies("myrepo-a").await.unwrap();
+        assert_eq!(deps, vec!["myrepo-b"]);
     }
 
     /// rosary-b5da2f PR 4: `Global` scope can write cross-repo deps via

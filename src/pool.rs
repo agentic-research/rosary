@@ -73,6 +73,22 @@ impl RepoPool {
         }
     }
 
+    /// Build a pool holding a single already-connected store, for tests.
+    /// `known_ports`/`beads_dirs` stay empty so the staleness guard is a no-op.
+    #[cfg(test)]
+    pub fn from_client(name: &str, path: PathBuf, store: Box<dyn BeadStore>) -> Self {
+        let mut clients: HashMap<String, Box<dyn BeadStore>> = HashMap::new();
+        clients.insert(name.to_string(), store);
+        let mut paths = HashMap::new();
+        paths.insert(name.to_string(), path);
+        RepoPool {
+            clients,
+            paths,
+            beads_dirs: HashMap::new(),
+            known_ports: HashMap::new(),
+        }
+    }
+
     /// Create a pool and connect to all repos in the given config.
     /// Repos that fail to connect are logged and skipped (best-effort).
     pub async fn from_config(config_path: &str) -> Result<Self> {
