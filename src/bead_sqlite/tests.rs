@@ -1,4 +1,3 @@
-
 use super::*;
 
 /// rosary-21e2d4: a bd embedded-Dolt store (no server-mode `dolt/`) must
