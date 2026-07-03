@@ -9,7 +9,7 @@
 //! runs accumulate.
 
 use super::PipelineVerdictValue;
-use super::shadow::{folded_pipeline_verdict, parse_events_for};
+use super::shadow::{derived_status, folded_pipeline_verdict, parse_events_for};
 use crate::store::{BeadStore, WorkRef};
 use anyhow::Result;
 
@@ -69,8 +69,9 @@ pub async fn audit_store(store: &dyn BeadStore, repo_name: &str) -> Result<Audit
         }
         report.comparable += 1;
 
+        // Raw chain-max verdict for display; terminal-aware status for the diff.
         let folded = folded_pipeline_verdict(&observations, &work);
-        let expected = folded.map(|v| v.expected_bead_status().to_string());
+        let expected = derived_status(&observations, &work);
 
         let agrees = matches!(&expected, Some(e) if normalize(e) == normalize(&b.status));
         if agrees {

@@ -83,9 +83,56 @@ fn parse_legacy_flat(s: &str, work: &WorkRef) -> Option<Observation> {
     ))
 }
 
+/// Derive the pipeline **status** from a work item's full observation set —
+/// what `persist_status` should hold. This is the terminal-aware layer over the
+/// chain-max verdict (rosary-818ed4): chain-max alone gives `Fail`/`Deadletter`
+/// no rank, so a deadlettered bead would fold to its highest *non-fail* verdict
+/// (e.g. `pr_open`) instead of a terminal state. Terminal verdicts absorb,
+/// order-independently:
+///   - `Done` present        → `done`    (terminal success dominates)
+///   - else `Deadletter`     → `blocked` (terminal failure)
+///   - else chain-max status (a lone `Fail` = retry → `open`)
+///
+/// `None` when the work item has no pipeline-verdict observation.
+pub fn derived_status(observations: &[Observation], work: &WorkRef) -> Option<String> {
+    let verdicts: Vec<PipelineVerdictValue> = observations
+        .iter()
+        .filter(|o| &o.work_item == work)
+        .filter_map(|o| match &o.value {
+            FieldValue::PipelineVerdict(v) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    if verdicts.is_empty() {
+        return None;
+    }
+    if verdicts.contains(&PipelineVerdictValue::Done) {
+        return Some("done".to_string());
+    }
+    if verdicts.contains(&PipelineVerdictValue::Deadletter) {
+        return Some("blocked".to_string());
+    }
+    let chain_max = verdicts
+        .iter()
+        .copied()
+        .max_by_key(|v| v.rank().unwrap_or(0))?;
+    Some(
+        match chain_max {
+            // A Fail with no forward progress means the bead is back in the
+            // queue for retry — persist_status writes "open".
+            PipelineVerdictValue::Fail => "open",
+            other => other.expected_bead_status(),
+        }
+        .to_string(),
+    )
+}
+
 /// Fold the observations and return the lattice's chain-max `PipelineVerdict`
 /// for `work` — the derived pipeline state the lattice would report. `None` when
 /// no pipeline-verdict observation exists for the work item.
+///
+/// Note: this is the raw chain-max verdict for display; [`derived_status`] is
+/// the terminal-aware STATUS used for the persist_status comparison.
 pub fn folded_pipeline_verdict(
     observations: &[Observation],
     work: &WorkRef,
@@ -206,7 +253,51 @@ mod tests {
         assert_eq!(
             folded_pipeline_verdict(&obs, &work()),
             Some(PipelineVerdictValue::PrOpen),
-            "chain-max ignores Deadletter — the divergence the audit surfaces"
+            "raw chain-max ignores Deadletter (display value)"
         );
+    }
+
+    // ── rosary-818ed4 regression: terminal-aware derived_status ──────────────
+
+    fn legacy(verdict: &str, phase: u32) -> String {
+        format!("phase={phase} agent=a verdict={verdict} detail=x")
+    }
+
+    #[test]
+    fn derived_status_deadletter_is_terminal_blocked() {
+        // THE FIX: a deadlettered bead's derived STATUS is `blocked`, even though
+        // the raw chain-max verdict is `PrOpen` (rosary-818ed4 / rosary-11214e).
+        let obs = parse_events_for(
+            &[
+                legacy("Dispatched", 0),
+                legacy("PrOpen", 1),
+                legacy("Deadletter", 77),
+            ],
+            &work(),
+        );
+        assert_eq!(derived_status(&obs, &work()).as_deref(), Some("blocked"));
+    }
+
+    #[test]
+    fn derived_status_done_dominates_a_prior_fail() {
+        // Terminal success absorbs: a Fail that was retried past → still `done`.
+        let obs = parse_events_for(
+            &[legacy("Verifying", 1), legacy("Fail", 2), legacy("Done", 3)],
+            &work(),
+        );
+        assert_eq!(derived_status(&obs, &work()).as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn derived_status_chain_max_when_no_terminal() {
+        let obs = parse_events_for(&[legacy("Dispatched", 0), legacy("Verifying", 1)], &work());
+        assert_eq!(derived_status(&obs, &work()).as_deref(), Some("verifying"));
+        let obs = parse_events_for(&[legacy("PrOpen", 4)], &work());
+        assert_eq!(derived_status(&obs, &work()).as_deref(), Some("pr_open"));
+    }
+
+    #[test]
+    fn derived_status_none_without_observations() {
+        assert_eq!(derived_status(&[], &work()), None);
     }
 }
