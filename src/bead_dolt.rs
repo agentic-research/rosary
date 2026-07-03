@@ -155,4 +155,8 @@ impl BeadStore for DoltBeadStore {
     async fn get_latest_event(&self, issue_id: &str, event_type: &str) -> Result<Option<String>> {
         self.client.get_latest_event(issue_id, event_type).await
     }
+
+    async fn list_event_details(&self, issue_id: &str, event_type: &str) -> Result<Vec<String>> {
+        self.client.list_event_details(issue_id, event_type).await
+    }
 }
