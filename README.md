@@ -124,7 +124,7 @@ rsry bead search "auth"
 rsry bead close rsry-abc123 --force          # `--force` skips the close-condition gate
 
 # Or wire rosary as an MCP server in your AI client (Claude Code, etc.)
-rsry serve --transport stdio                 # exposes 33 bead/thread/decade tools
+rsry serve --transport stdio                 # exposes 40 bead/thread/decade tools
 
 # Optionally sync to Linear for human review (read+write, bidirectional)
 rsry sync                                    # one-shot
