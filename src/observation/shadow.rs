@@ -83,48 +83,89 @@ fn parse_legacy_flat(s: &str, work: &WorkRef) -> Option<Observation> {
     ))
 }
 
+/// The phase index this observation belongs to, parsed from its
+/// `source_event_id` (`"phaseN:agent"`, uniform across live + legacy events).
+/// Defaults to 0 when absent/unparseable.
+fn phase_of(obs: &Observation) -> u32 {
+    obs.source_event_id
+        .strip_prefix("phase")
+        .and_then(|rest| rest.split(':').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Status of a single phase from its own verdict set — the innermost fold of the
+/// `Bead ⊃ Phase ⊃ verdict` catamorphism. This is NOT the global chain-max: a
+/// `Fail` here means *this phase's verify failed → retrying*, so it must rank
+/// ABOVE `Verifying`/`Dispatched` (it's a strictly later state), yet below a
+/// `Pass` (which means the phase ultimately advanced, possibly after retries).
+/// Precedence: PrOpen > Pass > Fail > Verifying > Dispatched. Order-independent
+/// (set-based), so it holds for the timestamp-less legacy corpus too.
+fn phase_local_status(verdicts: &[PipelineVerdictValue]) -> Option<&'static str> {
+    use PipelineVerdictValue as V;
+    let has = |t: V| verdicts.iter().any(|v| *v == t);
+    if has(V::PrOpen) {
+        Some("pr_open")
+    } else if has(V::Pass) {
+        Some("verifying") // phase passed verify, advancing to the next phase
+    } else if has(V::Fail) {
+        Some("open") // verify failed, back in the queue for retry
+    } else if has(V::Verifying) {
+        Some("verifying")
+    } else if has(V::Dispatched) {
+        Some("dispatched")
+    } else {
+        None
+    }
+}
+
 /// Derive the pipeline **status** from a work item's full observation set —
-/// what `persist_status` should hold. This is the terminal-aware layer over the
-/// chain-max verdict (rosary-818ed4): chain-max alone gives `Fail`/`Deadletter`
-/// no rank, so a deadlettered bead would fold to its highest *non-fail* verdict
-/// (e.g. `pr_open`) instead of a terminal state. Terminal verdicts absorb,
-/// order-independently:
-///   - `Done` present        → `done`    (terminal success dominates)
-///   - else `Deadletter`     → `blocked` (terminal failure)
-///   - else chain-max status (a lone `Fail` = retry → `open`)
+/// what `persist_status` should hold.
+///
+/// The pipeline is recursive state: `Bead ⊃ Phase ⊃ verdict-lifecycle`. A flat
+/// chain-max over every phase's verdicts is wrong — it ranks by verdict alone,
+/// so an early phase's `Pass` (rank 3) masks a *later* phase's `Fail`/retry
+/// (no rank), reporting `verifying` while the bead is really re-queued `open`
+/// (rosary-7f7eff). Instead we fold hierarchically:
+///   - `Done` present        → `done`    (terminal success, absorbs all phases)
+///   - else `Deadletter`     → `blocked` (terminal failure, absorbs all phases)
+///   - else the **highest phase reached** governs — its [`phase_local_status`].
 ///
 /// `None` when the work item has no pipeline-verdict observation.
 pub fn derived_status(observations: &[Observation], work: &WorkRef) -> Option<String> {
-    let verdicts: Vec<PipelineVerdictValue> = observations
+    let by_phase: Vec<(u32, PipelineVerdictValue)> = observations
         .iter()
         .filter(|o| &o.work_item == work)
         .filter_map(|o| match &o.value {
-            FieldValue::PipelineVerdict(v) => Some(*v),
+            FieldValue::PipelineVerdict(v) => Some((phase_of(o), *v)),
             _ => None,
         })
         .collect();
-    if verdicts.is_empty() {
+    if by_phase.is_empty() {
         return None;
     }
-    if verdicts.contains(&PipelineVerdictValue::Done) {
+    // Terminal verdicts absorb across ALL phases, order-independently (rosary-818ed4).
+    if by_phase
+        .iter()
+        .any(|(_, v)| *v == PipelineVerdictValue::Done)
+    {
         return Some("done".to_string());
     }
-    if verdicts.contains(&PipelineVerdictValue::Deadletter) {
+    if by_phase
+        .iter()
+        .any(|(_, v)| *v == PipelineVerdictValue::Deadletter)
+    {
         return Some("blocked".to_string());
     }
-    let chain_max = verdicts
+    // Otherwise the current (highest) phase governs: a later phase's Fail/retry
+    // is never masked by an earlier phase's Pass.
+    let max_phase = by_phase.iter().map(|(p, _)| *p).max()?;
+    let current: Vec<PipelineVerdictValue> = by_phase
         .iter()
-        .copied()
-        .max_by_key(|v| v.rank().unwrap_or(0))?;
-    Some(
-        match chain_max {
-            // A Fail with no forward progress means the bead is back in the
-            // queue for retry — persist_status writes "open".
-            PipelineVerdictValue::Fail => "open",
-            other => other.expected_bead_status(),
-        }
-        .to_string(),
-    )
+        .filter(|(p, _)| *p == max_phase)
+        .map(|(_, v)| *v)
+        .collect();
+    phase_local_status(&current).map(String::from)
 }
 
 /// Fold the observations and return the lattice's chain-max `PipelineVerdict`
@@ -299,5 +340,49 @@ mod tests {
     #[test]
     fn derived_status_none_without_observations() {
         assert_eq!(derived_status(&[], &work()), None);
+    }
+
+    #[test]
+    fn later_phase_fail_not_masked_by_earlier_phase_pass() {
+        // rosary-7f7eff (dogfood rosary-765f42): phase 1 PASSED, phase 2 is
+        // failing/retrying. Flat chain-max would report Pass → `verifying`; the
+        // phase-aware fold reports the CURRENT phase's Fail → `open`, matching
+        // what persist_status writes for a re-queued bead.
+        let obs = parse_events_for(
+            &[
+                legacy("Dispatched", 1),
+                legacy("Verifying", 1),
+                legacy("Pass", 1),
+                legacy("Dispatched", 2),
+                legacy("Verifying", 2),
+                legacy("Fail", 2),
+            ],
+            &work(),
+        );
+        assert_eq!(derived_status(&obs, &work()).as_deref(), Some("open"));
+        // The raw display fold still shows chain-max Pass (informational only).
+        assert_eq!(
+            folded_pipeline_verdict(&obs, &work()),
+            Some(PipelineVerdictValue::Pass)
+        );
+    }
+
+    #[test]
+    fn highest_phase_governs_when_it_passed_and_advances() {
+        // phase 2 reached Pass after phase 1 also passed → `verifying` (advancing),
+        // not dragged to a lower phase's state.
+        let obs = parse_events_for(&[legacy("Pass", 1), legacy("Pass", 2)], &work());
+        assert_eq!(derived_status(&obs, &work()).as_deref(), Some("verifying"));
+    }
+
+    #[test]
+    fn within_phase_retry_that_finally_passes_is_advancing() {
+        // A phase that Failed, retried, then Passed → `verifying` (Pass wins over
+        // the earlier Fail within the SAME phase).
+        let obs = parse_events_for(
+            &[legacy("Verifying", 2), legacy("Fail", 2), legacy("Pass", 2)],
+            &work(),
+        );
+        assert_eq!(derived_status(&obs, &work()).as_deref(), Some("verifying"));
     }
 }
