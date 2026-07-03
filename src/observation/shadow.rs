@@ -103,7 +103,7 @@ fn phase_of(obs: &Observation) -> u32 {
 /// (set-based), so it holds for the timestamp-less legacy corpus too.
 fn phase_local_status(verdicts: &[PipelineVerdictValue]) -> Option<&'static str> {
     use PipelineVerdictValue as V;
-    let has = |t: V| verdicts.iter().any(|v| *v == t);
+    let has = |t: V| verdicts.contains(&t);
     if has(V::PrOpen) {
         Some("pr_open")
     } else if has(V::Pass) {
