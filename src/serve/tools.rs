@@ -209,6 +209,19 @@ pub(crate) fn tool_definitions() -> Value {
                     "required": ["query"]                }
             },
             {
+                "name": "rsry_bead_history",
+                "description": "Rosary-owned observation history for a bead: the append-only review + verify verdicts folded through the observation lattice (ADR-0010). GitHub PR threads / CI checks are a projection of this — the history is queryable from rosary directly and survives without them. Returns the folded pipeline status plus each recorded verdict (source, event, observed_at). Pass either `scope` or `repo_path`.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "scope": { "type": "string", "description": "Canonical scope: 'repo:<name>'. Takes priority over repo_path." },
+                        "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory" },
+                        "id": { "type": "string", "description": "Bead ID whose observation history to read" }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
                 "name": "rsry_dispatch",
                 "description": "Dispatch an agent to work on a specific bead. Spawns an agent in the bead's repo with the appropriate agent perspective (dev-agent, staging-agent, etc.) and permissions.",
                 "inputSchema": {

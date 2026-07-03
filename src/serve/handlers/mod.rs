@@ -222,6 +222,7 @@ pub(crate) async fn call_tool(
         "rsry_bead_comment_delete" => tool_bead_comment_delete(args, pool, user_scope).await,
         "rsry_bead_link" => tool_bead_link(args, pool, backend).await,
         "rsry_bead_search" => tool_bead_search(args, pool, user_scope).await,
+        "rsry_bead_history" => tool_bead_history(args, pool).await,
         "rsry_dispatch" => tool_dispatch(args, config_path).await,
         "rsry_active" => tool_active().await,
         "rsry_workspace_create" => tool_workspace_create(args, config_path, repo_cache).await,
@@ -994,6 +995,49 @@ async fn tool_bead_link(
             }
         }
     }
+}
+
+/// Rosary-owned observation history for a bead (rosary-d18be8 / rosary-d298a3):
+/// the append-only review + verify verdicts folded through the lattice. GitHub
+/// PR threads / CI checks are a *projection* — this survives without them and is
+/// queryable from rosary directly.
+async fn tool_bead_history(args: &Value, pool: &RepoPool) -> Result<Value> {
+    let (scope, client_ref) = resolve_repo_client(args, pool).await?;
+    let client = client_ref.as_store();
+    let id = args["id"].as_str().ok_or_else(|| {
+        anyhow::anyhow!("id required — the bead whose observation history to read")
+    })?;
+
+    let events = client.list_event_details(id, "observation").await?;
+    let observations = crate::observation::shadow::parse_observation_events(&events);
+    let work = scope.work_ref(id)?;
+    let folded = crate::observation::shadow::folded_pipeline_verdict(&observations, &work);
+
+    let history: Vec<Value> = observations
+        .iter()
+        .map(|o| {
+            let verdict = match &o.value {
+                crate::observation::FieldValue::PipelineVerdict(v) => format!("{v:?}"),
+                other => format!("{other:?}"),
+            };
+            json!({
+                "source": o.source.as_str(),
+                "event": o.source_event_id,
+                "verdict": verdict,
+                "observed_at": o.observed_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "id": id,
+        "scope": scope.to_string(),
+        "folded_status": folded.map(|v| format!("{v:?}")),
+        "observation_count": observations.len(),
+        "history": history,
+        "note": "Rosary-owned observation history (review + verify verdicts, ADR-0010). \
+                 GitHub PR/CI state is a projection of this, not the source of truth.",
+    }))
 }
 
 async fn tool_bead_search(
