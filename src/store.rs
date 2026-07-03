@@ -464,6 +464,10 @@ pub trait BeadStore: Send + Sync {
     async fn log_event(&self, issue_id: &str, event_type: &str, detail: &str);
     /// Most recent event detail for a bead + event type.
     async fn get_latest_event(&self, issue_id: &str, event_type: &str) -> Result<Option<String>>;
+    /// All event details for a bead + event type, oldest → newest. Used by the
+    /// observation-lattice shadow fold (rosary-a66b3a / R4b): read back the
+    /// append-only `observation` events, rebuild the G-set, and fold it.
+    async fn list_event_details(&self, issue_id: &str, event_type: &str) -> Result<Vec<String>>;
 }
 
 // ── Composite traits ───────────────────────────────────

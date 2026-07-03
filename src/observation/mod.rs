@@ -50,6 +50,7 @@ pub mod log_sqlite;
 pub mod quarantine;
 pub mod registry;
 pub mod resolve;
+pub mod shadow;
 pub mod tree_fold;
 
 #[cfg(test)]

@@ -133,4 +133,25 @@ impl DoltClient {
 
         Ok(row.map(|r| r.get("comment")))
     }
+
+    pub async fn list_event_details(
+        &self,
+        issue_id: &str,
+        event_type: &str,
+    ) -> Result<Vec<String>> {
+        let full_id = match self.resolve_id(issue_id).await {
+            Ok(id) => id,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let rows = query(
+            "SELECT comment FROM events WHERE issue_id = ? AND event_type = ? ORDER BY created_at ASC",
+        )
+        .bind(&full_id)
+        .bind(event_type)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| format!("querying {event_type} events for {issue_id}"))?;
+
+        Ok(rows.iter().map(|r| r.get("comment")).collect())
+    }
 }

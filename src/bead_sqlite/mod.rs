@@ -1277,6 +1277,21 @@ impl BeadStore for SqliteBeadStore {
             .optional()?;
         Ok(result)
     }
+
+    async fn list_event_details(&self, issue_id: &str, event_type: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let full_id = match Self::resolve_id(&conn, issue_id) {
+            Ok(id) => id,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let mut stmt = conn.prepare(
+            "SELECT comment FROM events WHERE issue_id = ?1 AND event_type = ?2 ORDER BY created_at ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![full_id, event_type], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]

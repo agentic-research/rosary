@@ -126,6 +126,29 @@ impl Reconciler {
             client
                 .log_event(bead_id, "observation", &event_detail)
                 .await;
+
+            // R4b step 3 (rosary-a66b3a): shadow-fold behind `RSRY_LATTICE_SHADOW`.
+            // Read the persisted observations back, fold them through the
+            // FieldAlgebra registry, and log the lattice-derived verdict next to
+            // what we recorded — a corpus-compare surface. Pure observation:
+            // `persist_status` stays authoritative; no read-path flip until the
+            // fold is proven to agree across the corpus.
+            if std::env::var("RSRY_LATTICE_SHADOW").is_ok()
+                && let Ok(events) = client.list_event_details(bead_id, "observation").await
+            {
+                let work = crate::store::WorkRef {
+                    repo: repo.to_string(),
+                    scope: String::new(),
+                    bead_id: bead_id.to_string(),
+                };
+                let obs = crate::observation::shadow::parse_observation_events(&events);
+                let folded = crate::observation::shadow::folded_pipeline_verdict(&obs, &work);
+                eprintln!(
+                    "[lattice-shadow] bead={bead_id} recorded={verdict:?} folded={folded:?} \
+                     ({} observations)",
+                    obs.len()
+                );
+            }
         }
     }
 
