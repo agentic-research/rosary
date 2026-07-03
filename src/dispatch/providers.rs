@@ -1155,9 +1155,27 @@ pub(crate) fn resolve_launch_env(work_dir: &Path) -> Result<AgentLaunchEnv, Auth
         && let Some(key) = cfg.dispatch.and_then(|d| d.anthropic_api_key)
         && !key.is_empty()
     {
-        envrc.push(format!("export ANTHROPIC_API_KEY={key}"));
+        // Route by token SHAPE. A claude.ai OAuth token (from `claude
+        // setup-token`, the Max/Pro account credential — prefix `sk-ant-oat`)
+        // is NOT an API key: injecting it as ANTHROPIC_API_KEY makes claude
+        // treat it as a raw key and fail auth ("Not logged in") — the daemon
+        // dispatch failure (rosary-1be3b8). It must be CLAUDE_CODE_OAUTH_TOKEN.
+        // Real API keys (`sk-ant-api…`) stay ANTHROPIC_API_KEY.
+        let var = credential_env_var(&key);
+        envrc.push(format!("export {var}={key}"));
     }
     resolve_launch_env_from(|k| std::env::var(k).ok(), &envrc)
+}
+
+/// The env var an Anthropic credential must be injected under, by token shape:
+/// claude.ai OAuth tokens (`sk-ant-oat…`, from `claude setup-token`) →
+/// `CLAUDE_CODE_OAUTH_TOKEN`; everything else (API keys) → `ANTHROPIC_API_KEY`.
+pub(crate) fn credential_env_var(token: &str) -> &'static str {
+    if token.starts_with("sk-ant-oat") {
+        "CLAUDE_CODE_OAUTH_TOKEN"
+    } else {
+        "ANTHROPIC_API_KEY"
+    }
 }
 
 /// Read `.envrc` from `work_dir` and the git repo root (for worktrees).
@@ -1303,6 +1321,23 @@ fn ensure_codex_experimental_enabled() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rosary-1be3b8: a Max/Pro claude.ai OAuth token must be injected under
+    /// CLAUDE_CODE_OAUTH_TOKEN (claude treats ANTHROPIC_API_KEY as a raw key and
+    /// fails auth for OAuth tokens); real API keys stay ANTHROPIC_API_KEY.
+    #[test]
+    fn credential_routes_oauth_vs_api_key_by_prefix() {
+        assert_eq!(
+            credential_env_var("sk-ant-oat01-abc123"),
+            "CLAUDE_CODE_OAUTH_TOKEN"
+        );
+        assert_eq!(
+            credential_env_var("sk-ant-api03-abc123"),
+            "ANTHROPIC_API_KEY"
+        );
+        // Unknown shapes default to API key (safe: never mis-labels an OAuth token).
+        assert_eq!(credential_env_var("some-gateway-key"), "ANTHROPIC_API_KEY");
+    }
 
     /// rosary-ea33b5 (friction #2): the run spec models required vs optional
     /// MCP tools and the dispatch gate fails loud on a missing *required* tool
