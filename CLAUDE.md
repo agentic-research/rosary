@@ -45,52 +45,55 @@ task all            # fmt + check + lint + test
 
 ## Key Source Files
 
-| File                           | Purpose                                                                                                                                                      |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| src/serve/mod.rs               | MCP server (stdio + HTTP) + Linear/GitHub webhook handlers                                                                                                   |
-| src/serve/handlers/mod.rs      | MCP tool implementations (40 tools)                                                                                                                          |
-| src/serve/github_webhook.rs    | GitHub merge webhook → advance bead + unblock dependents                                                                                                     |
-| src/reconcile/mod.rs           | Reconciliation loop: scan → triage → dispatch → verify                                                                                                       |
-| src/bead.rs                    | Bead model, BeadState enum, Comment struct (audit-trail), Linear type mapping                                                                                |
-| src/bead_ops.rs                | Shared bead-op core (the API in CLI↔MCP): BeadCreateArgs + validate/create/close gates enforced 1:1 across `rsry bead` (CLI) and `rsry_bead_*` (MCP)         |
-| src/bead_sqlite/mod.rs         | `connect_bead_store` — the single entry point for ALL bead I/O; `SqliteBeadStore` reads `.beads/beads.db` directly (rusqlite) when there's no `.beads/dolt/` |
-| src/bead_dolt.rs               | `DoltBeadStore` — `BeadStore` over the Dolt MySQL client (used when `.beads/dolt/` exists)                                                                   |
-| src/dispatch/mod.rs            | Agent dispatch, pipeline mapping, execution                                                                                                                  |
-| src/dispatch/providers.rs      | AgentProvider trait — claude / gemini / plugin-kind="dispatch" backends                                                                                      |
-| src/dispatch/sweep.rs          | Orphan-dispatch detection — self-heals stuck `Dispatched` beads (rosary-67c43d)                                                                              |
-| src/epic.rs                    | Semantic clustering, dedup, file overlap detection                                                                                                           |
-| src/dolt/mod.rs                | Dolt client (per-repo beads, server mode) — used only when `.beads/dolt/` exists                                                                             |
-| src/store_dolt.rs              | Dolt backend for orchestrator state (pipeline, dispatches, cross-repo deps)                                                                                  |
-| src/store.rs                   | Backend-agnostic store traits (HierarchyStore, DispatchStore, LinkageStore)                                                                                  |
-| src/observation/mod.rs         | ADR-0010 substrate: Observation, FieldName, FieldAlgebra, Observer trait                                                                                     |
-| src/observation/algebra\_\*.rs | Per-field algebras: chain-max, LWW-register, OR-set, flat-lattice                                                                                            |
-| src/observation/log.rs         | In-memory G-set (used by tests + integration_tests)                                                                                                          |
-| src/observation/log_sqlite.rs  | Persistent G-set + quarantine via orchestrator SQLite                                                                                                        |
-| src/observation/registry.rs    | Field/algebra dispatch via OnceLock singleton                                                                                                                |
-| src/observation/fold.rs        | Per-field per-source fold + cross-source flat-lattice for Status                                                                                             |
-| src/observation/tree_fold.rs   | BDR Decade ⊃ Thread ⊃ Bead catamorphism (rollup status)                                                                                                      |
-| src/observation/quarantine.rs  | Cert-validity filter + queryable quarantine surface                                                                                                          |
-| src/handoff.rs                 | Structured context transfer between pipeline phases                                                                                                          |
-| src/workspace/mod.rs           | Git/jj worktree creation and isolation                                                                                                                       |
-| src/linear.rs                  | Linear sync CLI (`rsry sync`)                                                                                                                                |
-| src/linear_tracker.rs          | IssueTracker trait impl for Linear (cached states, configurable)                                                                                             |
-| src/github_mirror.rs           | `rsry sync --github` — bead context → PR comment                                                                                                             |
-| src/sync.rs                    | Backend-agnostic sync engine                                                                                                                                 |
-| src/config/mod.rs              | Configuration (repos, linear, http, tunnel, backend, plugins)                                                                                                |
-| src/plugin.rs                  | Plugin registry + PluginKind axis (Hook / Mcp / Dispatch / StateSink)                                                                                        |
-| src/pool.rs                    | Connection pool for multi-repo Dolt access                                                                                                                   |
-| src/main.rs                    | CLI entry + shared helpers (`generate_bead_id`, `resolve_beads_dir`)                                                                                         |
-| src/capture.rs                 | `rsry capture --from-session/--from-code` — text → BeadSpecs via LLM                                                                                         |
-| src/notes.rs                   | `rsry notes rotate` — age recipient rotation for scoped notes                                                                                                |
-| src/scan_assay.rs              | `rsry scan --assay` — stale-ref → P3 chore beads via assay.scan plugins                                                                                      |
-| src/bdr_enrich.rs              | LLM atom extraction (lenient JSON parse — tolerates fences + trailing prose)                                                                                 |
-| src/decompose.rs               | `rsry decompose --stub-output` — TechnicalSpec/Constraint atoms → Rust stubs                                                                                 |
-| src/secrets.rs                 | Write-time secret pattern scrubber for bead/comment writes                                                                                                   |
-| crates/bdr/src/parse.rs        | ADR markdown parser — frontmatter + section → atom extraction                                                                                                |
-| crates/bdr/src/decompose.rs    | Atom → BeadSpec mapper (incl. `doc_coverage_min` field, cross-repo routing)                                                                                  |
-| crates/bdr/src/thread.rs       | Thread grouping + Decade assembly from atoms                                                                                                                 |
-| crates/bdr/src/accrete.rs      | Bottom-up: bead completions → decade state transitions                                                                                                       |
-| crates/bdr/src/provenance.rs   | ProvenanceRef variants: Doc / Session / Code / Meeting / SlackThread                                                                                         |
+| File                           | Purpose                                                                                                                                                              |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| src/serve/mod.rs               | MCP server (stdio + HTTP) + Linear/GitHub webhook handlers                                                                                                           |
+| src/serve/handlers/mod.rs      | MCP tool implementations (40 tools)                                                                                                                                  |
+| src/serve/github_webhook.rs    | GitHub merge webhook → advance bead + unblock dependents                                                                                                             |
+| src/reconcile/mod.rs           | Reconciliation loop: scan → triage → dispatch → verify                                                                                                               |
+| src/bead.rs                    | Bead model, BeadState enum, Comment struct (audit-trail), Linear type mapping                                                                                        |
+| src/bead_ops.rs                | Shared bead-op core (the API in CLI↔MCP): BeadCreateArgs + validate/create/close gates enforced 1:1 across `rsry bead` (CLI) and `rsry_bead_*` (MCP)                 |
+| src/bead_sqlite/mod.rs         | `connect_bead_store` — the single entry point for ALL bead I/O; `SqliteBeadStore` reads `.beads/beads.db` directly (rusqlite) when there's no `.beads/dolt/`         |
+| src/bead_dolt.rs               | `DoltBeadStore` — `BeadStore` over the Dolt MySQL client (used when `.beads/dolt/` exists)                                                                           |
+| src/dispatch/mod.rs            | Agent dispatch, pipeline mapping, execution                                                                                                                          |
+| src/dispatch/providers.rs      | AgentProvider trait — claude / gemini / **codex (`codex exec`)** / acp / plugin-kind="dispatch"; `resolve_launch_env` cred routing (OAuth vs API key, rosary-1be3b8) |
+| src/dispatch/sweep.rs          | Orphan-dispatch detection — self-heals stuck `Dispatched` beads (rosary-67c43d)                                                                                      |
+| src/epic.rs                    | Semantic clustering, dedup, file overlap detection                                                                                                                   |
+| src/dolt/mod.rs                | Dolt client (per-repo beads, server mode) — used only when `.beads/dolt/` exists                                                                                     |
+| src/store_dolt.rs              | Dolt backend for orchestrator state (pipeline, dispatches, cross-repo deps)                                                                                          |
+| src/store.rs                   | Backend-agnostic store traits (HierarchyStore, DispatchStore, LinkageStore)                                                                                          |
+| src/observation/mod.rs         | ADR-0010 substrate: Observation, FieldName, FieldAlgebra, Observer trait                                                                                             |
+| src/observation/algebra\_\*.rs | Per-field algebras: chain-max, LWW-register, OR-set, flat-lattice                                                                                                    |
+| src/observation/log.rs         | In-memory G-set (used by tests + integration_tests)                                                                                                                  |
+| src/observation/log_sqlite.rs  | Persistent G-set + quarantine via orchestrator SQLite                                                                                                                |
+| src/observation/registry.rs    | Field/algebra dispatch via OnceLock singleton                                                                                                                        |
+| src/observation/fold.rs        | Per-field per-source fold + cross-source flat-lattice for Status                                                                                                     |
+| src/observation/tree_fold.rs   | BDR Decade ⊃ Thread ⊃ Bead catamorphism (rollup status)                                                                                                              |
+| src/observation/quarantine.rs  | Cert-validity filter + queryable quarantine surface                                                                                                                  |
+| src/observation/shadow.rs      | R4b: read persisted observations back (JSON + legacy flat), fold, `derived_status` (terminal-aware) — shadow-compare vs persist_status                               |
+| src/observation/audit.rs       | `rsry lattice audit` — fold every bead, diff derived status vs persist_status (corpus evidence for the source-of-truth flip)                                         |
+| src/skills.rs                  | Deterministic skill discovery — resolve skill name → SKILL.md + blake3 digest, fail-loud pre-dispatch (rosary-cf52cf)                                                |
+| src/handoff.rs                 | Structured context transfer between pipeline phases                                                                                                                  |
+| src/workspace/mod.rs           | Git/jj worktree creation and isolation                                                                                                                               |
+| src/linear.rs                  | Linear sync CLI (`rsry sync`)                                                                                                                                        |
+| src/linear_tracker.rs          | IssueTracker trait impl for Linear (cached states, configurable)                                                                                                     |
+| src/github_mirror.rs           | `rsry sync --github` — bead context → PR comment                                                                                                                     |
+| src/sync.rs                    | Backend-agnostic sync engine                                                                                                                                         |
+| src/config/mod.rs              | Configuration (repos, linear, http, tunnel, backend, plugins)                                                                                                        |
+| src/plugin.rs                  | Plugin registry + PluginKind axis (Hook / Mcp / Dispatch / StateSink)                                                                                                |
+| src/pool.rs                    | Connection pool for multi-repo Dolt access                                                                                                                           |
+| src/main.rs                    | CLI entry + shared helpers (`generate_bead_id`, `resolve_beads_dir`)                                                                                                 |
+| src/capture.rs                 | `rsry capture --from-session/--from-code` — text → BeadSpecs via LLM                                                                                                 |
+| src/notes.rs                   | `rsry notes rotate` — age recipient rotation for scoped notes                                                                                                        |
+| src/scan_assay.rs              | `rsry scan --assay` — stale-ref → P3 chore beads via assay.scan plugins                                                                                              |
+| src/bdr_enrich.rs              | LLM atom extraction (lenient JSON parse — tolerates fences + trailing prose)                                                                                         |
+| src/decompose.rs               | `rsry decompose --stub-output` — TechnicalSpec/Constraint atoms → Rust stubs                                                                                         |
+| src/secrets.rs                 | Write-time secret pattern scrubber for bead/comment writes                                                                                                           |
+| crates/bdr/src/parse.rs        | ADR markdown parser — frontmatter + section → atom extraction                                                                                                        |
+| crates/bdr/src/decompose.rs    | Atom → BeadSpec mapper (incl. `doc_coverage_min` field, cross-repo routing)                                                                                          |
+| crates/bdr/src/thread.rs       | Thread grouping + Decade assembly from atoms                                                                                                                         |
+| crates/bdr/src/accrete.rs      | Bottom-up: bead completions → decade state transitions                                                                                                               |
+| crates/bdr/src/provenance.rs   | ProvenanceRef variants: Doc / Session / Code / Meeting / SlackThread                                                                                                 |
 
 ## Agent Definitions
 
@@ -118,15 +121,21 @@ Beads are the distributed work tracking system. Each repo has `.beads/` with eit
 # MCP tools (via rsry serve) — 40 tools
 # Beads
 rsry_bead_create / rsry_bead_update / rsry_bead_search / rsry_bead_close
+rsry_bead_link / rsry_bead_import / rsry_bead_history
+# Comments
 rsry_bead_comment / rsry_bead_comment_list / rsry_bead_comment_update / rsry_bead_comment_delete
-rsry_bead_link / rsry_bead_import / rsry_status / rsry_list_beads / rsry_scan / rsry_active
+# Status + triage/review
+rsry_status / rsry_list_beads / rsry_scan / rsry_active / rsry_ticket_load / rsry_review
 # Dispatch + pipeline
 rsry_dispatch / rsry_run_once / rsry_decompose
 rsry_pipeline_upsert / rsry_pipeline_query / rsry_dispatch_record / rsry_dispatch_history
+# Agent sessions (agent-native run/session refs)
+rsry_agent_run_event_record / rsry_agent_run_events
+rsry_agent_session_addresses / rsry_agent_session_message_record
 # Workspaces
 rsry_workspace_create / rsry_workspace_checkpoint / rsry_workspace_cleanup / rsry_workspace_merge
 # Hierarchy (BDR lattice)
-rsry_decade_list / rsry_thread_list / rsry_thread_assign / rsry_thread_reparent
+rsry_decade_create / rsry_decade_list / rsry_thread_create / rsry_thread_list / rsry_thread_assign / rsry_thread_reparent
 # Repo registry
 rsry_repo_register / rsry_repo_list
 
@@ -136,7 +145,7 @@ rsry sync --github                           # mirror bead context to PR comment
 rsry scan                                    # scan all repos for beads
 rsry scan --assay                            # run assay.scan plugins → P3 chore beads for stale refs
 rsry status [--json]                         # aggregated counts; CLI text + JSON outputs agree (#192)
-rsry bead create / list / search / close / reopen   # `close` requires a test command in description (or --force)
+rsry bead create / list / search / close / reopen   # `close` requires a close condition (acceptance_criteria / test command / --force); bare `create` defaults one to the PR-merge signal
 rsry bead move <id> <dest-repo>              # cross-repo relocation (no bd): provenance+comments fwd, source tombstoned (ADR-0014)
 rsry bead backup <file> / restore <file>     # restorable store backup (SQLite VACUUM INTO); Dolt repos pointed at `dolt backup`. Distinct from export --jsonl (interop-only)
 rsry bead comment add <id> <body>            # append a comment (rosary-a96b06)
@@ -149,6 +158,7 @@ rsry capture --from-session <path>           # transcript → BeadSpecs via LLM 
 rsry capture --from-code <repo> <path>       # source file → BeadSpecs via LLM (Code provenance)
 rsry decompose <path> --stub-output <repo>   # also emit Rust stubs for design review
 rsry notes rotate --scope <s> --add-recipient <r>  # re-encrypt scope with new age recipient list
+rsry lattice audit [--repo <path>]           # fold each bead's observations, diff vs persist_status — R4b corpus evidence for the source-of-truth flip
 ```
 
 ## Triage & Dispatch
