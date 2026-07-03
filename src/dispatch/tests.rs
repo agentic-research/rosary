@@ -477,37 +477,61 @@ fn provider_by_name_claude() {
 }
 
 #[test]
-fn provider_by_name_codex_requires_experimental_gate() {
+fn provider_by_name_codex_is_the_working_exec_provider() {
+    // rosary-7643c9: `codex` now resolves to the functional `codex exec` CLI
+    // provider — no experimental gate, and it DOES expose a runnable command.
+    let empty = std::collections::HashMap::new();
+    let p = provider_by_name("codex", &empty).expect("codex must resolve without a gate");
+    assert_eq!(p.name(), "codex");
+    let (bin, args) = p.build_command("do the thing", &PermissionProfile::Implement, "sys");
+    assert_eq!(bin, "codex");
+    assert_eq!(args.first().map(String::as_str), Some("exec"));
+    assert!(
+        args.iter().any(|a| a == "--skip-git-repo-check"),
+        "args: {args:?}"
+    );
+    // Implement → workspace-write sandbox; unattended → approval never.
+    assert!(
+        args.windows(2)
+            .any(|w| w == ["--sandbox", "workspace-write"])
+    );
+    assert!(
+        args.last()
+            .map(|s| s.contains("do the thing"))
+            .unwrap_or(false)
+    );
+}
+
+#[test]
+fn provider_by_name_codex_native_requires_experimental_gate() {
     let _guard = codex_gate_test_lock();
     clear_codex_gate_env();
     let empty = std::collections::HashMap::new();
-    let err = match provider_by_name("codex", &empty) {
-        Ok(_) => panic!("codex provider must be gated off by default"),
+    let err = match provider_by_name("codex-native", &empty) {
+        Ok(_) => panic!("codex-native (app-server) must be gated off by default"),
         Err(err) => err,
     };
-
     assert!(err.to_string().contains("experimental"), "{err}");
     assert!(
         err.to_string().contains("RSRY_EXPERIMENTAL_CODEX=1"),
         "{err}"
     );
-    assert!(err.to_string().contains("rosary-d6b6e6"), "{err}");
     assert!(err.to_string().contains("rosary-2500f3"), "{err}");
 }
 
 #[test]
-fn provider_by_name_codex_returns_native_provider_when_experimental_gate_is_enabled() {
+fn provider_by_name_codex_native_returns_dormant_app_server_when_gated_on() {
     let _guard = codex_gate_test_lock();
     set_codex_gate_env("1");
     let empty = std::collections::HashMap::new();
-    let p = provider_by_name("codex", &empty).unwrap();
+    let p = provider_by_name("codex-native", &empty).unwrap();
     clear_codex_gate_env();
     assert_eq!(p.name(), "codex");
-
+    // The native provider has no durable CLI command path (rosary-d6d1bb).
     let (bin, args) = p.build_command("prompt", &PermissionProfile::Implement, "system prompt");
     assert!(
         bin.is_empty() && args.is_empty(),
-        "Codex provider must not expose a durable CLI command path"
+        "native codex provider must not expose a durable CLI command path"
     );
 }
 

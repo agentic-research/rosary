@@ -1261,6 +1261,126 @@ pub(crate) fn write_agent_mcp_config(work_dir: &Path) -> Option<std::path::PathB
 }
 
 /// Resolve a provider by name string, with optional binary path overrides from config.
+/// Working Codex provider: shells out to `codex exec` (non-interactive)
+/// (rosary-7643c9). Unlike the native app-server [`CodexProvider`] (dormant,
+/// `codex-native`), this actually runs today. Codex authenticates from
+/// `~/.codex/auth.json` — a FILE, not the macOS Keychain — so the inherited env
+/// is enough in daemon/launchd contexts (no credential injection needed, unlike
+/// claude). a per-permission sandbox makes it run
+/// unattended and bounded to the workspace.
+#[derive(Clone)]
+pub struct CodexExecProvider {
+    binary: String,
+    model: Option<String>,
+}
+
+impl CodexExecProvider {
+    pub fn new(binary: Option<String>) -> Self {
+        Self {
+            binary: binary.unwrap_or_else(|| "codex".to_string()),
+            model: None,
+        }
+    }
+
+    fn bin(&self) -> &str {
+        if self.binary.is_empty() {
+            "codex"
+        } else {
+            &self.binary
+        }
+    }
+}
+
+impl AgentProvider for CodexExecProvider {
+    fn build_command(
+        &self,
+        prompt: &str,
+        permissions: &PermissionProfile,
+        system_prompt: &str,
+    ) -> (String, Vec<String>) {
+        // Codex has no --append-system-prompt; prepend like gemini.
+        let full = format!("{system_prompt}\n\n---\n\n{prompt}");
+        // `codex exec` is non-interactive by design (no TTY → no approval
+        // prompts); `--sandbox` alone bounds execution. Older codex had a `-a`
+        // approval flag — modern `exec` rejects it, so we don't pass one.
+        let mut args = vec![
+            "exec".to_string(),
+            "--skip-git-repo-check".to_string(),
+            "--sandbox".to_string(),
+            codex_sandbox_mode(*permissions).to_string(),
+        ];
+        if let Some(m) = &self.model {
+            args.push("-m".to_string());
+            args.push(m.clone());
+        }
+        args.push(full);
+        (self.bin().to_string(), args)
+    }
+
+    fn spawn_agent(
+        &self,
+        prompt: &str,
+        work_dir: &Path,
+        permissions: &PermissionProfile,
+        system_prompt: &str,
+    ) -> Result<Box<dyn AgentSession>> {
+        let full = format!("{system_prompt}\n\n---\n\n{prompt}");
+        let log_path = work_dir.join(STREAM_LOG_FILENAME);
+        let log_file = std::fs::File::create(&log_path)
+            .with_context(|| format!("creating stream log {}", log_path.display()))?;
+        let err_path = work_dir.join(".rsry-stderr.log");
+        let err_file = std::fs::File::create(&err_path)
+            .with_context(|| format!("creating stderr log {}", err_path.display()))?;
+
+        let sandbox = codex_sandbox_mode(*permissions);
+        eprintln!(
+            "[spawn] {} exec --sandbox {} --skip-git-repo-check (cwd={})",
+            self.bin(),
+            sandbox,
+            work_dir.display()
+        );
+
+        let mut cmd = tokio::process::Command::new(self.bin());
+        cmd.arg("exec")
+            .arg("--skip-git-repo-check")
+            .args(["--sandbox", sandbox]);
+        if let Some(m) = &self.model {
+            cmd.args(["-m", m]);
+        }
+        cmd.arg(&full)
+            .current_dir(work_dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(log_file))
+            .stderr(std::process::Stdio::from(err_file));
+        // No credential injection: codex reads ~/.codex/auth.json (file-based),
+        // reachable in daemon contexts via the inherited HOME (rosary-765f42 is
+        // about the env-injected providers — claude/gemini — not codex).
+
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("spawning `codex exec` in {}", work_dir.display()))?;
+        let pid = child.id().unwrap_or(0);
+        eprintln!("[spawn] codex exec started (pid={pid})");
+        Ok(Box::new(CliSession::new(child)))
+    }
+
+    fn name(&self) -> &str {
+        "codex"
+    }
+
+    fn with_model(&self, model: Option<String>) -> Box<dyn AgentProvider> {
+        Box::new(CodexExecProvider {
+            binary: self.binary.clone(),
+            model,
+        })
+    }
+}
+
 pub fn provider_by_name(
     name: &str,
     binaries: &std::collections::HashMap<String, String>,
@@ -1294,10 +1414,20 @@ pub fn provider_by_name(
             Ok(Box::new(AcpNativeProvider { binary }))
         }
         "codex" => {
+            // The working CLI provider (rosary-7643c9). No experimental gate —
+            // it functions today via `codex exec`.
+            let binary = binaries.get("codex").cloned();
+            Ok(Box::new(CodexExecProvider::new(binary)))
+        }
+        "codex-native" => {
+            // The dormant native app-server provider (rosary-2500f3): durable
+            // session contract, but the transport isn't live yet — opt-in only.
             ensure_codex_experimental_enabled()?;
             Ok(Box::new(CodexProvider::default()))
         }
-        other => anyhow::bail!("unknown provider: {other} (available: claude, gemini, acp, codex)"),
+        other => anyhow::bail!(
+            "unknown provider: {other} (available: claude, gemini, acp, codex, codex-native)"
+        ),
     }
 }
 

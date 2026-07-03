@@ -155,6 +155,21 @@ passes `CLAUDE_CODE_OAUTH_TOKEN` as the `anthropic_api_key` GHA input.
 **ACP provider:** `ANTHROPIC_API_KEY` (Console API key) or the OAuth token work.
 Both are passed as `CLAUDE_CODE_OAUTH_TOKEN` to the ACP agent subprocess.
 
+**Codex provider** (`provider = "codex"`, rosary-7643c9): shells out to
+`codex exec --skip-git-repo-check --sandbox <mode>` (non-interactive; the
+per-permission sandbox is `workspace-write` for Implement, `read-only`
+otherwise). Requirements:
+
+- **Codex CLI ≥ 0.142** — the `exec` flag schema changed; older builds reject
+  the invocation. If installed via both the Homebrew *formula* and *cask*, the
+  formula can shadow the cask on `PATH`; keep only the cask
+  (`brew unlink codex && brew reinstall --cask codex`).
+- **Auth is file-based** (`~/.codex/auth.json`), so — unlike claude's Keychain —
+  it works in the launchd/daemon context with no credential injection.
+
+The dormant native app-server provider is `provider = "codex-native"` (opt-in
+behind `RSRY_EXPERIMENTAL_CODEX=1`; transport not live yet, rosary-2500f3).
+
 ### `[[plugin]]` — Pipeline Plugins
 
 Plugins extend rosary along a `kind` axis. Defined in `~/.rsry/plugins/*.toml`,
