@@ -1586,3 +1586,59 @@ async fn agent_session_message_records_addressed_handoff_event() {
     assert_eq!(got["events"][0]["payload"]["direction"], "outbound");
     assert_eq!(got["events"][0]["payload"]["handoff_kind"], "review");
 }
+
+/// rosary-d18be8 / rosary-d298a3: review + verify history is a Rosary-owned,
+/// queryable artifact folded through the lattice — GitHub is a projection.
+#[tokio::test]
+async fn bead_history_returns_folded_observation_history() {
+    use crate::observation::{Observation, PipelineVerdictValue, Source};
+    use crate::store::WorkRef;
+
+    let repo = crate::testutil::TestRepo::new();
+    let beads_dir = repo.path().join(".beads");
+    {
+        let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
+            .await
+            .unwrap();
+        store
+            .create_bead_full(crate::store::NewBead {
+                id: "rosary-h1".into(),
+                title: "H".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        for (v, phase) in [
+            (PipelineVerdictValue::Verifying, 1u32),
+            (PipelineVerdictValue::Pass, 2u32),
+        ] {
+            let obs = Observation::pipeline_verdict(
+                WorkRef {
+                    repo: "myrepo".into(),
+                    scope: String::new(),
+                    bead_id: "rosary-h1".into(),
+                },
+                Source::new("rosary"),
+                format!("phase{phase}:dev-agent"),
+                v,
+                chrono::Utc::now(),
+            );
+            let detail =
+                serde_json::to_string(&json!({ "observation": obs, "detail": "x" })).unwrap();
+            store.log_event("rosary-h1", "observation", &detail).await;
+        }
+    }
+    let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
+        .await
+        .unwrap();
+    let pool = crate::pool::RepoPool::from_client("myrepo", repo.path().to_path_buf(), store);
+
+    let args = json!({ "scope": "repo:myrepo", "id": "rosary-h1" });
+    let out = tool_bead_history(&args, &pool).await.unwrap();
+    assert_eq!(
+        out["folded_status"], "Pass",
+        "chain-max folds Verifying→Pass"
+    );
+    assert_eq!(out["observation_count"], 2);
+    assert_eq!(out["history"].as_array().unwrap().len(), 2);
+}
