@@ -143,6 +143,12 @@ Set the token once in `~/.rsry/config.toml`:
 anthropic_api_key = "sk-ant-oat01-..."  # or ANTHROPIC_API_KEY value
 ```
 
+Rosary routes this by token shape: an `sk-ant-oat…` OAuth token (from
+`claude setup-token`, your Max/Pro account — **not** a raw API key) is injected
+as `CLAUDE_CODE_OAUTH_TOKEN`; an `sk-ant-api…` key is injected as
+`ANTHROPIC_API_KEY`. Injecting an OAuth token as an API key makes claude fail
+with "Not logged in" (rosary-1be3b8), so the routing is automatic.
+
 This is the recommended pattern for hosted rigs — mirrors how `claude-code-action`
 passes `CLAUDE_CODE_OAUTH_TOKEN` as the `anthropic_api_key` GHA input.
 
