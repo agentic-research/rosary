@@ -1009,8 +1009,8 @@ async fn tool_bead_history(args: &Value, pool: &RepoPool) -> Result<Value> {
     })?;
 
     let events = client.list_event_details(id, "observation").await?;
-    let observations = crate::observation::shadow::parse_observation_events(&events);
     let work = scope.work_ref(id)?;
+    let observations = crate::observation::shadow::parse_events_for(&events, &work);
     let folded = crate::observation::shadow::folded_pipeline_verdict(&observations, &work);
 
     // Parse the raw envelopes so we can surface the recorded commit SHA + human

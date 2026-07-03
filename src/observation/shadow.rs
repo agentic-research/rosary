@@ -10,7 +10,9 @@ use crate::store::WorkRef;
 
 /// Parse the JSON envelopes `append_observation` writes
 /// (`{"observation": <Observation>, "detail": ...}`) back into `Observation`s.
-/// Malformed or legacy (flat-string) events are skipped, not errored.
+/// Malformed events are skipped, not errored. Only the JSON-envelope form is
+/// handled here — for the legacy flat-string history (which carries the verdict
+/// but no work_item), use [`parse_events_for`], which takes the `WorkRef`.
 pub fn parse_observation_events(events: &[String]) -> Vec<Observation> {
     events
         .iter()
@@ -19,6 +21,66 @@ pub fn parse_observation_events(events: &[String]) -> Vec<Observation> {
             serde_json::from_value(v.get("observation")?.clone()).ok()
         })
         .collect()
+}
+
+/// Parse observation events for a known `work` item, handling BOTH the JSON
+/// envelope (post R4b step 1) AND the legacy flat string
+/// (`"phase=N agent=A verdict=V detail=D"`) that predates it. The legacy form
+/// carries the verdict but not the work_item, so it's reconstructed from
+/// `work` — this makes the entire persisted history foldable, not just events
+/// written after the format change.
+pub fn parse_events_for(events: &[String], work: &WorkRef) -> Vec<Observation> {
+    events
+        .iter()
+        .filter_map(|e| {
+            // JSON envelope first.
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(e)
+                && let Some(o) = v.get("observation")
+                && let Ok(obs) = serde_json::from_value::<Observation>(o.clone())
+            {
+                return Some(obs);
+            }
+            parse_legacy_flat(e, work)
+        })
+        .collect()
+}
+
+/// Reconstruct an `Observation` from the legacy flat-string event
+/// `"phase=N agent=A verdict=V detail=D"`. `verdict` is the Debug spelling of
+/// `dolt::observations::Verdict`. Time isn't recoverable from the string, but
+/// the `PipelineVerdict` fold is chain-max (rank-based), not time-based, so it
+/// doesn't affect the derived status.
+fn parse_legacy_flat(s: &str, work: &WorkRef) -> Option<Observation> {
+    if !s.starts_with("phase=") {
+        return None;
+    }
+    let (mut phase, mut agent, mut verdict) = ("", "", "");
+    for tok in s.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("phase=") {
+            phase = v;
+        } else if let Some(v) = tok.strip_prefix("agent=") {
+            agent = v;
+        } else if let Some(v) = tok.strip_prefix("verdict=") {
+            verdict = v;
+        }
+    }
+    let pv = match verdict {
+        "Dispatched" => PipelineVerdictValue::Dispatched,
+        "Verifying" => PipelineVerdictValue::Verifying,
+        "Pass" => PipelineVerdictValue::Pass,
+        "PrOpen" => PipelineVerdictValue::PrOpen,
+        "Done" => PipelineVerdictValue::Done,
+        "Fail" => PipelineVerdictValue::Fail,
+        "Deadletter" => PipelineVerdictValue::Deadletter,
+        _ => return None,
+    };
+    Some(Observation::pipeline_verdict(
+        work.clone(),
+        super::Source::new("rosary"),
+        format!("phase{phase}:{agent}"),
+        pv,
+        chrono::DateTime::from_timestamp(0, 0).unwrap_or_default(),
+    ))
 }
 
 /// Fold the observations and return the lattice's chain-max `PipelineVerdict`
@@ -112,5 +174,39 @@ mod tests {
     #[test]
     fn no_observations_yields_none() {
         assert_eq!(folded_pipeline_verdict(&[], &work()), None);
+    }
+
+    #[test]
+    fn parse_events_for_handles_json_envelope_and_legacy_flat() {
+        // One JSON envelope + one legacy flat string; both reconstruct.
+        let json = event(PipelineVerdictValue::Pass, 2);
+        let legacy =
+            "phase=0 agent=scoping-agent verdict=Dispatched detail=agent dispatched".to_string();
+        let obs = parse_events_for(&[json, legacy, "garbage".into()], &work());
+        assert_eq!(obs.len(), 2, "both formats parse; garbage skipped");
+        // The legacy one folds in with the JSON one for the same work item.
+        assert_eq!(
+            folded_pipeline_verdict(&obs, &work()),
+            Some(PipelineVerdictValue::Pass)
+        );
+    }
+
+    #[test]
+    fn legacy_deadletter_folds_to_highest_non_fail() {
+        // The real-corpus finding: a bead that deadlettered folds to its highest
+        // NON-fail verdict (chain-max ignores Deadletter), not a terminal state.
+        // rosary-a66b3a step-4 must resolve this before the read-path flip.
+        let events = vec![
+            "phase=0 agent=a verdict=Dispatched detail=x".to_string(),
+            "phase=1 agent=a verdict=PrOpen detail=x".to_string(),
+            "phase=77 agent=a verdict=Deadletter detail=max retries".to_string(),
+        ];
+        let obs = parse_events_for(&events, &work());
+        assert_eq!(obs.len(), 3);
+        assert_eq!(
+            folded_pipeline_verdict(&obs, &work()),
+            Some(PipelineVerdictValue::PrOpen),
+            "chain-max ignores Deadletter — the divergence the audit surfaces"
+        );
     }
 }

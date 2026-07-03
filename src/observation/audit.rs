@@ -9,7 +9,7 @@
 //! runs accumulate.
 
 use super::PipelineVerdictValue;
-use super::shadow::{folded_pipeline_verdict, parse_observation_events};
+use super::shadow::{folded_pipeline_verdict, parse_events_for};
 use crate::store::{BeadStore, WorkRef};
 use anyhow::Result;
 
@@ -58,17 +58,17 @@ pub async fn audit_store(store: &dyn BeadStore, repo_name: &str) -> Result<Audit
 
     for b in beads {
         let events = store.list_event_details(&b.id, "observation").await?;
-        let observations = parse_observation_events(&events);
-        if observations.is_empty() {
-            continue; // legacy flat events / never dispatched — not comparable
-        }
-        report.comparable += 1;
-
         let work = WorkRef {
             repo: repo_name.to_string(),
             scope: String::new(),
             bead_id: b.id.clone(),
         };
+        let observations = parse_events_for(&events, &work);
+        if observations.is_empty() {
+            continue; // never dispatched — no observations to fold
+        }
+        report.comparable += 1;
+
         let folded = folded_pipeline_verdict(&observations, &work);
         let expected = folded.map(|v| v.expected_bead_status().to_string());
 
