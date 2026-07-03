@@ -44,6 +44,7 @@ pub mod algebra_chain;
 pub mod algebra_flat;
 pub mod algebra_lww;
 pub mod algebra_orset;
+pub mod audit;
 pub mod fold;
 pub mod log;
 pub mod log_sqlite;
@@ -215,6 +216,21 @@ impl PipelineVerdictValue {
             PipelineVerdictValue::PrOpen => Some(4),
             PipelineVerdictValue::Done => Some(5),
             PipelineVerdictValue::Fail | PipelineVerdictValue::Deadletter => None,
+        }
+    }
+
+    /// The mutable-cell bead status this folded verdict corresponds to — the
+    /// mapping `rsry lattice audit` uses to compare the lattice against
+    /// `persist_status` (R4b). `Pass` is a transient pre-PR state whose stable
+    /// status is still `verifying`; `Fail` is retry-eligible (`open`).
+    pub fn expected_bead_status(self) -> &'static str {
+        match self {
+            PipelineVerdictValue::Dispatched => "dispatched",
+            PipelineVerdictValue::Verifying | PipelineVerdictValue::Pass => "verifying",
+            PipelineVerdictValue::PrOpen => "pr_open",
+            PipelineVerdictValue::Done => "done",
+            PipelineVerdictValue::Fail => "open",
+            PipelineVerdictValue::Deadletter => "blocked",
         }
     }
 }
