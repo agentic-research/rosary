@@ -167,7 +167,7 @@ impl Reconciler {
                     scope: String::new(),
                     bead_id: bead_id.to_string(),
                 };
-                let obs = crate::observation::shadow::parse_observation_events(&events);
+                let obs = crate::observation::shadow::parse_events_for(&events, &work);
                 let folded = crate::observation::shadow::folded_pipeline_verdict(&obs, &work);
                 eprintln!(
                     "[lattice-shadow] bead={bead_id} recorded={verdict:?} folded={folded:?} \

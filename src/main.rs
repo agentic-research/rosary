@@ -316,6 +316,11 @@ enum Command {
         #[arg(short, long, default_value = ".")]
         repo: String,
     },
+    /// Observation-lattice tooling (R4b).
+    Lattice {
+        #[command(subcommand)]
+        action: LatticeAction,
+    },
     /// Garbage-collect merged agent branches from origin
     Sweep {
         /// Repo path (defaults to current directory)
@@ -429,6 +434,19 @@ enum HooksAction {
     /// Show whether each rsry-managed hook is installed (and where) and
     /// whether the Dolt remote is configured for bead sync.
     Status,
+}
+
+#[derive(Subcommand)]
+enum LatticeAction {
+    /// Fold every bead's persisted observations and diff the lattice-derived
+    /// status against `persist_status`. The corpus evidence that gates the R4b
+    /// read-path flip: run it across a real store, and when it reads clean the
+    /// fold is proven equivalent and `persist_status` can be deleted.
+    Audit {
+        /// Repo path containing .beads/ (defaults to current directory).
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1728,6 +1746,19 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Command::Lattice { action } => match action {
+            LatticeAction::Audit { repo } => {
+                let repo_path = scanner::resolve_repo_path(std::path::Path::new(&repo));
+                let beads_dir = resolve_beads_dir(&repo_path);
+                let store = bead_sqlite::connect_bead_store(&beads_dir).await?;
+                let repo_name = repo_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "repo".to_string());
+                let report = crate::observation::audit::audit_store(&*store, &repo_name).await?;
+                print!("{}", report.render(&repo_name));
+            }
+        },
         Command::Sweep { repo, dry_run } => {
             let repo_path = scanner::resolve_repo_path(std::path::Path::new(&repo));
             let result = workspace::sweep_agent_branches(&repo_path, dry_run).await;
