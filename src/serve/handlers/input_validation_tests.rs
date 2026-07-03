@@ -1623,8 +1623,10 @@ async fn bead_history_returns_folded_observation_history() {
                 v,
                 chrono::Utc::now(),
             );
-            let detail =
-                serde_json::to_string(&json!({ "observation": obs, "detail": "x" })).unwrap();
+            let detail = serde_json::to_string(
+                &json!({ "observation": obs, "detail": "x", "git_sha": "deadbee" }),
+            )
+            .unwrap();
             store.log_event("rosary-h1", "observation", &detail).await;
         }
     }
@@ -1640,5 +1642,9 @@ async fn bead_history_returns_folded_observation_history() {
         "chain-max folds Verifying→Pass"
     );
     assert_eq!(out["observation_count"], 2);
-    assert_eq!(out["history"].as_array().unwrap().len(), 2);
+    let history = out["history"].as_array().unwrap();
+    assert_eq!(history.len(), 2);
+    // Newest entry (Pass) surfaces its verdict + the reviewed commit SHA.
+    assert_eq!(history[1]["verdict"], "pass");
+    assert_eq!(history[1]["git_sha"], "deadbee");
 }

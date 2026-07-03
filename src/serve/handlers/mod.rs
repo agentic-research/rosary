@@ -1013,19 +1013,23 @@ async fn tool_bead_history(args: &Value, pool: &RepoPool) -> Result<Value> {
     let work = scope.work_ref(id)?;
     let folded = crate::observation::shadow::folded_pipeline_verdict(&observations, &work);
 
-    let history: Vec<Value> = observations
+    // Parse the raw envelopes so we can surface the recorded commit SHA + human
+    // detail alongside each verdict (d298a3: CI/verify results carry the
+    // reviewed SHA, not just the verdict).
+    let history: Vec<Value> = events
         .iter()
-        .map(|o| {
-            let verdict = match &o.value {
-                crate::observation::FieldValue::PipelineVerdict(v) => format!("{v:?}"),
-                other => format!("{other:?}"),
-            };
-            json!({
-                "source": o.source.as_str(),
-                "event": o.source_event_id,
+        .filter_map(|e| {
+            let env: Value = serde_json::from_str(e).ok()?;
+            let o = &env.get("observation")?;
+            let verdict = o.get("value").and_then(|v| v.get("value")).cloned();
+            Some(json!({
+                "source": o.get("source"),
+                "event": o.get("source_event_id"),
                 "verdict": verdict,
-                "observed_at": o.observed_at.to_rfc3339(),
-            })
+                "observed_at": o.get("observed_at"),
+                "git_sha": env.get("git_sha"),
+                "detail": env.get("detail"),
+            }))
         })
         .collect();
 

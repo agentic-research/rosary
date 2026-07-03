@@ -6,6 +6,21 @@ use super::Reconciler;
 use crate::scanner;
 use crate::store::BeadStore;
 
+/// Short git HEAD SHA of a workspace, best-effort. Used to stamp verification
+/// observations with the exact commit they were observed against (d298a3).
+fn git_head_sha(work_dir: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(work_dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (!sha.is_empty()).then_some(sha)
+}
+
 impl Reconciler {
     /// Get or lazily connect a BeadStore for a repo.
     pub(super) async fn dolt_client(&mut self, repo: &str) -> Option<&dyn BeadStore> {
@@ -102,6 +117,15 @@ impl Reconciler {
         verdict: crate::dolt::observations::Verdict,
         detail: &str,
     ) {
+        // d298a3 / friction #8: record the exact commit the verdict was observed
+        // against, so `task ci`/verify results carry the reviewed SHA (not just a
+        // verdict). Best-effort from the bead's completed workspace; None before
+        // a workspace exists (e.g. Dispatched).
+        let git_sha = self
+            .completed_work_dirs
+            .get(bead_id)
+            .and_then(|(wd, _)| git_head_sha(wd));
+
         if let Some(client) = self.dolt_client(repo).await {
             let obs = crate::observation::Observation::pipeline_verdict(
                 crate::store::WorkRef {
@@ -114,11 +138,13 @@ impl Reconciler {
                 verdict.into(),
                 chrono::Utc::now(),
             );
-            // Store the structured observation + the human detail. Falls back to
-            // the legacy flat string only if serialization somehow fails.
+            // Store the structured observation + the human detail + the observed
+            // commit SHA. Falls back to the legacy flat string only if
+            // serialization somehow fails.
             let event_detail = serde_json::to_string(&serde_json::json!({
                 "observation": obs,
                 "detail": detail,
+                "git_sha": git_sha,
             }))
             .unwrap_or_else(|_| {
                 format!("phase={phase} agent={agent} verdict={verdict:?} detail={detail}")
