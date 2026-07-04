@@ -74,6 +74,11 @@ task all            # fmt + check + lint + test
 | src/observation/audit.rs       | `rsry lattice audit` — fold every bead, diff derived status vs persist_status (corpus evidence for the source-of-truth flip)                                         |
 | src/skills.rs                  | Deterministic skill discovery — resolve skill name → SKILL.md + blake3 digest, fail-loud pre-dispatch (rosary-cf52cf)                                                |
 | src/handoff.rs                 | Structured context transfer between pipeline phases                                                                                                                  |
+| src/verify.rs                  | Ordered verify tiers (compile → test → review → close-condition); `VerifyTier` trait                                                                                 |
+| src/reconcile/verify.rs        | `verify_completed` — verify + pipeline decision; the **feedback-contract gate** (downgrade pass→retry when no `feedback` run-event, rosary-0908bc)                   |
+| src/reconcile/completion.rs    | Retry/deadletter logic; `on_fail` writes `.rsry-retry.md` for **fix-forward** retries                                                                                |
+| src/pipeline.rs                | `PipelineEngine` — issue_type→agent sequence, DispatchStore delegation, `dispatch_left_feedback` (run-start-gated feedback check)                                    |
+| src/dispatch/prompt.rs         | `build_prompt`/`build_system_prompt` — job contract incl. mandatory `feedback` run-event + `<previous_attempt>` fix-forward section                                  |
 | src/workspace/mod.rs           | Git/jj worktree creation and isolation                                                                                                                               |
 | src/linear.rs                  | Linear sync CLI (`rsry sync`)                                                                                                                                        |
 | src/linear_tracker.rs          | IssueTracker trait impl for Linear (cached states, configurable)                                                                                                     |
@@ -174,6 +179,37 @@ The reconciler's triage phase applies multiple filters before dispatch:
 1. **File overlap detection** (`epic::has_file_overlap` — prevents concurrent edits to same files)
 
 File overlap is also re-checked in Phase 4 (dispatch loop) to catch beads queued in the same triage pass.
+
+## Verify & the Feedback Contract
+
+After an agent completes, the reconciler verifies its work through ordered
+**tiers** (`src/verify.rs`): compile → `test` (runs `cargo test`) → `review`
+(adversarial, nonce-fenced) → `close-condition` (the bead's acceptance
+command/criteria). `highest_tier` records how far it got; a tier failure
+schedules a backoff retry until `max_retries` (default 5) → deadletter. The
+targeted-run loop exits when the **target's own** deadletter id is recorded
+(rosary-5361f4 — else it re-dispatches forever). Keep the suite green: a live
+test that hard-fails (e.g. a stale-cred integration test) fails **every**
+dispatch's `test` tier — mark such tests `#[ignore]` (rosary-59ff84).
+
+**Feedback contract (native + enforceable, rosary-0908bc):** a run is not
+complete until the agent records a native `feedback` run-event via
+`rsry_agent_run_event_record` (the agent-native run/session substrate, #247).
+`PipelineEngine::dispatch_left_feedback` checks for one recorded at/after this
+run's start (parsed from the `{bead}-{millis}` dispatch_id, so a prior attempt's
+feedback doesn't count) and **downgrades an otherwise-passing action to a retry**
+when it's absent. Fail-open when no backend store is configured.
+
+**Fix-forward retries:** on failure, `on_fail` (`src/reconcile/completion.rs`)
+writes `.rsry-retry.md` (the failed tier) into the preserved workspace, and
+`build_prompt` surfaces it as a `<previous_attempt>` section — so the retry
+iterates instead of restarting blind.
+
+**Providers** (`src/dispatch/providers.rs`): `claude` (Keychain OAuth or a
+`claude setup-token` OAuth token, routed by token shape — rosary-1be3b8),
+`codex` (`codex exec`, file-based `~/.codex/auth.json`, rosary-7643c9), `gemini`,
+`acp`, plus the dormant `codex-native` (experimental-gated). Every dispatched
+agent is granted `rsry_agent_run_event_record` for the feedback contract.
 
 ## ADRs
 
