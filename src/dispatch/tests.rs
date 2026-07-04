@@ -877,33 +877,28 @@ fn provider_by_name_with_binary_override() {
 
 #[test]
 fn permission_profile_from_issue_type() {
-    // bug/task/feature -> Implement
-    assert_eq!(
-        PermissionProfile::Implement,
-        match "bug" {
-            "review" | "survey" | "audit" => PermissionProfile::ReadOnly,
-            "epic" | "plan" | "triage" => PermissionProfile::Plan,
-            _ => PermissionProfile::Implement,
-        }
-    );
-    // review -> ReadOnly
-    assert_eq!(
-        PermissionProfile::ReadOnly,
-        match "review" {
-            "review" | "survey" | "audit" => PermissionProfile::ReadOnly,
-            "epic" | "plan" | "triage" => PermissionProfile::Plan,
-            _ => PermissionProfile::Implement,
-        }
-    );
-    // epic -> Plan
-    assert_eq!(
-        PermissionProfile::Plan,
-        match "epic" {
-            "review" | "survey" | "audit" => PermissionProfile::ReadOnly,
-            "epic" | "plan" | "triage" => PermissionProfile::Plan,
-            _ => PermissionProfile::Implement,
-        }
-    );
+    for issue_type in ["bug", "task", "feature", "chore"] {
+        assert_eq!(PermissionProfile::Implement, permission_profile(issue_type));
+    }
+    assert_eq!(PermissionProfile::ReadOnly, permission_profile("review"));
+    for issue_type in ["epic", "design", "research"] {
+        assert_eq!(PermissionProfile::Plan, permission_profile(issue_type));
+    }
+}
+
+#[test]
+fn permission_profile_does_not_treat_work_modes_as_issue_types() {
+    for non_issue_type in ["audit", "survey", "plan", "triage"] {
+        assert!(
+            !crate::bead::VALID_ISSUE_TYPES.contains(&non_issue_type),
+            "{non_issue_type} is not a canonical issue_type"
+        );
+        assert_eq!(
+            PermissionProfile::Implement,
+            permission_profile(non_issue_type),
+            "{non_issue_type} must not have hidden issue_type semantics"
+        );
+    }
 }
 
 #[test]

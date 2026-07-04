@@ -491,9 +491,29 @@ async fn tool_bead_create(
         );
     }
     let priority = priority_raw as u8;
+    // work_mode: optional secondary intent axis. It is not persisted yet; it
+    // only selects a canonical issue_type default when issue_type is omitted.
+    let work_mode = match args.get("work_mode") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_str()
+                .ok_or_else(|| anyhow::anyhow!("work_mode must be a string, got {:?}", v))?,
+        ),
+    };
+    if let Some(mode) = work_mode
+        && !crate::bead::is_valid_work_mode(mode)
+    {
+        anyhow::bail!(
+            "unknown work_mode {:?} — valid values: {}",
+            mode,
+            crate::bead::VALID_WORK_MODES.join(", ")
+        );
+    }
     // issue_type: optional, but must be one of the known values if present
     let issue_type = match args.get("issue_type") {
-        None | Some(Value::Null) => "task",
+        None | Some(Value::Null) => work_mode
+            .and_then(crate::bead::default_issue_type_for_work_mode)
+            .unwrap_or("task"),
         Some(v) => v
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("issue_type must be a string, got {:?}", v))?,

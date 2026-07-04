@@ -94,6 +94,43 @@ async fn create_rejects_issue_type_wrong_type() {
 }
 
 #[tokio::test]
+async fn create_rejects_unknown_work_mode() {
+    let args = json!({ "repo_path": FAKE_REPO, "title": "T", "work_mode": "story" });
+    let err = tool_bead_create(&args, &empty_pool(), None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("unknown work_mode"), "{err}");
+}
+
+#[tokio::test]
+async fn create_rejects_work_mode_wrong_type() {
+    let args = json!({ "repo_path": FAKE_REPO, "title": "T", "work_mode": 42 });
+    let err = tool_bead_create(&args, &empty_pool(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("work_mode must be a string"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn create_accepts_work_mode_before_repo_resolution() {
+    let args = json!({ "repo_path": FAKE_REPO, "title": "T", "work_mode": "investigation" });
+    let err = tool_bead_create(&args, &empty_pool(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        !err.to_string().contains("unknown work_mode"),
+        "known work_mode must pass validation before fake repo lookup: {err}"
+    );
+    assert!(
+        !err.to_string().contains("files required"),
+        "investigation work_mode should default to research, not task: {err}"
+    );
+}
+
+#[tokio::test]
 async fn create_defaults_missing_close_condition_rather_than_rejecting() {
     // A missing close condition no longer fails authoring — it's defaulted
     // (PR-merge) so bare create works, 1:1 across CLI + MCP. Validation

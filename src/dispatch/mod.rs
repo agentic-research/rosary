@@ -50,12 +50,12 @@ use session::ComputeSession;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionProfile {
-    /// Read + analyze only. For review, survey, audit.
+    /// Read + analyze only. Used by `review` beads and adversarial/audit modes.
     ReadOnly,
-    /// Read + edit + test + commit. For bug, task, feature.
+    /// Read + edit + test + commit. Used by bug/task/feature/chore beads.
     #[default]
     Implement,
-    /// Bead/project management via MCP. For planning, triage.
+    /// Bead/project management via MCP. Used by planning/research/design work.
     Plan,
 }
 
@@ -77,7 +77,7 @@ impl PermissionProfile {
                 // `feedback` run-event before finishing (rosary feedback-contract).
                 "mcp__rsry__rsry_agent_run_event_record"
             ),
-            // Review/audit: read-only code access + bead comments.
+            // Review/adversarial modes: read-only code access + bead comments.
             Self::ReadOnly => concat!(
                 "Read,Glob,Grep,",
                 "mcp__mache__*,",
@@ -85,7 +85,7 @@ impl PermissionProfile {
                 "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,",
                 "mcp__rsry__rsry_agent_run_event_record"
             ),
-            // Planning/triage: read code + full bead management (create, update, link).
+            // Planning/research/design: read code + full bead management.
             // Can create/update beads but still cannot close or merge.
             Self::Plan => concat!(
                 "Read,Glob,Grep,",
@@ -229,8 +229,8 @@ pub fn default_agent(issue_type: &str) -> &'static str {
 /// Derive the permission profile from the bead's issue type.
 pub fn permission_profile(issue_type: &str) -> PermissionProfile {
     match issue_type {
-        "review" | "survey" | "audit" => PermissionProfile::ReadOnly,
-        "epic" | "plan" | "triage" => PermissionProfile::Plan,
+        "review" => PermissionProfile::ReadOnly,
+        "epic" | "design" | "research" => PermissionProfile::Plan,
         _ => PermissionProfile::Implement,
     }
 }
