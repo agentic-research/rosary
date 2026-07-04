@@ -429,7 +429,46 @@ impl Reconciler {
                     .push((bead_id.clone(), repo.clone(), "verifying".into()));
             }
 
-            let (action, verify_summary) = self.verify_and_decide(bead_id, *exit_success, beads);
+            let (mut action, verify_summary) =
+                self.verify_and_decide(bead_id, *exit_success, beads);
+
+            // Enforceable feedback contract (rosary feedback-contract): a run
+            // isn't complete until the agent recorded a native `feedback`
+            // run-event. If verification would advance/complete the bead but the
+            // agent left no feedback, downgrade to Retry — the retry prompt
+            // carries the failure forward so the agent just leaves it (with the
+            // fix-forward context it doesn't redo the work). No backend store →
+            // fail-open (nothing to enforce against).
+            if matches!(
+                action,
+                CompletionAction::Advance { .. } | CompletionAction::Terminal
+            ) && let Some(dispatch_id) = self
+                .trackers
+                .get(bead_id.as_str())
+                .and_then(|t| t.dispatch_id.clone())
+            {
+                let scope = self
+                    .trackers
+                    .get(bead_id.as_str())
+                    .map(|t| t.scope.clone())
+                    .unwrap_or_default();
+                let bead_ref = crate::store::WorkRef {
+                    repo: repo.clone(),
+                    scope,
+                    bead_id: bead_id.clone(),
+                };
+                if !self
+                    .pipeline
+                    .dispatch_left_feedback(&bead_ref, &dispatch_id)
+                    .await
+                {
+                    eprintln!(
+                        "[feedback] {bead_id}: passed verification but left no `feedback` \
+                         run-event — job contract requires it; downgrading to retry"
+                    );
+                    action = CompletionAction::Retry;
+                }
+            }
 
             let outcome = self
                 .execute_action(

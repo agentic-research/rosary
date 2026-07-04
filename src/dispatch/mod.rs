@@ -72,14 +72,18 @@ impl PermissionProfile {
                 "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git *),Bash(task *),Glob,Grep,",
                 "mcp__mache__*,",
                 "mcp__rsry__rsry_bead_comment,mcp__rsry__rsry_bead_search,",
-                "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,mcp__rsry__rsry_active"
+                "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,mcp__rsry__rsry_active,",
+                // Native feedback substrate — the job contract requires a
+                // `feedback` run-event before finishing (rosary feedback-contract).
+                "mcp__rsry__rsry_agent_run_event_record"
             ),
             // Review/audit: read-only code access + bead comments.
             Self::ReadOnly => concat!(
                 "Read,Glob,Grep,",
                 "mcp__mache__*,",
                 "mcp__rsry__rsry_bead_comment,mcp__rsry__rsry_bead_search,",
-                "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads"
+                "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,",
+                "mcp__rsry__rsry_agent_run_event_record"
             ),
             // Planning/triage: read code + full bead management (create, update, link).
             // Can create/update beads but still cannot close or merge.
@@ -90,7 +94,8 @@ impl PermissionProfile {
                 "mcp__rsry__rsry_bead_comment,mcp__rsry__rsry_bead_search,",
                 "mcp__rsry__rsry_bead_link,",
                 "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,",
-                "mcp__rsry__rsry_decompose"
+                "mcp__rsry__rsry_decompose,",
+                "mcp__rsry__rsry_agent_run_event_record"
             ),
         }
     }

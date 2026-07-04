@@ -49,6 +49,13 @@ pub fn build_prompt(
         })
         .unwrap_or_default();
 
+    // Fix-forward: a `.rsry-retry.md` left by the previous failed attempt tells
+    // this retry exactly why it failed, so it iterates instead of restarting
+    // blind (rosary feedback-contract).
+    let retry_context = workspace
+        .and_then(|ws| std::fs::read_to_string(ws.join(".rsry-retry.md")).ok())
+        .unwrap_or_default();
+
     // Use workspace path for Repo: line (agent's actual working directory)
     // to prevent agents from resolving absolute paths against the main repo.
     // Keep repo_path for MCP bead tools where .beads/ lives.
@@ -64,6 +71,12 @@ pub fn build_prompt(
         format!("\n<handoff>\n{handoff_context}</handoff>\n")
     };
 
+    let retry_section = if retry_context.is_empty() {
+        String::new()
+    } else {
+        format!("\n<previous_attempt>\n{retry_context}</previous_attempt>\n")
+    };
+
     format!(
         "<task>\n\
          {framing}\n\
@@ -76,6 +89,7 @@ pub fn build_prompt(
          Description: {desc}\n\
          </bead>\n\
          {handoff}\
+         {retry}\
          \n\
          <instructions>\n\
          After completing your work:\n\
@@ -83,6 +97,11 @@ pub fn build_prompt(
          2. Commit: git commit -m \"[{bead_id}] type(scope): description\" (the [{bead_id}] prefix is REQUIRED)\n\
          3. Comment your status via mcp__rsry__rsry_bead_comment with repo_path=\"{bead_repo}\" and id=\"{bead_id}\"\n\
          4. Report what you changed\n\
+         5. REQUIRED — record your feedback (the run is NOT complete without it): call\n   \
+         mcp__rsry__rsry_agent_run_event_record with id=\"feedback-{bead_id}\", dispatch_id=\"{bead_id}\",\n   \
+         repo=\"{bead_repo}\", bead_id=\"{bead_id}\", event_type=\"feedback\", and summary= a short account of\n   \
+         what you did, what is still unresolved, and whether you expect verification to pass. If you\n   \
+         skip this, the reconciler re-dispatches the bead — you are the only one who can leave it.\n\
          Do NOT close the bead yourself — the reconciler verifies and closes it.\n\
          </instructions>",
         bead_id = bead.id,
@@ -90,6 +109,7 @@ pub fn build_prompt(
         title = bead.title,
         desc = bead.description,
         handoff = handoff_section,
+        retry = retry_section,
     )
 }
 
@@ -314,6 +334,33 @@ mod tests {
             !prompt.contains("<handoff>"),
             "no workspace = no handoff section"
         );
+    }
+
+    #[test]
+    fn build_prompt_requires_the_feedback_event() {
+        // The enforceable job contract must appear in the prompt so the agent
+        // knows to leave a native feedback run-event (rosary feedback-contract).
+        let bead = stub_bead("rosary-fb", "A task");
+        let prompt = build_prompt(&bead, "/repo/rosary", None, None);
+        assert!(prompt.contains("rsry_agent_run_event_record"), "{prompt}");
+        assert!(prompt.contains("event_type=\"feedback\""), "{prompt}");
+        assert!(prompt.contains("NOT complete"), "{prompt}");
+    }
+
+    #[test]
+    fn build_prompt_carries_previous_failure_forward() {
+        // Fix-forward: a `.rsry-retry.md` in the workspace surfaces as a
+        // <previous_attempt> section so the retry iterates instead of restarting.
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ws.path().join(".rsry-retry.md"),
+            "# Previous attempt failed\n\nAttempt #1 failed at verification tier **review**.\n",
+        )
+        .unwrap();
+        let bead = stub_bead("rosary-ff", "A task");
+        let prompt = build_prompt(&bead, "/repo/rosary", Some(ws.path()), None);
+        assert!(prompt.contains("<previous_attempt>"), "{prompt}");
+        assert!(prompt.contains("tier **review**"), "{prompt}");
     }
 
     #[test]
