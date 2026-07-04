@@ -807,8 +807,12 @@ impl Reconciler {
                         &bead.issue_type,
                         path.clone(),
                     );
-                    self.persist_status(&entry.bead_id, &entry.repo, "dispatched")
-                        .await;
+                    self.persist_status(
+                        &entry.bead_id,
+                        &entry.repo,
+                        crate::bead::BeadState::Dispatched,
+                    )
+                    .await;
                     summary.dispatched += 1;
                     // Orchestrator will request its first agent spawn on next tick.
                     continue;
@@ -870,8 +874,12 @@ impl Reconciler {
                         }
 
                         // State transition LAST: after all audit events are persisted.
-                        self.persist_status(&entry.bead_id, &entry.repo, "dispatched")
-                            .await;
+                        self.persist_status(
+                            &entry.bead_id,
+                            &entry.repo,
+                            crate::bead::BeadState::Dispatched,
+                        )
+                        .await;
 
                         // Unique per-dispatch ID: bead_id + started_at millis (generation
                         // is a content hash that doesn't change on retry, so it's not unique).

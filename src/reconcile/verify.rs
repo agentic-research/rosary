@@ -163,7 +163,8 @@ impl Reconciler {
                     "pipeline terminal",
                 )
                 .await;
-                self.persist_status(bead_id, repo, "pr_open").await;
+                self.persist_status(bead_id, repo, crate::bead::BeadState::PrOpen)
+                    .await;
                 ActionOutcome::Completed
             }
             CompletionAction::Retry => {
@@ -175,7 +176,8 @@ impl Reconciler {
                 self.handle_failure(bead_id, exit_success, verify_summary);
                 self.append_observation(bead_id, repo, &agent, phase, Verdict::Fail, detail)
                     .await;
-                self.persist_status(bead_id, repo, "open").await;
+                self.persist_status(bead_id, repo, crate::bead::BeadState::Open)
+                    .await;
                 ActionOutcome::Retrying
             }
             CompletionAction::Deadletter => {
@@ -198,7 +200,8 @@ impl Reconciler {
                     bead_id: bead_id.to_string(),
                 };
                 self.pipeline.clear_state(&bead_ref).await;
-                self.persist_status(bead_id, repo, "blocked").await;
+                self.persist_status(bead_id, repo, crate::bead::BeadState::DeadLetter)
+                    .await;
                 ActionOutcome::Deadlettered
             }
         }
@@ -326,7 +329,8 @@ impl Reconciler {
                 eprintln!("[phase] {bead_id} → {next_agent} (phase {})", phase + 1);
             }
         }
-        self.persist_status(bead_id, repo, "open").await;
+        self.persist_status(bead_id, repo, crate::bead::BeadState::Open)
+            .await;
     }
 
     // ── Public entry points ─────────────────────────────────────────────
@@ -414,7 +418,8 @@ impl Reconciler {
                         )
                     })
                     .unwrap_or_else(|| ("unknown".to_string(), 0));
-                self.persist_status(bead_id, &repo, "verifying").await;
+                self.persist_status(bead_id, &repo, crate::bead::BeadState::Verifying)
+                    .await;
                 self.append_observation(
                     bead_id,
                     &repo,
@@ -525,7 +530,7 @@ impl Reconciler {
                     result.deadlettered_ids.push(bead_id.clone());
                     result
                         .status_updates
-                        .push((bead_id.clone(), repo, "blocked".into()));
+                        .push((bead_id.clone(), repo, "dead_letter".into()));
                 }
             }
         }
@@ -613,7 +618,8 @@ impl Reconciler {
                             )
                         })
                         .unwrap_or_else(|| ("unknown".to_string(), 0));
-                    self.persist_status(bead_id, &repo, "verifying").await;
+                    self.persist_status(bead_id, &repo, crate::bead::BeadState::Verifying)
+                        .await;
                     self.append_observation(
                         bead_id,
                         &repo,
@@ -749,7 +755,8 @@ impl Reconciler {
                             if let Some(tracker) = self.trackers.get_mut(bead_id.as_str()) {
                                 tracker.dispatch_id = Some(new_dispatch_id);
                             }
-                            self.persist_status(bead_id, &repo, "dispatched").await;
+                            self.persist_status(bead_id, &repo, crate::bead::BeadState::Dispatched)
+                                .await;
                             self.append_observation(
                                 bead_id,
                                 &repo,
@@ -771,7 +778,8 @@ impl Reconciler {
                                 "[dispatch] {bead_id}: spawn failed for {next_agent} after \
                                  phase advance — deadlettering: {e}"
                             );
-                            self.persist_status(bead_id, &repo, "blocked").await;
+                            self.persist_status(bead_id, &repo, crate::bead::BeadState::DeadLetter)
+                                .await;
                             self.append_observation(
                                 bead_id,
                                 &repo,
