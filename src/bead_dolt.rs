@@ -60,7 +60,10 @@ impl BeadStore for DoltBeadStore {
     }
 
     async fn update_status(&self, id: &str, status: &str) -> Result<()> {
-        self.client.update_status(id, status).await
+        // Canonicalize at the write boundary — store only `BeadState` canonical
+        // forms; aliases are tolerated on input, never persisted.
+        let canonical = crate::bead::BeadState::from(status).to_string();
+        self.client.update_status(id, &canonical).await
     }
 
     async fn get_status(&self, id: &str) -> Result<Option<String>> {
