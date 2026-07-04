@@ -224,7 +224,7 @@ pub(crate) async fn call_tool(
         "rsry_bead_search" => tool_bead_search(args, pool, user_scope).await,
         "rsry_bead_history" => tool_bead_history(args, pool).await,
         "rsry_dispatch" => tool_dispatch(args, config_path).await,
-        "rsry_active" => tool_active().await,
+        "rsry_active" => tool_active(backend).await,
         "rsry_workspace_create" => tool_workspace_create(args, config_path, repo_cache).await,
         "rsry_workspace_checkpoint" => tool_workspace_checkpoint(args).await,
         "rsry_workspace_cleanup" => tool_workspace_cleanup(args),
@@ -403,7 +403,7 @@ async fn tool_run_once(
 
         // Async hand-off: spawn the full pipeline in the background and return
         // immediately. The MCP HTTP client has a ~60s timeout — the pipeline
-        // takes minutes. Use rsry_active to poll for completion.
+        // takes minutes. Use the backend-backed active/pipeline views to poll.
         let target_id = target.to_string();
         tokio::spawn(async move {
             let mut reconciler = Reconciler::new(reconciler_config).await;
@@ -424,7 +424,7 @@ async fn tool_run_once(
             "targeted_bead": target,
             "pipeline": true,
             "status": "started",
-            "message": "Pipeline running in background. Use rsry_active to monitor progress.",
+            "message": "Pipeline running in background. Use rsry_active for the merged active view, or rsry_pipeline_query/rsry_dispatch_history for per-bead details.",
         }))
     } else {
         // Single pass (no bead_id): fast enough to stay synchronous.
@@ -1333,14 +1333,17 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     }))
 }
 
-async fn tool_active() -> Result<Value> {
+async fn tool_active(backend: Option<&dyn BackendStore>) -> Result<Value> {
     let registry = crate::session::SessionRegistry::load().unwrap_or_default();
     let mut running = Vec::new();
     let mut completed = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
 
     for s in registry.active() {
         let health = check_agent_health(s);
+        seen.insert((s.repo.clone(), s.bead_id.clone()));
         let entry = json!({
+            "source": "session_registry",
             "bead_id": s.bead_id,
             "title": s.title,
             "agent": s.agent,
@@ -1364,11 +1367,91 @@ async fn tool_active() -> Result<Value> {
         }
     }
 
+    let mut backend_active_dispatches = 0;
+    let mut backend_active_pipelines = 0;
+    if let Some(backend) = backend {
+        let dispatches = backend.active_dispatches().await?;
+        backend_active_dispatches = dispatches.len();
+        let pipelines = backend.list_active_pipelines().await?;
+        backend_active_pipelines = pipelines.len();
+
+        let pipeline_by_bead: BTreeMap<_, _> = pipelines
+            .iter()
+            .map(|p| ((p.bead_ref.repo.clone(), p.bead_ref.bead_id.clone()), p))
+            .collect();
+
+        for d in &dispatches {
+            let key = (d.bead_ref.repo.clone(), d.bead_ref.bead_id.clone());
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.insert(key.clone());
+            let pipeline = pipeline_by_bead.get(&key);
+            running.push(json!({
+                "source": "backend",
+                "bead_id": d.bead_ref.bead_id,
+                "agent": d.agent,
+                "repo": d.bead_ref.repo,
+                "provider": d.provider,
+                "dispatch_id": d.id,
+                "pid": Value::Null,
+                "session_id": d.session_id,
+                "session_ref": d.session_ref.as_ref().map(|r| json!({
+                    "provider": r.provider,
+                    "id": r.id,
+                })),
+                "work_dir": d.work_dir,
+                "started_at": d.started_at.to_rfc3339(),
+                "last_activity": Value::Null,
+                "last_comment": Value::Null,
+                "health": "persisted_active",
+                "pipeline": pipeline.map(|p| json!({
+                    "phase": p.pipeline_phase,
+                    "agent": p.pipeline_agent,
+                    "phase_status": p.phase_status,
+                    "retries": p.retries,
+                })),
+            }));
+        }
+
+        for p in pipelines {
+            let key = (p.bead_ref.repo.clone(), p.bead_ref.bead_id.clone());
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.insert(key);
+            running.push(json!({
+                "source": "backend_pipeline",
+                "bead_id": p.bead_ref.bead_id,
+                "agent": p.pipeline_agent,
+                "repo": p.bead_ref.repo,
+                "provider": Value::Null,
+                "pid": Value::Null,
+                "session_ref": Value::Null,
+                "work_dir": Value::Null,
+                "started_at": Value::Null,
+                "last_activity": Value::Null,
+                "last_comment": Value::Null,
+                "health": "pipeline_state",
+                "pipeline": {
+                    "phase": p.pipeline_phase,
+                    "agent": p.pipeline_agent,
+                    "phase_status": p.phase_status,
+                    "retries": p.retries,
+                },
+            }));
+        }
+    }
+
     Ok(json!({
         "running": running.len(),
         "completed": completed.len(),
         "agents": running,
         "needs_merge": completed,
+        "backend": {
+            "active_dispatches": backend_active_dispatches,
+            "active_pipelines": backend_active_pipelines,
+        },
     }))
 }
 

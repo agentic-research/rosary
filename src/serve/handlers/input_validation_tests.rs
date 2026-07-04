@@ -1307,6 +1307,67 @@ async fn dispatch_record_roundtrips_native_session_ref() {
 }
 
 #[tokio::test]
+async fn active_includes_backend_pipeline_and_dispatch_state() {
+    use crate::store::tests::InMemoryStore;
+    use crate::store::{DispatchRecord, DispatchStore, PipelineState, WorkRef};
+
+    let store = InMemoryStore::new();
+    let bead_ref = WorkRef {
+        repo: "rosary".into(),
+        scope: String::new(),
+        bead_id: "rosary-backend-active".into(),
+    };
+    store
+        .upsert_pipeline(&PipelineState {
+            bead_ref: bead_ref.clone(),
+            pipeline_phase: 1,
+            pipeline_agent: "staging-agent".into(),
+            phase_status: "executing".into(),
+            retries: 0,
+            consecutive_reverts: 0,
+            highest_verify_tier: None,
+            last_generation: 0,
+            backoff_until: None,
+        })
+        .await
+        .expect("record pipeline");
+    store
+        .record_dispatch(&DispatchRecord {
+            id: "dispatch-backend-active".into(),
+            bead_ref,
+            agent: "staging-agent".into(),
+            provider: "codex".into(),
+            started_at: chrono::Utc::now(),
+            completed_at: None,
+            outcome: None,
+            work_dir: "/tmp/rsry-backend-active".into(),
+            session_id: None,
+            session_ref: Some(crate::dispatch::AgentSessionRef::new(
+                "codex",
+                "thread-active",
+            )),
+            workspace_path: None,
+            chain_hash: None,
+        })
+        .await
+        .expect("record dispatch");
+
+    let active = tool_active(Some(&store)).await.expect("query active");
+
+    assert_eq!(active["running"], 1);
+    assert_eq!(active["backend"]["active_dispatches"], 1);
+    assert_eq!(active["backend"]["active_pipelines"], 1);
+    assert_eq!(active["agents"][0]["source"], "backend");
+    assert_eq!(active["agents"][0]["bead_id"], "rosary-backend-active");
+    assert_eq!(
+        active["agents"][0]["dispatch_id"],
+        "dispatch-backend-active"
+    );
+    assert_eq!(active["agents"][0]["session_ref"]["provider"], "codex");
+    assert_eq!(active["agents"][0]["pipeline"]["phase_status"], "executing");
+}
+
+#[tokio::test]
 async fn dispatch_record_rejects_malformed_native_session_ref() {
     use crate::store::tests::InMemoryStore;
 

@@ -57,13 +57,13 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_run_once",
-                "description": "Run a reconciliation pass. With bead_id: starts the full pipeline in the background (async — returns immediately with status 'started', use rsry_active to poll). Without bead_id: single synchronous pass across all beads. Use dry_run=true to preview without dispatching.",
+                "description": "Run a reconciliation pass. With bead_id: starts the full pipeline in the background (async — returns immediately with status 'started', use rsry_active for the merged active view, or rsry_pipeline_query/rsry_dispatch_history for per-bead details). Without bead_id: single synchronous pass across all beads. Use dry_run=true to preview without dispatching.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "bead_id": {
                             "type": "string",
-                            "description": "Target a specific bead. Starts pipeline in background (async). Use rsry_active to monitor. With dry_run=true, runs a single synchronous pass instead."
+                            "description": "Target a specific bead. Starts pipeline in background (async). Use rsry_active for the merged active view, or rsry_pipeline_query/rsry_dispatch_history for per-bead details. With dry_run=true, runs a single synchronous pass instead."
                         },
                         "dry_run": {
                             "type": "boolean",
@@ -238,7 +238,7 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_active",
-                "description": "Show currently running agent sessions with bead ID, repo, provider, elapsed time.",
+                "description": "Show the merged active view: live session-registry entries plus backend active dispatch and pipeline rows.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
@@ -684,6 +684,36 @@ mod tests {
             );
             assert_eq!(tool["inputSchema"]["type"], "object");
         }
+    }
+
+    #[test]
+    fn run_once_and_active_tool_descriptions_name_backend_state() {
+        let defs = tool_definitions();
+        let tools = defs["tools"].as_array().unwrap();
+        let run_once = tools
+            .iter()
+            .find(|t| t["name"] == "rsry_run_once")
+            .expect("rsry_run_once must be in tool definitions");
+        let run_once_description = run_once["description"].as_str().unwrap();
+        let bead_description = run_once["inputSchema"]["properties"]["bead_id"]["description"]
+            .as_str()
+            .unwrap();
+        let active = tools
+            .iter()
+            .find(|t| t["name"] == "rsry_active")
+            .expect("rsry_active must be in tool definitions");
+        let active_description = active["description"].as_str().unwrap();
+
+        for text in [run_once_description, bead_description] {
+            assert!(
+                text.contains("rsry_pipeline_query") && text.contains("rsry_dispatch_history"),
+                "targeted run_once guidance must name backend-backed per-bead monitors; got: {text}"
+            );
+        }
+        assert!(
+            active_description.contains("backend active dispatch and pipeline rows"),
+            "rsry_active must advertise its merged backend-backed view; got: {active_description}"
+        );
     }
 
     #[test]
