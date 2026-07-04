@@ -82,7 +82,8 @@ impl Reconciler {
                     .await;
             }
 
-            self.persist_status(bead_id, bead_repo, new_status).await;
+            self.persist_status(bead_id, bead_repo, crate::bead::BeadState::from(new_status))
+                .await;
             transitions += 1;
         }
 
@@ -203,7 +204,8 @@ impl Reconciler {
                 }
 
                 eprintln!("[pr-merged] {} — PR merged, closing bead", bead.id);
-                self.persist_status(&bead.id, &bead.repo, "closed").await;
+                self.persist_status(&bead.id, &bead.repo, crate::bead::BeadState::Done)
+                    .await;
 
                 // Now clear pipeline state
                 let bead_ref = crate::store::WorkRef {

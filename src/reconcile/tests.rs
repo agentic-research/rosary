@@ -807,8 +807,8 @@ async fn verify_completed_max_retries_deadletters() {
     assert_eq!(result.failed, 1);
     assert_eq!(result.deadlettered, 1, "max retries → deadletter");
     assert_eq!(
-        result.status_updates[0].2, "blocked",
-        "deadletter → blocked"
+        result.status_updates[0].2, "dead_letter",
+        "deadletter records the canonical DeadLetter state, not the distinct Blocked"
     );
 }
 
@@ -1075,7 +1075,10 @@ async fn verify_completed_retry_boundary() {
         .verify_completed(&[("bound-2".to_string(), false)], &beads2, &thread_map)
         .await;
     assert_eq!(result2.deadlettered, 1, "retries=3 >= max=3 → deadletter");
-    assert_eq!(result2.status_updates[0].2, "blocked");
+    assert_eq!(
+        result2.status_updates[0].2, "dead_letter",
+        "deadletter → canonical DeadLetter, not the distinct Blocked state"
+    );
 }
 
 /// verify_agent skips ReadOnly agents (scoping-agent, staging-agent) but

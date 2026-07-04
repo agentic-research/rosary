@@ -45,12 +45,21 @@ impl Reconciler {
     /// Update bead status in Dolt and log the transition. Best-effort.
     /// Also mirrors the transition to the external issue tracker (Linear)
     /// if the bead has an external_ref and a tracker is configured.
-    pub(super) async fn persist_status(&mut self, bead_id: &str, repo: &str, status: &str) {
+    pub(super) async fn persist_status(
+        &mut self,
+        bead_id: &str,
+        repo: &str,
+        status: crate::bead::BeadState,
+    ) {
+        // Typed status (not `&str`): the compiler rejects a mistyped/non-canonical
+        // literal, which `BeadState::from` would otherwise map silently to `Open`
+        // (rosary status-drift review). The canonical string is derived once.
+        let status = status.to_string();
         // 1. Write to Dolt (source of truth) and fetch external_ref
         let has_tracker = self.issue_tracker.is_some();
         let mut external_ref: Option<String> = None;
         if let Some(client) = self.dolt_client(repo).await {
-            if let Err(e) = client.update_status(bead_id, status).await {
+            if let Err(e) = client.update_status(bead_id, &status).await {
                 eprintln!("[dolt] failed to update {bead_id} to {status}: {e}");
             }
             client
@@ -64,7 +73,7 @@ impl Reconciler {
         // 2. Mirror to external issue tracker (best-effort, never blocks)
         // Pass bead status — the tracker handles mapping to its native states.
         if let (Some(tracker), Some(ext_ref)) = (&self.issue_tracker, external_ref) {
-            if let Err(e) = tracker.update_status(&ext_ref, status).await {
+            if let Err(e) = tracker.update_status(&ext_ref, &status).await {
                 eprintln!(
                     "[{}] failed to mirror {bead_id} → {ext_ref}: {e}",
                     tracker.name()
@@ -241,7 +250,8 @@ impl Reconciler {
                 }
 
                 eprintln!("[recover] resetting stuck bead {} to open", bead.id);
-                self.persist_status(&bead.id, &bead.repo, "open").await;
+                self.persist_status(&bead.id, &bead.repo, crate::bead::BeadState::Open)
+                    .await;
             }
         }
 
@@ -334,8 +344,12 @@ impl Reconciler {
         for (repo, candidate) in all_candidates {
             // persist_status borrows &mut self; the outer `client` borrow
             // from above is already released by this point.
-            self.persist_status(&candidate.bead_id, &repo, "dead_letter")
-                .await;
+            self.persist_status(
+                &candidate.bead_id,
+                &repo,
+                crate::bead::BeadState::DeadLetter,
+            )
+            .await;
 
             // Verify the write actually landed before counting it.
             // `persist_status` is best-effort (eprintln on update_status

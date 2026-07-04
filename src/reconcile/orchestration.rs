@@ -222,7 +222,8 @@ impl Reconciler {
                         continue;
                     };
                     self.checkpoint_and_cleanup(&bead_id).await;
-                    self.persist_status(&bead_id, &repo, "pr_open").await;
+                    self.persist_status(&bead_id, &repo, crate::bead::BeadState::PrOpen)
+                        .await;
                     self.orchestrators.remove(&bead_id);
                     result.completed += 1;
                 }
@@ -249,7 +250,8 @@ impl Reconciler {
                         bead_id: bead_id.clone(),
                     };
                     self.pipeline.clear_state(&bead_ref).await;
-                    self.persist_status(&bead_id, &repo, "blocked").await;
+                    self.persist_status(&bead_id, &repo, crate::bead::BeadState::DeadLetter)
+                        .await;
                     self.orchestrators.remove(&bead_id);
                     result.deadlettered += 1;
                 }
