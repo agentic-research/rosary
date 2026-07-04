@@ -952,6 +952,12 @@ impl Reconciler {
         summary.passed += vr.passed;
         summary.failed += vr.failed;
         summary.deadlettered += vr.deadlettered;
+        // Record which beads deadlettered on the verify path so a targeted run
+        // exits when its TARGET dies — not just on liveness-sweep deadletters
+        // (rosary-5361f4: the re-dispatch runaway).
+        summary
+            .deadlettered_ids
+            .extend(vr.deadlettered_ids.iter().cloned());
         summary.agent_closed += vr.agent_closed;
 
         // Phase 5.5: FEATURE ASSEMBLY — when the last bead in a thread reaches

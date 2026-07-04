@@ -23,6 +23,12 @@ pub(super) struct VerifyResult {
     pub passed: usize,
     pub failed: usize,
     pub deadlettered: usize,
+    /// IDs of beads that deadlettered on THIS (verification) path — distinct
+    /// from the count so the targeted-run exit can tell whether the *target*
+    /// bead itself deadlettered, not just some sibling (rosary-5361f4). Without
+    /// this the exit never fires and a bead that can't pass verify is
+    /// re-dispatched forever.
+    pub deadlettered_ids: Vec<String>,
     /// Beads already closed by the agent via MCP — verification skipped.
     pub agent_closed: usize,
 }
@@ -339,6 +345,7 @@ impl Reconciler {
             passed: 0,
             failed: 0,
             deadlettered: 0,
+            deadlettered_ids: Vec::new(),
             agent_closed: 0,
         };
 
@@ -473,6 +480,10 @@ impl Reconciler {
                 ActionOutcome::Deadlettered => {
                     result.failed += 1;
                     result.deadlettered += 1;
+                    // Record the id so the targeted-run exit sees the TARGET's
+                    // own deadletter, not only liveness-sweep deadletters
+                    // (rosary-5361f4 — the re-dispatch runaway).
+                    result.deadlettered_ids.push(bead_id.clone());
                     result
                         .status_updates
                         .push((bead_id.clone(), repo, "blocked".into()));
