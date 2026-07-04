@@ -44,6 +44,8 @@
 # === TOOLING ===
 !/.gitignore
 !/.mcp.json
+# MCP capability manifest — importable into a cloister cluster (see server.json).
+!/server.json
 !/.pre-commit-config.yaml
 !/.github
 !/.claude-plugin

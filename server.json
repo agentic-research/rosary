@@ -1,0 +1,112 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.agentic-research/rosary",
+  "title": "rosary",
+  "description": "Agent orchestration and bead work-tracking: scan repos for work, dispatch agents (claude/codex/gemini), reconcile pipeline state, and sync to Linear — exposed as MCP over stdio and Streamable HTTP.",
+  "version": "0.3.0",
+  "repository": {
+    "url": "https://github.com/agentic-research/rosary",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/agentic-research/rosary/blob/main/README.md",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "http://localhost:{port}/mcp",
+      "variables": {
+        "port": {
+          "description": "Port where `rsry serve --transport http --port PORT` is listening (default 8383)",
+          "default": "8383"
+        }
+      }
+    }
+  ],
+  "_meta": {
+    "io.github.agentic-research.rosary/transports": {
+      "stdio": {
+        "command": "rsry",
+        "args": [
+          "serve",
+          "--transport",
+          "stdio"
+        ],
+        "note": "Per-client subprocess. Default transport used by Claude Code; the server reads/writes the per-repo bead store in-process (no `bd` CLI, ADR-0014)."
+      },
+      "streamable-http": {
+        "command": "rsry",
+        "args": [
+          "serve",
+          "--transport",
+          "http",
+          "--port",
+          "8383"
+        ],
+        "note": "Shared daemon — MCP Streamable HTTP at /mcp plus the Linear + GitHub webhook receiver. One daemon across clients."
+      }
+    },
+    "io.github.agentic-research.rosary/tools": {
+      "standalone": [
+        "rsry_bead_create",
+        "rsry_bead_update",
+        "rsry_bead_search",
+        "rsry_bead_close",
+        "rsry_bead_link",
+        "rsry_bead_import",
+        "rsry_bead_history",
+        "rsry_bead_comment",
+        "rsry_bead_comment_list",
+        "rsry_bead_comment_update",
+        "rsry_bead_comment_delete",
+        "rsry_status",
+        "rsry_list_beads",
+        "rsry_scan",
+        "rsry_active",
+        "rsry_ticket_load",
+        "rsry_review",
+        "rsry_dispatch",
+        "rsry_run_once",
+        "rsry_decompose",
+        "rsry_pipeline_upsert",
+        "rsry_pipeline_query",
+        "rsry_dispatch_record",
+        "rsry_dispatch_history",
+        "rsry_agent_run_event_record",
+        "rsry_agent_run_events",
+        "rsry_agent_session_addresses",
+        "rsry_agent_session_message_record",
+        "rsry_workspace_create",
+        "rsry_workspace_checkpoint",
+        "rsry_workspace_cleanup",
+        "rsry_workspace_merge",
+        "rsry_decade_create",
+        "rsry_decade_list",
+        "rsry_thread_create",
+        "rsry_thread_list",
+        "rsry_thread_assign",
+        "rsry_thread_reparent",
+        "rsry_repo_register",
+        "rsry_repo_list"
+      ]
+    },
+    "io.github.agentic-research.rosary/tool-categories": {
+      "beads": ["rsry_bead_create", "rsry_bead_update", "rsry_bead_search", "rsry_bead_close", "rsry_bead_link", "rsry_bead_import", "rsry_bead_history"],
+      "comments": ["rsry_bead_comment", "rsry_bead_comment_list", "rsry_bead_comment_update", "rsry_bead_comment_delete"],
+      "status-triage-review": ["rsry_status", "rsry_list_beads", "rsry_scan", "rsry_active", "rsry_ticket_load", "rsry_review"],
+      "dispatch-pipeline": ["rsry_dispatch", "rsry_run_once", "rsry_decompose", "rsry_pipeline_upsert", "rsry_pipeline_query", "rsry_dispatch_record", "rsry_dispatch_history"],
+      "agent-sessions": ["rsry_agent_run_event_record", "rsry_agent_run_events", "rsry_agent_session_addresses", "rsry_agent_session_message_record"],
+      "workspaces": ["rsry_workspace_create", "rsry_workspace_checkpoint", "rsry_workspace_cleanup", "rsry_workspace_merge"],
+      "hierarchy-bdr": ["rsry_decade_create", "rsry_decade_list", "rsry_thread_create", "rsry_thread_list", "rsry_thread_assign", "rsry_thread_reparent"],
+      "repo-registry": ["rsry_repo_register", "rsry_repo_list"]
+    },
+    "io.github.agentic-research.rosary/cluster": {
+      "note": "Import surface for a cloister cluster manifest — replaces the inlined `rsry_` backend claim list in cluster.toml with a locked package (see cloister ADR-0011).",
+      "handlesPrefix": "rsry_",
+      "serviceBinding": "ROSARY_BUNDLE",
+      "kind": "mcpProxy"
+    },
+    "io.github.agentic-research.rosary/backend": {
+      "note": "Beads live in each repo's `.beads/` — a SQLite `beads.db`, or a Dolt server when `.beads/dolt/` exists. Read/written in-process (ADR-0014). Orchestrator state (pipeline, dispatches, observation lattice) lives in `~/.rsry/backend.db`.",
+      "state-sync": "Bead state transitions mirror to Linear when `[linear]` is configured; the `/webhook` endpoint ingests Linear + GitHub webhooks. Sync is a side effect — every tool functions without it."
+    }
+  }
+}
