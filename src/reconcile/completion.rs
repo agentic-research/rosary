@@ -201,10 +201,20 @@ impl Reconciler {
         self.queue
             .record_backoff(&repo, bead_id, retries, Instant::now());
         if let Some((name, _)) = summary.first_failure() {
-            eprintln!(
-                "[retry] {bead_id}: failed at tier '{name}', retry #{} scheduled",
-                tracker.retries
-            );
+            eprintln!("[retry] {bead_id}: failed at tier '{name}', retry #{retries} scheduled");
+            // Fix-forward (rosary feedback-contract): leave the failure reason in
+            // the preserved workspace so the next attempt's prompt carries it and
+            // the agent iterates instead of restarting blind.
+            if let Some((work_dir, _)) = self.completed_work_dirs.get(bead_id) {
+                let body = format!(
+                    "# Previous attempt failed\n\nAttempt #{retries} failed at verification tier \
+                     **{name}**.\n\nFix forward: address this specific failure — do NOT restart \
+                     from scratch; your prior changes are still in this workspace. If you believe \
+                     you passed but were re-dispatched, you likely skipped the REQUIRED feedback \
+                     event — record it via `rsry_agent_run_event_record` (event_type=\"feedback\").\n"
+                );
+                let _ = std::fs::write(work_dir.join(".rsry-retry.md"), body);
+            }
         }
 
         false

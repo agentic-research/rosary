@@ -195,6 +195,43 @@ impl PipelineEngine {
         }
     }
 
+    /// Did this dispatch record its required `feedback` run-event? The job
+    /// contract requires the agent to leave a native feedback event before a
+    /// run counts as complete (rosary feedback-contract). Fail-OPEN: when no
+    /// backend store is configured (or the query errors) there's nothing to
+    /// enforce against, so the run proceeds — enforcement applies only where the
+    /// native run-event substrate is actually reachable.
+    pub async fn dispatch_left_feedback(
+        &self,
+        bead: &crate::store::WorkRef,
+        dispatch_id: &str,
+    ) -> bool {
+        let Some(ref store) = self.store else {
+            return true;
+        };
+        // The dispatch_id is `{bead_id}-{started_millis}` — its suffix is this
+        // run's start time. A `feedback` event with created_at at/after that
+        // instant belongs to THIS run (a prior attempt's feedback is older and
+        // correctly excluded). This avoids threading the id into the agent's
+        // prompt — the agent just records a feedback event during its run.
+        let since = dispatch_id
+            .rsplit_once('-')
+            .and_then(|(_, ms)| ms.parse::<i64>().ok())
+            .and_then(chrono::DateTime::from_timestamp_millis);
+        match store.agent_run_events_for_bead(bead).await {
+            Ok(events) => events.iter().any(|e| {
+                e.event_type == "feedback" && since.map(|s| e.created_at >= s).unwrap_or(true)
+            }),
+            Err(e) => {
+                eprintln!(
+                    "[feedback] query failed for {}: {e} — not enforcing this pass",
+                    bead.bead_id
+                );
+                true
+            }
+        }
+    }
+
     /// List all dispatch records with no completion timestamp.
     /// Used by crash recovery to abandon orphaned dispatches from a previous run.
     pub async fn active_dispatches(&self) -> Vec<crate::store::DispatchRecord> {
@@ -238,6 +275,51 @@ mod tests {
 
     fn engine() -> PipelineEngine {
         PipelineEngine::new(default_pipelines(), None, 0)
+    }
+
+    /// rosary feedback-contract: the gate is satisfied only by a `feedback`
+    /// run-event recorded at/after THIS run's start (parsed from the
+    /// `{bead}-{millis}` dispatch_id) — a prior attempt's feedback is older and
+    /// must not satisfy it. No store → fail-open.
+    #[tokio::test]
+    async fn dispatch_left_feedback_gates_by_run_start() {
+        use crate::store::{AgentRunEvent, WorkRef};
+        use std::collections::HashMap;
+        let dir = tempfile::tempdir().unwrap();
+        let backend =
+            crate::store_sqlite::SqliteBackend::connect(&dir.path().join("b.db")).unwrap();
+        let bead = WorkRef {
+            repo: "r".into(),
+            scope: String::new(),
+            bead_id: "r-1".into(),
+        };
+        let ev = |id: &str, ms: i64| AgentRunEvent {
+            id: id.into(),
+            dispatch_id: format!("r-1-{ms}"),
+            bead_ref: bead.clone(),
+            session_ref: None,
+            event_type: "feedback".into(),
+            summary: "s".into(),
+            payload: serde_json::json!({}),
+            created_at: chrono::DateTime::from_timestamp_millis(ms).unwrap(),
+        };
+        backend
+            .record_agent_run_event(&ev("old", 500))
+            .await
+            .unwrap();
+        backend
+            .record_agent_run_event(&ev("new", 1500))
+            .await
+            .unwrap();
+        let engine = PipelineEngine::new(HashMap::new(), Some(Box::new(backend)), 0);
+
+        // Run started at 2000 — nothing at/after → NOT satisfied.
+        assert!(!engine.dispatch_left_feedback(&bead, "r-1-2000").await);
+        // Run started at 1000 — the 1500 event satisfies it.
+        assert!(engine.dispatch_left_feedback(&bead, "r-1-1000").await);
+        // No backend store → fail-open (nothing to enforce against).
+        let no_store = PipelineEngine::new(HashMap::new(), None, 0);
+        assert!(no_store.dispatch_left_feedback(&bead, "r-1-2000").await);
     }
 
     #[test]
