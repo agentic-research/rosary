@@ -288,6 +288,30 @@ pub struct SqliteBeadStore {
     path: PathBuf,
 }
 
+/// Rewrite any non-canonical bead status (aliases like `closed`, `deadletter`)
+/// to its `BeadState` canonical form, in place. Derived from the enum's own
+/// parser + `as_str`, so the migration can never drift from the type. Runs on
+/// connect (idempotent); best-effort — a query failure just leaves rows as-is.
+fn canonicalize_statuses(conn: &Connection) {
+    use crate::bead::BeadState;
+    let distinct: Vec<String> = match conn.prepare("SELECT DISTINCT status FROM issues") {
+        Ok(mut stmt) => match stmt.query_map([], |r| r.get::<_, String>(0)) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => return,
+        },
+        Err(_) => return,
+    };
+    for raw in distinct {
+        let canonical = BeadState::from(raw.as_str()).to_string();
+        if canonical != raw {
+            let _ = conn.execute(
+                "UPDATE issues SET status = ?1 WHERE status = ?2",
+                params![canonical, raw],
+            );
+        }
+    }
+}
+
 impl SqliteBeadStore {
     /// Resolve a short or full bead ID to the canonical full ID stored in the DB.
     ///
@@ -341,6 +365,12 @@ impl SqliteBeadStore {
         let _ = conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_comments_deleted_at ON comments(deleted_at)",
         );
+        // Canonicalize legacy status aliases → BeadState canonical forms. The
+        // write boundary (update_status) now stores only canonical values, but
+        // rows written before that may hold aliases; heal them here on connect
+        // so no reader has to absorb aliases at read time (idempotent). Derived
+        // generically from `BeadState` so it can't drift from the enum.
+        canonicalize_statuses(&conn);
         // FTS5 index for full-text search with porter stemmer.
         // Separate from issues table — manually kept in sync on create/update.
         let _ = conn.execute_batch(
@@ -766,9 +796,13 @@ impl BeadStore for SqliteBeadStore {
                 ));
             }
         }
+        // Canonicalize at the write boundary: persist `next.as_str()`, not the
+        // raw input. Aliases ("closed", "deadletter") are tolerated on INPUT but
+        // never stored — so no reader downstream has to absorb them (the
+        // read-time absorption the drift review flagged).
         conn.execute(
             "UPDATE issues SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![status, full_id],
+            params![next.to_string(), full_id],
         )
         .with_context(|| format!("updating status for {id}"))?;
         Ok(())

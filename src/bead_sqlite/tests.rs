@@ -71,6 +71,35 @@ async fn create_and_get_bead() {
     assert_eq!(bead.priority, 2);
 }
 
+/// Status aliases are canonicalized on connect (migration) — no reader has to
+/// absorb `closed`/`deadletter` at read time. Transform early, store canonical.
+#[tokio::test]
+async fn connect_canonicalizes_legacy_status_aliases() {
+    let store = test_store();
+    store.create_bead("t-1", "a", "", 2, "task").await.unwrap();
+    // Simulate a legacy row written before the canonicalizing write boundary.
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute("UPDATE issues SET status = 'closed' WHERE id = 't-1'", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO issues (id, title, status, priority, issue_type, created_at, updated_at) \
+             VALUES ('t-2','b','deadletter',2,'task', datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        super::canonicalize_statuses(&conn); // idempotent; the connect-time pass
+    }
+    assert_eq!(
+        store.get_status("t-1").await.unwrap().as_deref(),
+        Some("done")
+    );
+    assert_eq!(
+        store.get_status("t-2").await.unwrap().as_deref(),
+        Some("dead_letter")
+    );
+}
+
 // Regression: short ID (suffix only) must resolve to full prefixed ID.
 // Before fix: close_bead("2a3970") silently succeeded with 0 rows changed
 // when the stored ID was "ley-line-open-2a3970".

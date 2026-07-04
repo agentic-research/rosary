@@ -127,8 +127,10 @@ fn phase_local_status(verdicts: &[PipelineVerdictValue]) -> Option<&'static str>
 /// so an early phase's `Pass` (rank 3) masks a *later* phase's `Fail`/retry
 /// (no rank), reporting `verifying` while the bead is really re-queued `open`
 /// (rosary-7f7eff). Instead we fold hierarchically:
-///   - `Done` present        → `done`    (terminal success, absorbs all phases)
-///   - else `Deadletter`     → `blocked` (terminal failure, absorbs all phases)
+///   - `Done` present        → `done`        (terminal success, absorbs all phases)
+///   - else `Deadletter`     → `dead_letter` (terminal failure — the canonical
+///     `BeadState::DeadLetter` spelling that `persist_status` writes; NOT
+///     `blocked`, which is the distinct dependency-blocked state)
 ///   - else the **highest phase reached** governs — its [`phase_local_status`].
 ///
 /// `None` when the work item has no pipeline-verdict observation.
@@ -155,7 +157,7 @@ pub fn derived_status(observations: &[Observation], work: &WorkRef) -> Option<St
         .iter()
         .any(|(_, v)| *v == PipelineVerdictValue::Deadletter)
     {
-        return Some("blocked".to_string());
+        return Some("dead_letter".to_string());
     }
     // Otherwise the current (highest) phase governs: a later phase's Fail/retry
     // is never masked by an earlier phase's Pass.
@@ -305,9 +307,12 @@ mod tests {
     }
 
     #[test]
-    fn derived_status_deadletter_is_terminal_blocked() {
-        // THE FIX: a deadlettered bead's derived STATUS is `blocked`, even though
-        // the raw chain-max verdict is `PrOpen` (rosary-818ed4 / rosary-11214e).
+    fn derived_status_deadletter_is_terminal_dead_letter() {
+        // A deadlettered bead's derived STATUS is the canonical `dead_letter`
+        // (BeadState::DeadLetter — what persist_status writes), even though the
+        // raw chain-max verdict is `PrOpen` (rosary-818ed4 / rosary-11214e). It
+        // is NOT `blocked` — that's the distinct dependency-blocked state, and
+        // returning it caused false audit divergence.
         let obs = parse_events_for(
             &[
                 legacy("Dispatched", 0),
@@ -316,7 +321,10 @@ mod tests {
             ],
             &work(),
         );
-        assert_eq!(derived_status(&obs, &work()).as_deref(), Some("blocked"));
+        assert_eq!(
+            derived_status(&obs, &work()).as_deref(),
+            Some("dead_letter")
+        );
     }
 
     #[test]
