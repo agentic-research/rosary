@@ -371,6 +371,22 @@ impl DoltClient {
             config.database, config.port
         );
 
+        // Serialize the ephemeral-port allocation → spawn → ready window across
+        // the whole process. Allocating a port via `bind(":0")` then dropping the
+        // listener before `dolt sql-server` binds it is a TOCTOU race: two
+        // concurrent auto-starts can grab the SAME just-freed port and collide —
+        // the Dolt integration-test flakiness under parallel `cargo test`, and a
+        // real race when rosary auto-starts servers for multiple repos at once.
+        // One startup at a time keeps the window closed: the port is held by a
+        // live server before the next allocation runs. tokio Mutex (not std)
+        // because the readiness wait `.await`s inside the guarded region.
+        static DOLT_STARTUP: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+            std::sync::OnceLock::new();
+        let _startup_guard = DOLT_STARTUP
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+
         // Allocate ephemeral port if configured port is 0
         let port = if config.port == 0 {
             let listener =
