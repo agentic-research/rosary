@@ -67,7 +67,7 @@ rsry decompose docs/adr/0009-feature.md --stub-output .
 
 ```bash
 task build    # requires Task (taskfile.dev)
-task test
+task check    # canonical local/CI verification gate
 
 # Register repos to watch
 rsry enable ~/code/my-app
@@ -86,7 +86,7 @@ rsry run --once --concurrency 3
 rsry run
 ```
 
-> Use `task build` / `task test` instead of raw `cargo` — the Taskfile sets `PKG_CONFIG_PATH` for the fuse-t dependency via ley-line.
+> Use `task build` / `task check` instead of raw `cargo` — the Taskfile is the verification contract and sets `PKG_CONFIG_PATH` for the fuse-t dependency via ley-line.
 
 ### Use rosary as just a task tracker (optional)
 
@@ -268,12 +268,14 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full technical picture,
 
 ```bash
 task build     # debug build with fuse-t support
+task compile   # fast cargo check
+task lint      # fmt + clippy + semgrep
 task test      # run tests
-task lint      # fmt + clippy
-task all       # fmt + check + lint + test
+task check     # canonical gate: contract + compile + lint + test
+task ci        # CI alias for task check
 ```
 
-Pre-commit hooks enforce `cargo fmt` and `cargo clippy` on every commit.
+CI delegates to `task check`; keep Taskfile targets as the source of truth instead of duplicating raw `cargo` commands in workflows or agent instructions.
 
 **Build prereqs:**
 

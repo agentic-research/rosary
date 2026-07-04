@@ -39,13 +39,26 @@ tasks:
     cmds:
       - cargo test
 
-  check:
+  compile:
     desc: Compile check without codegen
     cmds:
       - cargo check
 
+  taskfile-contract:
+    desc: Verify Taskfile remains the source of truth for CI/check gates
+    cmds:
+      - bash scripts/check-taskfile-contract.sh
+
+  check:
+    desc: Canonical verification gate (Taskfile source of truth)
+    cmds:
+      - task: taskfile-contract
+      - task: compile
+      - task: lint
+      - task: test
+
   lint:
-    desc: Run clippy + semgrep rules
+    desc: Run fmt + clippy + semgrep rules
     deps: [fmt]
     cmds:
       - cargo clippy -- -D warnings
@@ -86,7 +99,7 @@ tasks:
     # them inline. `release` produces the binary; `lint` (clippy -D warnings,
     # via its fmt dep) gates the install so we don't ship a binary that
     # wouldn't pass CI. Both are cached by taskfile if they ran in the
-    # same invocation, so `task all && task install` doesn't double-build.
+    # same invocation, so `task check && task install` doesn't double-build.
     deps: [release, lint]
     cmds:
       - |
@@ -277,19 +290,13 @@ tasks:
         fi
 
   all:
-    desc: fmt + check + lint + test
+    desc: Alias for the canonical verification gate
     cmds:
-      - task: fmt
       - task: check
-      - task: lint
-      - task: test
 
   ci:
-    desc: Mirror what GitHub Actions runs (cargo fmt --check + clippy + test)
-    # Useful before pushing — same gates as .github/workflows/ci.yml, in
-    # the same order. Does *not* mutate the tree (fmt --check vs fmt) so
-    # it's safe to run in a dirty worktree.
+    desc: CI alias for the canonical verification gate
+    # CI is secondary to this Taskfile: GitHub Actions delegates here, and this
+    # target delegates to `check` instead of duplicating raw tool commands.
     cmds:
-      - cargo fmt --check
-      - cargo clippy -- -D warnings
-      - cargo test
+      - task: check

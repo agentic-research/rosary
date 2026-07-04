@@ -86,7 +86,7 @@ permission profile, bead dependency, or review artifact.
 | Do not shell out for Codex | Native provider has no durable `build_command` path         | `provider_by_name("codex")` has no CLI command durable path.                 |
 | Preserve review history    | Review matrix stored as Rosary artifact/observation         | Store round trip keeps reviewer, SHA, evidence, verdict.                     |
 | PR is a container          | WorkRef + commit SHA + patch/PR metadata in review artifact | GitHub PR state can vanish while Rosary review remains queryable.            |
-| Run CI                     | Named recipe, e.g. `task ci`, plus environment capture      | Verification artifact records recipe, exit status, logs, binary SHA.         |
+| Run CI                     | Canonical Taskfile recipe, `task check`, plus environment capture | Verification artifact records recipe, exit status, logs, binary SHA.         |
 | Follow up later            | Bead with dependency edge and file/test scopes              | Review notes cannot close without linked follow-up beads.                    |
 
 ## Required Follow-Up Beads
@@ -95,7 +95,7 @@ permission profile, bead dependency, or review artifact.
 - `rosary-d6b6e6`: Persist provider-native session refs in dispatch records.
 - `rosary-d6d1bb`: Register Codex provider only after native session contract is durable.
 - `rosary-d18be8`: Make PR review history a Rosary-owned artifact, with GitHub as projection.
-- `rosary-d298a3`: Invert CI: treat PR as review container and `task ci` as Rosary-owned verification.
+- `rosary-d298a3`: Invert CI: treat PR as review container and `task check` as Rosary-owned verification (`task ci` is only an alias).
 - `rosary-d7a98e`: Allow `rsry_bead_link` same-repo dependencies with scope-only repo resolution.
 - `rosary-9e5138`: Make `task lint` robust when Semgrep cannot initialize system X509 trust.
 
@@ -136,7 +136,7 @@ GitHub comments can mirror that artifact, but they should not be canonical.
 GitHub Actions can run a task. Local Codex can run the same task. A future rig can
 run it elsewhere. The durable fact is not "GitHub check green"; it is:
 
-- recipe: `task ci`
+- recipe: `task check`
 - commit SHA: exact tree under verification
 - environment: relevant tool versions and sandbox data
 - result: pass/fail/degraded
@@ -154,7 +154,7 @@ This friction class is addressed when:
 1. A dispatch record can persist a provider-native session reference even when
    `pid=None`.
 1. A review artifact survives without GitHub and can be queried from Rosary.
-1. `task ci` results can be recorded as verification observations with the
+1. `task check` results can be recorded as verification observations with the
    reviewed commit SHA and environment summary.
 1. Every review "out of scope" item either links to a bead or is explicitly
    marked as intentionally discarded.
