@@ -697,6 +697,42 @@ async fn verify_completed_verify_fail_retries() {
     assert_eq!(result.status_updates[1].2, "open", "retry reopens bead");
 }
 
+/// rosary-5361f4: when a bead deadletters on the VERIFY path (retries already
+/// exhausted), its id must be recorded in `deadlettered_ids` — otherwise the
+/// targeted-run exit (which checks id-set membership, not the counter) never
+/// fires and the bead is re-dispatched forever (the observed runaway:
+/// Dispatched→Deadletter→Dispatched…).
+#[tokio::test]
+async fn verify_completed_deadletter_records_bead_id() {
+    let test_repo = crate::testutil::TestRepo::new();
+    test_repo.commit_plain("bad.rs", "fn bad() {}"); // no bead ref → verify fails
+
+    // retries already AT max_retries (3) → this failure exhausts → deadletter.
+    let mut r = reconciler_with_bead("bug-dl", "test-repo", "bug", "dev-agent", 3).await;
+    r.completed_work_dirs.insert(
+        "bug-dl".to_string(),
+        (test_repo.path().to_path_buf(), "test-repo".to_string()),
+    );
+    r.repo_info.insert(
+        "test-repo".to_string(),
+        (test_repo.path().to_path_buf(), "unknown".to_string()),
+    );
+
+    let beads = vec![crate::testutil::make_bead("bug-dl", "bug", "test-repo")];
+    let thread_map = std::collections::HashMap::new();
+
+    let result = r
+        .verify_completed(&[("bug-dl".to_string(), true)], &beads, &thread_map)
+        .await;
+
+    assert_eq!(result.deadlettered, 1, "retries exhausted → deadletter");
+    assert_eq!(
+        result.deadlettered_ids,
+        vec!["bug-dl".to_string()],
+        "the deadlettered bead's id MUST be recorded so the targeted-run exit fires"
+    );
+}
+
 /// dev-agent exits successfully and commit references the bead, but the bead's
 /// runnable close condition fails → verification fails → Retry.
 #[tokio::test]
