@@ -1070,8 +1070,19 @@ mod tests {
         assert_eq!(extract_phase("Phase 2 foundation"), Some("2".to_string()));
     }
 
-    /// Integration test — only runs when LINEAR_API_KEY is set.
+    /// Live integration test — hits the real Linear API.
+    ///
+    /// `#[ignore]` is the SURFACEABLE marker (shows as "ignored" in `cargo test`
+    /// output) rather than a silent early-return: a present-but-stale
+    /// `LINEAR_API_KEY` used to let this run and hard-panic on the 401, which
+    /// poisoned the whole `cargo test` suite — and since the reconciler's verify
+    /// `test` tier runs `cargo test`, EVERY dispatched bead failed verify and
+    /// deadlettered regardless of the agent's work (rosary-… dogfood, 2026-07-03).
+    /// Run explicitly: `cargo test sync_live_linear -- --ignored` with a valid
+    /// `LINEAR_API_KEY`. Same flakiness/environment-dependence family as mache's
+    /// `sleep_in_test` smell.
     #[tokio::test]
+    #[ignore = "live Linear API; run with --ignored + a valid LINEAR_API_KEY"]
     async fn sync_live_linear() {
         let api_key = match std::env::var("LINEAR_API_KEY") {
             Ok(k) if !k.is_empty() => k,
