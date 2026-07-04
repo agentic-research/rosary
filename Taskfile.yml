@@ -59,6 +59,11 @@ tasks:
     cmds:
       - cargo fmt
 
+  persist-status-ratchet:
+    desc: "Imperative persist_status() call sites may only decrease (R4b — state = fold, not scattered mutation)"
+    cmds:
+      - bash scripts/check-persist-status-ratchet.sh
+
   god-files:
     desc: Report god-files via mache long_file (structural view for the breakdown campaign)
     cmds:

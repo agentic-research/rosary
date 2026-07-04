@@ -51,6 +51,17 @@ repos:
         pass_filenames: false
         files: \.rs$
 
+      # persist_status ratchet: imperative bead-state-write sites may only
+      # DECREASE — a duplicated-logic smell that drives toward the single
+      # fold-driven writer (R4b / rosary-a66b3a). "State is a fold over
+      # observations, not an imperative mutation" — enforced, not documented.
+      - id: persist-status-ratchet
+        name: persist_status ratchet (state = fold, not scattered mutation)
+        entry: scripts/check-persist-status-ratchet.sh
+        language: script
+        pass_filenames: false
+        files: \.rs$
+
       # Rule 11: Every commit references a bead
       - id: bead-ref
         name: bead reference in commit (Rule 11)
