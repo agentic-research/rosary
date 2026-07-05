@@ -198,6 +198,41 @@ pub const VALID_ISSUE_TYPES: &[&str] = &[
     "bug", "feature", "task", "chore", "review", "epic", "design", "research",
 ];
 
+/// Secondary bead intent axis.
+///
+/// Keep `issue_type` small: it drives lifecycle, pipeline, and file-scope
+/// semantics. Work mode captures the epistemic/procedural posture that may
+/// eventually become type-schema metadata in the capnp issue-type substrate.
+pub const VALID_WORK_MODES: &[&str] = &[
+    "implementation",
+    "procedural",
+    "investigation",
+    "discovery",
+    "synthesis",
+    "adversarial",
+    "audit",
+    "validation",
+    "architecture",
+    "policy",
+    "cleanup",
+    "coordination",
+];
+
+pub fn is_valid_work_mode(work_mode: &str) -> bool {
+    VALID_WORK_MODES.contains(&work_mode)
+}
+
+pub fn default_issue_type_for_work_mode(work_mode: &str) -> Option<&'static str> {
+    match work_mode {
+        "implementation" => Some("task"),
+        "procedural" | "coordination" | "cleanup" => Some("task"),
+        "investigation" | "discovery" | "synthesis" => Some("research"),
+        "adversarial" | "audit" | "validation" => Some("review"),
+        "architecture" | "policy" => Some("design"),
+        _ => None,
+    }
+}
+
 pub fn requires_files(issue_type: &str) -> bool {
     // Epics/design/research are planning beads — they don't touch code directly.
     // They decompose into child beads that DO have file scopes.
@@ -961,6 +996,39 @@ mod tests {
         assert!(!requires_files("epic"));
         assert!(!requires_files("design"));
         assert!(!requires_files("research"));
+    }
+
+    #[test]
+    fn work_modes_are_orthogonal_to_issue_types() {
+        for mode in VALID_WORK_MODES {
+            assert!(is_valid_work_mode(mode), "{mode} must validate");
+        }
+
+        for mode in ["survey", "triage", "plan"] {
+            assert!(
+                !VALID_ISSUE_TYPES.contains(&mode),
+                "{mode} must not become an issue_type"
+            );
+        }
+    }
+
+    #[test]
+    fn work_modes_map_to_existing_issue_types() {
+        let cases = [
+            ("procedural", "task"),
+            ("investigation", "research"),
+            ("synthesis", "research"),
+            ("adversarial", "review"),
+            ("audit", "review"),
+            ("architecture", "design"),
+        ];
+
+        for (mode, issue_type) in cases {
+            assert_eq!(Some(issue_type), default_issue_type_for_work_mode(mode));
+            assert!(VALID_ISSUE_TYPES.contains(&issue_type));
+        }
+
+        assert_eq!(None, default_issue_type_for_work_mode("story"));
     }
 
     #[test]

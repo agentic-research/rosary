@@ -94,6 +94,43 @@ async fn create_rejects_issue_type_wrong_type() {
 }
 
 #[tokio::test]
+async fn create_rejects_unknown_work_mode() {
+    let args = json!({ "repo_path": FAKE_REPO, "title": "T", "work_mode": "story" });
+    let err = tool_bead_create(&args, &empty_pool(), None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("unknown work_mode"), "{err}");
+}
+
+#[tokio::test]
+async fn create_rejects_work_mode_wrong_type() {
+    let args = json!({ "repo_path": FAKE_REPO, "title": "T", "work_mode": 42 });
+    let err = tool_bead_create(&args, &empty_pool(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("work_mode must be a string"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn create_accepts_work_mode_before_repo_resolution() {
+    let args = json!({ "repo_path": FAKE_REPO, "title": "T", "work_mode": "investigation" });
+    let err = tool_bead_create(&args, &empty_pool(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        !err.to_string().contains("unknown work_mode"),
+        "known work_mode must pass validation before fake repo lookup: {err}"
+    );
+    assert!(
+        !err.to_string().contains("files required"),
+        "investigation work_mode should default to research, not task: {err}"
+    );
+}
+
+#[tokio::test]
 async fn create_defaults_missing_close_condition_rather_than_rejecting() {
     // A missing close condition no longer fails authoring — it's defaulted
     // (PR-merge) so bare create works, 1:1 across CLI + MCP. Validation
@@ -1304,6 +1341,70 @@ async fn dispatch_record_roundtrips_native_session_ref() {
     assert_eq!(history["dispatches"][0]["session_id"], Value::Null);
     assert_eq!(history["dispatches"][0]["session_ref"]["provider"], "codex");
     assert_eq!(history["dispatches"][0]["session_ref"]["id"], "thread-123");
+}
+
+#[tokio::test]
+async fn active_includes_backend_pipeline_and_dispatch_state() {
+    use crate::store::tests::InMemoryStore;
+    use crate::store::{DispatchRecord, DispatchStore, PipelineState, WorkRef};
+
+    let store = InMemoryStore::new();
+    let bead_ref = WorkRef {
+        repo: "rosary".into(),
+        scope: String::new(),
+        bead_id: "rosary-backend-active".into(),
+    };
+    store
+        .upsert_pipeline(&PipelineState {
+            bead_ref: bead_ref.clone(),
+            pipeline_phase: 1,
+            pipeline_agent: "staging-agent".into(),
+            phase_status: "executing".into(),
+            retries: 0,
+            consecutive_reverts: 0,
+            highest_verify_tier: None,
+            last_generation: 0,
+            backoff_until: None,
+        })
+        .await
+        .expect("record pipeline");
+    store
+        .record_dispatch(&DispatchRecord {
+            id: "dispatch-backend-active".into(),
+            bead_ref,
+            agent: "staging-agent".into(),
+            provider: "codex".into(),
+            started_at: chrono::Utc::now(),
+            completed_at: None,
+            outcome: None,
+            work_dir: "/tmp/rsry-backend-active".into(),
+            session_id: None,
+            session_ref: Some(crate::dispatch::AgentSessionRef::new(
+                "codex",
+                "thread-active",
+            )),
+            workspace_path: None,
+            chain_hash: None,
+        })
+        .await
+        .expect("record dispatch");
+
+    let active =
+        tool_active_with_registry(Some(&store), crate::session::SessionRegistry::default())
+            .await
+            .expect("query active");
+
+    assert_eq!(active["running"], 1);
+    assert_eq!(active["backend"]["active_dispatches"], 1);
+    assert_eq!(active["backend"]["active_pipelines"], 1);
+    assert_eq!(active["agents"][0]["source"], "backend");
+    assert_eq!(active["agents"][0]["bead_id"], "rosary-backend-active");
+    assert_eq!(
+        active["agents"][0]["dispatch_id"],
+        "dispatch-backend-active"
+    );
+    assert_eq!(active["agents"][0]["session_ref"]["provider"], "codex");
+    assert_eq!(active["agents"][0]["pipeline"]["phase_status"], "executing");
 }
 
 #[tokio::test]

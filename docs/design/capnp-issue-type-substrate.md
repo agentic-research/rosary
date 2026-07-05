@@ -71,6 +71,19 @@ What's **out of scope** for MVP: org-shared schema registries, ley-line-publishe
 
 Inheritance merges fields from the parent; user types can add new fields, override defaults, or explicitly negate (e.g., `disabled_guardrails: ["file-overlap"]` for a type that legitimately needs to write same files concurrently). Negation makes the schema admit intent rather than hide it.
 
+### 2.4 Work mode as a secondary axis
+
+Keep built-in `issue_type` values small and lifecycle-bearing. They select the
+default pipeline, permission profile, file-scope requirement, and close-condition
+semantics. Epistemic posture or procedural intent belongs on a secondary
+`work_mode` axis (`investigation`, `synthesis`, `adversarial`, `procedural`,
+etc.) that maps back to a canonical issue type when a bead is authored.
+
+This prevents vocabulary sprawl: `audit`, `triage`, `plan`, and similar labels
+must not become hidden issue types in Rust match arms. In the capnp substrate,
+`work_mode` becomes schema metadata composed with inherited issue types rather
+than a parallel type hierarchy.
+
 ## 3. Pipeline & guardrails
 
 ### 3.1 Cost-tiered LLM ladder
