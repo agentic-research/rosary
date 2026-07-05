@@ -9,6 +9,13 @@
     "source": "github"
   },
   "websiteUrl": "https://github.com/agentic-research/rosary/blob/main/README.md",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/agentic-research/rosary",
+      "version": "0.4.0"
+    }
+  ],
   "remotes": [
     {
       "type": "streamable-http",
