@@ -1,0 +1,35 @@
+name: smells
+
+# Structural code-smell ratchet, owned by mache's rule registry (ADR-0018) —
+# NOT reinvented in bash. The reusable mache find-smells action downloads the
+# mache binary (>= v0.13.0 auto-provisions the leyline backend so all _ast rules
+# run), builds an index over this checkout, uploads SARIF to code-scanning, and
+# fails the job on findings that EXCEED the committed docs/smell-baseline.json.
+#
+# This is a code-scanning surface (same class as CodeQL), deliberately a separate
+# workflow from ci.yml so it does not collide with the `task check` verification
+# contract (check-taskfile-contract.sh gates ci.yml only). Local mirror: `task smells`.
+# Regenerate the baseline after an intentional change and commit it (see `task smells`).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write # required for the action's SARIF upload to code-scanning
+
+jobs:
+  find-smells:
+    name: mache find-smells
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: agentic-research/mache/.github/actions/find-smells@29c7369c6f59fc8ad4143cced12ae948db580948 # main
+        with:
+          mache-version: v0.13.0
+          baseline: docs/smell-baseline.json
+          fail-on-new: 'true'
+          upload-sarif: 'true'

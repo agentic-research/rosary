@@ -57,15 +57,40 @@ tasks:
       so a pre-commit-only gate enforces nothing on the dispatch path.
       Structural code smells (god_file/long_file/dead_code/…) are NOT re-listed
       here: those are mache's rule engine (JSON-of-SQL over the AST + `--baseline`
-      ratchet, ADR-0018), wired via `mache find-smells` under rosary-<TBD> so we
-      don't reinvent them in bash. This target holds only the domain rules mache
-      does not own.
+      ratchet, ADR-0018), run via `task smells` locally and the reusable mache
+      find-smells action in CI (.github/workflows/smells.yml) — not reinvented in
+      bash. This target holds only the domain rules mache does not own.
     cmds:
       # R4b — imperative persist_status() call sites may only decrease. Kept as a
       # rosary script (not a mache rule) because mache's call-extraction
       # under-counts it (node_refs sees 16 of the 21 real sites), so the bash
       # grep is the accurate ratchet for this specific migration.
       - task: persist-status-ratchet
+
+  smells:
+    desc: >-
+      mache structural-smell ratchet (ADR-0018) — the god_file/long_file/
+      dead_code/duplicate/… gate, owned by mache's rule registry (JSON-of-SQL over
+      the AST), NOT reinvented in bash. Builds a mache index over the repo and
+      fails on findings that EXCEED the committed docs/smell-baseline.json (the
+      per-(rule,file) ratchet floor). CI runs the identical gate via the reusable
+      `agentic-research/mache` find-smells action; this target is the local mirror.
+      Requires mache >= v0.13.0 (it auto-provisions the leyline backend so all
+      _ast rules run). Regenerate the baseline after an intentional change with:
+      `mache build . /tmp/s.db && mache find-smells --db /tmp/s.db --rule '*'
+      --limit 100000 --baseline-root "$PWD" --write-baseline docs/smell-baseline.json`.
+    cmds:
+      - |
+        if ! command -v mache >/dev/null 2>&1; then
+          echo "SKIP: mache not on PATH — install mache >= v0.13.0 for the structural"
+          echo "      smell gate. CI enforces it via the mache find-smells action."
+          exit 0
+        fi
+        DB="$(mktemp -u).db"
+        trap 'rm -f "$DB"' EXIT
+        mache build . "$DB"
+        mache find-smells --db "$DB" --rule '*' --limit 100000 \
+          --baseline-root "$PWD" --baseline docs/smell-baseline.json
 
   check:
     desc: Canonical verification gate (Taskfile source of truth)
