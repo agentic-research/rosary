@@ -518,11 +518,13 @@ enum BeadAction {
     },
     /// List open beads with optional filters (rosary-e1c759).
     List {
-        /// Filter by status (open, in_progress, blocked, ready, done, closed).
-        /// Repeat or comma-separate for OR semantics. `ready` and `blocked`
-        /// use the canonical `Bead::is_ready`/`is_blocked` predicates rather
+        /// Filter by status (open, in_progress, blocked, ready, dispatchable,
+        /// done, closed). Repeat or comma-separate for OR semantics. `ready`,
+        /// `dispatchable`, and `blocked` use the canonical
+        /// `Bead::is_ready`/`is_dispatchable`/`is_blocked` predicates rather
         /// than literal string match (so `--status blocked` catches both
-        /// `status="blocked"` and `status="open"` beads with unresolved deps).
+        /// `status="blocked"` and `status="open"` beads with unresolved deps,
+        /// and `--status dispatchable` catches only beads truly safe to fan out).
         #[arg(short, long, value_delimiter = ',')]
         status: Vec<String>,
         /// Filter by priority (0=P0 highest, 3=P3 lowest). Repeat or
@@ -536,6 +538,11 @@ enum BeadAction {
         /// Shortcut for `--status ready`.
         #[arg(long, conflicts_with = "blocked")]
         ready: bool,
+        /// Shortcut for `--status dispatchable` — the strict subset of `ready`
+        /// that is actually safe to hand to an agent (close condition + bounded
+        /// scope + refined). Use this, not `--ready`, to gate fan-out.
+        #[arg(long, conflicts_with = "blocked")]
+        dispatchable: bool,
         /// Shortcut for `--status blocked`.
         #[arg(long)]
         blocked: bool,
@@ -988,6 +995,10 @@ async fn main() -> Result<()> {
                     .count();
                 let blocked = beads.iter().filter(|b| b.is_blocked()).count();
                 let ready = beads.iter().filter(|b| b.is_ready()).count();
+                // Dispatchable is a strict subset of ready: open + unblocked AND
+                // has a close condition, bounded scope, and a refined description.
+                // "ready" alone overstates what's safe to fan out (rosary-d4bb09).
+                let dispatchable = beads.iter().filter(|b| b.is_dispatchable()).count();
                 let done = beads
                     .iter()
                     .filter(|b| b.status == "done" || b.status == "closed")
@@ -1016,6 +1027,7 @@ async fn main() -> Result<()> {
                         "total": beads.len(),
                         "open": open,
                         "ready": ready,
+                        "dispatchable": dispatchable,
                         "in_progress": in_progress,
                         "blocked": blocked,
                         "done": done,
@@ -1577,14 +1589,19 @@ async fn main() -> Result<()> {
                     priority,
                     issue_type,
                     ready,
+                    dispatchable,
                     blocked,
                     limit,
                     json,
                 } => {
-                    // Expand `--ready` / `--blocked` into the unified `status`
-                    // filter set so filter_beads has one input vector to walk.
+                    // Expand `--ready` / `--dispatchable` / `--blocked` into the
+                    // unified `status` filter set so filter_beads has one input
+                    // vector to walk.
                     if ready {
                         status.push("ready".to_string());
+                    }
+                    if dispatchable {
+                        status.push("dispatchable".to_string());
                     }
                     if blocked {
                         status.push("blocked".to_string());
@@ -2916,6 +2933,7 @@ mod tests {
             priority: vec![1],
             issue_type: vec!["bug".to_string()],
             ready: false,
+            dispatchable: false,
             blocked: false,
             limit: 25,
             json: false,

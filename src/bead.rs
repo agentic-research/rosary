@@ -598,6 +598,42 @@ impl Bead {
         self.status == "open" && self.dependency_count == 0
     }
 
+    /// Bounded scope: implementation beads (bug/feature/task/chore) must declare
+    /// which files they touch, so file-overlap detection and review have a
+    /// surface. Planning/review types (epic/design/research) are exempt — they
+    /// decompose into scoped children rather than editing code directly.
+    pub fn has_bounded_scope(&self) -> bool {
+        !requires_files(&self.issue_type) || !self.files.is_empty()
+    }
+
+    /// A bead is *dispatchable* when it is safe to hand to an agent — a strictly
+    /// stronger condition than [`is_ready`](Self::is_ready). `is_ready` means
+    /// only "open and unblocked", which overstates readiness: a bead can be open
+    /// with no deps yet have no verifiable "done", no file scope, and no refined
+    /// description. Fanning agents out on that count is unsafe.
+    ///
+    /// Dispatchable = ready AND
+    /// - carries a **close condition** (how "done" is verified — [`has_close_condition`]), AND
+    /// - has **bounded scope** ([`has_bounded_scope`](Self::has_bounded_scope)), AND
+    /// - does not still **need refinement** ([`needs_refinement`](Self::needs_refinement)).
+    ///
+    /// This is the predicate the trusted-kernel fan-out gate should consult
+    /// instead of `is_ready` (rosary-d4bb09 — epic rosary-b503be invariant 6:
+    /// "ready must mean dispatchable with bounded scope and verification, not
+    /// merely open/unblocked"). `is_ready` is intentionally left unchanged so
+    /// existing callers keep their semantics; dispatchable is always a subset.
+    pub fn is_dispatchable(&self) -> bool {
+        self.is_ready()
+            && has_close_condition(
+                &self.issue_type,
+                &self.description,
+                &self.test_files,
+                &self.acceptance_criteria,
+            )
+            && self.has_bounded_scope()
+            && !self.needs_refinement()
+    }
+
     /// A bead is blocked if it has unresolved dependencies OR its status is explicitly "blocked".
     /// This is the single definition — used by both status counts and list filtering.
     pub fn is_blocked(&self) -> bool {
@@ -1330,5 +1366,122 @@ mod tests {
             "repo",
         );
         assert!(b.is_some(), "id+title+status+priority should be sufficient");
+    }
+
+    // ---- is_dispatchable (rosary-d4bb09, epic rosary-b503be invariant 6) ----
+
+    /// A refined description (>= 50 chars) so `needs_refinement` doesn't fire on
+    /// implementation beads — lets each test isolate the dimension it exercises.
+    const REFINED: &str =
+        "This bead has a fully refined description that clears the refinement floor.";
+
+    fn bead_json(v: serde_json::Value) -> Bead {
+        Bead::from_json(&v, "repo").expect("valid test bead")
+    }
+
+    #[test]
+    fn dispatchable_impl_bead_with_close_condition_and_scope() {
+        // (a) open + unblocked + close condition + bounded scope + refined.
+        let b = bead_json(json!({
+            "id": "x-1", "title": "t", "status": "open", "priority": 1,
+            "issue_type": "task", "description": REFINED,
+            "acceptance_criteria": "cargo test -p rosary is_dispatchable",
+            "files": ["src/bead.rs"], "dependency_count": 0,
+        }));
+        assert!(b.is_ready());
+        assert!(
+            b.is_dispatchable(),
+            "ready + verified + scoped → dispatchable"
+        );
+    }
+
+    #[test]
+    fn not_dispatchable_impl_bead_without_close_condition() {
+        // (b) open + unblocked impl bead with NO close condition is ready but
+        // NOT dispatchable — the core "643 ready overstates readiness" case.
+        let b = bead_json(json!({
+            "id": "x-2", "title": "t", "status": "open", "priority": 1,
+            "issue_type": "task", "description": REFINED,
+            "files": ["src/bead.rs"], "dependency_count": 0,
+            // no acceptance_criteria, no test_files, no command in description
+        }));
+        assert!(b.is_ready(), "still ready by the legacy predicate");
+        assert!(
+            !b.is_dispatchable(),
+            "no verifiable close condition → not dispatchable"
+        );
+    }
+
+    #[test]
+    fn not_dispatchable_impl_bead_without_bounded_scope() {
+        // Ready + close condition but no file scope → not dispatchable.
+        let b = bead_json(json!({
+            "id": "x-3", "title": "t", "status": "open", "priority": 1,
+            "issue_type": "feature", "description": REFINED,
+            "acceptance_criteria": "PR merges", "dependency_count": 0,
+            // files: [] (default)
+        }));
+        assert!(b.is_ready());
+        assert!(!b.has_bounded_scope());
+        assert!(!b.is_dispatchable(), "no file scope → not dispatchable");
+    }
+
+    #[test]
+    fn not_dispatchable_when_unrefined() {
+        // Ready + close condition + scope, but description below the refinement
+        // floor → not dispatchable (Golden Rule 12).
+        let b = bead_json(json!({
+            "id": "x-4", "title": "t", "status": "open", "priority": 1,
+            "issue_type": "task", "description": "too short",
+            "acceptance_criteria": "cargo test", "files": ["src/x.rs"],
+            "dependency_count": 0,
+        }));
+        assert!(b.is_ready());
+        assert!(b.needs_refinement());
+        assert!(
+            !b.is_dispatchable(),
+            "unrefined impl bead → not dispatchable"
+        );
+    }
+
+    #[test]
+    fn dispatchable_is_always_a_subset_of_ready() {
+        // (c) Blocked (deps) and non-open beads are never dispatchable, so the
+        // dispatchable set can never exceed the ready set.
+        let blocked = bead_json(json!({
+            "id": "x-5", "title": "t", "status": "open", "priority": 1,
+            "issue_type": "task", "description": REFINED,
+            "acceptance_criteria": "cargo test", "files": ["src/x.rs"],
+            "dependency_count": 2,
+        }));
+        assert!(!blocked.is_ready());
+        assert!(!blocked.is_dispatchable(), "unblocked is a precondition");
+
+        let done = bead_json(json!({
+            "id": "x-6", "title": "t", "status": "done", "priority": 1,
+            "issue_type": "task", "description": REFINED,
+            "acceptance_criteria": "cargo test", "files": ["src/x.rs"],
+            "dependency_count": 0,
+        }));
+        assert!(!done.is_ready());
+        assert!(!done.is_dispatchable());
+    }
+
+    #[test]
+    fn planning_types_are_dispatchable_without_file_scope() {
+        // design/research/epic are exempt from both the close-condition and the
+        // file-scope arms — they decompose into scoped children.
+        for issue_type in ["design", "research", "epic"] {
+            let b = bead_json(json!({
+                "id": "x-7", "title": "t", "status": "open", "priority": 1,
+                "issue_type": issue_type, "description": REFINED,
+                "dependency_count": 0,
+            }));
+            assert!(b.has_bounded_scope(), "{issue_type} exempt from file scope");
+            assert!(
+                b.is_dispatchable(),
+                "{issue_type} planning bead should be dispatchable without files"
+            );
+        }
     }
 }
