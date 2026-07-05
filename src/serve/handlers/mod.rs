@@ -1355,6 +1355,13 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
 
 async fn tool_active(backend: Option<&dyn BackendStore>) -> Result<Value> {
     let registry = crate::session::SessionRegistry::load().unwrap_or_default();
+    tool_active_with_registry(backend, registry).await
+}
+
+async fn tool_active_with_registry(
+    backend: Option<&dyn BackendStore>,
+    registry: crate::session::SessionRegistry,
+) -> Result<Value> {
     let mut running = Vec::new();
     let mut completed = Vec::new();
     let mut seen = std::collections::BTreeSet::new();

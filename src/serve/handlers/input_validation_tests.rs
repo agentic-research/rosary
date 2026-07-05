@@ -1389,7 +1389,10 @@ async fn active_includes_backend_pipeline_and_dispatch_state() {
         .await
         .expect("record dispatch");
 
-    let active = tool_active(Some(&store)).await.expect("query active");
+    let active =
+        tool_active_with_registry(Some(&store), crate::session::SessionRegistry::default())
+            .await
+            .expect("query active");
 
     assert_eq!(active["running"], 1);
     assert_eq!(active["backend"]["active_dispatches"], 1);
