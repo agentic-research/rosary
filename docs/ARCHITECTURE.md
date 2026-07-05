@@ -215,7 +215,7 @@ graph LR
 
     subgraph "Interface"
         main["main.rs<br/>CLI"]
-        serve["serve/<br/>MCP 27 tools + webhooks"]
+        serve["serve/<br/>MCP 40 tools + webhooks"]
         config["config.rs<br/>TOML config"]
         plugin["plugin.rs<br/>kind=hook|mcp|dispatch|state_sink"]
     end
@@ -271,7 +271,7 @@ Language-aware: Rust gets `cargo check/test/clippy`, Go gets `go vet/test/golang
 ## Bead Connection Model
 
 `RepoPool` dispatches per-repo to one of two bead-store backends via
-`connect_bead_store` (`src/bead_sqlite.rs`): a `DoltBeadStore` (MySQL wire to a
+`connect_bead_store` (`src/bead_sqlite/mod.rs`): a `DoltBeadStore` (MySQL wire to a
 per-repo `dolt sql-server`) when `.beads/dolt/` exists, otherwise a
 `SqliteBeadStore` reading `.beads/beads.db` directly — no server, no Dolt, no
 `bd` CLI. The diagram below shows the Dolt-mode tier; SQLite-mode repos hang off
@@ -298,7 +298,7 @@ graph TB
 
 Connection safety: `dolt_transaction_commit=1` (auto-commit per statement), `max_connections=1` (session variable consistency), bail on known dead port (no silent empty DB).
 
-## MCP Tools (27)
+## MCP Tools (40)
 
 | Category   | Tools                                                                                                                                              |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |

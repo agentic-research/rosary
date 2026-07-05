@@ -28,7 +28,7 @@ Terms used across rosary, the conductor, agents, and ADRs.
 
 | Term                | What                                                                                                                                               |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **AgentProvider**   | Which model runs: Claude, Gemini, ACP. Returns an `AgentSession`.                                                                                  |
+| **AgentProvider**   | Which model runs: Claude, Codex, Gemini, ACP. Returns an `AgentSession`.                                                                                  |
 | **ComputeProvider** | Where the agent runs: `local` (host subprocess) or `sprites` (remote container via sprites.dev).                                                   |
 | **Workspace**       | Isolated VCS environment for an agent to work in. jj workspace (preferred) or git worktree (fallback). Destroyed after verification.               |
 | **Conductor**       | Elixir/OTP application that manages agent lifecycles via supervision trees. Talks to rsry over HTTP/MCP. Handles the WHICH/WHERE/HOW of execution. |

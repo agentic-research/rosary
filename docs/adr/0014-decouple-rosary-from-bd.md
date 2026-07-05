@@ -20,7 +20,7 @@ sql-servers. Lived experience reversed that call:
 1. **rosary already doesn't depend on bd.** Verified 2026-06-24: rosary invokes
    the `bd` binary **zero** times at runtime (it only ever spawns `dolt` and
    `claude`). All bead I/O goes through `connect_bead_store()` in
-   `src/bead_sqlite.rs`, which is pure Rust: a `DoltBeadStore` (MySQL wire to a
+   `src/bead_sqlite/mod.rs`, which is pure Rust: a `DoltBeadStore` (MySQL wire to a
    per-repo dolt sql-server) when `.beads/dolt/` exists, otherwise a
    `SqliteBeadStore` reading `.beads/beads.db` directly via rusqlite. So "adopt
    bd as the owner" would have *added* a dependency rosary does not currently have.

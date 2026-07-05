@@ -57,7 +57,7 @@ tasks:
       so a pre-commit-only gate enforces nothing on the dispatch path.
       Structural code smells (god_file/long_file/dead_code/…) are NOT re-listed
       here: those are mache's rule engine (JSON-of-SQL over the AST + `--baseline`
-      ratchet, ADR-0018), run via `task smells` locally and the reusable mache
+      ratchet, mache ADR-0018), run via `task smells` locally and the reusable mache
       find-smells action in CI (.github/workflows/smells.yml) — not reinvented in
       bash. This target holds only the domain rules mache does not own.
     cmds:
@@ -69,7 +69,7 @@ tasks:
 
   smells:
     desc: >-
-      mache structural-smell ratchet (ADR-0018) — the god_file/long_file/
+      mache structural-smell ratchet (mache ADR-0018) — the god_file/long_file/
       dead_code/duplicate/… gate, owned by mache's rule registry (JSON-of-SQL over
       the AST), NOT reinvented in bash. Builds a mache index over the repo and
       fails on findings that EXCEED the committed docs/smell-baseline.json (the

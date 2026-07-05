@@ -50,7 +50,7 @@ Cross-repo state: decades, threads, pipeline tracking, dispatch history. Require
 
 ```toml
 [backend]
-provider = "dolt"                # Only "dolt" supported currently
+provider = "dolt"                # "dolt" or "sqlite" (switch with `rsry migrate`)
 path = "~/.rsry/dolt/rosary"    # Database directory (auto-initialized)
 ```
 

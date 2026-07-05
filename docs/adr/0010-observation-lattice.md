@@ -5,20 +5,25 @@
 **Depends on:** ADR-0005 (reactive store), ADR-0009 (cross-repo linkage)
 **Relates to:** rosary-7023a9 (substrate bead), rosary-45518d (CRDT-lattice draft superseded)
 
-> **Implementation status (2026-07-02): built, not yet source of truth.**
+> **Implementation status (2026-07-05): built + shadow-folding, not yet source of truth.**
 > The lattice substrate exists and is unit-tested — per-field algebras, `fold`,
 > `tree_fold`, quarantine, and the registry all live under `src/observation/*`.
-> But it is **not on a live read path yet.** `persist_status` (a mutable cell)
-> remains the source of truth; `append_observation` (src/reconcile/persistence.rs)
-> currently dual-writes a flattened verdict string to the event log rather than
-> constructing `Observation` values and folding through the `FieldAlgebra`
-> registry. Promotion — build real `Observation`s, fold behind a flag, prove the
-> folded status matches `persist_status` across the corpus, then flip the read
-> path and delete `persist_status` — is tracked as **rosary-a66b3a (R4b)** and
-> depends on the close-condition execution tier (**rosary-a57429 / R1**, landed
-> in #285): a fold cannot legitimately close a bead against a "done" that was
-> declared but never checked. Treat the sections below as the design target, not
-> a description of the current read path.
+> R4b steps 1 and 3 have landed: `append_observation`
+> (src/reconcile/persistence.rs) now constructs real `Observation` values
+> (`Observation::pipeline_verdict(...)`, canonical JSON) rather than a flattened
+> string, and — behind `RSRY_LATTICE_SHADOW` — folds them through the
+> `FieldAlgebra` registry, with `shadow::derived_status`
+> (src/observation/shadow.rs) as the terminal-aware reader for a shadow-compare
+> against `persist_status`. What remains (**R4b step 4 / rosary-a66b3a**): flip
+> the live read path to the folded status and delete `persist_status`. That flip
+> is mechanically driven by `scripts/check-persist-status-ratchet.sh` — a gate
+> wired into `task check` that counts imperative `persist_status(` call sites and
+> only lets them **decrease** (currently 21) until a single fold-driven writer
+> remains. So `persist_status` (a mutable cell) is **still the source of truth**;
+> the fold runs alongside it in shadow. R4b also depends on the close-condition
+> execution tier (**rosary-a57429 / R1**, landed in #285): a fold cannot
+> legitimately close a bead against a "done" that was declared but never checked.
+> Treat the sections below as the design target for the post-flip read path.
 
 ## Context
 
