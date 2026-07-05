@@ -94,6 +94,7 @@ permission profile, bead dependency, or review artifact.
 | PR is a container          | WorkRef + commit SHA + patch/PR metadata in review artifact | GitHub PR state can vanish while Rosary review remains queryable.            |
 | Run CI                     | Canonical Taskfile recipe, `task check`, plus environment capture | Verification artifact records recipe, exit status, logs, binary SHA.         |
 | Follow up later            | Bead with dependency edge and file/test scopes              | Review notes cannot close without linked follow-up beads.                    |
+| Reference the bead in the commit/PR | commit-msg gate rejects any subject that isn't `[bead-id] <type>(<scope>): <subject>` (Rule 11 + Conventional Commits); `rsry pr` derives the `[bead-id]` into the title so the squash subject carries it | `scripts/check-bead-ref.test.sh` — a malformed or bead-less subject is rejected; `close-merged --local` then auto-closes on merge. |
 
 ## Required Follow-Up Beads
 
