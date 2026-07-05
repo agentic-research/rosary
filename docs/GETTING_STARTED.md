@@ -181,7 +181,7 @@ rsry run --once  # single reconciliation pass: scan → triage → dispatch → 
 
 Or from within Claude Code, use the `rsry_dispatch` MCP tool.
 
-Rosary dispatches agents into isolated workspaces (jj workspaces or git worktrees). Each agent works a single bead, in isolation, against the verification pipeline. If the work passes all tiers (compile, test, lint, diff sanity), it's done. If not, it retries with backoff or deadletters for human attention.
+Rosary dispatches agents into isolated workspaces (jj workspaces or git worktrees). Each agent works a single bead, in isolation, against the verification pipeline. If the work passes all tiers (compile → test → lint → close-condition → diff sanity → review), it's done. If not, it retries with backoff or deadletters for human attention.
 
 The default is 3 concurrent dispatches. Start with 1 (`max_concurrent = 1` in config) until you trust the loop.
 
@@ -194,7 +194,7 @@ The default is 3 concurrent dispatches. Start with 1 (`max_concurrent = 1` in co
 | **Reconciler**   | The control loop: scan repos for beads → triage by priority and dependencies → dispatch agents → verify results. Kubernetes-controller style.                                   |
 | **Workspace**    | Isolated VCS environment where an agent works. Created per-dispatch, destroyed after verification. Prevents agents from stepping on each other.                                 |
 | **Pipeline**     | Sequence of agent perspectives a bead passes through. A bug gets `dev → staging`. A feature gets `dev → staging → prod`. Each phase is a different agent with a different lens. |
-| **Verification** | Five-tier check after agent work: commit exists → compiles → tests pass → lint clean → diff sanity (≤10 files, ≤500 lines). First failure short-circuits.                       |
+| **Verification** | Ordered tier check after agent work (`src/verify.rs`): commit exists → bead ref → compiles → tests pass → lint → close-condition (if declared) → diff sanity → mache blast-radius/duplication (advisory) → adversarial review. First failure short-circuits.                       |
 
 See [glossary.md](glossary.md) for the full term reference.
 
@@ -276,7 +276,7 @@ This is the mode for exploratory work, analysis, research, onboarding to a new c
 
 ### Autonomous: `rsry run`
 
-No human in the loop. Rosary scans repos for open beads, triages by priority and dependencies, dispatches agents into isolated workspaces, verifies results (compile → test → lint → diff sanity), and creates PRs. You review in the morning.
+No human in the loop. Rosary scans repos for open beads, triages by priority and dependencies, dispatches agents into isolated workspaces, verifies results (compile → test → lint → close-condition → diff sanity → review), and creates PRs. You review in the morning.
 
 ```bash
 rsry run --once   # single pass

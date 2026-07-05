@@ -4,6 +4,13 @@ author: jamestexas
 repo: rosary
 ---
 
+> **Status note (2026-07-05):** most of this work plan has **shipped** — the
+> `PluginKind` axis (`src/plugin.rs`), `capture --from-session/--from-code`,
+> `decompose --stub-output`, the GitHub merge webhook, the assay verify tier +
+> `doc_coverage_min`, `scan --assay`, and `notes rotate`. Still planned: outbound
+> MCP-client aggregation (`kind="mcp"`), per-session phase-scoped tool catalog,
+> and dispatch-backend plugin execution.
+
 # Tool Constellation + Plugin Substrate
 
 Five tools, each a different lens on the same underlying graph of files, symbols, and repos. Rosary is the orchestrator; the others are composable inputs.

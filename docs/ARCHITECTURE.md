@@ -248,25 +248,23 @@ graph LR
 
 ## Verification Pipeline
 
-Five tiers, first failure short-circuits:
+Ordered tiers assembled by `Verifier::for_language_with_close_condition`
+(`src/verify.rs`); first failure short-circuits. `highest_tier` records how far a
+run got.
 
 ```mermaid
 flowchart LR
-    T0["Tier 0<br/>Commit exists?"]
-    T1["Tier 1<br/>Compile"]
-    T2["Tier 2<br/>Test"]
-    T3["Tier 3<br/>Lint"]
-    T4["Tier 4<br/>Diff Sanity<br/>≤10 files, ≤500 lines"]
-
-    T0 -->|pass| T1 -->|pass| T2 -->|pass| T3 -->|pass| T4 -->|pass| DONE["done"]
-    T0 -->|fail| REJECT["rejected"]
-    T1 -->|fail| REJECT
-    T2 -->|fail| RETRY["retry"]
-    T3 -->|fail| RETRY
-    T4 -->|fail| BLOCK["blocked"]
+    T0["commit exists?"] --> T1["bead ref<br/>(Rule 11)"] --> T2["compile"] --> T3["test"] --> T4["lint"] --> T5["close-condition<br/>(if declared)"] --> T6["diff sanity"] --> T7["mache blast-radius<br/>+ duplication (advisory)"] --> T8["adversarial review"] --> DONE["done"]
 ```
 
-Language-aware: Rust gets `cargo check/test/clippy`, Go gets `go vet/test/golangci-lint`.
+- **Language-aware:** Rust gets `cargo check/test/clippy`, Go gets
+  `go vet/test/golangci-lint`.
+- **close-condition** runs only when the bead declares one (acceptance criteria
+  or a runnable command) — a fold cannot close a bead against an unchecked "done".
+- The two **mache** tiers (blast-radius, duplication) are advisory.
+- **review** is the nonce-fenced adversarial pass.
+- Separately, the **feedback contract** downgrades an otherwise-passing run to a
+  retry when the agent recorded no `feedback` run-event (`src/reconcile/verify.rs`).
 
 ## Bead Connection Model
 

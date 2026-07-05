@@ -1,6 +1,6 @@
 name: smells
 
-# Structural code-smell ratchet, owned by mache's rule registry (mache ADR-0018) —
+# Structural code-smell ratchet, owned by mache's rule registry (ADR-0018) —
 # NOT reinvented in bash. The reusable mache find-smells action downloads the
 # mache binary (>= v0.13.0 auto-provisions the leyline backend so all _ast rules
 # run), builds an index over this checkout, uploads SARIF to code-scanning, and

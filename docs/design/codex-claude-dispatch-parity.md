@@ -4,6 +4,13 @@ Status: draft
 Tracking: rosary-7a1d4a, rosary-cc2d08
 Related: codex-rosary-determinism-friction.md
 
+> **Status note (2026-07-05):** the provider-neutral run/session/event contract
+> shipped (#247), but this doc's "no durable `codex exec` shell-out" stance was
+> **not** followed: the working `codex` provider IS `codex exec` (#302,
+> `rosary-7643c9`). The native app-server path survives as the dormant,
+> experimental `codex-native` provider. Reconcile the Non-Goals/Must-Have rows
+> with that reality.
+
 ## Purpose
 
 Rosary's Codex integration is not just another provider flag. Rosary already

@@ -9,6 +9,11 @@ relates_to:
   - docs/adr/0010-observation-lattice.md
 ---
 
+> **Status note (2026-07-05):** the capnp substrate itself is unbuilt, but §2.4's
+> `work_mode` secondary axis **shipped** as a live Rust axis ahead of capnp —
+> `VALID_WORK_MODES` + `default_issue_type_for_work_mode` in `src/bead.rs`
+> (12 modes mapping back to canonical issue types). Treat §2.4 as implemented.
+
 # Capnp Issue-Type Substrate + Self-Narrated Handoffs
 
 ## TL;DR
