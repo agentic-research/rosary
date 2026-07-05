@@ -38,9 +38,16 @@ check_block="$(task_block check)"
 ci_block="$(task_block ci)"
 
 require_contains "$check_block" "task: taskfile-contract" "task check"
+require_contains "$check_block" "task: rules" "task check"
 require_contains "$check_block" "task: compile" "task check"
 require_contains "$check_block" "task: lint" "task check"
 require_contains "$check_block" "task: test" "task check"
+
+# The `rules` block carries the rosary-domain mechanical gates that used to live
+# only in the pre-commit CI job. Agents run `task check`, not pre-commit, so the
+# R4b persist_status ratchet must stay wired into the canonical gate here.
+rules_block="$(task_block rules)"
+require_contains "$rules_block" "task: persist-status-ratchet" "task rules"
 
 require_contains "$ci_block" "task: check" "task ci"
 reject_contains "$ci_block" "cargo " "task ci"

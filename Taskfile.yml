@@ -49,10 +49,29 @@ tasks:
     cmds:
       - bash scripts/check-taskfile-contract.sh
 
+  rules:
+    desc: >-
+      Rosary-domain mechanical gates that CI and dispatched agents must run.
+      They live here (inside the canonical `task check`) rather than only in the
+      local pre-commit hooks, because agents run `task check`, not pre-commit —
+      so a pre-commit-only gate enforces nothing on the dispatch path.
+      Structural code smells (god_file/long_file/dead_code/…) are NOT re-listed
+      here: those are mache's rule engine (JSON-of-SQL over the AST + `--baseline`
+      ratchet, ADR-0018), wired via `mache find-smells` under rosary-<TBD> so we
+      don't reinvent them in bash. This target holds only the domain rules mache
+      does not own.
+    cmds:
+      # R4b — imperative persist_status() call sites may only decrease. Kept as a
+      # rosary script (not a mache rule) because mache's call-extraction
+      # under-counts it (node_refs sees 16 of the 21 real sites), so the bash
+      # grep is the accurate ratchet for this specific migration.
+      - task: persist-status-ratchet
+
   check:
     desc: Canonical verification gate (Taskfile source of truth)
     cmds:
       - task: taskfile-contract
+      - task: rules
       - task: compile
       - task: lint
       - task: test
