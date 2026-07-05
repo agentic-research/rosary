@@ -100,6 +100,11 @@ tasks:
       - task: compile
       - task: lint
       - task: test
+      # Structural smell ratchet — enforced locally where mache is present, and in
+      # CI via the reusable mache find-smells action (.github/workflows/smells.yml).
+      # Skips (exit 0) when mache is absent, so the mache-less CI `verify` job that
+      # runs `task check` doesn't fail; the action is the CI enforcement point.
+      - task: smells
 
   lint:
     desc: Run fmt + clippy + semgrep rules

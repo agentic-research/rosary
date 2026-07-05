@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - uses: agentic-research/mache/.github/actions/find-smells@29c7369c6f59fc8ad4143cced12ae948db580948 # main
+      - uses: agentic-research/mache/.github/actions/find-smells@4d091914f7a92ff95b4625c76569efdbade27f3c # main
         with:
           mache-version: v0.13.0
           baseline: docs/smell-baseline.json

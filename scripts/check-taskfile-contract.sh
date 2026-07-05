@@ -42,6 +42,7 @@ require_contains "$check_block" "task: rules" "task check"
 require_contains "$check_block" "task: compile" "task check"
 require_contains "$check_block" "task: lint" "task check"
 require_contains "$check_block" "task: test" "task check"
+require_contains "$check_block" "task: smells" "task check"
 
 # The `rules` block carries the rosary-domain mechanical gates that used to live
 # only in the pre-commit CI job. Agents run `task check`, not pre-commit, so the
