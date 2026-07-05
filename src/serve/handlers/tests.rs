@@ -1,5 +1,98 @@
 use super::*;
 
+fn test_bead(
+    status: &str,
+    dependency_count: u32,
+    issue_type: &str,
+    description: &str,
+    files: &[&str],
+    acceptance_criteria: &str,
+) -> crate::bead::Bead {
+    crate::bead::Bead {
+        id: "rosary-test".to_string(),
+        title: "test".to_string(),
+        description: description.to_string(),
+        status: status.to_string(),
+        priority: 1,
+        issue_type: issue_type.to_string(),
+        owner: None,
+        repo: "rosary".to_string(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        dependency_count,
+        dependent_count: 0,
+        comment_count: 0,
+        branch: None,
+        pr_url: None,
+        jj_change_id: None,
+        external_ref: None,
+        files: files.iter().map(|s| (*s).to_string()).collect(),
+        test_files: vec![],
+        created_by: None,
+        scope: String::new(),
+        derived_from: vec![],
+        acceptance_criteria: acceptance_criteria.to_string(),
+    }
+}
+
+#[test]
+fn status_counts_include_dispatchable_subset() {
+    let scoped_impl = test_bead(
+        "open",
+        0,
+        "task",
+        "This description is long enough to count as refined for dispatch.",
+        &["src/main.rs"],
+        "cargo test --bin rsry dispatchable",
+    );
+    let merely_ready = test_bead(
+        "open",
+        0,
+        "task",
+        "This description is also long enough to count as refined for dispatch.",
+        &[],
+        "",
+    );
+    let blocked = test_bead(
+        "open",
+        1,
+        "task",
+        "Blocked bead still has enough description to avoid refinement checks.",
+        &["src/lib.rs"],
+        "cargo test",
+    );
+
+    let counts = status_counts(&[scoped_impl, merely_ready, blocked]);
+    assert_eq!(counts["total"].as_u64(), Some(3));
+    assert_eq!(counts["ready"].as_u64(), Some(2));
+    assert_eq!(counts["dispatchable"].as_u64(), Some(1));
+    assert_eq!(counts["blocked"].as_u64(), Some(1));
+}
+
+#[test]
+fn bead_matches_dispatchable_virtual_status() {
+    let dispatchable = test_bead(
+        "open",
+        0,
+        "task",
+        "This description is long enough to count as refined for dispatch.",
+        &["src/main.rs"],
+        "cargo test --bin rsry dispatchable",
+    );
+    let ready_only = test_bead(
+        "open",
+        0,
+        "task",
+        "This description is long enough to count as refined for dispatch.",
+        &[],
+        "",
+    );
+
+    assert!(bead_matches_status(&dispatchable, Some("dispatchable")));
+    assert!(!bead_matches_status(&ready_only, Some("dispatchable")));
+    assert!(bead_matches_status(&ready_only, Some("ready")));
+}
+
 // ---- tool_review (rosary-cd5d2a) --------------------------------------
 
 /// Phase 0 of rosary-ccd5a2. Caller must supply `bead_id`; the error

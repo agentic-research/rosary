@@ -290,30 +290,7 @@ async fn tool_status(config_path: &str) -> Result<Value> {
     }
 
     let beads = crate::scanner::scan_repos(&cfg.repo).await?;
-
-    // Predicates must match `cli.rs::print_status_summary` and the
-    // `rsry status --json` path in main.rs, otherwise the same numbers
-    // disagree across the three render surfaces (statusline, terminal,
-    // MCP). Before alignment, JSON's `blocked` was status-string equality
-    // and missed beads with status="open" + dependency_count > 0 — the
-    // canonical `is_blocked()` definition is "status=blocked OR
-    // (status=open AND deps unresolved)".
-    let open = beads.iter().filter(|b| b.status == "open").count();
-    let in_progress = beads
-        .iter()
-        .filter(|b| b.status == "in_progress" || b.status == "dispatched")
-        .count();
-    let blocked = beads.iter().filter(|b| b.is_blocked()).count();
-    let ready = beads.iter().filter(|b| b.is_ready()).count();
-    let total = beads.len();
-
-    Ok(json!({
-        "total": total,
-        "open": open,
-        "ready": ready,
-        "in_progress": in_progress,
-        "blocked": blocked,
-    }))
+    Ok(status_counts(&beads))
 }
 
 async fn tool_list_beads(
@@ -333,12 +310,7 @@ async fn tool_list_beads(
             Some(r) => b.repo == r,
             None => true,
         })
-        .filter(|b| match status {
-            Some("blocked") => b.is_blocked(),
-            Some("ready") => b.is_ready(),
-            Some(s) => b.status == s,
-            None => true,
-        })
+        .filter(|b| bead_matches_status(b, status))
         .collect();
 
     let total = filtered.len();
@@ -351,6 +323,42 @@ async fn tool_list_beads(
         "limit": limit,
         "beads": page,
     }))
+}
+
+/// Canonical status rollup for MCP `rsry_status`.
+///
+/// Predicates must match `cli.rs::print_status_summary` and `rsry status --json`
+/// in main.rs, otherwise the same numbers disagree across the render surfaces
+/// (statusline, terminal, MCP).
+fn status_counts(beads: &[crate::bead::Bead]) -> Value {
+    let open = beads.iter().filter(|b| b.status == "open").count();
+    let in_progress = beads
+        .iter()
+        .filter(|b| b.status == "in_progress" || b.status == "dispatched")
+        .count();
+    let blocked = beads.iter().filter(|b| b.is_blocked()).count();
+    let ready = beads.iter().filter(|b| b.is_ready()).count();
+    let dispatchable = beads.iter().filter(|b| b.is_dispatchable()).count();
+    let total = beads.len();
+
+    json!({
+        "total": total,
+        "open": open,
+        "ready": ready,
+        "dispatchable": dispatchable,
+        "in_progress": in_progress,
+        "blocked": blocked,
+    })
+}
+
+fn bead_matches_status(bead: &crate::bead::Bead, status: Option<&str>) -> bool {
+    match status {
+        Some("blocked") => bead.is_blocked(),
+        Some("ready") => bead.is_ready(),
+        Some("dispatchable") => bead.is_dispatchable(),
+        Some(s) => bead.status == s,
+        None => true,
+    }
 }
 
 async fn tool_run_once(
