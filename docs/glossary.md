@@ -28,7 +28,7 @@ Terms used across rosary, the conductor, agents, and ADRs.
 
 | Term                | What                                                                                                                                               |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **AgentProvider**   | Which model runs: Claude, Gemini, ACP. Returns an `AgentSession`.                                                                                  |
+| **AgentProvider**   | Which model runs: Claude, Codex, Gemini, ACP. Returns an `AgentSession`.                                                                                  |
 | **ComputeProvider** | Where the agent runs: `local` (host subprocess) or `sprites` (remote container via sprites.dev).                                                   |
 | **Workspace**       | Isolated VCS environment for an agent to work in. jj workspace (preferred) or git worktree (fallback). Destroyed after verification.               |
 | **Conductor**       | Elixir/OTP application that manages agent lifecycles via supervision trees. Talks to rsry over HTTP/MCP. Handles the WHICH/WHERE/HOW of execution. |
@@ -38,12 +38,10 @@ Terms used across rosary, the conductor, agents, and ADRs.
 
 | Term       | What                                                                                      |
 | ---------- | ----------------------------------------------------------------------------------------- |
-| **Tier**   | One check in the verification pipeline. Tiers run in order; first failure short-circuits. |
-| **Tier 0** | Commit exists?                                                                            |
-| **Tier 1** | Does it compile?                                                                          |
-| **Tier 2** | Do tests pass?                                                                            |
-| **Tier 3** | Does the linter approve?                                                                  |
-| **Tier 4** | Diff sanity — ≤10 files, ≤500 lines changed.                                              |
+| **Tier** | One check in the verification pipeline. Tiers run in order (`src/verify.rs`); first failure short-circuits. The Rust order: commit exists → bead ref (Rule 11) → compile → test → lint → close-condition (if declared) → diff sanity → mache blast-radius + duplication (advisory) → adversarial review. |
+| **close-condition tier** | Runs the bead's declared acceptance command/criteria — a fold can't close a bead against a "done" that was never checked. |
+| **diff sanity** | Rejects implausibly large diffs. |
+| **review tier** | Nonce-fenced adversarial review of the change. |
 
 ## Storage
 

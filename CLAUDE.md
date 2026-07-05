@@ -15,11 +15,17 @@ Rust-based agent orchestration and work tracking. Backbone of the ART (Agentic R
 
 ```bash
 task build          # debug build
+task check          # canonical verification gate: contract + rules + compile + lint + test + smells
 task test           # run all tests
-task lint           # fmt + clippy -D warnings
+task lint           # fmt + clippy -D warnings + semgrep
+task smells         # mache structural-smell ratchet (vs docs/smell-baseline.json)
 task install        # build release, codesign, install to ~/.local/bin
-task all            # fmt + check + lint + test
+task all            # alias for `task check`
 ```
+
+CI (`.github/workflows/ci.yml`) delegates to `task check` — the single canonical
+gate — and `scripts/check-taskfile-contract.sh` enforces that CI runs nothing
+else. `task ci` is also an alias for `task check`.
 
 ## Architecture
 
@@ -112,7 +118,7 @@ agents/
 ├── pm-agent.md           # Strategic perspective (cross-repo)
 ├── janitor-agent.md      # Codebase hygiene (repo-wide scheduled sweeps)
 └── rules/
-    └── GOLDEN_RULES.md   # 11 rules all agents operate under
+    └── GOLDEN_RULES.md   # 12 rules all agents operate under
 ```
 
 Agents map to Linear **labels** (not users — one seat, all perspectives via labels).
@@ -149,15 +155,18 @@ rsry sync --dry-run                          # bidirectional Linear sync
 rsry sync --github                           # mirror bead context to PR comments
 rsry scan                                    # scan all repos for beads
 rsry scan --assay                            # run assay.scan plugins → P3 chore beads for stale refs
-rsry status [--json]                         # aggregated counts; CLI text + JSON outputs agree (#192)
+rsry status [--json] [--repo <name>]         # counts across ALL registered repos (scope with --repo); counts terminal beads too (done/closed), CLI text + JSON agree (#192)
 rsry bead create / list / search / close / reopen   # `close` requires a close condition (acceptance_criteria / test command / --force); bare `create` defaults one to the PR-merge signal
+rsry bead list --dispatchable / --status all # `--dispatchable` = ready + close-condition + bounded scope + refined (Bead::is_dispatchable); `--status all` includes terminal beads (list defaults to the active-only view)
 rsry bead move <id> <dest-repo>              # cross-repo relocation (no bd): provenance+comments fwd, source tombstoned (ADR-0014)
 rsry bead backup <file> / restore <file>     # restorable store backup (SQLite VACUUM INTO); Dolt repos pointed at `dolt backup`. Distinct from export --jsonl (interop-only)
 rsry bead comment add <id> <body>            # append a comment (rosary-a96b06)
 rsry bead comment list <id> [--include-deleted]
 rsry bead comment update <id> <comment_id> --body <text> [--reason <why>]
 rsry bead comment delete <id> <comment_id> [--reason <why>] [--hard]   # --hard CLI-only; soft preserves audit trail
-rsry close-merged                            # catch-up sweep: close beads whose PRs already merged
+rsry close-merged                            # catch-up sweep (gh): close beads whose PRs already merged
+rsry close-merged --local                    # rsry-native: close beads from local `git log` squash commits ([bead-id] … (#N)) — no gh/webhook/tunnel; run by the git post-merge hook
+rsry hooks install / status                  # install/report the post-merge + post-push bead-sync hooks (post-merge runs `close-merged --local`)
 rsry thread-reparent <thread_id> <decade_id> [--name <new>]  # re-parent threads under a different decade
 rsry capture --from-session <path>           # transcript → BeadSpecs via LLM (Session provenance)
 rsry capture --from-code <repo> <path>       # source file → BeadSpecs via LLM (Code provenance)
@@ -229,6 +238,7 @@ agent is granted `rsry_agent_run_event_record` for the feedback contract.
 | 0013 | Superseded | Bead substrate — adopt bd/Dolt as shared store (superseded by 0014)                                                                                                                     |
 | 0014 | Accepted   | Decouple rosary from bd — speak the bead format, own the store                                                                                                                          |
 | 0015 | Proposed   | Execution-lineage capsules — durable, resumable, proof-ready envelope                                                                                                                   |
+| 0018 | Accepted   | Structural smell gate via mache's committed-baseline ratchet (`docs/smell-baseline.json` + `docs/smell-rules/*.json` + `task smells`); retired the bash god-file/file-length scripts    |
 
 ## BDR Hierarchy (Decade → Thread → Bead)
 

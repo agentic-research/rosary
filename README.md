@@ -118,7 +118,7 @@ Then on any platform:
 rsry enable ~/code/my-app
 
 # Create / search / update / close beads via CLI
-rsry bead create "Refactor auth module" --priority 1 --type task --files src/auth.rs
+rsry bead create "Refactor auth module" --priority 1 --issue-type task --files src/auth.rs
 rsry bead list
 rsry bead search "auth"
 rsry bead close rsry-abc123 --force          # `--force` skips the close-condition gate
@@ -248,11 +248,12 @@ rsry scan --assay
 
 After an agent completes, rosary runs tiered checks:
 
-1. Did it commit something?
+1. Did it commit something (and reference a bead)?
 1. Does it compile?
 1. Do tests pass?
-1. Does the linter approve?
+1. Does an adversarial review pass?
 1. Is the diff a reasonable size?
+1. Is the bead's close condition satisfied?
 
 Failed checks trigger retry with backoff. After 5 failures or 3 regressions, the bead is deadlettered for human attention.
 
@@ -271,7 +272,8 @@ task build     # debug build with fuse-t support
 task compile   # fast cargo check
 task lint      # fmt + clippy + semgrep
 task test      # run tests
-task check     # canonical gate: contract + compile + lint + test
+task smells    # mache structural-smell ratchet (vs docs/smell-baseline.json)
+task check     # canonical gate: contract + rules + compile + lint + test + smells
 task ci        # CI alias for task check
 ```
 

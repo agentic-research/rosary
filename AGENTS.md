@@ -1,154 +1,124 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
+This project tracks all work as **beads**, stored in `.beads/` (a SQLite
+`beads.db`, or a Dolt server when `.beads/dolt/` exists) and accessed **through
+`rsry`** — the CLI or the `rsry_*` MCP tools. Rosary owns the store and reads/
+writes it in-process; it **never invokes the `bd` CLI** (see
+[ADR-0014](docs/adr/0014-decouple-rosary-from-bd.md)). Do not run `bd`.
 
 ## Quick Reference
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
+rsry bead list --dispatchable      # work that's actually safe to pick up
+rsry bead list --ready             # open + unblocked (superset of dispatchable)
+rsry bead review <id>              # full context: summary + comments + change-set
+rsry bead close <id>               # complete work (requires a close condition)
+rsry status --repo <name>          # counts for one repo (omit --repo = all repos)
 ```
+
+The `rsry_*` MCP tools mirror these (`rsry_list_beads`, `rsry_bead_create`,
+`rsry_bead_close`, `rsry_bead_comment`, …) and are the preferred surface from
+inside an MCP client.
 
 ## Non-Interactive Shell Commands
 
-**ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
-
-Shell commands like `cp`, `mv`, and `rm` may be aliased to include `-i` (interactive) mode on some systems, causing the agent to hang indefinitely waiting for y/n input.
+**ALWAYS use non-interactive flags** with file operations to avoid hanging on
+confirmation prompts. Shell commands like `cp`, `mv`, and `rm` may be aliased to
+include `-i` (interactive) mode on some systems, causing the agent to hang
+indefinitely waiting for y/n input.
 
 **Use these forms instead:**
 
 ```bash
-# Force overwrite without prompting
 cp -f source dest           # NOT: cp source dest
 mv -f source dest           # NOT: mv source dest
 rm -f file                  # NOT: rm file
-
-# For recursive operations
 rm -rf directory            # NOT: rm -r directory
 cp -rf source dest          # NOT: cp -r source dest
 ```
 
 **Other commands that may prompt:**
 
-- `scp` - use `-o BatchMode=yes` for non-interactive
-- `ssh` - use `-o BatchMode=yes` to fail instead of prompting
-- `apt-get` - use `-y` flag
-- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
+- `scp` — use `-o BatchMode=yes` for non-interactive
+- `ssh` — use `-o BatchMode=yes` to fail instead of prompting
+- `apt-get` — use `-y`
+- `brew` — use `HOMEBREW_NO_AUTO_UPDATE=1`
 
-<!-- BEGIN BEADS INTEGRATION -->
+## Issue Tracking with beads (via `rsry`)
 
-## Issue Tracking with bd (beads)
+**IMPORTANT**: All issue tracking goes through beads. Do NOT use markdown TODOs,
+task lists, or external trackers. Do NOT use the `bd` CLI — use `rsry`.
 
-**IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
-
-### Why bd?
-
-- Dependency-aware: Track blockers and relationships between issues
-- Version-controlled: Built on Dolt with cell-level merge
-- Agent-optimized: JSON output, ready work detection, discovered-from links
-- Prevents duplicate tracking systems and confusion
-
-### Quick Start
-
-**Check for ready work:**
+### Create work
 
 ```bash
-bd ready --json
+rsry bead create "Issue title" --description "Detailed context" \
+  --issue-type bug --priority 1 --files src/foo.rs
 ```
 
-**Create new issues:**
+Implementation beads (`bug`/`feature`/`task`/`chore`) require a **file scope**
+(`--files`) and a **close condition** (an `--acceptance-criteria`, a runnable
+test command in the description, or the default PR-merge signal). Planning types
+(`epic`/`design`/`research`) and `review` are exempt from the file-scope rule.
+
+### Claim, update, complete
 
 ```bash
-bd create "Issue title" --description="Detailed context" -t bug|feature|task -p 0-4 --json
-bd create "Issue title" --description="What this issue is about" -p 1 --deps discovered-from:bd-123 --json
+rsry bead comment add <id> "progress note"
+rsry bead close <id>               # gated on the close condition
 ```
 
-**Claim and update:**
+### Issue types
 
-```bash
-bd update <id> --claim --json
-bd update bd-42 --priority 1 --json
-```
-
-**Complete work:**
-
-```bash
-bd close bd-42 --reason "Completed" --json
-```
-
-### Issue Types
-
-- `bug` - Something broken
-- `feature` - New functionality
-- `task` - Work item (tests, docs, refactoring)
-- `epic` - Large feature with subtasks
-- `chore` - Maintenance (dependencies, tooling)
+`bug`, `feature`, `task`, `chore` (implementation) · `epic`, `design`,
+`research` (planning) · `review` (read-only adversarial). A secondary
+`work_mode` axis (investigation / synthesis / adversarial / procedural / …)
+maps back to a canonical issue type when a bead is authored.
 
 ### Priorities
 
-- `0` - Critical (security, data loss, broken builds)
-- `1` - High (major features, important bugs)
-- `2` - Medium (default, nice-to-have)
-- `3` - Low (polish, optimization)
-- `4` - Backlog (future ideas)
+- `0` — Critical (security, data loss, broken builds)
+- `1` — High (major features, important bugs)
+- `2` — Medium (default)
+- `3` — Low (polish, optimization)
 
-### Workflow for AI Agents
+### Ready vs dispatchable
 
-1. **Check ready work**: `bd ready` shows unblocked issues
-1. **Claim your task atomically**: `bd update <id> --claim`
-1. **Work on it**: Implement, test, document
-1. **Discover new work?** Create linked issue:
-   - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
-1. **Complete**: `bd close <id> --reason "Done"`
+`rsry bead list --ready` = open + unblocked. `--dispatchable` is the strict
+subset that is actually safe to hand to an agent: it also has a close condition,
+a bounded file scope, and a refined description (`Bead::is_dispatchable`). Prefer
+`--dispatchable` when choosing what to work on.
 
-### Auto-Sync
+### State sync (automatic, rsry-native)
 
-bd automatically syncs with git:
-
-- Exports to `.beads/issues.jsonl` after changes (5s debounce)
-- Imports from JSONL when newer (e.g., after `git pull`)
-- No manual export/import needed!
-
-### Important Rules
-
-- ✅ Use bd for ALL task tracking
-- ✅ Always use `--json` flag for programmatic use
-- ✅ Link discovered work with `discovered-from` dependencies
-- ✅ Check `bd ready` before asking "what should I work on?"
-- ❌ Do NOT create markdown TODO lists
-- ❌ Do NOT use external issue trackers
-- ❌ Do NOT duplicate tracking systems
-
-For more details, see README.md and docs/QUICKSTART.md.
+There is **no** `bd dolt push` / `issues.jsonl` export step. Rosary owns the
+store. When a PR merges, the git `post-merge` hook (installed by
+`rsry hooks install`) runs `rsry close-merged --local`, which reads the
+squash-merge commit (`[bead-id] … (#N)`) from local `git log` and closes the
+bead — no webhook, no `gh`, no manual export. Dolt-backed repos also `dolt pull`
+in the same hook.
 
 ## Landing the Plane (Session Completion)
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+**When ending a work session**, complete ALL steps. Work is NOT complete until
+`git push` succeeds.
 
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-1. **Run quality gates** (if code changed) - Tests, linters, builds
-1. **Update issue status** - Close finished work, update in-progress items
-1. **PUSH TO REMOTE** - This is MANDATORY:
+1. **File beads for remaining work** — `rsry bead create …` for anything that
+   needs follow-up.
+1. **Run the gate** (if code changed) — `task check` (the canonical verification
+   gate: contract + rules + compile + lint + test + smells).
+1. **Update bead status** — close finished work; comment on in-progress items.
+1. **PUSH TO REMOTE** — mandatory:
    ```bash
    git pull --rebase
-   bd dolt push
    git push
-   git status  # MUST show "up to date with origin"
+   git status   # MUST show "up to date with origin"
    ```
-1. **Clean up** - Clear stashes, prune remote branches
-1. **Verify** - All changes committed AND pushed
-1. **Hand off** - Provide context for next session
+1. **Clean up** — clear stashes, prune remote branches.
+1. **Hand off** — provide context for the next session.
 
 **CRITICAL RULES:**
 
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
-
-<!-- END BEADS INTEGRATION -->
+- Work is NOT complete until `git push` succeeds.
+- NEVER stop before pushing — that strands work locally.
+- If push fails, resolve and retry until it succeeds.

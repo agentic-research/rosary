@@ -16,7 +16,10 @@ to the right place — it is **not** always `.git/hooks/`.
 - `post-push` — body shell logic that runs after `git push`. Pushes the
   local Dolt beads DB to the configured Dolt remote, best-effort.
 - `post-merge` — body shell logic that runs after `git pull` / merge.
-  Pulls the latest Dolt beads from the configured Dolt remote, best-effort.
+  Pulls the latest Dolt beads from the configured Dolt remote, and runs
+  `rsry close-merged --local` — closing any bead whose squash-merge commit
+  (`[bead-id] … (#N)`) just landed on the trunk, read from local `git log`
+  (no gh / webhook / tunnel). Both best-effort; neither blocks the merge.
 
 ## Marker lines (literal)
 

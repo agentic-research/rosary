@@ -1,6 +1,12 @@
 # Codex / Rosary Determinism Friction Log
 
-Status: draft
+Status: implemented (2026-07-05) — all "Required Follow-Up Beads" below have
+shipped and all "Acceptance Criteria For This Design" are met. Two further
+determinism wins this doc predicted in spirit also landed: the **mache-native
+structural smell gate** (Taskfile targets as named recipes, not ad-hoc bash —
+`docs/smell-rules/*.json` + `docs/smell-baseline.json`, run via `task smells`)
+and code-enforced **`is_dispatchable`** (`src/bead.rs`), which turns the
+"backlog truth" this log computed by hand into a checked predicate.
 Tracking: rosary-d88cfb
 Related: rosary-59fd34, rosary-cf52cf, rosary-d18be8, rosary-d298a3
 

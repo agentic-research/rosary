@@ -182,10 +182,10 @@ Handoff files (`.rsry-handoff-N.json`) carry summary, files_changed, review_hint
 ```mermaid
 graph LR
     subgraph "Core Loop"
-        reconcile["reconcile.rs<br/>loop + triage"]
+        reconcile["reconcile/mod.rs<br/>loop + triage"]
         scanner["scanner.rs<br/>multi-repo scan"]
         queue["queue.rs<br/>priority queue"]
-        dispatch["dispatch.rs<br/>AgentProvider"]
+        dispatch["dispatch/mod.rs<br/>AgentProvider"]
         verify["verify.rs<br/>tiered checks"]
     end
 
@@ -198,7 +198,7 @@ graph LR
 
     subgraph "Data"
         bead["bead.rs<br/>data model"]
-        dolt["dolt.rs<br/>MySQL client"]
+        dolt["dolt/mod.rs<br/>MySQL client"]
         pool["pool.rs<br/>RepoPool"]
         epic["epic.rs<br/>clustering + overlap"]
         store["store.rs<br/>HierarchyStore trait"]
@@ -215,8 +215,8 @@ graph LR
 
     subgraph "Interface"
         main["main.rs<br/>CLI"]
-        serve["serve/<br/>MCP 27 tools + webhooks"]
-        config["config.rs<br/>TOML config"]
+        serve["serve/<br/>MCP 40 tools + webhooks"]
+        config["config/mod.rs<br/>TOML config"]
         plugin["plugin.rs<br/>kind=hook|mcp|dispatch|state_sink"]
     end
 
@@ -248,30 +248,28 @@ graph LR
 
 ## Verification Pipeline
 
-Five tiers, first failure short-circuits:
+Ordered tiers assembled by `Verifier::for_language_with_close_condition`
+(`src/verify.rs`); first failure short-circuits. `highest_tier` records how far a
+run got.
 
 ```mermaid
 flowchart LR
-    T0["Tier 0<br/>Commit exists?"]
-    T1["Tier 1<br/>Compile"]
-    T2["Tier 2<br/>Test"]
-    T3["Tier 3<br/>Lint"]
-    T4["Tier 4<br/>Diff Sanity<br/>≤10 files, ≤500 lines"]
-
-    T0 -->|pass| T1 -->|pass| T2 -->|pass| T3 -->|pass| T4 -->|pass| DONE["done"]
-    T0 -->|fail| REJECT["rejected"]
-    T1 -->|fail| REJECT
-    T2 -->|fail| RETRY["retry"]
-    T3 -->|fail| RETRY
-    T4 -->|fail| BLOCK["blocked"]
+    T0["commit exists?"] --> T1["bead ref<br/>(Rule 11)"] --> T2["compile"] --> T3["test"] --> T4["lint"] --> T5["close-condition<br/>(if declared)"] --> T6["diff sanity"] --> T7["mache blast-radius<br/>+ duplication (advisory)"] --> T8["adversarial review"] --> DONE["done"]
 ```
 
-Language-aware: Rust gets `cargo check/test/clippy`, Go gets `go vet/test/golangci-lint`.
+- **Language-aware:** Rust gets `cargo check/test/clippy`, Go gets
+  `go vet/test/golangci-lint`.
+- **close-condition** runs only when the bead declares one (acceptance criteria
+  or a runnable command) — a fold cannot close a bead against an unchecked "done".
+- The two **mache** tiers (blast-radius, duplication) are advisory.
+- **review** is the nonce-fenced adversarial pass.
+- Separately, the **feedback contract** downgrades an otherwise-passing run to a
+  retry when the agent recorded no `feedback` run-event (`src/reconcile/verify.rs`).
 
 ## Bead Connection Model
 
 `RepoPool` dispatches per-repo to one of two bead-store backends via
-`connect_bead_store` (`src/bead_sqlite.rs`): a `DoltBeadStore` (MySQL wire to a
+`connect_bead_store` (`src/bead_sqlite/mod.rs`): a `DoltBeadStore` (MySQL wire to a
 per-repo `dolt sql-server`) when `.beads/dolt/` exists, otherwise a
 `SqliteBeadStore` reading `.beads/beads.db` directly — no server, no Dolt, no
 `bd` CLI. The diagram below shows the Dolt-mode tier; SQLite-mode repos hang off
@@ -298,7 +296,7 @@ graph TB
 
 Connection safety: `dolt_transaction_commit=1` (auto-commit per statement), `max_connections=1` (session variable consistency), bail on known dead port (no silent empty DB).
 
-## MCP Tools (27)
+## MCP Tools (40)
 
 | Category   | Tools                                                                                                                                              |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -325,7 +323,7 @@ Beads with thread assignments sync as sub-issues of the thread's parent issue. B
 
 All bead types require scopes for parallel dispatch:
 
-- **Files**: `src/reconcile.rs` (exact path)
+- **Files**: `src/reconcile/mod.rs` (exact path)
 - **Directories**: `crates/bdr/` (trailing slash = prefix match)
 - **Repo-wide**: `./` (blocks all dispatch in that repo)
 

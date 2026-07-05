@@ -1,6 +1,6 @@
 # ADR-0009: Cross-Repo Linkage — Stratified Acyclicity + Modal Evidence
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-04-30
 **Depends on:** mache-iegm (`MultiRepoGraph` federation)
 **Relates to:** ADR-0007 (BDR Enrichment Pipeline)

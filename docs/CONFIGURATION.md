@@ -50,7 +50,7 @@ Cross-repo state: decades, threads, pipeline tracking, dispatch history. Require
 
 ```toml
 [backend]
-provider = "dolt"                # Only "dolt" supported currently
+provider = "dolt"                # "dolt" or "sqlite" (switch with `rsry migrate`)
 path = "~/.rsry/dolt/rosary"    # Database directory (auto-initialized)
 ```
 
@@ -102,11 +102,23 @@ Provider notes:
 
 - `claude` and `gemini` use their CLI providers.
 - `acp` uses the native ACP protocol over an ACP-compatible agent binary.
-- `codex` is the native Codex provider boundary. It does not use `codex exec`;
-  live dispatch is experimental and disabled by default. Set
-  `RSRY_EXPERIMENTAL_CODEX=1` to opt in while native session durability
-  (`rosary-d6b6e6`) and live app-server validation (`rosary-2500f3`) are still
-  being hardened.
+- `codex` is the working Codex provider — it runs `codex exec` (non-interactive,
+  file-based auth at `~/.codex/auth.json`, `rosary-7643c9`). This is the one to
+  use.
+- `codex-native` is a separate, dormant provider boundary: a native app-server
+  path that does **not** shell out to `codex exec`. It is experimental and
+  disabled by default — set `RSRY_EXPERIMENTAL_CODEX=1` to opt in while native
+  session durability (`rosary-d6b6e6`) and live app-server validation
+  (`rosary-2500f3`) are still being hardened.
+
+#### Auto-dispatch approval gate
+
+`[dispatch] require_approval = true` gates auto-dispatch on a per-repo approval
+flag. When enabled, the reconciler only dispatches into repos whose registry
+entry has `approval = "approved"`. Manage it with `rsry approve <repo>` /
+`rsry reject <repo>` (a rejected repo is skipped; the default is unapproved).
+Leave `require_approval = false` (the default) to dispatch into every registered
+repo without gating.
 
 #### Authentication for dispatched agents
 

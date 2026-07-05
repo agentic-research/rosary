@@ -4,6 +4,12 @@ A structured record of what an agent did during a dispatch. Written to the
 workspace directory by the orchestrator after agent completion, before
 checkpoint and cleanup.
 
+> **Status note (2026-07-05):** the `DispatchManifest` type + `write_to()` exist
+> (`src/manifest.rs`), but `write_to` is **not yet called by the live
+> dispatch/reconcile path** — only `Handoff::write_to` is wired. So
+> `.rsry-dispatch.json` is designed and typed, not emitted. Phase-0 is now
+> `scoping-agent` (not `dev`), and paths under `src/reconcile/*` are split modules.
+
 ## Motivation
 
 Today, understanding what happened during a dispatch requires forensic
