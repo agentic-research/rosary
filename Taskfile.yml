@@ -73,12 +73,17 @@ tasks:
       dead_code/duplicate/… gate, owned by mache's rule registry (JSON-of-SQL over
       the AST), NOT reinvented in bash. Builds a mache index over the repo and
       fails on findings that EXCEED the committed docs/smell-baseline.json (the
-      per-(rule,file) ratchet floor). CI runs the identical gate via the reusable
-      `agentic-research/mache` find-smells action; this target is the local mirror.
-      Requires mache >= v0.13.0 (it auto-provisions the leyline backend so all
-      _ast rules run). Regenerate the baseline after an intentional change with:
-      `mache build . /tmp/s.db && mache find-smells --db /tmp/s.db --rule '*'
+      per-(rule,file) ratchet floor). Custom rosary rules live as JSON in
+      docs/smell-rules/ (loaded via MACHE_SMELL_RULES_DIR) — e.g. long_file_rosary
+      is Golden Rule 2 (>500 lines), which retired scripts/check-file-length.sh.
+      CI runs the identical gate via the reusable `agentic-research/mache`
+      find-smells action; this target is the local mirror. Requires mache >=
+      v0.13.0 (it auto-provisions the leyline backend so all _ast rules run).
+      Regenerate the baseline after an intentional change with:
+      `MACHE_SMELL_RULES_DIR=docs/smell-rules mache find-smells --db <db> --rule '*'
       --limit 100000 --baseline-root "$PWD" --write-baseline docs/smell-baseline.json`.
+    env:
+      MACHE_SMELL_RULES_DIR: '{{.TASKFILE_DIR}}/docs/smell-rules'
     cmds:
       - |
         if ! command -v mache >/dev/null 2>&1; then
@@ -127,16 +132,20 @@ tasks:
       - bash scripts/check-persist-status-ratchet.sh
 
   god-files:
-    desc: Report god-files via mache long_file (structural view for the breakdown campaign)
+    desc: >-
+      Report god-files (structural view for the R6 breakdown campaign) via mache's
+      long_file/god_file rules. Reporting only — the enforced gate is `task smells`
+      (ratcheted against docs/smell-baseline.json). The old wc -l script
+      (check-god-files.sh) was retired: it duplicated mache's long_file (>1500).
     cmds:
-      - bash scripts/check-god-files.sh
       - |
         if command -v mache >/dev/null 2>&1; then
           DB="$(mktemp -u).db"
-          mache build src "$DB" >/dev/null 2>&1 && {
-            echo "=== mache long_file (>1500) ==="
+          trap 'rm -f "$DB"' EXIT
+          mache build . "$DB" >/dev/null 2>&1 && {
+            echo "=== mache long_file (>1500) + god_file ==="
             mache find-smells --db "$DB" --rule long_file --format ci 2>/dev/null || true
-            rm -f "$DB"
+            mache find-smells --db "$DB" --rule god_file  --format ci 2>/dev/null || true
           }
         else
           echo "SKIP: mache not on PATH — install for the structural view"

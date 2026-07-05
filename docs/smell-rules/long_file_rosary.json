@@ -1,0 +1,8 @@
+{
+  "ID": "long_file_rosary",
+  "Description": "Golden Rule 2 (keep files small): source files over 500 lines. A rosary-strict mirror of mache's built-in long_file (which fires at 1501) — replaces the retired scripts/check-file-length.sh. Same _ast query, threshold 500. Baselined in docs/smell-baseline.json so existing long files are grandfathered; a new file crossing 500 lines fails the ratchet. Loaded via MACHE_SMELL_RULES_DIR=docs/smell-rules.",
+  "Requires": ["_ast"],
+  "ScopeColumn": "src.source_id",
+  "DefaultMinMetric": 500,
+  "Query": "SELECT src.source_id, src.node_id, src.start_byte, src.end_byte, src.start_row, src.start_col, src.end_row AS metric FROM _ast src WHERE src.node_kind = 'source_file' %s ORDER BY metric DESC, src.source_id"
+}

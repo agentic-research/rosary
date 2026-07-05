@@ -343,6 +343,11 @@
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/orchestrate/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/orchestrate/transcript.rs",
       "count": 1
     },
@@ -440,6 +445,11 @@
       "rule_id": "duplicate_definitions",
       "source_id": "src/serve/handlers/mod.rs",
       "count": 3
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/serve/handlers/tests.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -599,6 +609,261 @@
     {
       "rule_id": "long_file",
       "source_id": "src/store_sqlite.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "crates/bdr/src/decompose.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "crates/bdr/src/parse.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/acp.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/backend.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/bead.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/bead_sqlite/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/bead_sqlite/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/cli.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/config/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/config/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dispatch/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dispatch/providers.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dispatch/sweep.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dispatch/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dolt/bead_crud.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dolt/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dsse.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/epic.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/github.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/handoff.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/linear.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/linear_tracker.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/main.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/migrate.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/observation/integration_tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/observation/log_sqlite.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/observation/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/orchestrate/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/pipeline.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/plugin.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/queue.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/reconcile/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/reconcile/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/reconcile/tests_state.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/reconcile/verify.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/scope.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/serve/github_webhook.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/serve/handlers/input_validation_tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/serve/handlers/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/serve/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/serve/review.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/serve/tools.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/sprites.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/store.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/store_dolt.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/store_sqlite.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/vcs.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/verify.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/workspace/sweep.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/workspace/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "tests/cli_integration.rs",
       "count": 1
     }
   ]

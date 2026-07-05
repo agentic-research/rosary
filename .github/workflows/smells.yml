@@ -25,6 +25,12 @@ jobs:
     name: mache find-smells
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Load rosary's custom smell rules (JSON-of-SQL) so `--rule '*'` includes
+    # them — e.g. long_file_rosary (Golden Rule 2, >500 lines). mache reads this
+    # at process start; setting it at the job level propagates to the action's
+    # find-smells steps. The baseline is generated with the same dir set.
+    env:
+      MACHE_SMELL_RULES_DIR: ${{ github.workspace }}/docs/smell-rules
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: agentic-research/mache/.github/actions/find-smells@4d091914f7a92ff95b4625c76569efdbade27f3c # main

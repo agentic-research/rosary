@@ -32,24 +32,12 @@ repos:
         language: script
         types: [file]
 
-      # Rule 2: File length limit
-      - id: file-length
-        name: file length check (Rule 2)
-        entry: scripts/check-file-length.sh
-        language: script
-        types_or: [rust, python, go, javascript]
-        # Hook is now baseline-aware — only fails if file CROSSED the limit
-        # or GREW while already over. No exclude list needed.
-
-      # God-file gate: block NEW files crossing the long_file threshold, while
-      # grandfathering whatever is already a god-file on origin/main (the dynamic
-      # baseline — no committed list). Uses wc -l vs the base branch.
-      - id: god-files
-        name: god-file gate (line threshold vs origin/main)
-        entry: scripts/check-god-files.sh
-        language: script
-        pass_filenames: false
-        files: \.rs$
+      # Rule 2 (file length) + the god-file gate retired (rosary-4fe0b2): both
+      # were bash wc -l reinventions of mache's structural rules. They are now
+      # mache-native — `mache find-smells` over docs/smell-rules/ (Golden Rule 2 =
+      # long_file_rosary @500) plus the built-in long_file/god_file — ratcheted
+      # against docs/smell-baseline.json. Enforced by `task smells` locally and
+      # the mache find-smells action in CI (.github/workflows/smells.yml).
 
       # persist_status ratchet: imperative bead-state-write sites may only
       # DECREASE — a duplicated-logic smell that drives toward the single
