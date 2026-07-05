@@ -357,6 +357,7 @@ pub fn filter_beads(
             }
             statuses.iter().any(|s| match s.as_str() {
                 "ready" => b.is_ready(),
+                "dispatchable" => b.is_dispatchable(),
                 "blocked" => b.is_blocked(),
                 other => b.status == other,
             })

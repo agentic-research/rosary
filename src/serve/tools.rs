@@ -20,7 +20,7 @@ pub(crate) fn tool_definitions() -> Value {
             },
             {
                 "name": "rsry_status",
-                "description": "Return aggregated status counts across all repos: open, ready, in_progress, and blocked bead counts.",
+                "description": "Return aggregated status counts across all repos: open, ready, dispatchable, in_progress, and blocked bead counts.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
@@ -35,7 +35,7 @@ pub(crate) fn tool_definitions() -> Value {
                     "properties": {
                         "status": {
                             "type": "string",
-                            "description": "Filter by status (open, in_progress, blocked, ready, done, etc.). If omitted, returns all beads."
+                            "description": "Filter by status (open, in_progress, blocked, ready, dispatchable, done, etc.). If omitted, returns all beads."
                         },
                         "repo": {
                             "type": "string",
