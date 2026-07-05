@@ -39,13 +39,75 @@ tasks:
     cmds:
       - cargo test
 
-  check:
+  compile:
     desc: Compile check without codegen
     cmds:
       - cargo check
 
+  taskfile-contract:
+    desc: Verify Taskfile remains the source of truth for CI/check gates
+    cmds:
+      - bash scripts/check-taskfile-contract.sh
+
+  rules:
+    desc: >-
+      Rosary-domain mechanical gates that CI and dispatched agents must run.
+      They live here (inside the canonical `task check`) rather than only in the
+      local pre-commit hooks, because agents run `task check`, not pre-commit —
+      so a pre-commit-only gate enforces nothing on the dispatch path.
+      Structural code smells (god_file/long_file/dead_code/…) are NOT re-listed
+      here: those are mache's rule engine (JSON-of-SQL over the AST + `--baseline`
+      ratchet, ADR-0018), run via `task smells` locally and the reusable mache
+      find-smells action in CI (.github/workflows/smells.yml) — not reinvented in
+      bash. This target holds only the domain rules mache does not own.
+    cmds:
+      # R4b — imperative persist_status() call sites may only decrease. Kept as a
+      # rosary script (not a mache rule) because mache's call-extraction
+      # under-counts it (node_refs sees 16 of the 21 real sites), so the bash
+      # grep is the accurate ratchet for this specific migration.
+      - task: persist-status-ratchet
+
+  smells:
+    desc: >-
+      mache structural-smell ratchet (ADR-0018) — the god_file/long_file/
+      dead_code/duplicate/… gate, owned by mache's rule registry (JSON-of-SQL over
+      the AST), NOT reinvented in bash. Builds a mache index over the repo and
+      fails on findings that EXCEED the committed docs/smell-baseline.json (the
+      per-(rule,file) ratchet floor). CI runs the identical gate via the reusable
+      `agentic-research/mache` find-smells action; this target is the local mirror.
+      Requires mache >= v0.13.0 (it auto-provisions the leyline backend so all
+      _ast rules run). Regenerate the baseline after an intentional change with:
+      `mache build . /tmp/s.db && mache find-smells --db /tmp/s.db --rule '*'
+      --limit 100000 --baseline-root "$PWD" --write-baseline docs/smell-baseline.json`.
+    cmds:
+      - |
+        if ! command -v mache >/dev/null 2>&1; then
+          echo "SKIP: mache not on PATH — install mache >= v0.13.0 for the structural"
+          echo "      smell gate. CI enforces it via the mache find-smells action."
+          exit 0
+        fi
+        DB="$(mktemp -u).db"
+        trap 'rm -f "$DB"' EXIT
+        mache build . "$DB"
+        mache find-smells --db "$DB" --rule '*' --limit 100000 \
+          --baseline-root "$PWD" --baseline docs/smell-baseline.json
+
+  check:
+    desc: Canonical verification gate (Taskfile source of truth)
+    cmds:
+      - task: taskfile-contract
+      - task: rules
+      - task: compile
+      - task: lint
+      - task: test
+      # Structural smell ratchet — enforced locally where mache is present, and in
+      # CI via the reusable mache find-smells action (.github/workflows/smells.yml).
+      # Skips (exit 0) when mache is absent, so the mache-less CI `verify` job that
+      # runs `task check` doesn't fail; the action is the CI enforcement point.
+      - task: smells
+
   lint:
-    desc: Run clippy + semgrep rules
+    desc: Run fmt + clippy + semgrep rules
     deps: [fmt]
     cmds:
       - cargo clippy -- -D warnings
@@ -86,7 +148,7 @@ tasks:
     # them inline. `release` produces the binary; `lint` (clippy -D warnings,
     # via its fmt dep) gates the install so we don't ship a binary that
     # wouldn't pass CI. Both are cached by taskfile if they ran in the
-    # same invocation, so `task all && task install` doesn't double-build.
+    # same invocation, so `task check && task install` doesn't double-build.
     deps: [release, lint]
     cmds:
       - |
@@ -277,19 +339,13 @@ tasks:
         fi
 
   all:
-    desc: fmt + check + lint + test
+    desc: Alias for the canonical verification gate
     cmds:
-      - task: fmt
       - task: check
-      - task: lint
-      - task: test
 
   ci:
-    desc: Mirror what GitHub Actions runs (cargo fmt --check + clippy + test)
-    # Useful before pushing — same gates as .github/workflows/ci.yml, in
-    # the same order. Does *not* mutate the tree (fmt --check vs fmt) so
-    # it's safe to run in a dirty worktree.
+    desc: CI alias for the canonical verification gate
+    # CI is secondary to this Taskfile: GitHub Actions delegates here, and this
+    # target delegates to `check` instead of duplicating raw tool commands.
     cmds:
-      - cargo fmt --check
-      - cargo clippy -- -D warnings
-      - cargo test
+      - task: check

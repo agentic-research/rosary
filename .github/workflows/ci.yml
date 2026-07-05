@@ -16,44 +16,8 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
-  check:
+  verify:
     name: task check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - name: install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev capnproto
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        if: github.event_name != 'schedule'
-        with:
-          shared-key: rosary-${{ hashFiles('Cargo.lock') }}
-      # Delegate to Taskfile.yml so CI matches `task check` locally — no
-      # drift between what a developer runs and what gates merges.
-      - run: task check
-
-  test:
-    name: task test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - name: install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev capnproto
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        if: github.event_name != 'schedule'
-        with:
-          shared-key: rosary-${{ hashFiles('Cargo.lock') }}
-      - run: task test
-
-  pre-commit:
-    name: pre-commit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -62,14 +26,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: rustfmt,clippy
-      - name: install semgrep
-        run: pip install semgrep
+      - uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         if: github.event_name != 'schedule'
         with:
           shared-key: rosary-${{ hashFiles('Cargo.lock') }}
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
-      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+      - name: install semgrep
+        run: pip install semgrep
+      # Taskfile.yml owns the verification contract. CI is deliberately thin:
+      # install prerequisites, then run the same named gate agents use locally.
+      - run: task check
