@@ -356,6 +356,7 @@ pub fn filter_beads(
                 return true;
             }
             statuses.iter().any(|s| match s.as_str() {
+                "all" => true,
                 "ready" => b.is_ready(),
                 "dispatchable" => b.is_dispatchable(),
                 "blocked" => b.is_blocked(),
@@ -629,6 +630,20 @@ mod tests {
         let out = filter_beads(beads, &["open".to_string()], &[], &[], 50);
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(|b| b.status == "open"));
+    }
+
+    /// `--status all` matches every status, including terminal ones — the fix
+    /// for closed/done beads being invisible in `bead list`.
+    #[test]
+    fn filter_beads_status_all_includes_terminal() {
+        let beads = vec![
+            fb("a", "open", 1, "task"),
+            fb("b", "closed", 1, "task"),
+            fb("c", "done", 1, "task"),
+            fb("d", "blocked", 1, "task"),
+        ];
+        let out = filter_beads(beads, &["all".to_string()], &[], &[], 50);
+        assert_eq!(out.len(), 4, "all must return every status");
     }
 
     /// Multiple statuses act as OR.
