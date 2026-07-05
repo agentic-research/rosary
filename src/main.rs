@@ -346,6 +346,12 @@ enum Command {
         /// Preview what would close without making changes
         #[arg(long)]
         dry_run: bool,
+        /// rsry-native local mode: detect merges from local `git log`
+        /// (`[bead-id] … (#N)` squash commits on the trunk) instead of asking
+        /// `gh` per bead. No network / webhook / tunnel — this is what the
+        /// git `post-merge` hook runs after `git pull`.
+        #[arg(long)]
+        local: bool,
     },
     /// Export orchestrator backend state to JSON backup
     Backup {
@@ -1791,20 +1797,35 @@ async fn main() -> Result<()> {
                 );
             }
         }
-        Command::CloseMerged { repo, dry_run } => {
-            let summary = run_close_merged(repo.as_deref(), dry_run).await?;
+        Command::CloseMerged {
+            repo,
+            dry_run,
+            local,
+        } => {
             let verb = if dry_run { "would close" } else { "closed" };
-            println!(
-                "close-merged: {} {} (checked={}, no_pr_url={}, not_merged={}, gh_errors={})",
-                summary.merged_closed,
-                verb,
-                summary.checked,
-                summary.no_pr_url,
-                summary.not_merged,
-                summary.gh_errors,
-            );
-            for id in &summary.bead_ids_closed {
-                println!("  {id}");
+            if local {
+                let summary = run_close_merged_local(repo.as_deref(), dry_run).await?;
+                println!(
+                    "close-merged --local: {} {} (checked={})",
+                    summary.merged_closed, verb, summary.checked,
+                );
+                for id in &summary.bead_ids_closed {
+                    println!("  {id}");
+                }
+            } else {
+                let summary = run_close_merged(repo.as_deref(), dry_run).await?;
+                println!(
+                    "close-merged: {} {} (checked={}, no_pr_url={}, not_merged={}, gh_errors={})",
+                    summary.merged_closed,
+                    verb,
+                    summary.checked,
+                    summary.no_pr_url,
+                    summary.not_merged,
+                    summary.gh_errors,
+                );
+                for id in &summary.bead_ids_closed {
+                    println!("  {id}");
+                }
             }
         }
         Command::Backup { output } => {
@@ -2866,6 +2887,117 @@ pub async fn run_close_merged_with_config(
                 format!("Auto-closed by rsry close-merged: PR merged ({merge_sha})")
             };
             store.add_comment(&b.id, &audit_msg, "rosary").await.ok();
+            store.close_bead(&b.id).await.ok();
+        }
+    }
+
+    Ok(summary)
+}
+
+/// rsry-native local variant of [`run_close_merged`]. Instead of asking `gh`
+/// per bead (an external API + shell transport), it reads the trunk's recent
+/// commits with [`vcs::scan_merged_closures`] and closes any still-open bead
+/// whose squash-merge commit (`[bead-id] … (#N)`) has landed locally. No `gh` /
+/// webhook / tunnel — the git `post-merge` hook (docs/git-hooks/post-merge)
+/// drives it after `git pull`. This is the local twin of `serve::github_webhook`:
+/// same "merged → close" outcome (satisfying the bead's default "PR merges"
+/// close condition), reached by a local pull instead of an inbound POST.
+/// Idempotent — re-running only ever closes beads that are still open.
+pub async fn run_close_merged_local(
+    repo_filter: Option<&str>,
+    dry_run: bool,
+) -> Result<CloseMergedSummary> {
+    let cfg = config::load_merged(&config::resolve_config_path())?;
+    run_close_merged_local_with_config(&cfg, repo_filter, dry_run).await
+}
+
+/// Inner form taking an explicit Config (mirrors [`run_close_merged_with_config`]
+/// so tests can pass a hand-built Config).
+pub async fn run_close_merged_local_with_config(
+    cfg: &config::Config,
+    repo_filter: Option<&str>,
+    dry_run: bool,
+) -> Result<CloseMergedSummary> {
+    let mut summary = CloseMergedSummary::default();
+    let repos: Vec<&config::RepoConfig> = cfg
+        .repo
+        .iter()
+        .filter(|r| repo_filter.is_none_or(|name| r.name == name))
+        .collect();
+    if repos.is_empty() {
+        eprintln!("close-merged --local: no matching repos registered");
+        return Ok(summary);
+    }
+
+    for repo in repos {
+        let resolved = scanner::resolve_repo_path(&repo.path);
+        let beads_dir = resolve_beads_dir(&resolved);
+        if !beads_dir.exists() {
+            continue;
+        }
+        // Recent merged-PR closures from local git (trunk, first-parent). Dedup
+        // by bead id so a bead referenced by two recent commits is closed once.
+        let mut seen = std::collections::HashSet::new();
+        let closures: Vec<vcs::MergedClosure> = vcs::scan_merged_closures(&resolved, 50)
+            .into_iter()
+            .filter(|c| seen.insert(c.bead_id.clone()))
+            .collect();
+        if closures.is_empty() {
+            continue;
+        }
+
+        let store = match bead_sqlite::connect_bead_store(&beads_dir).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("close-merged --local: skipping {}: {e}", repo.name);
+                continue;
+            }
+        };
+        let beads = match store.list_beads(&repo.name).await {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!(
+                    "close-merged --local: list_beads({}) failed: {e}",
+                    repo.name
+                );
+                continue;
+            }
+        };
+
+        for closure in &closures {
+            summary.checked += 1;
+            // Match the webhook's rule: the full id ends with the ref. Only
+            // non-terminal beads are eligible (idempotent on re-run).
+            let matched = beads.iter().find(|b| {
+                !matches!(b.state(), bead::BeadState::Done | bead::BeadState::Rejected)
+                    && (b.id == closure.bead_id || b.id.ends_with(&closure.bead_id))
+            });
+            let Some(b) = matched else {
+                continue;
+            };
+            summary.merged_closed += 1;
+            summary.bead_ids_closed.push(b.id.clone());
+            if dry_run {
+                continue;
+            }
+            store
+                .log_event(
+                    &b.id,
+                    "github_merge",
+                    &format!("PR #{} merged (local git scan) → done", closure.pr_number),
+                )
+                .await;
+            store
+                .add_comment(
+                    &b.id,
+                    &format!(
+                        "Auto-closed by rsry close-merged --local: PR #{} merged",
+                        closure.pr_number
+                    ),
+                    "rosary",
+                )
+                .await
+                .ok();
             store.close_bead(&b.id).await.ok();
         }
     }

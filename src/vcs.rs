@@ -312,9 +312,124 @@ pub fn extract_bead_ids(message: &str) -> Vec<String> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Merged-PR closure detection (rsry-native, local — no gh, no webhook, no tunnel)
+// ---------------------------------------------------------------------------
+
+/// A merged-PR closure detected from a squash-merge commit subject on the
+/// trunk. The convention `[<bead-id>] <subject> (#<pr>)` is the *local* signal
+/// that a PR merged — read straight from `git log`, no `gh` / webhook / tunnel.
+/// Closing on it is how rosary satisfies a bead's default "PR merges" close
+/// condition without an inbound webhook (the same outcome as
+/// `serve::github_webhook`, driven by a local pull instead of a POST).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedClosure {
+    pub bead_id: String,
+    pub pr_number: u64,
+}
+
+/// Parse a commit subject like `[rosary-4fe0b2] title (#318)` into a
+/// [`MergedClosure`]. Requires BOTH a leading `[bead-id]` bracket AND a
+/// trailing `(#N)` PR marker — so a plain work-in-progress commit that only
+/// carries the `[bead-id]` prefix (Golden Rule 11) is NOT mistaken for a merge.
+pub fn parse_merged_closure(subject: &str) -> Option<MergedClosure> {
+    let bead_id = leading_bracket_id(subject)?;
+    let pr_number = trailing_pr_number(subject)?;
+    Some(MergedClosure { bead_id, pr_number })
+}
+
+/// Extract `<prefix>-<suffix>` from a leading `[...]` bracket, validating the
+/// bead-id shape (lowercase-alpha prefix, alphanumeric suffix). Case-preserving
+/// so the returned id round-trips against the store.
+fn leading_bracket_id(subject: &str) -> Option<String> {
+    let rest = subject.trim_start().strip_prefix('[')?;
+    let end = rest.find(']')?;
+    let id = &rest[..end];
+    let dash = id.find('-')?;
+    let (prefix, suffix) = (&id[..dash], &id[dash + 1..]);
+    let ok = !prefix.is_empty()
+        && !suffix.is_empty()
+        && prefix.chars().all(|c| c.is_ascii_lowercase() || c == '.')
+        && suffix.chars().all(|c| c.is_ascii_alphanumeric());
+    ok.then(|| id.to_string())
+}
+
+/// Extract the PR number from a trailing `(#<digits>)` marker — the shape
+/// GitHub squash-merge commits carry. Scans for the LAST `(#` so a bead id or
+/// body mention doesn't shadow the real trailing PR number.
+fn trailing_pr_number(subject: &str) -> Option<u64> {
+    let after = &subject[subject.rfind("(#")? + 2..];
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() || !after[digits.len()..].starts_with(')') {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Scan the trunk's recent first-parent commits for merged-PR closures via
+/// `git log`. VCS-agnostic (works on pure-git and jj-colocated repos — the git
+/// `post-merge` hook fires after `git pull` lands the squash commit on the
+/// current branch). Idempotent: returns every closure in the window; the caller
+/// closes only beads that are still open, so re-running is harmless.
+pub fn scan_merged_closures(repo_path: &Path, limit: usize) -> Vec<MergedClosure> {
+    let output = std::process::Command::new("git")
+        .args([
+            "log",
+            "--first-parent",
+            "-n",
+            &limit.to_string(),
+            "--format=%s",
+        ])
+        .current_dir(repo_path)
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(parse_merged_closure)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_merged_closure_matches_squash_merge_subject() {
+        let c = parse_merged_closure("[rosary-4fe0b2] Retire bash gates (#318)").unwrap();
+        assert_eq!(c.bead_id, "rosary-4fe0b2");
+        assert_eq!(c.pr_number, 318);
+    }
+
+    #[test]
+    fn parse_merged_closure_requires_pr_marker() {
+        // Golden Rule 11 prefix WITHOUT a (#N) merge marker is a work-in-progress
+        // commit, not a merge — must not be treated as a closure.
+        assert!(parse_merged_closure("[rosary-4fe0b2] work in progress").is_none());
+    }
+
+    #[test]
+    fn parse_merged_closure_requires_bracket() {
+        assert!(parse_merged_closure("fix something (#318)").is_none());
+    }
+
+    #[test]
+    fn parse_merged_closure_rejects_malformed_id() {
+        assert!(parse_merged_closure("[nodash] title (#1)").is_none());
+        assert!(parse_merged_closure("[UPPER-CASE] title (#1)").is_none());
+        assert!(parse_merged_closure("[rosary-4fe0b2] title (#notanumber)").is_none());
+    }
+
+    #[test]
+    fn parse_merged_closure_takes_last_pr_marker() {
+        // A body/earlier mention must not shadow the real trailing PR number.
+        let c = parse_merged_closure("[rosary-abc123] see (#100) then (#318)").unwrap();
+        assert_eq!(c.pr_number, 318);
+    }
 
     #[test]
     fn state_dir_under_home() {

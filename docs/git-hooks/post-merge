@@ -3,3 +3,10 @@ BEADS_DIR=".beads/dolt/$REPO"
 if [ -d "$BEADS_DIR" ]; then
     (cd "$BEADS_DIR" && dolt pull 2>/dev/null) || true
 fi
+
+# Close beads whose PR just merged, rsry-native: read the squash-merge commits
+# `git pull` landed on the trunk (`[bead-id] … (#N)`) — no gh / webhook / tunnel.
+# Best-effort: never block or fail the merge.
+if command -v rsry >/dev/null 2>&1; then
+    rsry close-merged --local --repo "$REPO" >/dev/null 2>&1 || true
+fi
