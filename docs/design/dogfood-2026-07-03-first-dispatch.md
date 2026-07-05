@@ -1,5 +1,8 @@
 # First dogfood dispatch — findings (2026-07-03)
 
+> **Update (2026-07-05):** the multi-phase fold gap this log surfaced (the R4b
+> step-4 blocker) was resolved by rosary-7f7eff (#305, phase-aware pipeline fold).
+
 Status: findings log
 Relates: rosary-a66b3a (R4b), rosary-818ed4 (terminal-fail fold, closed),
 rosary-fafb7c (pipeline progression)

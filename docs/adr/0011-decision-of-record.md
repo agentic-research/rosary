@@ -1,6 +1,6 @@
 # ADR-0011: Decision-of-Record — authenticated-authority resolution over CRDT conflict detection
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Bead:** rosary-1915e0
 - **Supersedes:** the "sheaf-H¹ decision substrate / four-graded-truth stack / causal-intersection-as-gluing" framing (falsified 2026-06-22 by a four-agent adversarial pass — math, empirical, greybeard, prior-art)
 

@@ -182,10 +182,10 @@ Handoff files (`.rsry-handoff-N.json`) carry summary, files_changed, review_hint
 ```mermaid
 graph LR
     subgraph "Core Loop"
-        reconcile["reconcile.rs<br/>loop + triage"]
+        reconcile["reconcile/mod.rs<br/>loop + triage"]
         scanner["scanner.rs<br/>multi-repo scan"]
         queue["queue.rs<br/>priority queue"]
-        dispatch["dispatch.rs<br/>AgentProvider"]
+        dispatch["dispatch/mod.rs<br/>AgentProvider"]
         verify["verify.rs<br/>tiered checks"]
     end
 
@@ -198,7 +198,7 @@ graph LR
 
     subgraph "Data"
         bead["bead.rs<br/>data model"]
-        dolt["dolt.rs<br/>MySQL client"]
+        dolt["dolt/mod.rs<br/>MySQL client"]
         pool["pool.rs<br/>RepoPool"]
         epic["epic.rs<br/>clustering + overlap"]
         store["store.rs<br/>HierarchyStore trait"]
@@ -216,7 +216,7 @@ graph LR
     subgraph "Interface"
         main["main.rs<br/>CLI"]
         serve["serve/<br/>MCP 40 tools + webhooks"]
-        config["config.rs<br/>TOML config"]
+        config["config/mod.rs<br/>TOML config"]
         plugin["plugin.rs<br/>kind=hook|mcp|dispatch|state_sink"]
     end
 
@@ -323,7 +323,7 @@ Beads with thread assignments sync as sub-issues of the thread's parent issue. B
 
 All bead types require scopes for parallel dispatch:
 
-- **Files**: `src/reconcile.rs` (exact path)
+- **Files**: `src/reconcile/mod.rs` (exact path)
 - **Directories**: `crates/bdr/` (trailing slash = prefix match)
 - **Repo-wide**: `./` (blocks all dispatch in that repo)
 

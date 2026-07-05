@@ -1,6 +1,6 @@
 # Codex fan-out lanes — safe parallel dispatch of the rosary backlog
 
-**Bead:** rosary-5f45d2 · **Date:** 2026-07-01 · **Status:** analysis (Phase 2 dogfooding)
+**Bead:** rosary-5f45d2 · **Date:** 2026-07-01 · **Status:** superseded snapshot — the hand-computed "dispatchable" count is now code-enforced (`Bead::is_dispatchable`, rosary-d4bb09) and the god-file driver `src/serve/handlers.rs` was split (#294); treat the figures as a historical lane map
 
 ## Goal
 

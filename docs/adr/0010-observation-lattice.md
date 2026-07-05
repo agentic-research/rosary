@@ -1,6 +1,6 @@
 # ADR-0010: Observation Lattice — Multi-Source Reconciliation Substrate
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-05
 **Depends on:** ADR-0005 (reactive store), ADR-0009 (cross-repo linkage)
 **Relates to:** rosary-7023a9 (substrate bead), rosary-45518d (CRDT-lattice draft superseded)
