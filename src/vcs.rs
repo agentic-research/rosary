@@ -328,23 +328,54 @@ pub struct MergedClosure {
     pub pr_number: u64,
 }
 
-/// Parse a commit subject like `[rosary-4fe0b2] title (#318)` into a
-/// [`MergedClosure`]. Requires BOTH a leading `[bead-id]` bracket AND a
-/// trailing `(#N)` PR marker — so a plain work-in-progress commit that only
-/// carries the `[bead-id]` prefix (Golden Rule 11) is NOT mistaken for a merge.
-pub fn parse_merged_closure(subject: &str) -> Option<MergedClosure> {
-    let bead_id = leading_bracket_id(subject)?;
-    let pr_number = trailing_pr_number(subject)?;
-    Some(MergedClosure { bead_id, pr_number })
+/// Parse every closure from a squash commit's **full message**. The PR number
+/// comes from the FIRST-line (subject) trailing `(#N)` marker — the squash
+/// signal; bead ids are every `[bead-id]` bracket anywhere in the message.
+///
+/// This reads the body, not just the subject, because GitHub's squash commit
+/// synthesizes the subject from the PR *title* (which may lack a bracket) while
+/// the body carries the squashed commits — each of which Golden Rule 11
+/// guarantees has a `[bead-id]` prefix. So a multi-bead PR whose title omits the
+/// id still resolves via its commit list. Returns empty for a commit with no
+/// `(#N)` marker (a work-in-progress commit, not a merge).
+pub fn parse_merged_closures(message: &str) -> Vec<MergedClosure> {
+    let subject = message.lines().next().unwrap_or("");
+    let Some(pr_number) = trailing_pr_number(subject) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    extract_bracket_ids(message)
+        .into_iter()
+        .filter(|id| seen.insert(id.clone()))
+        .map(|bead_id| MergedClosure { bead_id, pr_number })
+        .collect()
 }
 
-/// Extract `<prefix>-<suffix>` from a leading `[...]` bracket, validating the
-/// bead-id shape (lowercase-alpha prefix, alphanumeric suffix). Case-preserving
-/// so the returned id round-trips against the store.
-fn leading_bracket_id(subject: &str) -> Option<String> {
-    let rest = subject.trim_start().strip_prefix('[')?;
-    let end = rest.find(']')?;
-    let id = &rest[..end];
+/// Subject-only convenience over [`parse_merged_closures`] (first match, if any).
+#[allow(dead_code)] // public convenience + exercised by unit tests
+pub fn parse_merged_closure(subject: &str) -> Option<MergedClosure> {
+    parse_merged_closures(subject).into_iter().next()
+}
+
+/// Find every `[<prefix>-<suffix>]` bead-id bracket **anywhere** in `text` — not
+/// just at line start, since squash bodies bullet the commits (`* [id] …`).
+fn extract_bracket_ids(text: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find(']') else { break };
+        if let Some(id) = valid_bead_id(&after[..close]) {
+            ids.push(id);
+        }
+        rest = &after[close + 1..];
+    }
+    ids
+}
+
+/// Validate the `<prefix>-<suffix>` bead-id shape (lowercase-alpha prefix,
+/// alphanumeric suffix); returns the id (case-preserving) if valid.
+fn valid_bead_id(id: &str) -> Option<String> {
     let dash = id.find('-')?;
     let (prefix, suffix) = (&id[..dash], &id[dash + 1..]);
     let ok = !prefix.is_empty()
@@ -367,10 +398,11 @@ fn trailing_pr_number(subject: &str) -> Option<u64> {
 }
 
 /// Scan the trunk's recent first-parent commits for merged-PR closures via
-/// `git log`. VCS-agnostic (works on pure-git and jj-colocated repos — the git
-/// `post-merge` hook fires after `git pull` lands the squash commit on the
-/// current branch). Idempotent: returns every closure in the window; the caller
-/// closes only beads that are still open, so re-running is harmless.
+/// `git log` (full message per commit, NUL-separated). VCS-agnostic (works on
+/// pure-git and jj-colocated repos — the git `post-merge` hook fires after
+/// `git pull` lands the squash commit on the current branch). Idempotent:
+/// returns every closure in the window; the caller closes only beads that are
+/// still open, so re-running is harmless.
 pub fn scan_merged_closures(repo_path: &Path, limit: usize) -> Vec<MergedClosure> {
     let output = std::process::Command::new("git")
         .args([
@@ -378,7 +410,7 @@ pub fn scan_merged_closures(repo_path: &Path, limit: usize) -> Vec<MergedClosure
             "--first-parent",
             "-n",
             &limit.to_string(),
-            "--format=%s",
+            "--format=%B%x00",
         ])
         .current_dir(repo_path)
         .output();
@@ -389,8 +421,9 @@ pub fn scan_merged_closures(repo_path: &Path, limit: usize) -> Vec<MergedClosure
         return Vec::new();
     }
     String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(parse_merged_closure)
+        .split('\0')
+        .filter(|m| !m.trim().is_empty())
+        .flat_map(parse_merged_closures)
         .collect()
 }
 
@@ -429,6 +462,29 @@ mod tests {
         // A body/earlier mention must not shadow the real trailing PR number.
         let c = parse_merged_closure("[rosary-abc123] see (#100) then (#318)").unwrap();
         assert_eq!(c.pr_number, 318);
+    }
+
+    #[test]
+    fn parse_merged_closures_reads_body_when_subject_lacks_bracket() {
+        // The #322 case: PR title (→ squash subject) has the (#N) but no bracket;
+        // the body carries the squashed commits' [bead-id]s (Golden Rule 11),
+        // bulleted. All should resolve, deduped, with the subject's PR number.
+        let msg = "docs: accuracy sweep after v0.4.0 (#322)\n\n\
+                   * [rosary-da720c] docs: first pass\n\
+                   * [rosary-da720c] docs: second pass\n\
+                   * [rosary-9d181f] docs: third pass\n";
+        let closures = parse_merged_closures(msg);
+        let ids: Vec<&str> = closures.iter().map(|c| c.bead_id.as_str()).collect();
+        assert_eq!(closures.len(), 2, "da720c deduped");
+        assert!(ids.contains(&"rosary-da720c"));
+        assert!(ids.contains(&"rosary-9d181f"));
+        assert!(closures.iter().all(|c| c.pr_number == 322));
+    }
+
+    #[test]
+    fn parse_merged_closures_empty_without_pr_marker() {
+        // No (#N) on the subject → not a merge, even if the body has brackets.
+        assert!(parse_merged_closures("wip [rosary-abc123] no pr marker").is_empty());
     }
 
     #[test]
