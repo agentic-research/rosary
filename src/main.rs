@@ -353,6 +353,24 @@ enum Command {
         #[arg(long)]
         local: bool,
     },
+    /// Create a GitHub PR with the current branch's `[bead-id]` auto-prefixed
+    /// into the title (derived from HEAD's commit — Golden Rule 11 guarantees
+    /// one is there), so the squash-merge subject carries the id and the
+    /// post-merge hook auto-closes the bead. Thin wrapper over `gh pr create`.
+    Pr {
+        /// PR title — the `[bead-id]` prefix is added automatically if absent.
+        #[arg(long)]
+        title: String,
+        /// Base branch (defaults to the repo default).
+        #[arg(long)]
+        base: Option<String>,
+        /// Path to a file holding the PR body.
+        #[arg(long)]
+        body_file: Option<String>,
+        /// Open the PR as a draft.
+        #[arg(long)]
+        draft: bool,
+    },
     /// Export orchestrator backend state to JSON backup
     Backup {
         /// Output directory (default: ~/.rsry/backups/<timestamp>)
@@ -1854,6 +1872,61 @@ async fn main() -> Result<()> {
                     println!("  {id}");
                 }
             }
+        }
+        Command::Pr {
+            title,
+            base,
+            body_file,
+            draft,
+        } => {
+            // Derive the `[bead-id]` from HEAD's commit subject (Golden Rule 11
+            // guarantees one) and prefix the title unless it already leads with a
+            // bracket — so the squash-merge subject carries the id and the
+            // post-merge hook can auto-close the bead.
+            let head_subject = std::process::Command::new("git")
+                .args(["log", "-1", "--format=%s"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            let full_title = match vcs::extract_bead_ids(&head_subject).into_iter().next() {
+                Some(id) if !title.trim_start().starts_with('[') => format!("[{id}] {title}"),
+                _ => {
+                    if title.trim_start().starts_with('[') {
+                        // already carries a bracket — trust the author
+                    } else {
+                        eprintln!(
+                            "warning: no [bead-id] found on HEAD's commit; PR title has none either"
+                        );
+                    }
+                    title.clone()
+                }
+            };
+            let mut args: Vec<String> = vec![
+                "pr".into(),
+                "create".into(),
+                "--title".into(),
+                full_title.clone(),
+            ];
+            if let Some(b) = &base {
+                args.push("--base".into());
+                args.push(b.clone());
+            }
+            if let Some(bf) = &body_file {
+                args.push("--body-file".into());
+                args.push(bf.clone());
+            } else {
+                args.push("--fill".into()); // body from commits when no file given
+            }
+            if draft {
+                args.push("--draft".into());
+            }
+            let status = std::process::Command::new("gh").args(&args).status()?;
+            if !status.success() {
+                anyhow::bail!("gh pr create failed");
+            }
+            eprintln!("opened PR — title: {full_title}");
         }
         Command::Backup { output } => {
             let cfg = config::load_merged(&config::resolve_config_path())?;
