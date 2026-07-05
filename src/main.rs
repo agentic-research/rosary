@@ -522,15 +522,20 @@ enum BeadAction {
         #[arg(long)]
         force: bool,
     },
-    /// List open beads with optional filters (rosary-e1c759).
+    /// List beads with optional filters (rosary-e1c759). Defaults to the active
+    /// (open) set; pass `--status all` (or a terminal status like `done`/`closed`)
+    /// to include terminal beads — the active-only default is why closed/done
+    /// beads were invisible here.
     List {
-        /// Filter by status (open, in_progress, blocked, ready, dispatchable,
-        /// done, closed). Repeat or comma-separate for OR semantics. `ready`,
-        /// `dispatchable`, and `blocked` use the canonical
-        /// `Bead::is_ready`/`is_dispatchable`/`is_blocked` predicates rather
-        /// than literal string match (so `--status blocked` catches both
-        /// `status="blocked"` and `status="open"` beads with unresolved deps,
-        /// and `--status dispatchable` catches only beads truly safe to fan out).
+        /// Filter by status (all, open, in_progress, blocked, ready,
+        /// dispatchable, done, closed). Repeat or comma-separate for OR
+        /// semantics. `all` matches every status; `ready`, `dispatchable`, and
+        /// `blocked` use the canonical `Bead::is_ready`/`is_dispatchable`/
+        /// `is_blocked` predicates rather than literal string match (so
+        /// `--status blocked` catches both `status="blocked"` and `status="open"`
+        /// beads with unresolved deps, and `--status dispatchable` catches only
+        /// beads truly safe to fan out). Terminal statuses (done/closed/…) and
+        /// `all` pull the full store view instead of the active-only list.
         #[arg(short, long, value_delimiter = ',')]
         status: Vec<String>,
         /// Filter by priority (0=P0 highest, 3=P3 lowest). Repeat or
@@ -982,7 +987,10 @@ async fn main() -> Result<()> {
             let cfg = config::load_merged(&config::resolve_config_path())?;
             let repo_filter = parse_repo_filter(&repo);
             let repos = filter_repos(&cfg.repo, &repo_filter);
-            let beads = scanner::scan_repos(&repos).await?;
+            // Include terminal beads so `done`/`closed` are counted for real.
+            // `scan_repos` (open-only) structurally reported done=0 — the store's
+            // active filter hides closed/done, so status lied about the backlog.
+            let beads = scanner::scan_repos_all(&repos).await?;
             if json {
                 // Use the canonical predicates from `Bead` so this path
                 // agrees with the CLI text output AND the `rsry_status`
@@ -1014,10 +1022,12 @@ async fn main() -> Result<()> {
                 // semantics as the global counts above.
                 let mut per_repo = std::collections::BTreeMap::new();
                 for bead in &beads {
-                    let entry = per_repo.entry(bead.repo.clone()).or_insert_with(
-                        || serde_json::json!({"open": 0, "in_progress": 0, "blocked": 0}),
-                    );
-                    if bead.is_blocked() {
+                    let entry = per_repo.entry(bead.repo.clone()).or_insert_with(|| {
+                        serde_json::json!({"open": 0, "in_progress": 0, "blocked": 0, "done": 0})
+                    });
+                    if bead.status == "done" || bead.status == "closed" {
+                        entry["done"] = json!(entry["done"].as_u64().unwrap_or(0) + 1);
+                    } else if bead.is_blocked() {
                         entry["blocked"] = json!(entry["blocked"].as_u64().unwrap_or(0) + 1);
                     } else if bead.status == "in_progress" || bead.status == "dispatched" {
                         entry["in_progress"] =
@@ -1612,12 +1622,29 @@ async fn main() -> Result<()> {
                     if blocked {
                         status.push("blocked".to_string());
                     }
-                    let all = client.list_beads(&repo_name).await?;
+                    // Terminal beads (done/closed/rejected/stale) live outside the
+                    // active list. Fetch the FULL set when the caller asks for any
+                    // of them — or `all` — so `--status done` / `--status all`
+                    // return rows instead of the silently-empty result the
+                    // active-only list gave (the "beads you can't see" bug).
+                    let wants_terminal = status.iter().any(|s| {
+                        matches!(s.as_str(), "all" | "done" | "closed" | "rejected" | "stale")
+                    });
+                    let all = if wants_terminal {
+                        client.list_all_beads(&repo_name).await?
+                    } else {
+                        client.list_beads(&repo_name).await?
+                    };
                     let filtered = cli::filter_beads(all, &status, &priority, &issue_type, limit);
+                    let capped = limit.min(200);
                     if json {
                         cli::bead_list_json(&filtered);
                     } else {
                         cli::bead_list(&filtered);
+                        // Never silently truncate — say so if we hit the cap.
+                        if filtered.len() == capped {
+                            eprintln!("(showing first {capped}; pass --limit to see more)");
+                        }
                     }
                 }
                 BeadAction::Reopen { id } => {

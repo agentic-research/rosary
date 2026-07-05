@@ -2,8 +2,22 @@ use anyhow::Result;
 
 use crate::bead::Bead;
 use crate::config::RepoConfig;
-/// Scan all configured repos for beads.
+/// Scan all configured repos for **open/active** beads — the triage view.
+/// Terminal beads (done/closed/rejected) are excluded by the store's active
+/// filter, so this is the "what is there to work on" set.
 pub async fn scan_repos(repos: &[RepoConfig]) -> Result<Vec<Bead>> {
+    scan_repos_inner(repos, false).await
+}
+
+/// Scan all configured repos for **every** bead, terminal ones included.
+/// `rsry status` uses this so its counts reflect the full population — the
+/// open-only [`scan_repos`] structurally can't see done/closed beads, which is
+/// why `done` was always reported as 0.
+pub async fn scan_repos_all(repos: &[RepoConfig]) -> Result<Vec<Bead>> {
+    scan_repos_inner(repos, true).await
+}
+
+async fn scan_repos_inner(repos: &[RepoConfig], include_terminal: bool) -> Result<Vec<Bead>> {
     let mut all_beads = Vec::new();
 
     for repo in repos {
@@ -13,7 +27,7 @@ pub async fn scan_repos(repos: &[RepoConfig]) -> Result<Vec<Bead>> {
             continue;
         }
 
-        match read_beads(&beads_dir, &repo.name).await {
+        match read_beads(&beads_dir, &repo.name, include_terminal).await {
             Ok(beads) => all_beads.extend(beads),
             Err(e) => eprintln!("warning: failed to read beads from {}: {e}", repo.name),
         }
@@ -30,9 +44,19 @@ pub async fn scan_repos(repos: &[RepoConfig]) -> Result<Vec<Bead>> {
 }
 
 /// Read beads from a single repo via BeadStore (SQLite or Dolt fallback).
-async fn read_beads(beads_dir: &std::path::Path, repo_name: &str) -> Result<Vec<Bead>> {
+/// `include_terminal` selects the full [`list_all_beads`](crate::store::BeadStore::list_all_beads)
+/// view over the active-only [`list_beads`](crate::store::BeadStore::list_beads).
+async fn read_beads(
+    beads_dir: &std::path::Path,
+    repo_name: &str,
+    include_terminal: bool,
+) -> Result<Vec<Bead>> {
     let store = crate::bead_sqlite::connect_bead_store(beads_dir).await?;
-    store.list_beads(repo_name).await
+    if include_terminal {
+        store.list_all_beads(repo_name).await
+    } else {
+        store.list_beads(repo_name).await
+    }
 }
 
 /// Expand `~` in paths. Uses shellexpand (already a dependency).
