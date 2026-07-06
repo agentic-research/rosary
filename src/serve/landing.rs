@@ -56,7 +56,7 @@ pub(crate) async fn handle_landing(headers: axum::http::HeaderMap) -> Response {
     }
 }
 
-const TOOL_COUNT: usize = 27;
+const TOOL_COUNT: usize = 40;
 
 /// Minimal fallback when /app/static/mcp-landing.html doesn't exist
 /// (local dev, non-containerized). The real page is managed by rig.

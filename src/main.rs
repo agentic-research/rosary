@@ -426,6 +426,13 @@ enum Command {
         #[arg(short, long, default_value = ".")]
         repo: String,
     },
+    /// Report runtime truth: installed binary vs repo version vs the running MCP
+    /// service — surfaces the "stale binary / stale service" drift (rosary-d09889).
+    Doctor {
+        /// Port of the running HTTP MCP service to probe.
+        #[arg(long, default_value_t = 8383)]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2059,6 +2066,72 @@ async fn main() -> Result<()> {
             match action {
                 HooksAction::Install => hooks::install(&repo_root)?,
                 HooksAction::Status => hooks::status(&repo_root)?,
+            }
+        }
+        Command::Doctor { port } => {
+            let installed = env!("CARGO_PKG_VERSION");
+            println!("rsry doctor — runtime truth");
+            println!(
+                "  installed binary : {installed} ({})",
+                env!("RSRY_BUILD_HASH")
+            );
+
+            let mut drift = false;
+
+            // Repo version — only meaningful inside the rosary crate.
+            if let Ok(toml) = std::fs::read_to_string("Cargo.toml")
+                && toml.contains("name = \"rosary\"")
+            {
+                let repo_ver = toml
+                    .lines()
+                    .find_map(|l| l.strip_prefix("version = "))
+                    .map(|v| v.trim().trim_matches('"'));
+                if let Some(rv) = repo_ver {
+                    if rv == installed {
+                        println!("  repo (Cargo.toml): {rv}  ✓");
+                    } else {
+                        drift = true;
+                        println!(
+                            "  repo (Cargo.toml): {rv}  ⚠ installed binary is behind — run `task install`"
+                        );
+                    }
+                }
+            }
+
+            // Running HTTP MCP service — probe GET / (JSON).
+            let url = format!("http://localhost:{port}/");
+            match reqwest::Client::new()
+                .get(&url)
+                .header("accept", "application/json")
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())
+            {
+                Ok(resp) => match resp.json::<serde_json::Value>().await {
+                    Ok(j) => {
+                        let sv = j.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+                        if sv == installed {
+                            println!("  running service  : {sv} on :{port}  ✓");
+                        } else {
+                            drift = true;
+                            println!(
+                                "  running service  : {sv} on :{port}  ⚠ stale — `task install` restarts it on the new binary"
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        println!("  running service  : reachable on :{port}, no version field")
+                    }
+                },
+                Err(_) => println!("  running service  : not reachable on :{port} (not running?)"),
+            }
+
+            if drift {
+                println!(
+                    "\nDrift detected — run `task install` to bring the binary + MCP service current."
+                );
+            } else {
+                println!("\nNo drift.");
             }
         }
     }
