@@ -10,3 +10,15 @@ fi
 if command -v rsry >/dev/null 2>&1; then
     rsry close-merged --local --repo "$REPO" >/dev/null 2>&1 || true
 fi
+
+# rsry version-drift nudge (rosary-d09889): in the rosary source repo, if this
+# pull moved the crate version past the installed binary, say so — the release
+# pull IS the trigger, so nobody has to notice manually. Warn-only: `task
+# install` codesigns + restarts the MCP service, too heavy to fire silently.
+if command -v rsry >/dev/null 2>&1 && grep -q '^name = "rosary"' Cargo.toml 2>/dev/null; then
+    repo_ver=$(grep -m1 '^version' Cargo.toml 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/')
+    inst_ver=$(rsry --version 2>/dev/null | awk '{print $2}')
+    if [ -n "$repo_ver" ] && [ -n "$inst_ver" ] && [ "$repo_ver" != "$inst_ver" ]; then
+        printf '⚠ rsry drift: installed %s, repo is %s — run `task install` to update the binary + MCP service.\n' "$inst_ver" "$repo_ver" >&2
+    fi
+fi
