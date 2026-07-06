@@ -1883,9 +1883,10 @@ async fn main() -> Result<()> {
             // guarantees one) and prefix the title unless it already leads with a
             // bracket — so the squash-merge subject carries the id and the
             // post-merge hook can auto-close the bead.
-            let head_subject = std::process::Command::new("git")
+            let head_subject = tokio::process::Command::new("git")
                 .args(["log", "-1", "--format=%s"])
                 .output()
+                .await
                 .ok()
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -1922,7 +1923,10 @@ async fn main() -> Result<()> {
             if draft {
                 args.push("--draft".into());
             }
-            let status = std::process::Command::new("gh").args(&args).status()?;
+            let status = tokio::process::Command::new("gh")
+                .args(&args)
+                .status()
+                .await?;
             if !status.success() {
                 anyhow::bail!("gh pr create failed");
             }
