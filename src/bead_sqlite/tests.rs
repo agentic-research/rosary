@@ -538,6 +538,52 @@ async fn search_excludes_closed_deps_from_dependency_count() {
 }
 
 #[tokio::test]
+async fn typed_deps_and_get_children() {
+    // rosary-649660: get_children returns only containment edges
+    // (parent-child / discovered-from), never plain blocks edges.
+    let store = test_store();
+    for id in ["parent", "kid", "found", "blocker"] {
+        store.create_bead(id, id, "", 1, "task").await.unwrap();
+    }
+    // kid is a child of parent; found was discovered from parent; blocker is a
+    // plain blocks edge (parent depends on blocker).
+    store
+        .add_dependency_typed("kid", "parent", "parent-child")
+        .await
+        .unwrap();
+    store
+        .add_dependency_typed("found", "parent", "discovered-from")
+        .await
+        .unwrap();
+    store.add_dependency("parent", "blocker").await.unwrap();
+
+    let mut children = store.get_children("parent").await.unwrap();
+    children.sort();
+    assert_eq!(children, vec!["found".to_string(), "kid".to_string()]);
+    // The blocks edge must NOT surface as a child.
+    assert!(store.get_children("blocker").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn add_dependency_typed_upserts_type() {
+    // Re-linking an existing pair promotes its type (blocks → parent-child)
+    // rather than silently ignoring the second write.
+    let store = test_store();
+    store.create_bead("c", "c", "", 1, "task").await.unwrap();
+    store.create_bead("p", "p", "", 1, "task").await.unwrap();
+    store.add_dependency("c", "p").await.unwrap(); // blocks
+    assert!(store.get_children("p").await.unwrap().is_empty());
+    store
+        .add_dependency_typed("c", "p", "parent-child")
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_children("p").await.unwrap(),
+        vec!["c".to_string()]
+    );
+}
+
+#[tokio::test]
 async fn update_status_and_close() {
     let store = test_store();
     store.create_bead("x", "Test", "", 1, "task").await.unwrap();

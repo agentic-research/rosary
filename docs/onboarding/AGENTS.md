@@ -64,7 +64,24 @@ Implementation beads (`bug`/`feature`/`task`/`chore`) require a **file scope**
 (`--files`) and a **close condition** (an `--acceptance-criteria`, a runnable
 test command in the description, or the default PR-merge signal). Planning types
 (`epic`/`design`/`research`) and `review` are exempt from the file-scope rule.
-Link discovered work with a `discovered-from` dependency to its parent.
+
+### Link related work (typed edges)
+
+Dependencies carry a **type** — `blocks` (the default), `related`,
+`parent-child`, `discovered-from`:
+
+```bash
+# work you found while doing something else → trace it to its origin
+rsry_bead_link  id=<new>  depends_on=<origin>  dep_type=discovered-from
+# subtask under an umbrella/epic
+rsry_bead_link  id=<child> depends_on=<parent> dep_type=parent-child
+```
+
+`parent-child` and `discovered-from` are **containment** edges, and they gate
+auto-close: a parent bead won't be closed by a merged PR while it still has open
+children — the PR is linked, but the umbrella stays open until the last child
+lands. Use `blocks` for ordering (A must finish before B) — closing a blocker is
+the normal unblock signal and does **not** hold anything open.
 
 ### Claim, update, complete
 

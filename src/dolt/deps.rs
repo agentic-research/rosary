@@ -5,19 +5,62 @@ use sqlx_core::row::Row;
 use super::DoltClient;
 
 impl DoltClient {
-    /// Add a dependency: `issue_id` depends on `depends_on_id`.
+    /// Add a dependency: `issue_id` depends on `depends_on_id` (defaults to a
+    /// `blocks` edge). Prefer `add_dependency_typed` for containment edges.
     pub async fn add_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()> {
+        self.add_dependency_typed(issue_id, depends_on_id, "blocks")
+            .await
+    }
+
+    /// Add a typed dependency edge. `dep_type` is one of
+    /// `blocks` | `related` | `parent-child` | `discovered-from`.
+    /// Upserts the type when the (issue, depends_on) pair already exists so a
+    /// re-link can promote a plain blocks edge to a containment edge.
+    pub async fn add_dependency_typed(
+        &self,
+        issue_id: &str,
+        depends_on_id: &str,
+        dep_type: &str,
+    ) -> Result<()> {
         let full_issue = self.resolve_id(issue_id).await?;
         let full_dep = self.resolve_id(depends_on_id).await?;
-        query("INSERT IGNORE INTO dependencies (issue_id, depends_on_id) VALUES (?, ?)")
-            .bind(&full_issue)
-            .bind(&full_dep)
-            .execute(&self.pool)
-            .await
-            .with_context(|| format!("adding dependency {issue_id} → {depends_on_id}"))?;
-        self.auto_commit(&format!("dep {full_issue} → {full_dep}"))
+        query(
+            "INSERT INTO dependencies (issue_id, depends_on_id, dep_type) VALUES (?, ?, ?)
+             ON DUPLICATE KEY UPDATE dep_type = VALUES(dep_type)",
+        )
+        .bind(&full_issue)
+        .bind(&full_dep)
+        .bind(dep_type)
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("adding {dep_type} dependency {issue_id} → {depends_on_id}"))?;
+        self.auto_commit(&format!("dep {full_issue} → {full_dep} ({dep_type})"))
             .await;
         Ok(())
+    }
+
+    /// List the containment children of a bead — beads linked to it by a
+    /// `parent-child` or `discovered-from` edge (the edge points from child to
+    /// parent, so children are the dependents filtered to those types). Used by
+    /// the close-merged containment gate so a parent doesn't auto-close while
+    /// its children are still open.
+    pub async fn get_children(&self, issue_id: &str) -> Result<Vec<String>> {
+        let full_id = match self.resolve_id(issue_id).await {
+            Ok(id) => id,
+            Err(_) => return Ok(vec![]),
+        };
+        let rows = query(
+            "SELECT issue_id FROM dependencies
+             WHERE depends_on_id = ? AND dep_type IN ('parent-child', 'discovered-from')",
+        )
+        .bind(&full_id)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| format!("listing children for {issue_id}"))?;
+        Ok(rows
+            .iter()
+            .map(|r| r.get::<String, _>("issue_id"))
+            .collect())
     }
 
     /// Remove a dependency.

@@ -301,6 +301,7 @@ const BEADS_SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS dependencies (
         issue_id VARCHAR(128) NOT NULL,
         depends_on_id VARCHAR(128) NOT NULL,
+        dep_type VARCHAR(32) NOT NULL DEFAULT 'blocks',
         PRIMARY KEY (issue_id, depends_on_id)
     )",
     "CREATE TABLE IF NOT EXISTS events (

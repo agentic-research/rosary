@@ -84,7 +84,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead_dolt.rs",
-      "count": 31
+      "count": 33
     },
     {
       "rule_id": "duplicate_definitions",
@@ -99,7 +99,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead_sqlite/mod.rs",
-      "count": 39
+      "count": 41
     },
     {
       "rule_id": "duplicate_definitions",
@@ -169,7 +169,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dolt/deps.rs",
-      "count": 9
+      "count": 11
     },
     {
       "rule_id": "duplicate_definitions",
@@ -509,7 +509,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/store.rs",
-      "count": 114
+      "count": 116
     },
     {
       "rule_id": "duplicate_definitions",

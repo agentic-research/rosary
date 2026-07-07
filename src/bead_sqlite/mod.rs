@@ -353,6 +353,11 @@ impl SqliteBeadStore {
         // Fail silently if the column already exists.
         let _ = conn.execute_batch("ALTER TABLE issues ADD COLUMN created_by TEXT");
         let _ = conn.execute_batch("ALTER TABLE issues ADD COLUMN scope TEXT NOT NULL DEFAULT ''");
+        // rosary-649660: typed dependency edges. Existing rows default to
+        // 'blocks', preserving the prior "every edge is a blocker" semantics.
+        let _ = conn.execute_batch(
+            "ALTER TABLE dependencies ADD COLUMN dep_type TEXT NOT NULL DEFAULT 'blocks'",
+        );
         // rosary-a96b06: comment audit-trail columns. Idempotent on existing DBs.
         let _ = conn.execute_batch("ALTER TABLE comments ADD COLUMN edited_at TEXT");
         let _ = conn.execute_batch("ALTER TABLE comments ADD COLUMN edit_reason TEXT");
@@ -409,6 +414,7 @@ CREATE TABLE IF NOT EXISTS issues (
 CREATE TABLE IF NOT EXISTS dependencies (
     issue_id TEXT NOT NULL,
     depends_on_id TEXT NOT NULL,
+    dep_type TEXT NOT NULL DEFAULT 'blocks',
     PRIMARY KEY (issue_id, depends_on_id)
 );
 
@@ -1076,14 +1082,47 @@ impl BeadStore for SqliteBeadStore {
     }
 
     async fn add_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()> {
+        self.add_dependency_typed(issue_id, depends_on_id, "blocks")
+            .await
+    }
+
+    async fn add_dependency_typed(
+        &self,
+        issue_id: &str,
+        depends_on_id: &str,
+        dep_type: &str,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let full_issue = Self::resolve_id(&conn, issue_id)?;
         let full_dep = Self::resolve_id(&conn, depends_on_id)?;
+        // Upsert the type so a re-link can promote a plain blocks edge to a
+        // containment edge (parent-child / discovered-from).
         conn.execute(
-            "INSERT OR IGNORE INTO dependencies (issue_id, depends_on_id) VALUES (?1, ?2)",
-            params![full_issue, full_dep],
+            "INSERT INTO dependencies (issue_id, depends_on_id, dep_type) VALUES (?1, ?2, ?3)
+             ON CONFLICT(issue_id, depends_on_id) DO UPDATE SET dep_type = excluded.dep_type",
+            params![full_issue, full_dep, dep_type],
         )?;
         Ok(())
+    }
+
+    async fn get_children(&self, issue_id: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let full_id = match Self::resolve_id(&conn, issue_id) {
+            Ok(id) => id,
+            Err(_) => return Ok(vec![]),
+        };
+        // Children link to their parent via parent-child / discovered-from
+        // edges (edge points from child → parent), so children are the
+        // dependents filtered to those containment types.
+        let mut stmt = conn.prepare(
+            "SELECT issue_id FROM dependencies
+             WHERE depends_on_id = ?1 AND dep_type IN ('parent-child', 'discovered-from')",
+        )?;
+        let kids = stmt
+            .query_map(params![full_id], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(kids)
     }
 
     async fn remove_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()> {

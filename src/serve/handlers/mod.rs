@@ -924,6 +924,14 @@ async fn tool_bead_link(
         .get("remove")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    // Typed edge (rosary-649660): blocks (default) | related | parent-child |
+    // discovered-from. Containment types (parent-child/discovered-from) drive
+    // the close-merged gate — a parent won't auto-close while children are open.
+    let dep_type = args
+        .get("dep_type")
+        .or_else(|| args.get("link_type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("blocks");
     // cross_repo: "other-repo/bead-id" — writes to backend LinkageStore instead of per-repo Dolt.
     // Auto-detect (rosary-98ee93): if `depends_on` carries a `<repo>-<id>` prefix that doesn't
     // match the calling repo name, route through LinkageStore without requiring the
@@ -1007,8 +1015,12 @@ async fn tool_bead_link(
                     client.remove_dependency(id, depends_on).await?;
                     Ok(json!({ "id": id, "depends_on": depends_on, "action": "removed" }))
                 } else {
-                    client.add_dependency(id, depends_on).await?;
-                    Ok(json!({ "id": id, "depends_on": depends_on, "action": "added" }))
+                    client
+                        .add_dependency_typed(id, depends_on, dep_type)
+                        .await?;
+                    Ok(
+                        json!({ "id": id, "depends_on": depends_on, "dep_type": dep_type, "action": "added" }),
+                    )
                 }
             }
             None => {

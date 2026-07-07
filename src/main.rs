@@ -1858,8 +1858,8 @@ async fn main() -> Result<()> {
             if local {
                 let summary = run_close_merged_local(repo.as_deref(), dry_run).await?;
                 println!(
-                    "close-merged --local: {} {} (checked={})",
-                    summary.merged_closed, verb, summary.checked,
+                    "close-merged --local: {} {} (checked={}, held_open={})",
+                    summary.merged_closed, verb, summary.checked, summary.held_open,
                 );
                 for id in &summary.bead_ids_closed {
                     println!("  {id}");
@@ -2967,6 +2967,10 @@ pub struct CloseMergedSummary {
     pub gh_errors: usize,
     /// Beads we closed (or would close, in dry-run)
     pub merged_closed: usize,
+    /// Beads whose PR merged but were held open by the containment gate — a
+    /// parent/epic with open children, or a planning bead (rosary-649660).
+    /// The PR is still associated; only the close is deferred.
+    pub held_open: usize,
     /// IDs of beads closed (in order processed)
     pub bead_ids_closed: Vec<String>,
 }
@@ -3204,18 +3208,81 @@ pub async fn run_close_merged_local_with_config(
             let Some(b) = matched else {
                 continue;
             };
+
+            // Containment gate (rosary-649660): a parent/epic must not
+            // auto-close while its children are still open — a merged PR on one
+            // child shouldn't sweep the umbrella shut. Children are the open
+            // beads linked to b by a parent-child / discovered-from edge.
+            let child_ids = store.get_children(&b.id).await.unwrap_or_default();
+            let open_children: Vec<String> = child_ids
+                .into_iter()
+                .filter(|cid| {
+                    beads.iter().any(|c| {
+                        &c.id == cid
+                            && !matches!(
+                                c.state(),
+                                bead::BeadState::Done | bead::BeadState::Rejected
+                            )
+                    })
+                })
+                .collect();
+            let is_planning = matches!(b.issue_type.as_str(), "epic" | "design" | "research");
+            let hold_open = is_planning || !open_children.is_empty();
+
+            // Record the PR association either way — structured `pr_url` event so
+            // a parent + its children's PRs surface as a chain (parity with the
+            // gh/webhook path), plus the human-readable github_merge event.
+            let pr_ref = vcs::origin_pr_url(&resolved, closure.pr_number)
+                .unwrap_or_else(|| format!("#{}", closure.pr_number));
+            if !dry_run {
+                store.log_event(&b.id, "pr_url", &pr_ref).await;
+                store
+                    .log_event(
+                        &b.id,
+                        "github_merge",
+                        &format!("PR #{} merged (local git scan)", closure.pr_number),
+                    )
+                    .await;
+            }
+
+            if hold_open {
+                summary.held_open += 1;
+                let reason = if !open_children.is_empty() {
+                    format!(
+                        "has {} open child bead(s): {}",
+                        open_children.len(),
+                        open_children.join(", ")
+                    )
+                } else {
+                    format!("is a {} (planning) bead", b.issue_type)
+                };
+                eprintln!(
+                    "close-merged --local: PR #{} associated with {} but NOT closed — {reason}",
+                    closure.pr_number, b.id
+                );
+                if !dry_run {
+                    store
+                        .add_comment(
+                            &b.id,
+                            &format!(
+                                "PR #{} merged and linked to this bead, but it was NOT \
+                                 auto-closed because it {reason}. Close it once the \
+                                 remaining work lands.",
+                                closure.pr_number
+                            ),
+                            "rosary",
+                        )
+                        .await
+                        .ok();
+                }
+                continue;
+            }
+
             summary.merged_closed += 1;
             summary.bead_ids_closed.push(b.id.clone());
             if dry_run {
                 continue;
             }
-            store
-                .log_event(
-                    &b.id,
-                    "github_merge",
-                    &format!("PR #{} merged (local git scan) → done", closure.pr_number),
-                )
-                .await;
             store
                 .add_comment(
                     &b.id,
@@ -3266,6 +3333,127 @@ mod tests {
         // Both paths return the all-zero default — no work, no errors.
         assert_eq!(summary_no_filter, CloseMergedSummary::default());
         assert_eq!(summary_filtered, CloseMergedSummary::default());
+    }
+
+    /// Run an isolated git command in `dir` (no user/global/system config).
+    fn tgit(dir: &Path, args: &[&str]) -> std::process::Output {
+        let home = tempfile::tempdir().expect("HOME tempdir");
+        std::process::Command::new("git")
+            .current_dir(dir)
+            .env_clear()
+            .env("HOME", home.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .args(args)
+            .output()
+            .expect("spawn git")
+    }
+
+    #[tokio::test]
+    async fn close_merged_local_holds_open_parent_with_open_child() {
+        // rosary-649660: a parent with an open child must be linked to its
+        // merged PR but NOT auto-closed. This is exactly the bug that closed
+        // rosary-aaffb0 out from under its remaining scope.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        tgit(root, &["init", "-q", "-b", "main"]);
+        tgit(root, &["config", "user.email", "t@t.invalid"]);
+        tgit(root, &["config", "user.name", "t"]);
+        tgit(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("f"), "x").unwrap();
+        tgit(root, &["add", "f"]);
+        // Squash-style merge commit referencing the parent bead.
+        tgit(
+            root,
+            &[
+                "commit",
+                "-q",
+                "-m",
+                "[testrepo-parent] feat: umbrella (#1)",
+            ],
+        );
+
+        // Bead store: open parent + open child, linked by a parent-child edge.
+        let beads_dir = root.join(".beads");
+        let store = bead_sqlite::connect_bead_store(&beads_dir).await.unwrap();
+        store
+            .create_bead("testrepo-parent", "Parent", "", 1, "task")
+            .await
+            .unwrap();
+        store
+            .create_bead("testrepo-child", "Child", "", 1, "task")
+            .await
+            .unwrap();
+        store
+            .add_dependency_typed("testrepo-child", "testrepo-parent", "parent-child")
+            .await
+            .unwrap();
+        drop(store);
+
+        let cfg = config::Config {
+            repo: vec![config::RepoConfig {
+                name: "testrepo".to_string(),
+                path: root.to_path_buf(),
+                lang: None,
+                self_managed: false,
+                approval: config::DispatchApproval::Approved,
+            }],
+            ..Default::default()
+        };
+
+        let summary = run_close_merged_local_with_config(&cfg, None, false)
+            .await
+            .unwrap();
+
+        // Held open, not closed.
+        assert_eq!(summary.merged_closed, 0, "parent must not auto-close");
+        assert_eq!(summary.held_open, 1, "parent should be held open");
+
+        // But the PR association WAS recorded (structured pr_url event) so the
+        // chain surfaces, and the parent is still open.
+        let store = bead_sqlite::connect_bead_store(&beads_dir).await.unwrap();
+        assert_eq!(
+            store
+                .get_status("testrepo-parent")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("open")
+        );
+        let pr_evt = store
+            .get_latest_event("testrepo-parent", "pr_url")
+            .await
+            .unwrap();
+        assert!(
+            pr_evt.is_some(),
+            "pr_url event should be recorded on parent"
+        );
+
+        // Now close the child and re-run: the parent is eligible and closes.
+        store.close_bead("testrepo-child").await.unwrap();
+        drop(store);
+        let summary2 = run_close_merged_local_with_config(&cfg, None, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            summary2.merged_closed, 1,
+            "parent closes once child is done"
+        );
+        let store = bead_sqlite::connect_bead_store(&beads_dir).await.unwrap();
+        // Terminal after close — the exact canonical form ("done"/"closed") is
+        // normalized on connect, so assert terminal-ness, not a literal string.
+        let status = store.get_status("testrepo-parent").await.unwrap();
+        let terminal = status
+            .as_deref()
+            .map(|s| {
+                matches!(
+                    bead::BeadState::from(s),
+                    bead::BeadState::Done | bead::BeadState::Rejected
+                )
+            })
+            .unwrap_or(false);
+        assert!(terminal, "parent should be terminal, got {status:?}");
     }
 
     #[test]
