@@ -94,6 +94,7 @@ else. `task ci` is also an alias for `task check`.
 | src/plugin.rs                  | Plugin registry + PluginKind axis (Hook / Mcp / Dispatch / StateSink)                                                                                                |
 | src/pool.rs                    | Connection pool for multi-repo Dolt access                                                                                                                           |
 | src/main.rs                    | CLI entry + shared helpers (`generate_bead_id`, `resolve_beads_dir`)                                                                                                 |
+| src/init.rs                    | `rsry init` — onboarding primitive (store + metadata + managed AGENTS.md section, replacing a legacy bd block); handler adds hooks + global register (rosary-aaffb0)  |
 | src/capture.rs                 | `rsry capture --from-session/--from-code` — text → BeadSpecs via LLM                                                                                                 |
 | src/notes.rs                   | `rsry notes rotate` — age recipient rotation for scoped notes                                                                                                        |
 | src/scan_assay.rs              | `rsry scan --assay` — stale-ref → P3 chore beads via assay.scan plugins                                                                                              |
@@ -166,6 +167,7 @@ rsry bead comment update <id> <comment_id> --body <text> [--reason <why>]
 rsry bead comment delete <id> <comment_id> [--reason <why>] [--hard]   # --hard CLI-only; soft preserves audit trail
 rsry close-merged                            # catch-up sweep (gh): close beads whose PRs already merged
 rsry close-merged --local                    # rsry-native: close beads from local `git log` squash commits ([bead-id] … (#N)) — no gh/webhook/tunnel; run by the git post-merge hook
+rsry init [path] [--dolt] [--no-register]    # onboard a repo (bd-init equivalent, ADR-0014): create `.beads/` store (SQLite default, `--dolt` for server mode) + metadata.json + managed AGENTS.md section (replaces a legacy bd block) + `hooks install` + global register. Idempotent.
 rsry hooks install / status                  # install/report the post-merge + post-push bead-sync hooks (post-merge runs `close-merged --local`)
 rsry thread-reparent <thread_id> <decade_id> [--name <new>]  # re-parent threads under a different decade
 rsry capture --from-session <path>           # transcript → BeadSpecs via LLM (Session provenance)

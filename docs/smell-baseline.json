@@ -233,6 +233,11 @@
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/init.rs",
+      "count": 4
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/linear.rs",
       "count": 6
     },
@@ -244,7 +249,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/main.rs",
-      "count": 10
+      "count": 12
     },
     {
       "rule_id": "duplicate_definitions",
