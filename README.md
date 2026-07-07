@@ -293,24 +293,28 @@ image's default `CMD` matches cluster.capnp's launch args
 (`mcp --ipc-socket /run/cloister-uds/rosary.sock`).
 
 ```bash
-task image          # krust musl cross-compile + docker COPY
-task image:smoke    # verify the binary runs inside the distroless image
+task image:build     # cargo-zigbuild musl cross-compile + docker build (native arch, loadable)
+task image:smoke     # verify the binary runs inside the distroless image
+task image:release   # multi-arch build + push + cosign sign (CI hooks into this; see below)
 ```
 
-The pipeline is two steps:
+Image tasks live in `.taskfiles/image.yml`, included under the `image:`
+namespace. The pipeline is two steps:
 
-1. **krust + cargo-zigbuild** cross-compiles `rsry` to
-   `aarch64-unknown-linux-musl` (`target/krust/.../release/rsry`, ~19MB
-   static).
+1. **`cargo-zigbuild`** cross-compiles `rsry` to
+   `<arch>-unknown-linux-musl` (`target/<triple>/release/rsry`, ~19MB
+   static), staged at `dist/<arch>/rsry`. zig handles the musl C
+   cross-compile (leyline-fs FUSE bindings included) that stalled the
+   apko/melange path on Apple Silicon — and cross-builds *both* arches on
+   one machine with no emulation.
 1. **`image.Dockerfile`** drops that binary onto
    `gcr.io/distroless/static-debian12:nonroot` (no shell, no package
-   manager, nonroot uid 65532) — a single `COPY`, no Rust toolchain in
-   the container.
+   manager, nonroot uid 65532), selecting the arch by buildx `TARGETARCH`.
 
-Pattern adopted from `ley-line-open` after its melange/apko path stalled
-on Apple Silicon (precedent: `ley-line-open-2b255c`). The `melange.yaml`
-and `apko.yaml` files are retained for reference; `task apk` still wires
-them but is no longer the recommended path.
+CI (`.github/workflows/release.yml`) publishes on a tag by calling the same
+`task image:release` — no image command lives in CI that the Taskfile doesn't
+own. The retained `melange.yaml` / `apko.yaml` / `task apk` are a reference
+artifact of the abandoned apko path, not the recommended one.
 
 ## License
 
