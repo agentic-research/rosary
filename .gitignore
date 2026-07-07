@@ -16,13 +16,15 @@
 # === CONFIG ===
 !/.cargo
 !/Taskfile.yml
+# Included Taskfile modules (`includes:` in Taskfile.yml) — e.g. image build.
+!/.taskfiles
 !/rosary.toml
 !/rosary-self.toml
 # Image build — configs tracked, artifacts/keys local-only.
-# Active path: `task image` uses krust + image.Dockerfile (see Taskfile.yml).
-# apko.yaml / melange.yaml retained for reference but deferred — Apple Silicon
-# bind-mount of 31GB target/ made the melange path pathological (rosary-16df06,
-# tracked precedent in ley-line-open-2b255c).
+# Active path: `task image:build` / `image:release` use cargo-zigbuild +
+# image.Dockerfile (see .taskfiles/image.yml). apko.yaml / melange.yaml are
+# retained for reference but deferred — the melange path stalled on Apple
+# Silicon (rosary-16df06, precedent ley-line-open-2b255c).
 !/apko.yaml
 !/melange.yaml
 !/image.Dockerfile
@@ -59,3 +61,4 @@
 !/.rsry-bead-id
 !/.rsry-stream.jsonl
 .rsry-bead-id
+dist/

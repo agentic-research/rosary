@@ -183,3 +183,52 @@ jobs:
       # recorded as a signed attestation (Rekor transparency log) — just not a
       # downloadable release asset. Verify with `slsa-verifier` / `cosign`.
       upload-assets: false
+
+  # --- Container image → ghcr (rosary-76a038, cloister ADR-0041) -------------
+  # Publishes the distroless multi-arch image cloister pulls
+  # (`ghcr.io/agentic-research/rosary`) — the gap where `packages[].oci` named
+  # an image CI never built. One job, one Taskfile call: `task image:release`
+  # cross-compiles amd64+arm64 with cargo-zigbuild (zig, no emulation), buildx
+  # assembles the multi-arch manifest, cosign signs the digest. CI runs no image
+  # command the Taskfile doesn't own (the check-taskfile-contract philosophy).
+  image:
+    name: Publish image → ghcr
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # cosign keyless
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev capnproto
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install zig + cargo-zigbuild
+        run: |
+          pip3 install ziglang==0.13.0
+          cargo install --locked cargo-zigbuild
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push + sign multi-arch image
+        run: task image:release REGISTRY="${IMAGE_NAME}" VERSION="${TAG#v}" PUSH=true SIGN=true

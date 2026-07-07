@@ -1,0 +1,94 @@
+# .taskfiles/image.yml — OCI image build/publish, included into the root
+# Taskfile under the `image:` namespace (`includes: { image: .taskfiles/image.yml }`).
+#
+# Source of truth for the container image: CI hooks into these targets and runs
+# no image command of its own (the check-taskfile-contract philosophy). Local
+# dev and CI share one code path — `task image:build` (native, loadable) for
+# testing, `task image:release` (multi-arch, push + sign) for a tag.
+#
+# cargo-zigbuild (public, on crates.io) cross-compiles rsry to static musl; zig
+# handles the C cross-compile (leyline-fs FUSE bindings included) that stalled
+# the apko/melange path on Apple Silicon. It cross-builds BOTH arches on one
+# machine with no emulation, so `image:release` is a single target CI invokes
+# once. The distroless base + `mcp --ipc-socket` entrypoint (image.Dockerfile)
+# match how cloister launches rosary (cluster.capnp).
+version: '3'
+
+vars:
+  REGISTRY: '{{.REGISTRY | default "localhost/rosary"}}'
+  VERSION: '{{.VERSION | default "0.2.0"}}'
+
+tasks:
+  default:
+    desc: Build the local native-arch image (alias for image:build)
+    cmds:
+      - task: build
+
+  # Cross-compile rsry to <TRIPLE> and stage the binary where the Dockerfile
+  # expects it (dist/<ARCH>/rsry, selected by buildx TARGETARCH). Internal.
+  _stage:
+    internal: true
+    cmds:
+      - rustup target add {{.TRIPLE}}
+      - cargo zigbuild --release --target {{.TRIPLE}} --bin rsry
+      - mkdir -p dist/{{.ARCH}}
+      - cp target/{{.TRIPLE}}/release/rsry dist/{{.ARCH}}/rsry
+
+  build:
+    desc: Build the native-arch distroless image locally (loadable) for testing.
+    vars:
+      ARCH:
+        sh: 'uname -m | sed -e "s/x86_64/amd64/" -e "s/aarch64/arm64/"'
+      TRIPLE:
+        sh: 'case "$(uname -m)" in x86_64) echo x86_64-unknown-linux-musl;; *) echo aarch64-unknown-linux-musl;; esac'
+    cmds:
+      - task: _stage
+        vars: { TRIPLE: '{{.TRIPLE}}', ARCH: '{{.ARCH}}' }
+      - |
+        docker build -f image.Dockerfile \
+          --platform linux/{{.ARCH}} \
+          --build-arg TARGETARCH={{.ARCH}} \
+          -t rosary:{{.VERSION}} .
+      - echo "Built rosary:{{.VERSION}} (linux/{{.ARCH}}). Default CMD matches cluster.capnp (mcp --ipc-socket)."
+
+  smoke:
+    desc: Verify the built binary actually runs inside the distroless image.
+    deps: [build]
+    vars:
+      ARCH:
+        sh: 'uname -m | sed -e "s/x86_64/amd64/" -e "s/aarch64/arm64/"'
+    cmds:
+      - docker rm -f rosary-smoke 2>/dev/null || true
+      - docker run --rm --platform linux/{{.ARCH}} --entrypoint /usr/bin/rsry rosary:{{.VERSION}} --version
+      - echo "smoke passed — musl binary runs inside distroless"
+
+  release:
+    desc: >-
+      Build a multi-arch (amd64+arm64) image, push to REGISTRY, and sign the
+      digest (keyless cosign). zig cross-compiles both arches on one machine (no
+      emulation) so CI calls this ONE target once per tag:
+      `task image:release REGISTRY=ghcr.io/agentic-research/rosary VERSION=<v-stripped> PUSH=true SIGN=true`.
+    vars:
+      PUSH: '{{.PUSH | default "false"}}'
+      SIGN: '{{.SIGN | default "false"}}'
+    cmds:
+      - task: _stage
+        vars: { TRIPLE: x86_64-unknown-linux-musl, ARCH: amd64 }
+      - task: _stage
+        vars: { TRIPLE: aarch64-unknown-linux-musl, ARCH: arm64 }
+      - |
+        docker buildx create --name rosary-builder --use 2>/dev/null || docker buildx use rosary-builder
+        OUT=$([ "{{.PUSH}}" = "true" ] && echo "--push" || echo "")
+        docker buildx build -f image.Dockerfile \
+          --platform linux/amd64,linux/arm64 \
+          -t {{.REGISTRY}}:{{.VERSION}} -t {{.REGISTRY}}:latest \
+          $OUT .
+      - |
+        if [ "{{.SIGN}}" = "true" ] && [ "{{.PUSH}}" = "true" ]; then
+          DIGEST=$(docker buildx imagetools inspect {{.REGISTRY}}:{{.VERSION}} \
+            --format '{{`{{json .Manifest}}`}}' | jq -r .digest)
+          cosign sign --yes "{{.REGISTRY}}@${DIGEST}"
+          echo "signed {{.REGISTRY}}@${DIGEST}"
+        else
+          echo "image:release built {{.REGISTRY}}:{{.VERSION}} (PUSH={{.PUSH}} SIGN={{.SIGN}})"
+        fi

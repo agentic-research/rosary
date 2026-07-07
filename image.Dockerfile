@@ -24,12 +24,15 @@
 #
 # See `task image` for the wired-up invocation.
 
-ARG BIN_PATH=target/krust/aarch64-unknown-linux-musl/release/rsry
+# The Taskfile (`task image:build` / `image:release`) cross-compiles rsry with
+# cargo-zigbuild and stages the per-arch binary at `dist/<arch>/rsry`. buildx
+# sets TARGETARCH per `--platform`, so one Dockerfile serves single-arch local
+# builds and the multi-arch release build with no shell in the (distroless) image.
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
-ARG BIN_PATH
-COPY ${BIN_PATH} /usr/bin/rsry
+ARG TARGETARCH
+COPY dist/${TARGETARCH}/rsry /usr/bin/rsry
 
 ENV HOME=/tmp \
     RUST_LOG=info
