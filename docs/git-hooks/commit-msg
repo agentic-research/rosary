@@ -1,0 +1,33 @@
+# Commit contract — [bead-id] <type>(<scope>): <subject>
+# Golden Rule 11 (bead ref) + Conventional Commits, enforced at commit time.
+# Auto-injects [bead-id] from .rsry-bead-id in agent worktrees. See rosary's
+# docs/design/codex-rosary-determinism-friction.md: "encode the rule as a gate."
+subject=$(head -n1 "$1")
+case "$subject" in
+    "Merge "*|'Revert "'*|"Revert:"*|"initial commit"*|"fixup!"*|"squash!"*|"amend!"*) exit 0 ;;
+esac
+types='feat|fix|docs|chore|refactor|test|perf|build|ci|style|revert'
+bead_re='^\[[-a-zA-Z0-9._]+\] '
+conv_re="(${types})(\([a-zA-Z0-9._/-]+\))?!?: .+"
+# Full contract already present — pass.
+if printf '%s' "$subject" | grep -qE "${bead_re}${conv_re}"; then exit 0; fi
+# Conventional but missing the bead ref — inject from .rsry-bead-id (agent worktrees).
+if printf '%s' "$subject" | grep -qE "^${conv_re}"; then
+    bead_id_file="$(git rev-parse --show-toplevel 2>/dev/null)/.rsry-bead-id"
+    if [ -f "$bead_id_file" ]; then
+        bead_id=$(tr -d '[:space:]' <"$bead_id_file")
+        if [ -n "$bead_id" ]; then
+            printf '[%s] %s' "$bead_id" "$(cat "$1")" >"$1"
+            exit 0
+        fi
+    fi
+fi
+if ! printf '%s' "$subject" | grep -qE "$bead_re"; then
+    echo "ERROR: commit must start with a bead reference (Golden Rule 11)."
+else
+    echo "ERROR: commit must use Conventional Commits after the bead reference (type in ${types})."
+fi
+echo "  Required: [bead-id] <type>(<scope>): <subject>"
+echo "  Example:  [rosary-d3a3dd] fix(serve): rename domain"
+echo "  Got:      ${subject}"
+exit 1
