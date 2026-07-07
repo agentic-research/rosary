@@ -164,6 +164,9 @@ jobs:
         with:
           tag_name: ${{ env.TAG }}
           generate_release_notes: true
+          # Tags with a pre-release suffix (v0.5.0-rc1, -beta, …) are flagged as
+          # prereleases so they don't surface as the latest stable release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: release-assets/*
 
   # --- SLSA Provenance (Level 3) ---
