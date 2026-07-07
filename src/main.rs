@@ -2185,6 +2185,10 @@ mod hooks {
     pub(crate) const HOOKS: &[(&str, &str)] = &[
         ("post-push", include_str!("../docs/git-hooks/post-push")),
         ("post-merge", include_str!("../docs/git-hooks/post-merge")),
+        // The commit contract (Rule 11 + Conventional Commits) — the same body
+        // that enforces at commit-msg time. Embedded so a fresh `rsry hooks
+        // install` configures it without any manual symlink to ~/.rsry/hooks.
+        ("commit-msg", include_str!("../docs/git-hooks/commit-msg")),
     ];
 
     /// Resolve the actual hooks directory for `repo_root`.
@@ -2288,13 +2292,57 @@ mod hooks {
     /// Merge-aware: existing user hooks are preserved. The rsry block is
     /// (re)inserted between markers in each managed hook file. Idempotent —
     /// running install twice produces the same file content the second time.
+    /// Unset a stale bd-era `core.hooksPath` (a `.beads/hooks` fossil left by
+    /// `bd init`) so hooks resolve to `.git/hooks`. No-op when hooksPath is
+    /// unset or points elsewhere (e.g. rosary's own `.rsry-hooks`).
+    fn migrate_bd_hooks_path(repo_root: &Path) {
+        let Ok(out) = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["config", "core.hooksPath"])
+            .output()
+        else {
+            return;
+        };
+        if !out.status.success() {
+            return;
+        }
+        let hp = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if hp.contains(".beads/hooks") {
+            let _ = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo_root)
+                .args(["config", "--unset", "core.hooksPath"])
+                .status();
+            eprintln!("[hooks] migrated off bd-era core.hooksPath ({hp}) → using .git/hooks");
+        }
+    }
+
     pub fn install(repo_root: &Path) -> Result<()> {
+        // Migrate off the stale bd-era hooks path before resolving. `bd init`
+        // installed hooks into `.beads/hooks` and pointed `core.hooksPath`
+        // there; ADR-0014 decoupled rosary from bd, so that dir is a fossil.
+        // Unset it (local .git/config) so hooks resolve to the standard
+        // `.git/hooks` instead of a tracked bd directory. (rosary's own
+        // `.rsry-hooks` is left alone — only `.beads/hooks` is migrated.)
+        migrate_bd_hooks_path(repo_root);
+
         let hooks_dir = resolve_hooks_dir(repo_root)?;
         std::fs::create_dir_all(&hooks_dir)
             .with_context(|| format!("creating {}", hooks_dir.display()))?;
 
         for (name, block) in HOOKS {
             let dst = hooks_dir.join(name);
+            // Replace a stale symlink (e.g. a hand-made commit-msg →
+            // ~/.rsry/hooks/commit-msg) with a self-contained managed file —
+            // never follow it and clobber the link target.
+            if dst
+                .symlink_metadata()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+            {
+                let _ = std::fs::remove_file(&dst);
+            }
             let content = if dst.exists() {
                 let existing = std::fs::read_to_string(&dst)
                     .with_context(|| format!("reading existing hook at {}", dst.display()))?;
@@ -2508,10 +2556,14 @@ mod hooks {
             // here when run from a different cwd.
             for (name, content) in HOOKS {
                 assert!(!content.trim().is_empty(), "template {name} is empty");
-                assert!(
-                    content.contains("dolt"),
-                    "template {name} should reference dolt commands"
-                );
+                // The bead-sync hooks drive dolt; the commit-msg hook is the
+                // commit-contract gate and has nothing to do with dolt.
+                if matches!(*name, "post-merge" | "post-push") {
+                    assert!(
+                        content.contains("dolt"),
+                        "sync template {name} should reference dolt commands"
+                    );
+                }
             }
         }
 
