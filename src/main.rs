@@ -38,6 +38,7 @@ mod github_mirror;
 #[allow(dead_code)] // API surface — wired into pipeline phase transitions
 mod handoff;
 mod import;
+mod init;
 mod linear;
 #[allow(dead_code)]
 mod linear_tracker;
@@ -432,6 +433,20 @@ enum Command {
         /// Port of the running HTTP MCP service to probe.
         #[arg(long, default_value_t = 8383)]
         port: u16,
+    },
+    /// Onboard a repo to rosary bead tracking — the bd-init equivalent
+    /// (ADR-0014): create the `.beads/` store, write the managed AGENTS.md
+    /// section, install the git hooks, and register the repo. Idempotent.
+    Init {
+        /// Repo path (defaults to current directory).
+        #[arg(default_value = ".")]
+        path: String,
+        /// Use a Dolt server store instead of the default single-file SQLite.
+        #[arg(long)]
+        dolt: bool,
+        /// Skip adding the repo to global rsry config (repo-local setup only).
+        #[arg(long)]
+        no_register: bool,
     },
 }
 
@@ -2133,6 +2148,56 @@ async fn main() -> Result<()> {
             } else {
                 println!("\nNo drift.");
             }
+        }
+        Command::Init {
+            path,
+            dolt,
+            no_register,
+        } => {
+            let repo_root = scanner::resolve_repo_path(Path::new(&path));
+
+            // 1–3: repo-local store + metadata + managed AGENTS.md section.
+            let outcome = init::run(&repo_root, dolt).await?;
+
+            // 4: git hooks (post-merge close-merged, post-push sync, commit-msg
+            // contract). Shares the same install path as `rsry hooks install`.
+            hooks::install(&repo_root)?;
+
+            // 5: register in global config so `rsry status`/scan/dispatch see it,
+            // unless the caller wants a repo-local-only setup.
+            let registered = if no_register {
+                None
+            } else {
+                Some(config::enable_repo(&repo_root)?)
+            };
+
+            // 6: report.
+            println!("\nrsry init — {}", repo_root.display());
+            let store_line = match outcome.store {
+                init::StoreOutcome::CreatedSqlite => "created SQLite store (.beads/beads.db)",
+                init::StoreOutcome::CreatedDolt => "created Dolt store (.beads/dolt/)",
+                init::StoreOutcome::AlreadyPresent => "store already present — left as-is",
+            };
+            println!("  store   : {store_line}");
+            let agents_line = match outcome.agents {
+                init::AgentsOutcome::Created => "created AGENTS.md",
+                init::AgentsOutcome::SectionUpdated => "refreshed managed section in AGENTS.md",
+                init::AgentsOutcome::ReplacedBdBlock => {
+                    "replaced legacy bd block in AGENTS.md (routed to rsry)"
+                }
+                init::AgentsOutcome::AppendedSection => "appended managed section to AGENTS.md",
+                init::AgentsOutcome::Unchanged => "AGENTS.md already current",
+            };
+            println!("  agents  : {agents_line}");
+            match registered {
+                Some(entry) => println!("  config  : registered as '{}'", entry.name),
+                None => println!("  config  : not registered (--no-register)"),
+            }
+            println!(
+                "\nDone. This repo's work is now tracked as beads via rsry. Commit `.beads/` and\n\
+                 AGENTS.md so collaborators get the store on clone; they run `rsry init` to wire\n\
+                 up their own hooks. Create your first bead with `rsry bead create`."
+            );
         }
     }
 
