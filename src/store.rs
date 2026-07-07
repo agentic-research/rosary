@@ -422,9 +422,28 @@ pub trait BeadStore: Send + Sync {
 
     // ── Dependencies ──
     async fn add_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()>;
+    /// Add a typed dependency edge: `blocks` (the default `add_dependency`
+    /// records) | `related` | `parent-child` | `discovered-from`. The default
+    /// impl falls back to a plain `blocks` edge so backends that don't yet
+    /// carry a `dep_type` column stay correct.
+    async fn add_dependency_typed(
+        &self,
+        issue_id: &str,
+        depends_on_id: &str,
+        _dep_type: &str,
+    ) -> Result<()> {
+        self.add_dependency(issue_id, depends_on_id).await
+    }
     async fn remove_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()>;
     async fn get_dependencies(&self, issue_id: &str) -> Result<Vec<String>>;
     async fn get_dependents(&self, issue_id: &str) -> Result<Vec<String>>;
+    /// Containment children — beads linked by a `parent-child` or
+    /// `discovered-from` edge. Used by the close-merged containment gate so a
+    /// parent doesn't auto-close while its children are open. Default is empty
+    /// (no containment known) so mock/legacy backends don't over-gate.
+    async fn get_children(&self, _issue_id: &str) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
 
     // ── Comments & events ──
     async fn add_comment(&self, issue_id: &str, body: &str, author: &str) -> Result<()>;

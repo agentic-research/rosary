@@ -427,9 +427,68 @@ pub fn scan_merged_closures(repo_path: &Path, limit: usize) -> Vec<MergedClosure
         .collect()
 }
 
+/// Build the canonical PR URL (`https://github.com/<owner>/<repo>/pull/<n>`)
+/// from the repo's `origin` remote, so the local close path can record the same
+/// structured `pr_url` event the gh/webhook path emits — letting a parent and
+/// its children's PRs surface as a chain without any network call. Returns
+/// `None` when origin isn't a recognizable GitHub remote (the caller falls back
+/// to a bare `#<n>` reference).
+pub fn origin_pr_url(repo_path: &Path, pr_number: u64) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let slug = github_slug(&url)?;
+    Some(format!("https://github.com/{slug}/pull/{pr_number}"))
+}
+
+/// Normalize a git remote URL to its `<owner>/<repo>` slug. Handles the SSH
+/// (`git@github.com:owner/repo.git`) and HTTPS (`https://github.com/owner/repo`)
+/// forms, with or without a trailing `.git`.
+fn github_slug(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("git@github.com:")
+        .or_else(|| url.strip_prefix("https://github.com/"))
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
+    let slug = rest.strip_suffix(".git").unwrap_or(rest).trim_matches('/');
+    // Must be exactly owner/repo — reject anything with extra path segments.
+    let mut parts = slug.split('/');
+    let owner = parts.next().filter(|s| !s.is_empty())?;
+    let repo = parts.next().filter(|s| !s.is_empty())?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_slug_handles_ssh_and_https_forms() {
+        assert_eq!(
+            github_slug("git@github.com:agentic-research/rosary.git").as_deref(),
+            Some("agentic-research/rosary")
+        );
+        assert_eq!(
+            github_slug("https://github.com/agentic-research/rosary").as_deref(),
+            Some("agentic-research/rosary")
+        );
+        assert_eq!(
+            github_slug("ssh://git@github.com/org/repo.git").as_deref(),
+            Some("org/repo")
+        );
+        // Non-GitHub or malformed remotes yield nothing.
+        assert!(github_slug("git@gitlab.com:org/repo.git").is_none());
+        assert!(github_slug("https://github.com/org/repo/extra").is_none());
+    }
 
     #[test]
     fn parse_merged_closure_matches_squash_merge_subject() {

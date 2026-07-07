@@ -110,6 +110,17 @@ impl BeadStore for DoltBeadStore {
         self.client.add_dependency(issue_id, depends_on_id).await
     }
 
+    async fn add_dependency_typed(
+        &self,
+        issue_id: &str,
+        depends_on_id: &str,
+        dep_type: &str,
+    ) -> Result<()> {
+        self.client
+            .add_dependency_typed(issue_id, depends_on_id, dep_type)
+            .await
+    }
+
     async fn remove_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()> {
         self.client.remove_dependency(issue_id, depends_on_id).await
     }
@@ -120,6 +131,10 @@ impl BeadStore for DoltBeadStore {
 
     async fn get_dependents(&self, issue_id: &str) -> Result<Vec<String>> {
         self.client.get_dependents(issue_id).await
+    }
+
+    async fn get_children(&self, issue_id: &str) -> Result<Vec<String>> {
+        self.client.get_children(issue_id).await
     }
 
     async fn add_comment(&self, issue_id: &str, body: &str, author: &str) -> Result<()> {

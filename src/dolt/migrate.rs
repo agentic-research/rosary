@@ -94,6 +94,15 @@ const MIGRATIONS: &[Migration] = &[
         description: "Drop fk_events_issue so synthetic _schema event log stops warning",
         verify: None,
     },
+    Migration {
+        version: "007_dep_type",
+        // Typed dependency edges (rosary-649660): blocks (default), related,
+        // parent-child, discovered-from. Existing rows default to 'blocks',
+        // which preserves the prior semantics (every edge was a blocker).
+        sql: "ALTER TABLE dependencies ADD COLUMN dep_type VARCHAR(32) NOT NULL DEFAULT 'blocks'",
+        description: "Typed dependency edges: blocks/related/parent-child/discovered-from (rosary-649660)",
+        verify: Some("SELECT dep_type FROM dependencies LIMIT 0"),
+    },
 ];
 
 /// True when a DDL error means "schema already in the post-apply state" —
