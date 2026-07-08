@@ -6,13 +6,24 @@ rules:
   - id: blocking-subprocess-in-async
     message: >
       std::process::Command blocks the async runtime.
-      Use tokio::process::Command instead.
+      Use tokio::process::Command (`.output()/.status()/.wait()` become async — add `.await`).
     severity: ERROR
     languages: [rust]
+    metadata:
+      category: correctness
+      confidence: HIGH
+      subcategory: [audit]
+      references:
+        - https://docs.rs/tokio/latest/tokio/process/index.html
+        - https://ryhl.io/blog/async-what-is-blocking/
+      why: >
+        Caught the real regression in rosary #324 → #327 (a blocking
+        `std::process::Command` shipped into an async handler). Kept ERROR so
+        `task lint` / CI fail on it.
     patterns:
       - pattern-either:
-          - pattern: std::process::Command::new(...).$METHOD(...)
-          - pattern: std::process::Command::new(...).args(...).$METHOD(...)
+          - pattern: std::process::Command::new($CMD).$METHOD($...ARGS)
+          - pattern: std::process::Command::new($CMD).args($ARGV).$METHOD($...ARGS)
       - metavariable-regex:
           metavariable: $METHOD
           regex: ^(status|output|wait)$
@@ -35,6 +46,17 @@ rules:
       Move log_event / add_comment calls above persist_status.
     severity: WARNING
     languages: [rust]
+    metadata:
+      category: correctness
+      confidence: MEDIUM
+      subcategory: [audit]
+      references:
+        - https://github.com/agentic-research/rosary/blob/main/docs/adr/0010-observation-lattice.md
+      why: >
+        A crash between the state write and its audit record leaves the
+        observation log with a gap the lattice can't reconstruct. Ordering the
+        audit record first makes the transition recoverable. WARNING, not ERROR:
+        it flags a fragile ordering, not a guaranteed defect.
     pattern-either:
       - pattern: |
           $SELF.persist_status($A, $B, $C).await;

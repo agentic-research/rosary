@@ -52,6 +52,7 @@
 !/.github
 !/.claude-plugin
 !/.semgrep
+!/.semgrepignore
 
 # === BEADS (tracked config, not data) ===
 !/.beads

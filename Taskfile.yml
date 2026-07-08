@@ -122,9 +122,12 @@ tasks:
     deps: [fmt]
     cmds:
       - cargo clippy -- -D warnings
-      # Semgrep via a wrapper that degrades cleanly when it's present but
-      # unusable (e.g. X509 trust-init failure in a sandbox) — rosary-9e5138.
-      # Still fails on real findings. Tested by scripts/run-semgrep.test.sh.
+      # Rule QA first: `--validate` (well-formed) + `--test` (fixtures still
+      # match) so a rotted rule fails loudly before it silently stops catching
+      # things (rosary-4b18f0). Then the scan. Both degrade cleanly when
+      # semgrep is present but unusable (X509 trust-init in a sandbox,
+      # rosary-9e5138); still fail on real findings/failures.
+      - bash scripts/check-semgrep-rules.sh .semgrep/rules.yml .semgrep/rules.rs
       - bash scripts/run-semgrep.sh .semgrep/rules.yml .
 
   fmt:
