@@ -41,7 +41,7 @@ pub fn resolve_skill(agents_dir: &Path, name: &str) -> Result<SkillRef> {
             agents_dir.display()
         )
     })?;
-    let digest = blake3::hash(&content).to_hex().to_string();
+    let digest = crate::cas::content_hash(&content);
     Ok(SkillRef {
         name: name.to_string(),
         path,
@@ -73,12 +73,10 @@ mod tests {
         let sk = resolve_skill(tmp.path(), "pr-review-kit").unwrap();
         assert_eq!(sk.name, "pr-review-kit");
         assert!(sk.path.ends_with("skills/pr-review-kit/SKILL.md"));
-        // digest is the blake3 of the file content — stable + content-addressed.
+        // digest is the LLO content-address of the file bytes (stable, shared).
         assert_eq!(
             sk.digest,
-            blake3::hash(b"# PR Review Kit\nreview steps")
-                .to_hex()
-                .to_string()
+            crate::cas::content_hash(b"# PR Review Kit\nreview steps")
         );
     }
 
