@@ -1,0 +1,3 @@
+# Semgrep rule *test fixtures* — deliberate violations for `semgrep --test`.
+# Excluded from the main `task lint` scan; `--test` targets them explicitly.
+.semgrep/rules.rs
