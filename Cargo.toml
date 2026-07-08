@@ -80,3 +80,10 @@ assert_cmd = "2"
 predicates = "3"
 tower = { version = "0.5", features = ["util"] }
 rand = "0.8"
+# Golden-vector proof that rosary's cas::content_hash == LLO's canonical
+# ContentAddressed::hash byte-for-byte, before swapping cas.rs onto it
+# (rosary-bf6c74). rev-pinned to a commit that carries `impl ContentAddressed
+# for [u8]` (#48); leyline-core pulls no rusqlite, so this stays independent of
+# leyline-vcs's older pin (updating the whole source to HEAD needs a rusqlite
+# 0.34→0.39 bump — tracked for the swap, rosary-bf8121).
+leyline-core = { git = "https://github.com/agentic-research/ley-line-open", rev = "c3515b9", default-features = false }
