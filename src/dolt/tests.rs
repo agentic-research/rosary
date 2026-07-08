@@ -848,6 +848,64 @@ async fn migrate_errors_when_repair_cannot_restore_schema() {
     );
 }
 
+/// rosary-dc0a9f: a bd-created (richer) `dependencies` schema uses bd's `type`
+/// column plus a NOT-NULL `created_by` with no default. Before the fix,
+/// `add_dependency_typed` errored ("Field 'created_by' doesn't have a default
+/// value") and `get_children` read a phantom `dep_type` — so the containment
+/// gate was blind on exactly the bd stores rosary interoperates with. This pins
+/// both: the insert supplies created_by + writes bd's `type`, and get_children
+/// reads it back.
+#[tokio::test]
+async fn typed_dep_works_on_bd_richer_schema() {
+    let sandbox = match SandboxBeads::new().await {
+        Some(s) => s,
+        None => return,
+    };
+    let client = sandbox.fresh_client().await;
+
+    // Replace rosary's minimal dependencies table with a bd-shaped one:
+    // bd's `type` column, NOT-NULL `created_by` (no default), and no `dep_type`.
+    client
+        .execute_raw("DROP TABLE dependencies")
+        .await
+        .expect("drop dependencies for bd-schema setup");
+    client
+        .execute_raw(
+            "CREATE TABLE dependencies (
+                issue_id VARCHAR(128) NOT NULL,
+                depends_on_id VARCHAR(128) NOT NULL,
+                `type` VARCHAR(32) NOT NULL DEFAULT 'blocks',
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                created_by VARCHAR(255) NOT NULL,
+                thread_id VARCHAR(255) DEFAULT '',
+                PRIMARY KEY (issue_id, depends_on_id)
+            )",
+        )
+        .await
+        .expect("create bd-shaped dependencies table");
+
+    client
+        .create_bead("parent", "Parent", "", 1, "task")
+        .await
+        .unwrap();
+    client
+        .create_bead("child", "Child", "", 1, "task")
+        .await
+        .unwrap();
+
+    // The exact dc0a9f failure: used to error on the missing created_by default.
+    client
+        .add_dependency_typed("child", "parent", "parent-child")
+        .await
+        .expect("add_dependency_typed must work on a bd-richer schema");
+
+    // get_children reads bd's `type` (not a phantom dep_type) → sees the edge.
+    // This one assertion proves both write-to-`type` and read-from-`type`: if
+    // the value had gone anywhere else, get_children would return empty.
+    let kids = client.get_children("parent").await.unwrap();
+    assert_eq!(kids, vec!["child".to_string()]);
+}
+
 /// `migrate()` must be idempotent across repeated invocations: after a
 /// clean first run, the second call exercises the verify-on-already-applied
 /// path for migrations both with and without a verify clause (005 has one;
