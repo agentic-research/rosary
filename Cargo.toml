@@ -54,7 +54,9 @@ axum = "0.8"
 uuid = { version = "1", features = ["v4"] }
 hmac = "0.12"
 sha2 = "0.10" # interop only: DSSE/in-toto digests + provider webhook HMAC. NOT for CAS.
-blake3 = "1" # content-addressing (CAS), ecosystem-standard (cloister, mache OCI)
+# blake3 is no longer a DIRECT dep (rosary-bf9cbf): CAS hashing goes through
+# cas::content_hash → leyline-core's ContentAddressed::hash, so blake3 arrives
+# transitively via leyline-core and rosary can't drift off the substrate lock.
 hex = "0.4"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 base64 = "0.22"
