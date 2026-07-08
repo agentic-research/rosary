@@ -223,8 +223,11 @@ pub(crate) async fn handle_github_webhook(
     eprintln!("[github-webhook] PR #{pr_number} merged — advancing bead {bead_id}");
 
     // 6. Find the bead across all repos, advance it, unblock dependents
+    //    (connect on demand — the merged PR doesn't say which repo).
     let mut found = false;
-    for (repo_name, client) in state.pool.iter_clients() {
+    for (repo_name, client) in state.pool.connect_all().await {
+        let repo_name = repo_name.as_str();
+        let client = client.as_ref();
         // Search for the bead by short ID
         let beads = match client.search_beads(&bead_id, repo_name, 20).await {
             Ok(b) => b,

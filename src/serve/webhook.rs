@@ -155,9 +155,11 @@ pub(crate) async fn handle_webhook(
         }
     };
 
-    // 8. Find the bead by external_ref across all repos in the pool
+    // 8. Find the bead by external_ref across all repos (connect on demand —
+    //    a webhook doesn't know which repo holds the bead).
     let mut found = false;
-    for (repo_name, client) in state.pool.iter_clients() {
+    for (repo_name, client) in state.pool.connect_all().await {
+        let client = client.as_ref();
         match client.find_by_external_ref(&identifier).await {
             Ok(Some(bead_id)) => {
                 let new_status = bead_state.to_string();

@@ -105,8 +105,9 @@ pub(crate) async fn find_triage_bead_in_store(
 /// `ticket_id`. Errors from any single store are skipped — one broken repo
 /// doesn't block discovery in the others.
 pub(crate) async fn find_triage_bead(pool: &RepoPool, ticket_id: &str) -> Option<Value> {
-    for (repo_name, client) in pool.iter_clients() {
-        if let Some(found) = find_triage_bead_in_store(client, repo_name, ticket_id).await {
+    for (repo_name, client) in pool.connect_all().await {
+        if let Some(found) = find_triage_bead_in_store(client.as_ref(), &repo_name, ticket_id).await
+        {
             return Some(found);
         }
     }

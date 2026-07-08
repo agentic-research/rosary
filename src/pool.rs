@@ -89,48 +89,63 @@ impl RepoPool {
         }
     }
 
-    /// Create a pool and connect to all repos in the given config.
-    /// Repos that fail to connect are logged and skipped (best-effort).
+    /// Build a pool that RECORDS the config but connects NOTHING (rosary-31193d).
+    ///
+    /// Eagerly connecting every configured repo here was the dolt-server leak: it
+    /// spawned/attached a `dolt sql-server` per Dolt repo on *every* MCP server
+    /// start — 34 repos → 34 servers → ~6.5GB — even for a single-repo op
+    /// (rosary-a7a668). Now stores are opened lazily, per repo actually used:
+    /// [`get`]/[`get_by_path`] connect on demand via the recorded `beads_dirs`,
+    /// and the ad-hoc fallback in `get_client` handles the rest. So startup
+    /// spawns zero servers; a single-repo op touches exactly one.
     pub async fn from_config(config_path: &str) -> Result<Self> {
         let cfg = config::load_merged(config_path)?;
-        let mut clients: HashMap<String, Box<dyn BeadStore>> = HashMap::new();
         let mut paths = HashMap::new();
         let mut beads_dirs = HashMap::new();
-        let mut known_ports: HashMap<String, u16> = HashMap::new();
-
         for repo in &cfg.repo {
             let path = crate::scanner::expand_path(&repo.path);
             let beads_dir = path.join(".beads");
             if !beads_dir.exists() {
                 continue;
             }
-
-            paths.insert(repo.name.clone(), path.clone());
-
-            // Record the Dolt port used at connect time so we can detect restarts later.
-            let port = read_dolt_port(&beads_dir);
-            if let Some(p) = port {
-                known_ports.insert(repo.name.clone(), p);
-            }
-
-            match crate::bead_sqlite::connect_bead_store(&beads_dir).await {
-                Ok(store) => {
-                    eprintln!("[pool] connected: {}", repo.name);
-                    clients.insert(repo.name.clone(), store);
-                    beads_dirs.insert(repo.name.clone(), beads_dir);
-                }
-                Err(e) => {
-                    eprintln!("[pool] skipping {} (connect failed: {e})", repo.name);
-                }
-            }
+            paths.insert(repo.name.clone(), path);
+            beads_dirs.insert(repo.name.clone(), beads_dir);
         }
-
         Ok(RepoPool {
-            clients,
+            clients: HashMap::new(),
             paths,
             beads_dirs,
-            known_ports,
+            known_ports: HashMap::new(),
         })
+    }
+
+    /// The recorded repo root path for a registered repo name, without
+    /// connecting. Lets a scope-only call (`scope: "repo:X"`, no `repo_path`)
+    /// resolve X's path and lazily open just that store — rosary-31193d.
+    pub fn path_for(&self, repo_name: &str) -> Option<&Path> {
+        self.paths.get(repo_name).map(|p| p.as_path())
+    }
+
+    /// Every configured repo name (whether or not it's connected). Used for
+    /// the startup log + cross-repo handlers, since `clients` is now lazy.
+    pub fn configured_names(&self) -> Vec<&str> {
+        self.beads_dirs.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Open a store for EVERY configured repo (ad hoc, best-effort). For the
+    /// cross-repo handlers (webhooks, ticket-load) that must search all repos
+    /// for a bead without knowing which one holds it. Connects on demand — a
+    /// webhook firing is far rarer than an MCP startup, so this doesn't
+    /// reintroduce the startup fan-out.
+    pub async fn connect_all(&self) -> Vec<(String, Box<dyn BeadStore>)> {
+        let mut out = Vec::new();
+        for (name, beads_dir) in &self.beads_dirs {
+            match crate::bead_sqlite::connect_bead_store(beads_dir).await {
+                Ok(store) => out.push((name.clone(), store)),
+                Err(e) => eprintln!("[pool] connect_all: skipping {name} ({e})"),
+            }
+        }
+        out
     }
 
     /// Get a BeadStore by repo name.
@@ -166,26 +181,11 @@ impl RepoPool {
         None
     }
 
-    /// Number of connected repos.
-    pub fn len(&self) -> usize {
+    /// Number of repos actually connected so far (lazy — grows on use, not at
+    /// startup). Test-only: pins that `from_config` connects nothing.
+    #[cfg(test)]
+    pub fn connected_count(&self) -> usize {
         self.clients.len()
-    }
-
-    /// Whether pool has no connections (required by clippy alongside `len()`).
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.clients.is_empty()
-    }
-
-    /// List connected repo names.
-    pub fn repo_names(&self) -> Vec<&str> {
-        self.clients.keys().map(|s| s.as_str()).collect()
-    }
-
-    /// Iterate over all (repo_name, client) pairs. Used by webhook handler.
-    #[allow(dead_code)]
-    pub fn iter_clients(&self) -> impl Iterator<Item = (&str, &dyn BeadStore)> {
-        self.clients.iter().map(|(k, v)| (k.as_str(), v.as_ref()))
     }
 }
 
@@ -201,28 +201,69 @@ mod tests {
             beads_dirs: HashMap::new(),
             known_ports: HashMap::new(),
         };
-        assert!(pool.is_empty());
-        assert_eq!(pool.len(), 0);
+        assert_eq!(pool.connected_count(), 0);
         assert!(pool.get("nonexistent").is_none());
         assert!(pool.get_by_path("/tmp/fake").is_none());
-        assert!(pool.repo_names().is_empty());
+        assert!(pool.path_for("nonexistent").is_none());
     }
 
     #[test]
-    fn pool_paths_resolve() {
+    fn path_for_resolves_without_connecting() {
+        // A registered repo's path is available for lazy connect (scope-only
+        // calls) without any store being connected.
         let mut paths = HashMap::new();
         paths.insert("myrepo".to_string(), PathBuf::from("/tmp/myrepo"));
-
         let pool = RepoPool {
             clients: HashMap::new(),
             paths,
             beads_dirs: HashMap::new(),
             known_ports: HashMap::new(),
         };
+        assert_eq!(pool.path_for("myrepo"), Some(Path::new("/tmp/myrepo")));
+        assert!(pool.connected_count() == 0, "path lookup connects nothing");
+    }
 
-        // No client for this path, but path resolution works
-        assert!(pool.get_by_path("/tmp/myrepo").is_none()); // no client
-        assert!(pool.get("myrepo").is_none()); // no client
+    /// The leak fix (rosary-31193d / a7a668): `from_config` over a config with a
+    /// real (SQLite) repo must connect NOTHING — no store, no dolt server — even
+    /// though the repo exists. Servers are spawned lazily, per repo actually
+    /// used, not eagerly for all on every MCP startup.
+    #[tokio::test]
+    async fn from_config_connects_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().join("myrepo");
+        std::fs::create_dir_all(repo.join(".beads")).unwrap();
+        // A SQLite bead store so the repo is "real" (has .beads/).
+        crate::bead_sqlite::SqliteBeadStore::connect(&repo.join(".beads/beads.db")).unwrap();
+
+        let config_path = tmp.path().join("rosary.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "[[repo]]\nname = \"myrepo\"\npath = \"{}\"\n",
+                repo.display()
+            ),
+        )
+        .unwrap();
+
+        let pool = RepoPool::from_config(config_path.to_str().unwrap())
+            .await
+            .unwrap();
+
+        // Recorded but NOT connected — the whole point.
+        assert!(
+            pool.configured_names().contains(&"myrepo"),
+            "repo is recorded in config"
+        );
+        assert_eq!(
+            pool.connected_count(),
+            0,
+            "from_config must connect nothing (no eager fan-out)"
+        );
+        assert_eq!(
+            pool.path_for("myrepo"),
+            Some(repo.as_path()),
+            "path is resolvable for lazy connect"
+        );
     }
 
     #[tokio::test]
@@ -320,22 +361,21 @@ path = "/tmp/no-such-repo-xyz"
     }
 
     #[test]
-    fn repo_names_returns_connected() {
-        let clients = HashMap::new();
-        let mut paths = HashMap::new();
-
-        // We can't easily create a BeadStore without a real database,
-        // so test the names/paths logic separately
-        paths.insert("alpha".to_string(), PathBuf::from("/tmp/alpha"));
-        paths.insert("beta".to_string(), PathBuf::from("/tmp/beta"));
-
+    fn configured_names_lists_all_registered_regardless_of_connection() {
+        let mut beads_dirs = HashMap::new();
+        beads_dirs.insert("alpha".to_string(), PathBuf::from("/tmp/alpha/.beads"));
+        beads_dirs.insert("beta".to_string(), PathBuf::from("/tmp/beta/.beads"));
         let pool = RepoPool {
-            clients,
-            paths,
-            beads_dirs: HashMap::new(),
+            clients: HashMap::new(),
+            paths: HashMap::new(),
+            beads_dirs,
             known_ports: HashMap::new(),
         };
-        // No clients connected, so repo_names is empty
-        assert!(pool.repo_names().is_empty());
+        // configured_names reports all registered repos even though none are
+        // connected (lazy) — so the startup log stays truthful.
+        let mut names = pool.configured_names();
+        names.sort_unstable();
+        assert_eq!(names, vec!["alpha", "beta"]);
+        assert_eq!(pool.connected_count(), 0);
     }
 }
