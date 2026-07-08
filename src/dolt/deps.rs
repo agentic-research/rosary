@@ -4,7 +4,56 @@ use sqlx_core::row::Row;
 
 use super::DoltClient;
 
+/// Which columns the live `dependencies` table actually has. rosary's own
+/// minimal schema is `(issue_id, depends_on_id, dep_type)`; a bd-created (richer)
+/// store instead has bd's `type` column plus a NOT-NULL `created_by` with no
+/// default — and, after rosary migration 007, *also* a `dep_type` column. So the
+/// dep ops must probe the schema and (a) write/read the canonical type column
+/// (`type` when present, else `dep_type`) and (b) supply `created_by` when the
+/// store requires it. Probed per call (dep ops are infrequent) — rosary-dc0a9f.
+struct DepSchema {
+    /// The dependency-type column to read/write: `type` (bd) or `dep_type`.
+    type_col: &'static str,
+    /// `created_by` exists and is NOT NULL with no default → must be supplied.
+    needs_created_by: bool,
+}
+
 impl DoltClient {
+    async fn dep_schema(&self) -> Result<DepSchema> {
+        let rows = query(
+            "SELECT COLUMN_NAME, IS_NULLABLE, COLUMN_DEFAULT
+             FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_NAME = 'dependencies'",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("probing dependencies schema")?;
+        let (mut has_type, mut needs_created_by) = (false, false);
+        for r in &rows {
+            let name: String = r.try_get("COLUMN_NAME").unwrap_or_default();
+            match name.as_str() {
+                // bd's canonical dep-type column.
+                "type" => has_type = true,
+                "created_by" => {
+                    let nullable: String = r.try_get("IS_NULLABLE").unwrap_or_default();
+                    let default: Option<String> = r
+                        .try_get::<Option<String>, _>("COLUMN_DEFAULT")
+                        .ok()
+                        .flatten();
+                    needs_created_by = nullable.eq_ignore_ascii_case("NO") && default.is_none();
+                }
+                _ => {}
+            }
+        }
+        // Prefer bd's `type` where it exists so rosary interoperates with the
+        // data bd already wrote; fall back to rosary's own `dep_type`.
+        let type_col = if has_type { "type" } else { "dep_type" };
+        Ok(DepSchema {
+            type_col,
+            needs_created_by,
+        })
+    }
+
     /// Add a dependency: `issue_id` depends on `depends_on_id` (defaults to a
     /// `blocks` edge). Prefer `add_dependency_typed` for containment edges.
     pub async fn add_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()> {
@@ -24,16 +73,35 @@ impl DoltClient {
     ) -> Result<()> {
         let full_issue = self.resolve_id(issue_id).await?;
         let full_dep = self.resolve_id(depends_on_id).await?;
-        query(
-            "INSERT INTO dependencies (issue_id, depends_on_id, dep_type) VALUES (?, ?, ?)
-             ON DUPLICATE KEY UPDATE dep_type = VALUES(dep_type)",
-        )
-        .bind(&full_issue)
-        .bind(&full_dep)
-        .bind(dep_type)
-        .execute(&self.pool)
-        .await
-        .with_context(|| format!("adding {dep_type} dependency {issue_id} → {depends_on_id}"))?;
+        let sch = self.dep_schema().await?;
+        let col = sch.type_col; // safe: hardcoded "type" | "dep_type", not user input
+        // Rebind the value on conflict (portable) rather than the deprecated
+        // VALUES() function. Supply created_by only when the store requires it.
+        let (sql, with_creator) = if sch.needs_created_by {
+            (
+                format!(
+                    "INSERT INTO dependencies (issue_id, depends_on_id, `{col}`, created_by) \
+                     VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `{col}` = ?"
+                ),
+                true,
+            )
+        } else {
+            (
+                format!(
+                    "INSERT INTO dependencies (issue_id, depends_on_id, `{col}`) \
+                     VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `{col}` = ?"
+                ),
+                false,
+            )
+        };
+        let mut q = query(&sql).bind(&full_issue).bind(&full_dep).bind(dep_type);
+        if with_creator {
+            q = q.bind("rosary");
+        }
+        q = q.bind(dep_type); // ON DUPLICATE KEY UPDATE value
+        q.execute(&self.pool).await.with_context(|| {
+            format!("adding {dep_type} dependency {issue_id} → {depends_on_id}")
+        })?;
         self.auto_commit(&format!("dep {full_issue} → {full_dep} ({dep_type})"))
             .await;
         Ok(())
@@ -49,10 +117,11 @@ impl DoltClient {
             Ok(id) => id,
             Err(_) => return Ok(vec![]),
         };
-        let rows = query(
+        let col = self.dep_schema().await?.type_col;
+        let rows = query(&format!(
             "SELECT issue_id FROM dependencies
-             WHERE depends_on_id = ? AND dep_type IN ('parent-child', 'discovered-from')",
-        )
+             WHERE depends_on_id = ? AND `{col}` IN ('parent-child', 'discovered-from')"
+        ))
         .bind(&full_id)
         .fetch_all(&self.pool)
         .await
