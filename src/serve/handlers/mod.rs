@@ -139,25 +139,26 @@ pub(crate) async fn resolve_repo_client<'a>(
             );
         }
     }
-    // Try the pool by name first — handles the "scope-only, no
-    // repo_path" case for any repo already registered.
+    // Try the pool by name first (in case it's already connected).
     if let Some(store) = pool.get(repo_name) {
         return Ok((scope, StoreRef::Pooled(store)));
     }
-    // Fall back to the existing get_client path which expects a
-    // filesystem path. This preserves back-compat for callers that
-    // still pass `repo_path` directly + handles repos not yet in the
-    // pool (one-shot CLI invocations).
-    let repo_path = args
-        .get("repo_path")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "scope `{repo_name}` is not loaded in the repo pool and no `repo_path` was passed; \
-                 register the repo via `rsry_repo_register` or pass `repo_path` explicitly"
-            )
-        })?;
-    let store_ref = get_client(repo_path, pool).await?;
+    // Resolve the repo's path: an explicit `repo_path` arg, else the recorded
+    // path for a registered repo (the scope-only, no-`repo_path` case). Then
+    // open just THAT repo's store lazily — never all of them (rosary-31193d).
+    let repo_path: String = match args.get("repo_path").and_then(|v| v.as_str()) {
+        Some(p) => p.to_string(),
+        None => pool
+            .path_for(repo_name)
+            .map(|p| p.to_string_lossy().to_string())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "scope `{repo_name}` is not a registered repo and no `repo_path` was passed; \
+                     register the repo via `rsry_repo_register` or pass `repo_path` explicitly"
+                )
+            })?,
+    };
+    let store_ref = get_client(&repo_path, pool).await?;
     Ok((scope, store_ref))
 }
 

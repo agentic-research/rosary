@@ -117,10 +117,10 @@ pub async fn run(ipc_socket: &Path, config_path: &str) -> Result<()> {
     let config_path: Arc<str> = Arc::from(config_path);
 
     eprintln!(
-        "[rsry-mcp] server started (ipc-socket transport at {}, {} repos: {}, build {})",
+        "[rsry-mcp] server started (ipc-socket transport at {}, {} repos lazy: {}, build {})",
         ipc_socket.display(),
-        pool.len(),
-        pool.repo_names().join(", "),
+        pool.configured_names().len(),
+        pool.configured_names().join(", "),
         env!("RSRY_BUILD_HASH"),
     );
 
