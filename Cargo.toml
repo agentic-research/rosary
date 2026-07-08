@@ -36,13 +36,14 @@ dirs-next = "2.0.0"
 sqlx-core = { version = "0.8.6", features = ["chrono", "tokio", "_rt-tokio"], default-features = false }
 sqlx-mysql = { version = "0.8.6", features = ["chrono"], default-features = false }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
-leyline-vcs = { git = "https://github.com/agentic-research/ley-line-open", default-features = false, optional = true }
-# Canonical CAS hashing primitive (ContentAddressed::hash, BLAKE3-locked) — the
-# single source of truth for content addresses across the ecosystem, so a bead's
-# hash == a mache derivation's == the same CAS. Non-optional (cas.rs is core) and
-# light (no FUSE/rusqlite). rev-pinned independent of leyline-vcs's older lock;
-# adopting current LLO wholesale needs a rusqlite bump (rosary-7069df). Proven
-# byte-identical to the prior blake3 impl by rosary-bf6c74's golden vectors.
+# The ONLY LLO dependency: the light content-address substrate
+# (ContentAddressed::hash, BLAKE3-locked) — the single source of truth for
+# content addresses across the ecosystem, so a bead's hash == a mache
+# derivation's == the same CAS. Light (no FUSE/rusqlite). vcs uses the `jj` CLI
+# rather than leyline-vcs, so rosary carries none of the heavy leyline-fs/jj-lib
+# subtree (rosary-30374f). rev-pinned; adopting current LLO wholesale needs a
+# rusqlite bump (rosary-7069df). Byte-identical to the prior blake3 impl per
+# rosary-bf6c74's golden vectors.
 leyline-core = { git = "https://github.com/agentic-research/ley-line-open", rev = "c3515b9", default-features = false }
 agent-client-protocol = "0.10.2"
 async-trait = "0.1.89"
@@ -74,14 +75,6 @@ openssl = { version = "0.10", features = ["vendored"] }
 
 [build-dependencies]
 capnpc = "0.21"
-
-[features]
-# `leyline` is back on by default now that leyline-vcs ships from
-# `agentic-research/ley-line-open` (PUBLIC). Public clones build the
-# integrated jj sidecar + FUSE path natively, no `--features` flag
-# required. See rosary-7b1191 / ley-line-open#1 for the carve-out.
-default = ["leyline"]
-leyline = ["dep:leyline-vcs"]
 
 [dev-dependencies]
 tempfile = "3"
