@@ -7,15 +7,21 @@
 //! observation hashed in rosary has the SAME digest as in cloister/mache,
 //! which is the whole point of a shared CAS (rosary-a3ab19).
 //!
+//! Delegates to ley-line-open's canonical `ContentAddressed::hash` (the
+//! BLAKE3-locked substrate σ function) rather than hashing directly, so rosary
+//! can't drift off the substrate's hash lock — the exact drift `leyline-cas-ffi`
+//! exists to prevent. Proven byte-for-byte identical to the prior local blake3
+//! impl by rosary-bf6c74's golden vectors before this swap (rosary-bf8121).
+//!
 //! NOT for: DSSE/in-toto attestation digests (`dsse.rs`) or provider webhook
 //! HMACs (`serve/webhook.rs`) — those are sha256 by external spec, a
 //! different interop boundary, deliberately left as sha256.
 
 /// Content hash of arbitrary bytes: lowercase hex of the BLAKE3-256 digest
-/// (64 hex chars). The canonical rosary CAS primitive.
+/// (64 hex chars). The canonical rosary CAS primitive — LLO's locked hash.
 #[allow(dead_code)] // API surface — CAS primitive; observation payload_hash + future blob CAS
 pub fn content_hash(bytes: &[u8]) -> String {
-    blake3::hash(bytes).to_hex().to_string()
+    hex::encode(leyline_core::ContentAddressed::hash(bytes).as_bytes())
 }
 
 #[cfg(test)]
