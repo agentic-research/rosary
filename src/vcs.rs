@@ -1,17 +1,18 @@
-//! Thin wrapper around leyline-vcs for automatic state versioning.
+//! Thin wrapper around the `jj` CLI for automatic state versioning.
 //!
 //! Rosary's state directory (`~/.rsry/`) is a jj repo. Every state change
-//! (bead status update, triage score, dispatch record) auto-snapshots via
-//! leyline-vcs's sidecar pattern: the hot path writes to SQLite, the cold
-//! path snapshots to jj asynchronously.
+//! (bead status update, triage score, dispatch record) auto-snapshots: the hot
+//! path writes to SQLite, the cold path snapshots to jj asynchronously.
+//!
+//! Uses the `jj` CLI throughout — init, snapshot, and push all shell out — so
+//! rosary carries none of leyline-vcs's heavy transitive deps (leyline-fs /
+//! jj-lib / rusqlite) for what is a handful of subprocess calls (rosary-30374f).
 //!
 //! Agents never interact with this directly — it's pure plumbing.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-#[cfg(feature = "leyline")]
-use leyline_vcs::JjIntegration;
 
 #[allow(dead_code)] // API surface — wired when main.rs calls ensure_state_dir on startup
 /// Rosary state directory, default `~/.rsry/`.
@@ -33,26 +34,24 @@ pub fn ensure_state_dir() -> Result<PathBuf> {
 }
 
 #[allow(dead_code)]
-/// Initialize a jj repo in the state directory if one doesn't exist.
+/// Initialize a git-backed jj repo in the state directory if one doesn't exist.
 ///
-/// With `leyline` feature: uses leyline-vcs's JjIntegration (jj-lib native).
-/// Without: falls back to `jj init` CLI.
+/// `jj git init` (not the deprecated bare `jj init`) so the repo has a git
+/// backend consistent with [`push`]'s `jj git push`. Idempotent — a no-op when
+/// `.jj` already exists.
 pub fn init_jj(state_path: &Path) -> Result<()> {
-    #[cfg(feature = "leyline")]
-    {
-        JjIntegration::init_or_open(state_path)
-            .with_context(|| format!("jj init_or_open at {}", state_path.display()))?;
+    if state_path.join(".jj").exists() {
+        return Ok(());
     }
-    #[cfg(not(feature = "leyline"))]
-    {
-        if !state_path.join(".jj").exists() {
-            let _ = std::process::Command::new("jj")
-                .args(["init"])
-                .current_dir(state_path)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
+    let status = std::process::Command::new("jj")
+        .args(["git", "init"])
+        .current_dir(state_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .with_context(|| format!("running jj git init at {}", state_path.display()))?;
+    if !status.success() {
+        anyhow::bail!("jj git init failed at {}", state_path.display());
     }
     Ok(())
 }
@@ -564,9 +563,24 @@ mod tests {
         assert!(dir.exists());
     }
 
-    #[cfg(feature = "leyline")]
+    /// `jj` on PATH? (init_jj now shells out; skip when it isn't installed —
+    /// same pattern as the dolt tests.)
+    fn jj_available() -> bool {
+        std::process::Command::new("jj")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
     #[test]
     fn init_jj_creates_repo() {
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
         let tmp = tempfile::TempDir::new().unwrap();
         assert!(!tmp.path().join(".jj").exists());
 
@@ -574,12 +588,15 @@ mod tests {
         assert!(tmp.path().join(".jj").exists());
     }
 
-    #[cfg(feature = "leyline")]
     #[test]
     fn init_jj_idempotent() {
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
         let tmp = tempfile::TempDir::new().unwrap();
 
-        // First call inits, second call opens — both succeed
+        // First call inits, second call is a no-op — both succeed.
         init_jj(tmp.path()).unwrap();
         init_jj(tmp.path()).unwrap();
         assert!(tmp.path().join(".jj").exists());
