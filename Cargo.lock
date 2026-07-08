@@ -2069,6 +2069,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "leyline-core"
+version = "0.6.0"
+source = "git+https://github.com/agentic-research/ley-line-open?rev=c3515b9#c3515b9e90e522dcd9226038a3f134a51bb20b8f"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "bytemuck",
+ "memmap2",
+ "serde",
+]
+
+[[package]]
 name = "leyline-fs"
 version = "0.1.0"
 source = "git+https://github.com/agentic-research/ley-line-open#ccb4409f5830d38f9162ecb50bf9b5b61e47ed68"
@@ -2078,7 +2090,7 @@ dependencies = [
  "blake3",
  "bytemuck",
  "crossbeam-queue",
- "leyline-core",
+ "leyline-core 0.1.0",
  "leyline-schema",
  "log",
  "memmap2",
@@ -2105,7 +2117,7 @@ dependencies = [
  "anyhow",
  "hex",
  "jj-lib",
- "leyline-core",
+ "leyline-core 0.1.0",
  "leyline-fs",
  "log",
  "pollster",
@@ -3283,6 +3295,7 @@ dependencies = [
  "hex",
  "hmac",
  "jsonwebtoken",
+ "leyline-core 0.6.0",
  "leyline-vcs",
  "libc",
  "openssl",

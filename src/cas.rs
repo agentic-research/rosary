@@ -46,4 +46,54 @@ mod tests {
         assert_eq!(h.len(), 64, "blake3-256 hex = 64 chars");
         assert!(h.bytes().all(|b| b.is_ascii_hexdigit()), "lowercase hex");
     }
+
+    /// Golden-vector proof (rosary-bf6c74): rosary's `content_hash` is
+    /// byte-for-byte identical to LLO's canonical `ContentAddressed::hash`
+    /// across a spread of inputs — so swapping `content_hash` onto the LLO
+    /// primitive (rosary-bf8121) is a pure refactor, and rosary can't drift off
+    /// the substrate's BLAKE3 lock (the exact drift `leyline-cas-ffi` exists to
+    /// prevent). If this fails, DO NOT swap. Uses `leyline-core` as a
+    /// dev-dependency only; `cas.rs` itself is untouched here.
+    #[test]
+    fn golden_vectors_match_leyline_core() {
+        use leyline_core::ContentAddressed;
+
+        let unicode = "héllo wörld — 𝔯𝔬𝔰𝔞𝔯𝔶 🌍".as_bytes();
+        let all_bytes: Vec<u8> = (0u8..=255).collect();
+        let large = vec![0xA5u8; 4096];
+        let vectors: &[&[u8]] = &[
+            b"",
+            b"a",
+            b"abc",
+            b"rosary",
+            b"\x00\x01\x02\x03",
+            unicode,
+            &all_bytes,
+            &large,
+        ];
+
+        for v in vectors {
+            let rosary_hex = content_hash(v);
+            // UFCS + explicit deref: `v` is `&&[u8]`; `*v` is the `&[u8]` the
+            // `ContentAddressed for [u8]` impl takes as `&self` (avoids the
+            // std::hash::Hash name clash).
+            let llo: leyline_core::Hash = ContentAddressed::hash(*v);
+
+            // (1) Byte-for-byte: same 32-byte BLAKE3 digest.
+            assert_eq!(
+                hex::decode(&rosary_hex).unwrap().as_slice(),
+                llo.as_bytes(),
+                "digest bytes diverge for input len {}",
+                v.len()
+            );
+            // (2) Wire-format: rosary's lowercase hex == hex of LLO's bytes, so
+            //     the swap is string-transparent for every existing caller.
+            assert_eq!(
+                rosary_hex,
+                hex::encode(llo.as_bytes()),
+                "hex wire format diverges for input len {}",
+                v.len()
+            );
+        }
+    }
 }
