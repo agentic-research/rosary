@@ -146,4 +146,25 @@ mod tests {
         assert_eq!(env.refs.len(), 4); // capped
         assert!(env.rollup.is_some()); // remainder collapsed to one blob
     }
+
+    #[test]
+    fn warmth_resume_refetches_nothing_already_held() {
+        let chain: Vec<Handoff> = (0..10u32).map(phase).collect();
+        let mut rs = RefStore::new(MemBlobStore::default());
+
+        // First build demotes older phases → some genuinely-new puts.
+        let _ = build(&chain, &TiersPolicy, 2000, 8, &mut rs).unwrap();
+        let after_first = rs.puts();
+        assert!(after_first > 0, "first build should demote something");
+
+        // "Resume": rebuild the SAME chain against the SAME store. Content-
+        // addressed puts are idempotent by hash — warmth means resume adds
+        // nothing the store already holds.
+        let _ = build(&chain, &TiersPolicy, 2000, 8, &mut rs).unwrap();
+        assert_eq!(
+            rs.puts() - after_first,
+            0,
+            "resume re-put already-held blobs"
+        );
+    }
 }

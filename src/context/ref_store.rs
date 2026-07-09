@@ -28,10 +28,23 @@ impl<B: BlobStore> RefStore<B> {
 
     /// Store bytes, return the hex content hash. The hex equals
     /// `cas::content_hash`, so a bead's ref == the same CAS everywhere.
+    ///
+    /// Content-addressed and idempotent: a blob the store already holds is not
+    /// re-put, and `puts` counts only genuinely-new work — the warmth invariant
+    /// (resume re-fetches nothing already held).
     pub fn put(&mut self, bytes: &[u8]) -> Result<String> {
-        self.store.put(bytes).context("blobstore put")?;
-        self.puts += 1;
-        Ok(crate::cas::content_hash(bytes))
+        let hex = crate::cas::content_hash(bytes);
+        let h = hash_from_hex(&hex)?;
+        if self
+            .store
+            .get(h)
+            .context("blobstore get (warmth check)")?
+            .is_none()
+        {
+            self.store.put(bytes).context("blobstore put")?;
+            self.puts += 1;
+        }
+        Ok(hex)
     }
 
     /// Fetch a blob by hex hash. `Ok(None)` on a clean miss; the underlying
