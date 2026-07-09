@@ -4,7 +4,7 @@ members = [".", "crates/crypto", "crates/bdr"]
 
 [package]
 name = "rosary"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 description = "Strings beads, repos, and review layers into coordinated work"
 license = "AGPL-3.0-or-later"
