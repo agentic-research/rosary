@@ -153,6 +153,11 @@
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/dispatch/codex_native.rs",
+      "count": 16
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/fake.rs",
       "count": 11
     },
@@ -169,7 +174,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/providers.rs",
-      "count": 43
+      "count": 27
     },
     {
       "rule_id": "duplicate_definitions",
@@ -610,11 +615,6 @@
       "rule_id": "duplicate_definitions",
       "source_id": "tests/ipc_docker_e2e.rs",
       "count": 2
-    },
-    {
-      "rule_id": "long_file",
-      "source_id": "src/dispatch/providers.rs",
-      "count": 1
     },
     {
       "rule_id": "long_file",

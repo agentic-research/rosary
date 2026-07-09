@@ -7,6 +7,7 @@
 //! The `AgentProvider` trait abstracts over different AI backends (Claude, Gemini,
 //! Codex, etc). `ClaudeProvider` is the default implementation.
 
+pub(crate) mod codex_native;
 pub mod prompt;
 pub mod providers;
 pub mod session;
@@ -19,14 +20,15 @@ pub(crate) mod fake;
 pub(crate) mod tests;
 
 // Re-export public API so callers can still use `dispatch::X`.
+#[allow(unused_imports)] // API surface
+pub use codex_native::CodexProvider;
 #[allow(unused_imports)] // API surface — not all re-exports consumed within crate yet
 pub use prompt::{
     PROMPT_VERSION, build_prompt, build_system_prompt, load_agent_prompt, strip_frontmatter,
 };
 #[allow(unused_imports)] // API surface
 pub use providers::{
-    AcpCliProvider, AgentProvider, AgentRunSpec, ClaudeProvider, CodexProvider, GeminiProvider,
-    provider_by_name,
+    AcpCliProvider, AgentProvider, AgentRunSpec, ClaudeProvider, GeminiProvider, provider_by_name,
 };
 #[allow(unused_imports)] // API surface
 pub use session::{AgentSession, AgentSessionRef, CliSession};
