@@ -7,6 +7,7 @@
 pub mod envelope;
 pub mod policy;
 pub mod ref_store;
+pub mod render;
 
 use std::path::Path;
 
