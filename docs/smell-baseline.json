@@ -124,7 +124,27 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/config/mod.rs",
-      "count": 5
+      "count": 6
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/context/envelope.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/context/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/context/policy.rs",
+      "count": 4
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/context/ref_store.rs",
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -284,7 +304,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/observation/audit.rs",
-      "count": 2
+      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
@@ -369,7 +389,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/pool.rs",
-      "count": 7
+      "count": 5
     },
     {
       "rule_id": "duplicate_definitions",

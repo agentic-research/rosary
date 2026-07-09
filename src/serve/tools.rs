@@ -19,6 +19,17 @@ pub(crate) fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "rsry_expand_ref",
+                "description": "Fetch a demoted context blob by its content hash (from the bounded pipeline-context envelope). Use when the prompt shows an 'Earlier context' ref you need in full.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hash": { "type": "string", "description": "hex content hash of the demoted blob" }
+                    },
+                    "required": ["hash"]
+                }
+            },
+            {
                 "name": "rsry_status",
                 "description": "Return aggregated status counts across all repos: open, ready, dispatchable, in_progress, and blocked bead counts.",
                 "inputSchema": {

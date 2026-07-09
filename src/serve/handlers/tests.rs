@@ -323,3 +323,21 @@ fn user_scope_anonymous_yields_none() {
         "anonymous/CLI callers must not scope to a user"
     );
 }
+
+#[tokio::test]
+async fn expand_ref_returns_stored_blob() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    // Seed a blob through a RefStore rooted at the cas dir the tool reads.
+    let mut rs = crate::context::ref_store::RefStore::new(
+        leyline_core::FsBlobStore::open(tmp.path()).unwrap(),
+    );
+    let hash = rs.put(b"demoted phase body").unwrap();
+
+    let args = serde_json::json!({ "hash": hash, "cas_dir": tmp.path().to_str().unwrap() });
+    let out = super::tool_expand_ref(&args).await.unwrap();
+    assert_eq!(out["content"].as_str().unwrap(), "demoted phase body");
+
+    let miss =
+        serde_json::json!({ "hash": "0".repeat(64), "cas_dir": tmp.path().to_str().unwrap() });
+    assert!(super::tool_expand_ref(&miss).await.unwrap()["content"].is_null());
+}
