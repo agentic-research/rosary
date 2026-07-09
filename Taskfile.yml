@@ -103,6 +103,41 @@ tasks:
         mache find-smells --db "$DB" --rule '*' --limit 100000 \
           --baseline-root "$PWD" --baseline docs/smell-baseline.json
 
+  coverage:
+    desc: >-
+      Test-coverage ratchet (rosary-69fdde) — the coverage analog of the mache
+      smell baseline. Runs cargo-llvm-cov and fails on any per-file line-coverage
+      regression below docs/coverage-baseline.json (the safety net that makes
+      decomposition like rosary-6a143f safe). The number is ONLY ever the tool's
+      output — regenerated and compared, never hand-typed — the structural guard
+      against fabricated coverage (rosary-5732ee). Local-first: run before/after a
+      decomposition to prove no regression. Skips (exit 0) when cargo-llvm-cov is
+      absent. CI enforcement is a follow-up (rosary-ae05a5 — needs a CI-native
+      baseline, since CI lacks dolt/jj and their tests skip).
+    cmds:
+      - |
+        if ! cargo llvm-cov --version >/dev/null 2>&1; then
+          echo "SKIP: cargo-llvm-cov not installed."
+          echo "      cargo install cargo-llvm-cov && rustup component add llvm-tools-preview"
+          exit 0
+        fi
+        COV="$(mktemp -u).json"
+        trap 'rm -f "$COV"' EXIT
+        cargo llvm-cov --json --output-path "$COV" --workspace
+        python3 scripts/coverage-ratchet.py --check "$COV"
+
+  coverage:baseline:
+    desc: >-
+      Regenerate docs/coverage-baseline.json from a fresh cargo-llvm-cov run.
+      Run after an intentional coverage change (e.g. a split that moves lines) —
+      never hand-edit the baseline.
+    cmds:
+      - |
+        COV="$(mktemp -u).json"
+        trap 'rm -f "$COV"' EXIT
+        cargo llvm-cov --json --output-path "$COV" --workspace
+        python3 scripts/coverage-ratchet.py --write "$COV"
+
   check:
     desc: Canonical verification gate (Taskfile source of truth)
     cmds:
