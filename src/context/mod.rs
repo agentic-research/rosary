@@ -4,5 +4,6 @@
 //! a bounded working set plus content-addressed *references* to demoted material
 //! instead of inlining the whole handoff chain into every phase's prompt.
 
+pub mod envelope;
 pub mod policy;
 pub mod ref_store;
