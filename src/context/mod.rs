@@ -51,4 +51,69 @@ mod tests {
         let out = super::build_bounded_prompt(&chain, &cfg, tmp.path()).unwrap();
         assert!(out.len() <= cfg.budget);
     }
+
+    /// End-to-end dogfood of the real on-disk path a dispatch uses (rosary-dd5828):
+    /// a deep handoff chain → `FsBlobStore` on disk → bounded render → warm resume.
+    /// Beyond the unit tests (which use MemBlobStore), this asserts demoted phases
+    /// actually persist to the CAS on disk (git-style sharded layout) and that a
+    /// resume against the same CAS re-writes nothing.
+    #[test]
+    fn warm_resume_fs_end_to_end() {
+        fn count_blobs(dir: &std::path::Path) -> usize {
+            std::fs::read_dir(dir)
+                .map(|rd| {
+                    rd.flatten()
+                        .map(|e| {
+                            let p = e.path();
+                            if p.is_dir() { count_blobs(&p) } else { 1 }
+                        })
+                        .sum()
+                })
+                .unwrap_or(0)
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cas = tmp.path();
+        let chain: Vec<crate::handoff::Handoff> = (0..20u32)
+            .map(|n| {
+                crate::handoff::Handoff::new(
+                    n,
+                    "dev-agent",
+                    None,
+                    "rosary-dogfood",
+                    "claude",
+                    &crate::manifest::Work::default(),
+                    None,
+                )
+            })
+            .collect();
+        let cfg = crate::config::ContextConfig {
+            policy: "tiers".into(),
+            budget: 2000,
+            max_refs: 4,
+        };
+
+        let prompt = super::build_bounded_prompt(&chain, &cfg, cas).unwrap();
+        let blobs = count_blobs(cas);
+
+        assert!(prompt.len() <= cfg.budget, "render exceeded budget");
+        assert!(prompt.contains("Phase 19"), "the current phase must be hot");
+        assert!(
+            prompt.contains("Earlier context"),
+            "older phases must demote to CAS refs"
+        );
+        assert!(
+            blobs > 0,
+            "demoted handoffs must persist to the CAS on disk (git-style shards)"
+        );
+
+        // Warm resume: re-render the same chain against the same on-disk CAS —
+        // content-addressed puts are idempotent, so no new blobs are written.
+        let _ = super::build_bounded_prompt(&chain, &cfg, cas).unwrap();
+        assert_eq!(
+            count_blobs(cas),
+            blobs,
+            "resume must not re-write already-held blobs"
+        );
+    }
 }
