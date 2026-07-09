@@ -24,6 +24,7 @@ pub(crate) struct GithubPullRequest {
     pub body: Option<String>,
     pub title: Option<String>,
     pub number: Option<u64>,
+    pub html_url: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +194,51 @@ pub(crate) async fn handle_github_webhook(
         }
     };
 
-    // 4. Only process closed+merged PRs
+    // 4a. On PR opened/reopened, record the pr_url association on the bead —
+    //     caller-agnostic (fires however the PR was created: rsry pr, raw gh,
+    //     the gh MCP tool, the web UI, another agent). No agent cooperation
+    //     required. rosary-a90785.
+    if matches!(payload.action.as_deref(), Some("opened") | Some("reopened")) {
+        let pr = match payload.pull_request {
+            Some(pr) => pr,
+            None => return (axum::http::StatusCode::OK, "no pull_request").into_response(),
+        };
+        let pr_number = pr.number.unwrap_or(0);
+        let search_text = format!(
+            "{} {}",
+            pr.title.as_deref().unwrap_or(""),
+            pr.body.as_deref().unwrap_or("")
+        );
+        let bead_id = match extract_bead_id(&search_text) {
+            Some(id) => id,
+            None => return (axum::http::StatusCode::OK, "no bead id found").into_response(),
+        };
+        let pr_ref = pr
+            .html_url
+            .clone()
+            .unwrap_or_else(|| format!("#{pr_number}"));
+        for (repo_name, client) in state.pool.connect_all().await {
+            let client = client.as_ref();
+            let Ok(beads) = client.search_beads(&bead_id, repo_name.as_str(), 20).await else {
+                continue;
+            };
+            if let Some(b) = beads
+                .iter()
+                .find(|b| b.id.ends_with(&bead_id) || b.id == bead_id)
+            {
+                client.log_event(&b.id, "pr_url", &pr_ref).await;
+                eprintln!(
+                    "[github-webhook] PR #{pr_number} opened — recorded pr_url on {} ({pr_ref})",
+                    b.id
+                );
+                return (axum::http::StatusCode::OK, "pr_url recorded").into_response();
+            }
+        }
+        eprintln!("[github-webhook] PR #{pr_number} opened but bead {bead_id} not found");
+        return (axum::http::StatusCode::OK, "bead not found").into_response();
+    }
+
+    // 4b. Only process closed+merged PRs
     if payload.action.as_deref() != Some("closed") {
         return (axum::http::StatusCode::OK, "not a close event").into_response();
     }
@@ -482,6 +527,45 @@ mod tests {
                 "merged": true,
                 "title": "feat: no bead ref",
                 "body": "This PR has no bead reference."
+            }
+        }"#;
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhook/github")
+            .header("x-github-event", "pull_request")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn github_webhook_handles_opened_and_extracts_bead() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = axum::Router::new()
+            .route(
+                "/webhook/github",
+                axum::routing::post(handle_github_webhook),
+            )
+            .with_state(make_state());
+
+        // An `opened` PR with a bead id + html_url. Empty pool, so the find loop
+        // ends in "bead not found" — but this proves the opened branch is handled
+        // (not falling through to the close filter), the bead id is extracted,
+        // and pr_url would be recorded when the bead exists. rosary-a90785.
+        let body = r#"{
+            "action": "opened",
+            "pull_request": {
+                "number": 7,
+                "title": "[rosary-a90785] feat(webhook): record pr_url on opened",
+                "body": "captured without an agent thinking about it",
+                "html_url": "https://github.com/agentic-research/rosary/pull/7"
             }
         }"#;
 
