@@ -305,60 +305,13 @@ impl Handoff {
     }
 
     /// Format the handoff chain as context for the next agent's prompt.
+    ///
+    /// The render body moved to [`crate::context::render::PlainRenderer`]
+    /// (rosary-6a143f); this stays as a stable entry point for existing callers
+    /// and tests.
     pub fn format_for_prompt(chain: &[Self]) -> String {
-        if chain.is_empty() {
-            return String::new();
-        }
-
-        let mut out = String::from("\n## Previous Phase Context\n\n");
-        for h in chain {
-            out.push_str(&format!(
-                "### Phase {} ({} via {})\n",
-                h.phase, h.from_agent, h.provider
-            ));
-            if let Some(ref tid) = h.thread_id {
-                out.push_str(&format!("Thread: {tid}\n"));
-            }
-            out.push_str(&format!("Summary: {}\n", h.summary));
-            if !h.files_changed.is_empty() {
-                out.push_str(&format!("Files: {}\n", h.files_changed.join(", ")));
-            }
-            if !h.review_hints.is_empty() {
-                out.push_str("Review hints:\n");
-                for hint in &h.review_hints {
-                    out.push_str(&format!("- {hint}\n"));
-                }
-            }
-            if !h.tools_used.is_empty() {
-                let approved: Vec<&str> = h
-                    .tools_used
-                    .iter()
-                    .filter(|t| t.approved)
-                    .map(|t| t.tool_name.as_str())
-                    .collect();
-                let rejected: Vec<&str> = h
-                    .tools_used
-                    .iter()
-                    .filter(|t| !t.approved)
-                    .map(|t| t.tool_name.as_str())
-                    .collect();
-                if !approved.is_empty() {
-                    out.push_str(&format!("Tools used: {}\n", approved.join(", ")));
-                }
-                if !rejected.is_empty() {
-                    out.push_str(&format!("Tools denied: {}\n", rejected.join(", ")));
-                }
-            }
-            if let Some(ref v) = h.verdict {
-                out.push_str(&format!("Verdict: {}\n", v.decision));
-                for c in &v.concerns {
-                    out.push_str(&format!("  Concern: {c}\n"));
-                }
-            }
-            out.push('\n');
-        }
-        out.push_str("Handoff files are in your working directory. Use mache MCP tools to structurally review the changes.\n");
-        out
+        use crate::context::render::ContextRenderer;
+        crate::context::render::PlainRenderer.render(chain)
     }
 }
 
