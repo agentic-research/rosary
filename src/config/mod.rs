@@ -35,6 +35,9 @@ pub struct Config {
     /// Example: `[pipelines]\nbug = ["dev-agent", "staging-agent"]`
     #[serde(default = "default_pipelines")]
     pub pipelines: HashMap<String, Vec<String>>,
+    /// Bounded content-addressed pipeline context (warm-resume, rosary-dd5828).
+    #[serde(default)]
+    pub context: ContextConfig,
     /// Maximum number of pipeline stages to execute per bead.
     /// 0 = unlimited (default). 1 = single-agent only.
     /// The hosted service sets this based on the customer's plan.
@@ -460,6 +463,41 @@ impl Default for OrchestrationConfig {
             max_nesting_depth: 0,
         }
     }
+}
+
+/// Bounded content-addressed pipeline context (`[context]`). Governs how the
+/// handoff chain is pruned into a budgeted envelope before prompt-building.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextConfig {
+    /// Pruning policy: `tiers` (default, current phase hot) or `recency`.
+    #[serde(default = "default_context_policy")]
+    pub policy: String,
+    /// Hard ceiling (bytes) the rendered context must stay under.
+    #[serde(default = "default_context_budget")]
+    pub budget: usize,
+    /// Max inline refs before older ones roll up into a single blob.
+    #[serde(default = "default_context_max_refs")]
+    pub max_refs: usize,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            policy: default_context_policy(),
+            budget: default_context_budget(),
+            max_refs: default_context_max_refs(),
+        }
+    }
+}
+
+fn default_context_policy() -> String {
+    "tiers".to_string()
+}
+fn default_context_budget() -> usize {
+    8000
+}
+fn default_context_max_refs() -> usize {
+    8
 }
 
 /// Built-in pipeline definitions: issue_type → ordered agent sequence.
