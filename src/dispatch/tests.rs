@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tempfile::TempDir;
 
-use crate::dispatch::fake::{DeterministicAgentAction, DeterministicAgentProvider};
-use crate::dispatch::providers::{
+use crate::dispatch::codex_native::{
     CodexAppServerClient, CodexAppServerRequest, CodexAppServerRuntime, CodexNativeSession,
     CodexProvider, CodexRuntime, CodexThreadStart, CodexUnixSocketClient,
 };
+use crate::dispatch::fake::{DeterministicAgentAction, DeterministicAgentProvider};
 
 fn codex_gate_test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
