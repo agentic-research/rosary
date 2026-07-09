@@ -18,6 +18,9 @@ pub fn hash_from_hex(hex: &str) -> Result<Hash> {
 /// proof-gate.
 pub struct RefStore<B: BlobStore> {
     store: B,
+    /// Genuinely-new puts — warmth instrumentation (read in tests + available
+    /// for runtime observability).
+    #[allow(dead_code)]
     puts: usize,
 }
 
@@ -55,6 +58,7 @@ impl<B: BlobStore> RefStore<B> {
     }
 
     /// Count of genuinely-new puts — instrumentation for the warmth gate.
+    #[allow(dead_code)]
     pub fn puts(&self) -> usize {
         self.puts
     }
