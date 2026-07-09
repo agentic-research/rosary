@@ -183,6 +183,7 @@ pub(crate) async fn call_tool(
 
     match name {
         "rsry_scan" => tool_scan(config_path).await,
+        "rsry_expand_ref" => tool_expand_ref(args).await,
         "rsry_status" => tool_status(config_path).await,
         "rsry_list_beads" => {
             let status = args
@@ -265,6 +266,26 @@ async fn tool_scan(config_path: &str) -> Result<Value> {
     Ok(json!({
         "count": beads.len(),
         "beads": beads,
+    }))
+}
+
+/// Fetch a demoted context blob by its hex content hash (warm-resume,
+/// rosary-dd5828). `content` is null on a clean miss; verify-on-read in the
+/// blob store turns a tampered blob into an error. `cas_dir` is a test-only
+/// override; production reads `~/.rsry/cas`.
+async fn tool_expand_ref(args: &Value) -> Result<Value> {
+    let hash = args
+        .get("hash")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("expand_ref requires `hash`"))?;
+    let cas_dir = match args.get("cas_dir").and_then(|v| v.as_str()) {
+        Some(d) => std::path::PathBuf::from(d),
+        None => crate::vcs::state_dir()?.join("cas"),
+    };
+    let rs = crate::context::ref_store::RefStore::new(leyline_core::FsBlobStore::open(&cas_dir)?);
+    let body = rs.expand(hash)?;
+    Ok(json!({
+        "content": body.map(|b| String::from_utf8_lossy(&b).to_string()),
     }))
 }
 

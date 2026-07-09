@@ -26,6 +26,7 @@ mod capture;
 mod cas;
 mod cli;
 mod config;
+mod context;
 mod decompose;
 mod dispatch;
 mod dolt;

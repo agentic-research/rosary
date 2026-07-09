@@ -89,7 +89,7 @@ pub async fn sync_external_refs(
             }
         } else {
             // Create mirror bead in target repo
-            let mirror_id = format!("xref-{}-{}", ext_ref.source_repo, &ext_ref.source_bead_id);
+            let mirror_id = format!("xref-{}-{}", ext_ref.source_repo, ext_ref.source_bead_id);
             let title = format!(
                 "[cross-repo] {} (from {})",
                 ext_ref.source_title, ext_ref.source_repo

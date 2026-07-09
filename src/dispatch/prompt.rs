@@ -45,7 +45,19 @@ pub fn build_prompt(
     let handoff_context = workspace
         .map(|ws| {
             let chain = crate::handoff::Handoff::read_chain(ws);
-            crate::handoff::Handoff::format_for_prompt(&chain)
+            // Bounded, content-addressed context (warm-resume, rosary-dd5828):
+            // recent phases hot, older demoted to CAS refs, render under budget.
+            // Falls back to the full chain if the CAS is unavailable (graceful).
+            let cfg = crate::config::load_merged(&crate::config::resolve_config_path())
+                .map(|c| c.context)
+                .unwrap_or_default();
+            let cas_dir = crate::vcs::state_dir()
+                .map(|d| d.join("cas"))
+                .unwrap_or_else(|_| ws.join(".rsry-cas"));
+            crate::context::build_bounded_prompt(&chain, &cfg, &cas_dir).unwrap_or_else(|e| {
+                eprintln!("[context] bounded prompt failed ({e}); falling back to full chain");
+                crate::handoff::Handoff::format_for_prompt(&chain)
+            })
         })
         .unwrap_or_default();
 

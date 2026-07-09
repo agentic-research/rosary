@@ -34,7 +34,7 @@ impl Reconciler {
                 continue;
             }
 
-            let thread_id = format!("backlog/{}-{}", &cluster.bead_ids[0], &cluster.bead_ids[1]);
+            let thread_id = format!("backlog/{}-{}", cluster.bead_ids[0], cluster.bead_ids[1]);
             // decade_id must match the prefix extracted by workspace_ops.rs
             // (thread_id.split('/').next()) so list_threads("backlog") finds it.
             // The "backlog" name signals these are auto-clustered beads

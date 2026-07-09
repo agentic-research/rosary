@@ -838,3 +838,20 @@ path = "~/remotes/art/rosary"
     let att = config.attestation.unwrap();
     assert!(att.signing_key_path.is_none());
 }
+
+#[test]
+fn context_config_defaults_when_absent() {
+    let cfg: Config = toml::from_str("").unwrap();
+    assert_eq!(cfg.context.policy, "tiers");
+    assert_eq!(cfg.context.budget, 8000);
+    assert_eq!(cfg.context.max_refs, 8);
+}
+
+#[test]
+fn context_config_overrides() {
+    let cfg: Config =
+        toml::from_str("[context]\npolicy = \"recency\"\nbudget = 4000\nmax_refs = 4\n").unwrap();
+    assert_eq!(cfg.context.policy, "recency");
+    assert_eq!(cfg.context.budget, 4000);
+    assert_eq!(cfg.context.max_refs, 4);
+}
