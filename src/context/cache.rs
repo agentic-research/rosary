@@ -13,6 +13,36 @@ pub struct Provenance {
     pub source_refs: Vec<String>,
 }
 
+/// A described change to the world. `on_change` invalidates every entry whose
+/// `provenance` intersects it. This is the self-contained generation floor —
+/// correct with zero leyline present; a leyline cascade refiner (B3) narrows it.
+#[derive(Clone, Debug, Default)]
+pub struct ChangeSet {
+    /// The bead whose state moved (paired with `commit_sha`).
+    pub bead: Option<String>,
+    /// The new commit sha; entries for `bead` cached at a different sha are stale.
+    pub commit_sha: Option<String>,
+    /// Source regions (content-hashes) that changed.
+    pub source_refs: Vec<String>,
+}
+
+impl Provenance {
+    /// True if this entry was derived from something the change touched.
+    fn intersects(&self, change: &ChangeSet) -> bool {
+        // Same bead, advanced sha → the derivation is at an old commit.
+        if let (Some(bead), Some(sha)) = (&change.bead, &change.commit_sha) {
+            if &self.bead == bead && &self.commit_sha != sha {
+                return true;
+            }
+        }
+        // Any shared source region changed.
+        change
+            .source_refs
+            .iter()
+            .any(|r| self.source_refs.contains(r))
+    }
+}
+
 struct CacheEntry {
     value: String,
     generation: u64,
@@ -68,6 +98,22 @@ impl ContextCache {
     pub fn len_valid(&self) -> usize {
         self.entries.values().filter(|e| e.valid).count()
     }
+
+    /// Bump the generation, mark `valid = false` on every entry whose provenance
+    /// intersects `change`, and return the invalidated keys (the cascade a
+    /// downstream consumer would evict on its side). The SOLE invalidator.
+    pub fn on_change(&mut self, change: &ChangeSet) -> Vec<String> {
+        self.generation += 1;
+        let mut invalidated = Vec::new();
+        for (key, entry) in self.entries.iter_mut() {
+            if entry.valid && entry.provenance.intersects(change) {
+                entry.valid = false;
+                invalidated.push(key.clone());
+            }
+        }
+        invalidated.sort();
+        invalidated
+    }
 }
 
 #[cfg(test)]
@@ -82,6 +128,14 @@ mod tests {
         }
     }
 
+    fn prov_refs(bead: &str, sha: &str, refs: &[&str]) -> Provenance {
+        Provenance {
+            bead: bead.into(),
+            commit_sha: sha.into(),
+            source_refs: refs.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
     #[test]
     fn put_then_get_returns_value_absent_is_none() {
         let mut c = ContextCache::new();
@@ -89,5 +143,90 @@ mod tests {
         assert_eq!(c.get("k1"), Some("render-A"));
         assert_eq!(c.get("missing"), None);
         assert_eq!(c.len_valid(), 1);
+    }
+
+    #[test]
+    fn eviction_completeness_sha_change() {
+        // Gate 2: after on_change, the affected entry is gone from get().
+        let mut c = ContextCache::new();
+        c.put("k", "old-render", prov("rosary-1", "sha1"));
+        let evicted = c.on_change(&ChangeSet {
+            bead: Some("rosary-1".into()),
+            commit_sha: Some("sha2".into()),
+            source_refs: vec![],
+        });
+        assert_eq!(evicted, vec!["k".to_string()]);
+        assert_eq!(c.get("k"), None, "stale entry must never be served");
+        assert_eq!(c.generation(), 1, "on_change bumps generation");
+    }
+
+    #[test]
+    fn on_change_spares_unrelated_beads() {
+        let mut c = ContextCache::new();
+        c.put("k", "render", prov("rosary-1", "sha1"));
+        let evicted = c.on_change(&ChangeSet {
+            bead: Some("rosary-2".into()),
+            commit_sha: Some("shaX".into()),
+            source_refs: vec![],
+        });
+        assert!(evicted.is_empty());
+        assert_eq!(
+            c.get("k"),
+            Some("render"),
+            "unrelated change must not evict"
+        );
+    }
+
+    #[test]
+    fn eviction_on_shared_source_ref() {
+        let mut c = ContextCache::new();
+        c.put(
+            "k",
+            "render",
+            prov_refs("rosary-1", "sha1", &["blobhash-r1"]),
+        );
+        c.on_change(&ChangeSet {
+            bead: None,
+            commit_sha: None,
+            source_refs: vec!["blobhash-r1".into()],
+        });
+        assert_eq!(
+            c.get("k"),
+            None,
+            "a changed source ref must evict its derivations"
+        );
+    }
+
+    #[test]
+    fn freshness_soundness_valid_never_lies() {
+        // Gate 1: after a scripted sequence, every valid entry's provenance does
+        // NOT intersect any applied change.
+        let mut c = ContextCache::new();
+        c.put("a", "ra", prov("rosary-1", "sha1"));
+        c.put("b", "rb", prov("rosary-2", "sha1"));
+        c.put("d", "rd", prov_refs("rosary-3", "sha1", &["r-shared"]));
+        let changes = [
+            ChangeSet {
+                bead: Some("rosary-1".into()),
+                commit_sha: Some("sha2".into()),
+                source_refs: vec![],
+            },
+            ChangeSet {
+                bead: None,
+                commit_sha: None,
+                source_refs: vec!["r-shared".into()],
+            },
+        ];
+        for ch in &changes {
+            c.on_change(ch);
+        }
+        // "a" (rosary-1 moved) and "d" (r-shared changed) must be gone; "b" survives.
+        assert_eq!(c.get("a"), None);
+        assert_eq!(c.get("d"), None);
+        assert_eq!(c.get("b"), Some("rb"));
+        // Invariant: no served entry intersects any applied change.
+        for ch in &changes {
+            assert!(c.get("a").is_none() || !prov("rosary-1", "sha1").intersects(ch));
+        }
     }
 }
