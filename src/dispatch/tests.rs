@@ -1777,3 +1777,39 @@ async fn spawn_failure_cleans_up_git_worktree() {
         expected_ws.display()
     );
 }
+
+#[test]
+fn codex_rpc_read_times_out_on_hung_server() {
+    use std::time::{Duration, Instant};
+    // A raw connected socket pair standing in for a Codex app-server that
+    // completed the handshake but then never answers. Driving the WebSocket off
+    // `from_raw_socket` skips the HTTP-upgrade dance (and its accept/connect race
+    // — the source of a prior CI flake), leaving a clean test of the read loop:
+    // the peer stays open but silent, so the only way out is the read deadline.
+    let (client_end, peer_end) = std::os::unix::net::UnixStream::pair().unwrap();
+    let mut ws = tungstenite::WebSocket::from_raw_socket(
+        client_end,
+        tungstenite::protocol::Role::Client,
+        None,
+    );
+
+    let started = Instant::now();
+    let result = crate::dispatch::codex_native::read_jsonrpc_result(
+        &mut ws,
+        "hung-req",
+        Duration::from_millis(300),
+    );
+    let elapsed = started.elapsed();
+
+    let err = result.expect_err("a hung app-server must not block forever");
+    assert!(
+        err.to_string().contains("timed out"),
+        "the error must be a deterministic timeout, got: {err:#}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "must bail near the 300ms deadline, not hang ({elapsed:?})"
+    );
+    // Hold the peer open until here so the read blocks on silence, not EOF.
+    drop(peer_end);
+}
