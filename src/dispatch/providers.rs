@@ -256,6 +256,12 @@ impl AgentProvider for ClaudeProvider {
             "--output-format",
             "json",
         ];
+        // Binding denylist: --allowedTools is only advisory in headless -p, so
+        // read-only profiles must explicitly deny execute/mutate tools (rosary-5251a0).
+        let disallowed = permissions.claude_disallowed_tools();
+        if !disallowed.is_empty() {
+            base_args.extend_from_slice(&["--disallowedTools", disallowed]);
+        }
         if let Some(ref m) = self.model {
             base_args.extend_from_slice(&["--model", m.as_str()]);
         }
@@ -325,6 +331,13 @@ impl AgentProvider for ClaudeProvider {
             "--output-format".to_string(),
             "json".to_string(),
         ];
+        // Binding denylist: --allowedTools is only advisory in headless -p, so
+        // read-only profiles must explicitly deny execute/mutate tools (rosary-5251a0).
+        let disallowed = permissions.claude_disallowed_tools();
+        if !disallowed.is_empty() {
+            args.push("--disallowedTools".to_string());
+            args.push(disallowed.to_string());
+        }
         if let Some(ref m) = self.model {
             args.push("--model".to_string());
             args.push(m.clone());

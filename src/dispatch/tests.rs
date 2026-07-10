@@ -397,6 +397,39 @@ fn claude_provider_no_model_flag_when_unset() {
 }
 
 #[test]
+fn readonly_profiles_deny_execute_tools_in_build_command() {
+    // rosary-5251a0 root cause: in headless `claude -p`, --allowedTools is only an
+    // auto-approve list, NOT a binding allowlist — a read-only agent still ran Bash
+    // (a dispatched scoping-agent executed `find /`). The binding fix is an explicit
+    // --disallowedTools for the read-only profiles (verified: --disallowedTools blocks).
+    let p = ClaudeProvider::default();
+    for profile in [PermissionProfile::ReadOnly, PermissionProfile::Plan] {
+        let (_, args) = p.build_command("prompt", &profile, "sys");
+        let denies = args
+            .windows(2)
+            .any(|w| w[0] == "--disallowedTools" && w[1] == "Bash,Edit,Write,NotebookEdit");
+        assert!(
+            denies,
+            "{profile:?} must pass --disallowedTools Bash,Edit,Write,NotebookEdit — \
+             the allowlist alone does not bind in headless -p"
+        );
+    }
+}
+
+#[test]
+fn implement_profile_has_no_builtin_denylist() {
+    // Implement legitimately needs Bash(cargo *)/Edit/Write, so it gets no built-in
+    // denylist here. Binding its SCOPED Bash (deny `find /` but allow `cargo`) can't be
+    // done with a denylist — it needs a permission-prompt-tool / OS sandbox (follow-up).
+    let p = ClaudeProvider::default();
+    let (_, args) = p.build_command("prompt", &PermissionProfile::Implement, "sys");
+    assert!(
+        !args.iter().any(|a| a == "--disallowedTools"),
+        "Implement must not carry a built-in denylist (it needs Bash/Edit/Write)"
+    );
+}
+
+#[test]
 fn claude_provider_with_model_clones_correctly() {
     let p = ClaudeProvider {
         binary: "my-claude".into(),

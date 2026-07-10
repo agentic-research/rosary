@@ -102,6 +102,23 @@ impl PermissionProfile {
         }
     }
 
+    /// Claude `--disallowedTools` — the *binding* denylist.
+    ///
+    /// In headless `claude -p`, `--allowedTools` is only an auto-approve list, not a
+    /// binding allowlist: tools absent from it still execute (a dispatched ReadOnly
+    /// scoping-agent ran `find /` — rosary-5251a0; verified empirically that only
+    /// `--disallowedTools` / `--permission-mode plan` actually deny). Read-only
+    /// profiles therefore explicitly deny the execute/mutate built-ins, making them
+    /// genuinely read-only. `Implement` returns "" — it legitimately needs
+    /// Bash(cargo *)/Edit/Write, and binding its *scoped* Bash (deny `find /` while
+    /// allowing `cargo`) needs a permission-prompt-tool / OS sandbox, not a denylist.
+    pub fn claude_disallowed_tools(&self) -> &str {
+        match self {
+            Self::ReadOnly | Self::Plan => "Bash,Edit,Write,NotebookEdit",
+            Self::Implement => "",
+        }
+    }
+
     /// Gemini `--approval-mode` flag value.
     pub fn gemini_approval_mode(&self) -> &str {
         match self {
