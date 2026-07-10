@@ -465,6 +465,22 @@ impl Default for OrchestrationConfig {
     }
 }
 
+/// Warm-resume context-cache mode (rosary-a9f5dc). `off` = always re-derive
+/// (Phase A behavior, the default + escape hatch); `shadow` = compute the warm
+/// render, assert it equals cold, but serve cold; `on` = serve warm (deferred to
+/// B4 — treated as `shadow` until certified).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheMode {
+    Off,
+    Shadow,
+    On,
+}
+
+fn default_context_cache() -> CacheMode {
+    CacheMode::Off
+}
+
 /// Bounded content-addressed pipeline context (`[context]`). Governs how the
 /// handoff chain is pruned into a budgeted envelope before prompt-building.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -478,6 +494,9 @@ pub struct ContextConfig {
     /// Max inline refs before older ones roll up into a single blob.
     #[serde(default = "default_context_max_refs")]
     pub max_refs: usize,
+    /// Warm-resume cache mode. Default `off` — no cache until deliberately enabled.
+    #[serde(default = "default_context_cache")]
+    pub cache: CacheMode,
 }
 
 impl Default for ContextConfig {
@@ -486,6 +505,7 @@ impl Default for ContextConfig {
             policy: default_context_policy(),
             budget: default_context_budget(),
             max_refs: default_context_max_refs(),
+            cache: default_context_cache(),
         }
     }
 }
