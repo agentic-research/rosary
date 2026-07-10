@@ -48,6 +48,7 @@ mod tests {
             policy: "tiers".into(),
             budget: 2000,
             max_refs: 8,
+            cache: crate::config::CacheMode::Off,
         };
         let out = super::build_bounded_prompt(&chain, &cfg, tmp.path()).unwrap();
         assert!(out.len() <= cfg.budget);
@@ -92,6 +93,7 @@ mod tests {
             policy: "tiers".into(),
             budget: 2000,
             max_refs: 4,
+            cache: crate::config::CacheMode::Off,
         };
 
         let prompt = super::build_bounded_prompt(&chain, &cfg, cas).unwrap();

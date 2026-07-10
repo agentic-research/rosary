@@ -855,3 +855,17 @@ fn context_config_overrides() {
     assert_eq!(cfg.context.budget, 4000);
     assert_eq!(cfg.context.max_refs, 4);
 }
+
+#[test]
+fn context_cache_mode_defaults_off_and_parses() {
+    // Default is Off — zero behavior change vs Phase A.
+    assert_eq!(
+        crate::config::ContextConfig::default().cache,
+        crate::config::CacheMode::Off
+    );
+    // Parses lowercase strings from TOML.
+    let c: crate::config::ContextConfig = toml::from_str("cache = \"shadow\"").unwrap();
+    assert_eq!(c.cache, crate::config::CacheMode::Shadow);
+    let c: crate::config::ContextConfig = toml::from_str("cache = \"on\"").unwrap();
+    assert_eq!(c.cache, crate::config::CacheMode::On);
+}
