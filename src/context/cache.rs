@@ -29,10 +29,19 @@ pub struct ChangeSet {
 impl Provenance {
     /// True if this entry was derived from something the change touched.
     fn intersects(&self, change: &ChangeSet) -> bool {
-        // Same bead, advanced sha → the derivation is at an old commit.
-        if let (Some(bead), Some(sha)) = (&change.bead, &change.commit_sha) {
-            if &self.bead == bead && &self.commit_sha != sha {
-                return true;
+        // The bead's state moved. With a new sha, only entries at an older sha
+        // are stale (an advance); without one, conservatively treat every entry
+        // for this bead as stale — a bead-only change must never silently no-op.
+        if let Some(bead) = &change.bead {
+            if &self.bead == bead {
+                match &change.commit_sha {
+                    Some(sha) => {
+                        if &self.commit_sha != sha {
+                            return true;
+                        }
+                    }
+                    None => return true,
+                }
             }
         }
         // Any shared source region changed.
@@ -224,9 +233,34 @@ mod tests {
         assert_eq!(c.get("a"), None);
         assert_eq!(c.get("d"), None);
         assert_eq!(c.get("b"), Some("rb"));
-        // Invariant: no served entry intersects any applied change.
-        for ch in &changes {
-            assert!(c.get("a").is_none() || !prov("rosary-1", "sha1").intersects(ch));
+        // Invariant (Gate 1): no still-valid entry's provenance intersects any
+        // applied change — checked against the actual surviving entries.
+        for entry in c.entries.values().filter(|e| e.valid) {
+            for ch in &changes {
+                assert!(
+                    !entry.provenance.intersects(ch),
+                    "a valid entry's provenance intersects an applied change"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn on_change_bead_only_invalidates_all_entries_for_that_bead() {
+        let mut c = ContextCache::new();
+        c.put("k", "render", prov("rosary-1", "sha1"));
+        c.put("other", "r2", prov("rosary-2", "sha1"));
+        let evicted = c.on_change(&ChangeSet {
+            bead: Some("rosary-1".into()),
+            commit_sha: None,
+            source_refs: vec![],
+        });
+        assert_eq!(
+            evicted,
+            vec!["k".to_string()],
+            "bead-only change must invalidate that bead's entries"
+        );
+        assert_eq!(c.get("k"), None);
+        assert_eq!(c.get("other"), Some("r2"), "other beads unaffected");
     }
 }
