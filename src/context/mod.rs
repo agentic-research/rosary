@@ -29,6 +29,7 @@ pub fn build_bounded_prompt(
 }
 
 /// Content-addressed cache key for a (chain, cfg) render — same inputs, same key.
+#[allow(dead_code)] // wired live in B2 (rosary-a9f5dc)
 pub(crate) fn shadow_key(
     chain: &[crate::handoff::Handoff],
     cfg: &crate::config::ContextConfig,
@@ -43,6 +44,7 @@ pub(crate) fn shadow_key(
 /// Provenance for a chain's render: the bead it belongs to, the latest phase's
 /// content hash as the commit/source signal. A new phase or a bead move changes
 /// this, so `on_change` can invalidate derivations of the old state.
+#[allow(dead_code)] // wired live in B2 (rosary-a9f5dc)
 pub(crate) fn provenance_of(chain: &[crate::handoff::Handoff]) -> cache::Provenance {
     let last = chain.last();
     let bead = last.map(|h| h.bead_id.clone()).unwrap_or_default();
@@ -56,6 +58,7 @@ pub(crate) fn provenance_of(chain: &[crate::handoff::Handoff]) -> cache::Provena
 
 /// Result of a shadow render: what was served (always cold) and whether warm
 /// diverged from cold (an invalidation bug — auto-demotes the cache).
+#[allow(dead_code)] // wired live in B2 (rosary-a9f5dc)
 pub struct ShadowOutcome {
     pub served: String,
     pub diverged: bool,
@@ -65,6 +68,7 @@ pub struct ShadowOutcome {
 /// equality, and ALWAYS serve cold. A divergence means `on_change` missed a
 /// change: log it, mark the entry invalid (auto-demote), never serve warm.
 /// This is the shadow-mode discipline (ADR-0010/R4b) — cold stays authoritative.
+#[allow(dead_code)] // wired live in B2 (rosary-a9f5dc)
 pub fn build_bounded_prompt_shadow(
     chain: &[crate::handoff::Handoff],
     cfg: &crate::config::ContextConfig,
@@ -273,5 +277,71 @@ mod tests {
         );
         let cold = super::build_bounded_prompt(&chain, &cfg, tmp.path()).unwrap();
         assert_eq!(out.served, cold, "must serve cold on divergence");
+    }
+
+    #[test]
+    fn warmth_no_change_resume_hits_cache() {
+        // Gate 4: a no-change resume serves from cache (a hit), not a re-derivation.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let chain: Vec<crate::handoff::Handoff> = (0..8u32)
+            .map(|n| {
+                crate::handoff::Handoff::new(
+                    n,
+                    "dev-agent",
+                    None,
+                    "rosary-a9f5dc",
+                    "claude",
+                    &crate::manifest::Work::default(),
+                    None,
+                )
+            })
+            .collect();
+        let cfg = crate::config::ContextConfig {
+            policy: "tiers".into(),
+            budget: 2000,
+            max_refs: 8,
+            cache: crate::config::CacheMode::Shadow,
+        };
+        let mut cache = super::cache::ContextCache::new();
+
+        let _ = super::build_bounded_prompt_shadow(&chain, &cfg, tmp.path(), &mut cache).unwrap();
+        assert_eq!(cache.len_valid(), 1, "first render memoizes one entry");
+        // Resume with no change → the same key is a valid hit.
+        let key = super::shadow_key(&chain, &cfg);
+        assert!(
+            cache.get(&key).is_some(),
+            "no-change resume must be a warm hit"
+        );
+    }
+
+    #[test]
+    fn cache_off_reproduces_phase_a_byte_for_byte() {
+        // Rollback correctness: Off == exactly the Phase A path.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let chain: Vec<crate::handoff::Handoff> = (0..12u32)
+            .map(|n| {
+                crate::handoff::Handoff::new(
+                    n,
+                    "dev-agent",
+                    None,
+                    "rosary-a9f5dc",
+                    "claude",
+                    &crate::manifest::Work::default(),
+                    None,
+                )
+            })
+            .collect();
+        let cfg = crate::config::ContextConfig {
+            policy: "tiers".into(),
+            budget: 2000,
+            max_refs: 4,
+            cache: crate::config::CacheMode::Off,
+        };
+        let mut cache = super::cache::ContextCache::new();
+        let plain = super::build_bounded_prompt(&chain, &cfg, tmp.path()).unwrap();
+        let shadowed =
+            super::build_bounded_prompt_shadow(&chain, &cfg, tmp.path(), &mut cache).unwrap();
+        assert_eq!(shadowed.served, plain);
+        assert_eq!(cache.len_valid(), 0, "Off must not touch the cache");
     }
 }

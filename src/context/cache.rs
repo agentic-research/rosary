@@ -1,6 +1,11 @@
 //! Staleness-invalidated, content-addressed context cache (warm-resume Phase B,
 //! rosary-a9f5dc). Aligned with LLO's CacheEntry{value,generation,valid}: `get`
 //! returns a value only while `valid`; `on_change` is the sole invalidator.
+//!
+//! Dormant: the persistent cache a live path would own is deferred to B2
+//! (reconciler ownership — a stateless `build_bounded_prompt` cannot
+//! meaningfully own one). Exercised only by tests until then.
+#![allow(dead_code)] // wired live in B2 (rosary-a9f5dc)
 
 use std::collections::HashMap;
 
@@ -32,16 +37,16 @@ impl Provenance {
         // The bead's state moved. With a new sha, only entries at an older sha
         // are stale (an advance); without one, conservatively treat every entry
         // for this bead as stale — a bead-only change must never silently no-op.
-        if let Some(bead) = &change.bead {
-            if &self.bead == bead {
-                match &change.commit_sha {
-                    Some(sha) => {
-                        if &self.commit_sha != sha {
-                            return true;
-                        }
+        if let Some(bead) = &change.bead
+            && &self.bead == bead
+        {
+            match &change.commit_sha {
+                Some(sha) => {
+                    if &self.commit_sha != sha {
+                        return true;
                     }
-                    None => return true,
                 }
+                None => return true,
             }
         }
         // Any shared source region changed.
