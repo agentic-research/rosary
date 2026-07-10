@@ -65,8 +65,11 @@ pub struct ShadowOutcome {
 }
 
 /// Render both the warm (cache) and cold (re-derive) paths, assert-and-log their
-/// equality, and ALWAYS serve cold. A divergence means `on_change` missed a
-/// change: log it, mark the entry invalid (auto-demote), never serve warm.
+/// equality, and ALWAYS serve cold. With full-chain content keying a changed
+/// chain yields a new key (a miss), so a same-key divergence means the cached
+/// render no longer matches a fresh re-derivation for this exact chain — CAS
+/// state drifted or the render turned non-deterministic (or the entry was
+/// poisoned): log it, invalidate the entry (auto-demote), never serve warm.
 /// This is the shadow-mode discipline (ADR-0010/R4b) — cold stays authoritative.
 #[allow(dead_code)] // wired live in B2 (rosary-a9f5dc)
 pub fn build_bounded_prompt_shadow(
