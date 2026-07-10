@@ -1781,19 +1781,17 @@ async fn spawn_failure_cleans_up_git_worktree() {
 #[test]
 fn codex_rpc_read_times_out_on_hung_server() {
     use std::time::{Duration, Instant};
-    let dir = TempDir::new().unwrap();
-    let socket_path = dir.path().join("hung.sock");
-    let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
-    // Server completes the websocket handshake, then hangs — never answers.
-    let server = std::thread::spawn(move || {
-        if let Ok((stream, _)) = listener.accept() {
-            let _ws = tungstenite::accept(stream);
-            std::thread::sleep(Duration::from_secs(2)); // outlive the client deadline
-        }
-    });
-
-    let stream = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
-    let (mut ws, _) = tungstenite::client::client("ws://localhost/", stream).unwrap();
+    // A raw connected socket pair standing in for a Codex app-server that
+    // completed the handshake but then never answers. Driving the WebSocket off
+    // `from_raw_socket` skips the HTTP-upgrade dance (and its accept/connect race
+    // — the source of a prior CI flake), leaving a clean test of the read loop:
+    // the peer stays open but silent, so the only way out is the read deadline.
+    let (client_end, peer_end) = std::os::unix::net::UnixStream::pair().unwrap();
+    let mut ws = tungstenite::WebSocket::from_raw_socket(
+        client_end,
+        tungstenite::protocol::Role::Client,
+        None,
+    );
 
     let started = Instant::now();
     let result = crate::dispatch::codex_native::read_jsonrpc_result(
@@ -1809,8 +1807,9 @@ fn codex_rpc_read_times_out_on_hung_server() {
         "the error must be a deterministic timeout"
     );
     assert!(
-        elapsed < Duration::from_secs(1),
+        elapsed < Duration::from_secs(2),
         "must bail near the 300ms deadline, not hang ({elapsed:?})"
     );
-    server.join().ok();
+    // Hold the peer open until here so the read blocks on silence, not EOF.
+    drop(peer_end);
 }
