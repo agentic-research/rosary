@@ -1,6 +1,5 @@
 //! Native Codex transport — the experimental app-server / JSON-RPC provider,
-//! extracted from providers.rs for cohesion (rosary-167459). Dormant until
-//! config selects it; the default `codex exec` provider stays in providers.rs.
+//! extracted from providers.rs (rosary-167459). Dormant until config selects it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -16,10 +15,8 @@ use super::PermissionProfile;
 use super::providers::{AgentProvider, AgentRunSpec};
 use super::session::{AgentSession, AgentSessionRef};
 
-/// JSON-RPC request envelope for Codex's remote app-server transport.
-///
-/// Rosary owns this minimal wire contract so Codex dispatch can be tested
-/// without linking the full Codex workspace or spawning `codex exec`.
+/// JSON-RPC request envelope for Codex's remote app-server transport — a minimal
+/// wire contract so dispatch is testable without the Codex workspace or `codex exec`.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[allow(dead_code)] // Native Codex transport seam; exercised by focused adapter tests until config selects it.
 pub struct CodexAppServerRequest {
@@ -123,22 +120,15 @@ fn codex_config(start: &CodexThreadStart) -> serde_json::Value {
     })
 }
 
-/// Minimal app-server client boundary used by Rosary's native Codex runtime.
-///
-/// The production implementation can speak Codex's WebSocket/UDS JSON-RPC
-/// protocol, while tests can provide an in-memory client with exact request
-/// assertions. The trait remains request/response shaped on purpose: dispatch
-/// should not know about a Codex process or shell command.
+/// Minimal app-server client boundary for the native Codex runtime: production
+/// speaks Codex's WebSocket/UDS JSON-RPC, tests provide an in-memory client.
 #[allow(dead_code)] // Production transport is the next slice; tests exercise the boundary now.
 pub trait CodexAppServerClient: Send + Sync {
     fn request(&self, request: CodexAppServerRequest) -> Result<serde_json::Value>;
 }
 
-/// Remote Codex app-server client over the local control Unix socket.
-///
-/// This is a native protocol transport, not `codex exec`: Rosary speaks the
-/// app-server JSON-RPC/WebSocket protocol directly and receives Codex's native
-/// thread id back as an addressable session ref.
+/// Remote Codex app-server client over the local control Unix socket — a native
+/// JSON-RPC/WebSocket transport (not `codex exec`) returning Codex's thread id.
 pub struct CodexUnixSocketClient {
     socket_path: PathBuf,
 }
@@ -309,9 +299,8 @@ pub(crate) fn read_jsonrpc_result(
     request_id: &str,
     timeout: Duration,
 ) -> Result<serde_json::Value> {
-    // Total deadline across the whole wait — a server that dribbles keep-alive
-    // frames but never answers still bounds out, and a fully-hung server hits
-    // the read timeout on the first read.
+    // Total deadline across the whole wait: a server that dribbles keep-alives
+    // but never answers still bounds out, and a fully-hung one trips the first read.
     let deadline = Instant::now() + timeout;
     loop {
         let remaining = deadline
@@ -358,12 +347,8 @@ pub(crate) fn read_jsonrpc_result(
     }
 }
 
-/// Structured request used by the native Codex runtime boundary.
-///
-/// This mirrors the subset of [`AgentRunSpec`] that Codex needs to create a
-/// thread/session without parsing Rosary facts out of provider-specific prompt
-/// text. The concrete app-server/client adapter can map these fields to
-/// `ThreadStartParams` and turn injection later.
+/// Structured request for the native Codex runtime boundary — the subset of
+/// [`AgentRunSpec`] needed to start a thread; the adapter maps it to `ThreadStartParams`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexThreadStart {
     pub bead_id: Option<String>,
@@ -393,11 +378,9 @@ impl CodexThreadStart {
     }
 }
 
-/// Native Codex runtime adapter.
-///
-/// Production implementations should call Codex app-server/client/protocol
-/// APIs directly. This trait intentionally has no binary/argv concept, which
-/// keeps Rosary's durable Codex path from regressing to `codex exec`.
+/// Native Codex runtime adapter — calls Codex app-server/protocol APIs directly.
+/// Intentionally has no binary/argv concept, so the durable Codex path can't
+/// regress to `codex exec`.
 pub trait CodexRuntime: Send + Sync {
     fn start_thread(&self, start: CodexThreadStart) -> Result<CodexNativeSession>;
 }
@@ -455,10 +438,9 @@ impl AgentSession for CodexNativeSession {
     }
 }
 
-/// Provider for Codex native thread/session dispatch.
-///
-/// Unlike Claude/Gemini, this provider does not build or spawn a CLI command.
-/// It consumes [`AgentRunSpec`] and delegates to a native runtime adapter.
+/// Provider for Codex native thread/session dispatch — unlike Claude/Gemini it
+/// builds no CLI command; it consumes [`AgentRunSpec`] and delegates to a native
+/// runtime adapter.
 #[derive(Clone)]
 pub struct CodexProvider {
     runtime: Arc<dyn CodexRuntime>,
