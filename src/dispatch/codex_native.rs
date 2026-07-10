@@ -15,8 +15,7 @@ use super::PermissionProfile;
 use super::providers::{AgentProvider, AgentRunSpec};
 use super::session::{AgentSession, AgentSessionRef};
 
-/// JSON-RPC request envelope for Codex's remote app-server transport — a minimal
-/// wire contract so dispatch is testable without the Codex workspace or `codex exec`.
+/// JSON-RPC request envelope for Codex's remote app-server transport — a minimal wire contract, testable without `codex exec`.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[allow(dead_code)] // Native Codex transport seam; exercised by focused adapter tests until config selects it.
 pub struct CodexAppServerRequest {
@@ -120,15 +119,13 @@ fn codex_config(start: &CodexThreadStart) -> serde_json::Value {
     })
 }
 
-/// Minimal app-server client boundary for the native Codex runtime: production
-/// speaks Codex's WebSocket/UDS JSON-RPC, tests provide an in-memory client.
+/// App-server client boundary: production speaks Codex's WebSocket/UDS JSON-RPC, tests inject an in-memory client.
 #[allow(dead_code)] // Production transport is the next slice; tests exercise the boundary now.
 pub trait CodexAppServerClient: Send + Sync {
     fn request(&self, request: CodexAppServerRequest) -> Result<serde_json::Value>;
 }
 
-/// Remote Codex app-server client over the local control Unix socket — a native
-/// JSON-RPC/WebSocket transport (not `codex exec`) returning Codex's thread id.
+/// Remote Codex app-server client over the local control Unix socket — a native JSON-RPC/WebSocket transport, not `codex exec`.
 pub struct CodexUnixSocketClient {
     socket_path: PathBuf,
 }
@@ -290,8 +287,7 @@ fn send_jsonrpc_value(
         .context("sending Codex app-server JSON-RPC message")
 }
 
-/// Default deadline for a single Codex app-server JSON-RPC round-trip. A hung
-/// app-server must not block a dispatch forever (rosary-72fc26).
+/// Deadline for one Codex JSON-RPC round-trip; a hung server can't block forever (rosary-72fc26).
 const CODEX_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) fn read_jsonrpc_result(
@@ -315,13 +311,20 @@ pub(crate) fn read_jsonrpc_result(
             .context("setting Codex app-server read timeout")?;
         let message = match websocket.read() {
             Ok(m) => m,
-            Err(tungstenite::Error::Io(e))
+            // The read is bounded by `remaining`, so a failure at/after the deadline
+            // is our timeout — key off the clock, not the errno (Linux wraps an
+            // expired SO_RCVTIMEO differently than macOS).
+            Err(_) if Instant::now() >= deadline => {
+                anyhow::bail!("Codex app-server request {request_id} timed out after {timeout:?}")
+            }
+            // A per-read timeout before the deadline: our slice elapsed early, loop on.
+            Err(tungstenite::Error::Io(io))
                 if matches!(
-                    e.kind(),
+                    io.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
-                anyhow::bail!("Codex app-server request {request_id} timed out after {timeout:?}");
+                continue;
             }
             Err(e) => return Err(e).context("reading Codex app-server JSON-RPC message"),
         };
@@ -378,9 +381,8 @@ impl CodexThreadStart {
     }
 }
 
-/// Native Codex runtime adapter — calls Codex app-server/protocol APIs directly.
-/// Intentionally has no binary/argv concept, so the durable Codex path can't
-/// regress to `codex exec`.
+/// Native Codex runtime adapter — calls Codex app-server/protocol APIs directly,
+/// with no binary/argv concept, so the durable path can't regress to `codex exec`.
 pub trait CodexRuntime: Send + Sync {
     fn start_thread(&self, start: CodexThreadStart) -> Result<CodexNativeSession>;
 }
@@ -438,9 +440,8 @@ impl AgentSession for CodexNativeSession {
     }
 }
 
-/// Provider for Codex native thread/session dispatch — unlike Claude/Gemini it
-/// builds no CLI command; it consumes [`AgentRunSpec`] and delegates to a native
-/// runtime adapter.
+/// Provider for Codex native thread/session dispatch — builds no CLI command;
+/// consumes [`AgentRunSpec`] and delegates to a native runtime adapter.
 #[derive(Clone)]
 pub struct CodexProvider {
     runtime: Arc<dyn CodexRuntime>,

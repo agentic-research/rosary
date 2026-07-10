@@ -1801,10 +1801,10 @@ fn codex_rpc_read_times_out_on_hung_server() {
     );
     let elapsed = started.elapsed();
 
-    assert!(result.is_err(), "a hung app-server must not block forever");
+    let err = result.expect_err("a hung app-server must not block forever");
     assert!(
-        result.unwrap_err().to_string().contains("timed out"),
-        "the error must be a deterministic timeout"
+        err.to_string().contains("timed out"),
+        "the error must be a deterministic timeout, got: {err:#}"
     );
     assert!(
         elapsed < Duration::from_secs(2),
