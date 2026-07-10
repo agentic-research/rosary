@@ -1,20 +1,19 @@
 name: coverage
 
-# CI-enforced coverage ratchet (rosary-ae05a5), approach (a) — CI is the source
-# of truth for the baseline, sidestepping the local↔CI coverage divergence (CI
-# has no dolt/jj, so those tests skip and coverage differs). On push-to-main the
-# job regenerates a CI-native baseline and commits it back; PRs check against it.
-# Bootstrap-safe: until the first CI-native baseline lands, PR enforcement is
-# skipped (the coverage-ratchet script gates on the baseline's `env` marker).
+# CI-enforced coverage ratchet (rosary-ae05a5), approach (c). The committed
+# baseline (docs/coverage-baseline.json) covers only files with deterministic
+# coverage — the env-dependent integration files (dolt/jj: dolt/*, store_dolt,
+# bead_dolt, vcs, pool) are excluded via --ignore-filename-regex in the Taskfile,
+# because CI lacks those tools so their tests skip and coverage would diverge.
+# So a single committed baseline is valid both locally and in CI: no commit-back,
+# no branch-ruleset friction. Fails a PR that drops an included file's coverage.
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - docs/coverage-baseline.json # the commit-back below must not re-trigger
   pull_request:
 
 permissions:
-  contents: write # the main-push step commits the regenerated baseline
+  contents: read
 
 jobs:
   coverage:
@@ -34,24 +33,4 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo install cargo-llvm-cov --locked
-
-      # PRs: enforce (skips itself until a CI-native baseline exists on main).
-      - if: github.event_name == 'pull_request'
-        run: task coverage
-
-      # Push to main: regenerate the CI-native baseline and commit it back.
-      - if: github.event_name == 'push'
-        env:
-          COVERAGE_ENV: ci
-        run: task coverage:baseline
-      - if: github.event_name == 'push'
-        run: |
-          if git diff --quiet docs/coverage-baseline.json; then
-            echo "baseline unchanged"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add docs/coverage-baseline.json
-            git commit -m "chore(coverage): regenerate CI-native baseline [rosary-ae05a5]"
-            git push
-          fi
+      - run: task coverage

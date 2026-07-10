@@ -112,8 +112,8 @@ tasks:
       output — regenerated and compared, never hand-typed — the structural guard
       against fabricated coverage (rosary-5732ee). Local-first: run before/after a
       decomposition to prove no regression. Skips (exit 0) when cargo-llvm-cov is
-      absent. CI enforcement is a follow-up (rosary-ae05a5 — needs a CI-native
-      baseline, since CI lacks dolt/jj and their tests skip).
+      absent. CI-enforced via .github/workflows/coverage.yml (rosary-ae05a5, approach c). Env-dependent files (dolt/jj) are excluded so a single
+      baseline is valid both locally and in CI.
     cmds:
       - |
         if ! cargo llvm-cov --version >/dev/null 2>&1; then
@@ -123,7 +123,7 @@ tasks:
         fi
         COV="$(mktemp -u).json"
         trap 'rm -f "$COV"' EXIT
-        cargo llvm-cov --json --output-path "$COV" --workspace
+        cargo llvm-cov --json --output-path "$COV" --workspace --ignore-filename-regex '(dolt|/vcs\.rs|/pool\.rs)'
         python3 scripts/coverage-ratchet.py --check "$COV"
 
   coverage:baseline:
@@ -135,7 +135,7 @@ tasks:
       - |
         COV="$(mktemp -u).json"
         trap 'rm -f "$COV"' EXIT
-        cargo llvm-cov --json --output-path "$COV" --workspace
+        cargo llvm-cov --json --output-path "$COV" --workspace --ignore-filename-regex '(dolt|/vcs\.rs|/pool\.rs)'
         python3 scripts/coverage-ratchet.py --write "$COV"
 
   check:

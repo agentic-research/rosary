@@ -51,28 +51,15 @@ def per_file_pct(cov_json_path):
 
 
 def write_baseline(cov_json_path):
-    import os
     files, total = per_file_pct(cov_json_path)
-    # Record where the baseline was generated. CI enforces only against a
-    # CI-native baseline (COVERAGE_ENV=ci); a locally-generated one (dolt/jj
-    # present → different coverage) is bootstrap-only in CI.
-    env = os.environ.get("COVERAGE_ENV", "local")
-    doc = {"version": 1, "env": env, "total_line_pct": total, "files": dict(sorted(files.items()))}
+    doc = {"version": 1, "total_line_pct": total, "files": dict(sorted(files.items()))}
     json.dump(doc, open(BASELINE, "w"), indent=1)
     open(BASELINE, "a").write("\n")
-    print(f"wrote {BASELINE}: {len(files)} files, total {total}% lines (env={env})")
+    print(f"wrote {BASELINE}: {len(files)} files, total {total}% lines")
 
 
 def check(cov_json_path):
-    import os
     base = json.load(open(BASELINE))
-    # Bootstrap: in CI, don't enforce a locally-generated baseline (CI lacks
-    # dolt/jj so its numbers differ). A main-push regenerates it env=ci; after
-    # that, CI enforces. Locally we always enforce (the decomposition net).
-    if os.environ.get("CI") and base.get("env") != "ci":
-        print(f"coverage ratchet: baseline env={base.get('env')!r} not CI-native — "
-              "enforcement skipped until a main-push regenerates it (bootstrap).")
-        return 0
     cur, cur_total = per_file_pct(cov_json_path)
     regressions = []
     for name, floor in base["files"].items():
