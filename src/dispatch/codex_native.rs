@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tungstenite::{Message, WebSocket};
@@ -254,7 +255,7 @@ fn request_codex_app_server(
     initialize_codex_app_server(&mut websocket)?;
     let request_id = request.id.clone();
     send_jsonrpc_value(&mut websocket, &serde_json::to_value(request)?)?;
-    read_jsonrpc_result(&mut websocket, &request_id)
+    read_jsonrpc_result(&mut websocket, &request_id, CODEX_RPC_TIMEOUT)
 }
 
 fn initialize_codex_app_server(
@@ -280,7 +281,7 @@ fn initialize_codex_app_server(
             }
         }),
     )?;
-    let _ = read_jsonrpc_result(websocket, "rsry-initialize")?;
+    let _ = read_jsonrpc_result(websocket, "rsry-initialize", CODEX_RPC_TIMEOUT)?;
     send_jsonrpc_value(
         websocket,
         &serde_json::json!({
@@ -299,14 +300,42 @@ fn send_jsonrpc_value(
         .context("sending Codex app-server JSON-RPC message")
 }
 
-fn read_jsonrpc_result(
+/// Default deadline for a single Codex app-server JSON-RPC round-trip. A hung
+/// app-server must not block a dispatch forever (rosary-72fc26).
+const CODEX_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub(crate) fn read_jsonrpc_result(
     websocket: &mut WebSocket<std::os::unix::net::UnixStream>,
     request_id: &str,
+    timeout: Duration,
 ) -> Result<serde_json::Value> {
+    // Total deadline across the whole wait — a server that dribbles keep-alive
+    // frames but never answers still bounds out, and a fully-hung server hits
+    // the read timeout on the first read.
+    let deadline = Instant::now() + timeout;
     loop {
-        let message = websocket
-            .read()
-            .context("reading Codex app-server JSON-RPC message")?;
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| {
+                anyhow::anyhow!("Codex app-server request {request_id} timed out after {timeout:?}")
+            })?;
+        websocket
+            .get_ref()
+            .set_read_timeout(Some(remaining))
+            .context("setting Codex app-server read timeout")?;
+        let message = match websocket.read() {
+            Ok(m) => m,
+            Err(tungstenite::Error::Io(e))
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                anyhow::bail!("Codex app-server request {request_id} timed out after {timeout:?}");
+            }
+            Err(e) => return Err(e).context("reading Codex app-server JSON-RPC message"),
+        };
         let payload = match message {
             Message::Text(text) => text.to_string(),
             Message::Binary(bytes) => String::from_utf8(bytes.to_vec())
