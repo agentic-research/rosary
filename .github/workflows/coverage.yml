@@ -53,5 +53,5 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add docs/coverage-baseline.json
             git commit -m "chore(coverage): regenerate CI-native baseline [rosary-ae05a5]"
-            git push
+            git push || echo "::warning::commit-back blocked by branch ruleset — add github-actions[bot] to the main ruleset bypass to enable coverage enforcement (rosary-ae05a5)"
           fi
