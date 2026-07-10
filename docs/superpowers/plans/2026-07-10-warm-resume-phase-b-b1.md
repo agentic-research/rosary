@@ -638,28 +638,33 @@ Add to the `tests` module in `src/context/mod.rs`:
 Run: `cargo test --bin rsry context::tests::warmth_no_change_resume_hits_cache context::tests::cache_off_reproduces 2>&1 | tail -10`
 Expected: PASS is possible here since the impl exists — if so, this task is a pure verification/guard addition. If they FAIL, it's a real gap; fix per Step 3.
 
-- [ ] **Step 3: Fix if needed**
+- [ ] **Step 3: Silence dead_code on the dormant B1 API (so `task check` lint passes)**
 
-If `cache_off_reproduces_phase_a_byte_for_byte` fails because `Off` still populated the cache, confirm the early-return in `build_bounded_prompt_shadow` (Task 4) returns before any `cache.put`. No new code should be required; if a fix is needed it is the early `return` guard.
+`task lint` runs `cargo clippy -- -D warnings` (no `--all-targets`), so the test callers of the cache do NOT count — and B1's cache is intentionally dormant: the persistent cache that a live path would own is deferred to B2 (reconciler ownership; a stateless `build_bounded_prompt` cannot meaningfully own one, and a per-call cache would defeat cross-dispatch shadow). So annotate the not-yet-wired public API with `#[allow(dead_code)]` + a "wired live in B2" note — the repo's convention for dormant-but-intended code (see `src/dispatch/codex_native.rs`, `RefStore::puts`).
+
+Run `cargo clippy --bin rsry 2>&1 | grep -E 'never (used|constructed)'` to get the exact flagged items, then add `#[allow(dead_code)] // wired live in B2 (rosary-a9f5dc)` to each. Expect these: in `src/context/cache.rs` — `Provenance`, `ChangeSet`, `struct ContextCache` (and/or its `impl` items `new`/`generation`/`put`/`get`/`on_change`/`len_valid`), and the private `CacheEntry`/`intersects` (private items are flagged too); in `src/context/mod.rs` — `shadow_key`, `provenance_of`, `struct ShadowOutcome` (+ its fields), `build_bounded_prompt_shadow`. A module-level `#![allow(dead_code)]` at the top of `cache.rs` is acceptable if per-item annotation would be noisy — but keep the mod.rs shadow-helper items annotated per-item (mod.rs is not all-dormant).
+
+Verify no clippy dead_code remains: `cargo clippy --bin rsry 2>&1 | grep -c 'never used\|never constructed'` → `0`.
 
 - [ ] **Step 4: Run the full gate**
 
 Run: `cargo test --bin rsry context:: 2>&1 | tail -6`
 Expected: `test result: ok.` with all Phase A + Phase B context tests passing (≥ 9 new).
 
-Run: `task check 2>&1 | tail -15`
-Expected: green (compile + lint + test + smells). If `long_file_rosary` fires on `cache.rs`, confirm `wc -l src/context/cache.rs` ≤ 499 and trim comments if over.
+Run: `task check 2>&1 | tail -20`
+Expected: **green** (contract + rules + compile + lint + test + smells). This is the gate the whole plan defers here — it MUST pass. If `long_file_rosary` fires on `cache.rs`, confirm `wc -l src/context/cache.rs` ≤ 499 and trim comments if over. If the local smell gate is broken (mache backend), note it and confirm lint+test+compile are green (CI runs the released-mache smell gate).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/context/mod.rs
+git add src/context/mod.rs src/context/cache.rs
 git commit -m "$(cat <<'EOF'
-[rosary-a9f5dc] test(context): warmth gate + cache=off rollback-correctness
+[rosary-a9f5dc] test(context): warmth gate + cache=off rollback + dormant-API allows
 
 Gate 4 (warmth): a no-change resume is a valid cache hit. Rollback: cache=off
-reproduces the Phase A render byte-for-byte and never touches the cache. B1
-cache core is proven-safe and inert by default.
+reproduces the Phase A render byte-for-byte and never touches the cache.
+#[allow(dead_code)] marks the dormant B1 cache API (wired live in B2). B1 cache
+core is proven-safe and inert by default; task check green.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01TzQGRJiJEZr3C4MbSySDkZ
