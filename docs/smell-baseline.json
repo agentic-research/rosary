@@ -74,7 +74,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead.rs",
-      "count": 11
+      "count": 12
     },
     {
       "rule_id": "duplicate_definitions",
@@ -144,7 +144,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/context/ref_store.rs",
-      "count": 2
+      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
@@ -895,6 +895,11 @@
       "rule_id": "long_file_rosary",
       "source_id": "tests/cli_integration.rs",
       "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/context/cache.rs",
+      "count": 5
     }
   ]
 }
