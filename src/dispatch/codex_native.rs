@@ -2,6 +2,7 @@
 //! extracted from providers.rs (rosary-167459). Dormant until config selects it.
 
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -311,17 +312,16 @@ pub(crate) fn read_jsonrpc_result(
             .context("setting Codex app-server read timeout")?;
         let message = match websocket.read() {
             Ok(m) => m,
-            // The read is bounded by `remaining`, so a failure at/after the deadline
-            // is our timeout — key off the clock, not the errno (Linux wraps an
-            // expired SO_RCVTIMEO differently than macOS).
+            // The read is bounded by `remaining`, so any failure at/after the deadline
+            // is our timeout — key off the clock, not the errno (OSes wrap it differently).
             Err(_) if Instant::now() >= deadline => {
                 anyhow::bail!("Codex app-server request {request_id} timed out after {timeout:?}")
             }
-            // A per-read timeout before the deadline: our slice elapsed early, loop on.
+            // A pre-deadline per-read timeout or EINTR-interrupted read — both transient, re-read.
             Err(tungstenite::Error::Io(io))
                 if matches!(
                     io.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
                 ) =>
             {
                 continue;
