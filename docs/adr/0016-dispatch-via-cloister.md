@@ -21,6 +21,16 @@ rosary spawns agents by `Command::new("claude") -p …` on the host — bypassin
 
 cloister's ADR-0040 already frames the fix in three layers with a hard boundary; this ADR records how rosary participates.
 
+## The through-line: dispatch is the *one inconsistent operation*
+
+Every other rosary operation is an API call in MCP shape — request → handler does the work → response (`rsry_bead_create`, `rsry_status`, …). `rsry_dispatch` alone breaks that shape: request → **fork a detached host subprocess** → return "dispatched" → then poll a stream and reconcile out-of-band. There is no `mcp → hits api → done`; there is `mcp → fork → hope`.
+
+**That discontinuity is the disease, not five separate bugs.** The corpses (82caac) are a fork nobody holds a handle to. The untestability is behaviour living in an external binary instead of a handler you can assert on. The auth surprise (b1495c) is the fork landing outside the credential context. The reign hole (5251a0) is the fork running with an authority the caller never granted. Restore the shape — dispatch is a **mediated call that runs the work and returns a receipt**, like everything else — and the special case that caused all of it is gone.
+
+There is no "MCP vs. the API": MCP *is* an API call (JSON-RPC to a service). The credential proxy is another API call (HTTP to `/vault/proxy`). Consistency means the dispatch lifecycle is a **managed request/receipt**, not a forgotten pid — and that is *orthogonal* to who holds the LLM credential (Max stays audit-not-custody regardless of where the agent runs). The host fork is not a design; it is the temporary inconsistency this ADR removes.
+
+The decision consistency exists **now** (D2, L0 shipped). The *execution* consistency is the part that isn't done — and cloister names exactly why (D3, `workerd` can't spawn) and exactly what fixes it (libkrun microVM, ADR-0044): the agent becomes a **supervised resource addressable through the plane**, so `done` means "a managed resource finished," not "a `ps` you have to guess about."
+
 ## Decision
 
 ### D1 — Dispatch is *mediated* by cloister, *executed* host-side
@@ -48,6 +58,8 @@ Context death (ADR-0015) is unchanged by this ADR: the worktree stays the dispos
 ### D6 — Corpses (82caac): supervisor, not raw detach
 
 Because the harness runs host-side, the lifecycle handle is rosary's (not cloister's) responsibility — which is why `82caac` (terminal-filtered `list_active_pipelines` + reap-on-read) remains the correct fix, and dispatch should hold a real child handle rather than detaching and forgetting. cloister's mediation records that a dispatch *happened*; rosary must record when it *ended*.
+
+The detached fork exists partly for a real reason: the intended **supervisor is the Elixir/OTP orchestrator layer** (the paid orchestrator tier; `project_tier_architecture` — Rust = pipeline, Elixir/Gleam = orchestrator). OTP supervision trees *are* the "manage / restart / reap an external process" primitive this ADR keeps invoking — a dispatched agent is a natural OTP-supervised port/process, and death is a supervisor event, not a `ps`-guess. So the durable "supervisor handle" likely lands **in OTP, not in the Rust pipeline** — the Rust side spawns/holds, OTP supervises. This is the honest long-term home for D6, but it is **not the immediate concern**: the interim is the Rust-side child handle + 82caac reaping, and the OTP supervision is layered on when the orchestrator tier is in play. (It also composes cleanly with libkrun, D3: OTP supervises the microVM as the resource, not a raw pid.)
 
 ### D7 — The exec-out smell rule (V0), narrowed by the census
 
