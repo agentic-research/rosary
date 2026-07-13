@@ -240,6 +240,7 @@ agent is granted `rsry_agent_run_event_record` for the feedback contract.
 | 0013 | Superseded | Bead substrate — adopt bd/Dolt as shared store (superseded by 0014)                                                                                                                     |
 | 0014 | Accepted   | Decouple rosary from bd — speak the bead format, own the store                                                                                                                          |
 | 0015 | Proposed   | Execution-lineage capsules — durable, resumable, proof-ready envelope                                                                                                                   |
+| 0016 | Proposed   | Dispatch agents as cloister bundles, not host subprocesses — slice-grant reign + isolate sandbox + vault creds + supervisor lifecycle + capsule lineage on jj; keeps Max-OAuth (no API-key regression) |
 | 0018 | Accepted   | Structural smell gate via mache's committed-baseline ratchet (`docs/smell-baseline.json` + `docs/smell-rules/*.json` + `task smells`); retired the bash god-file/file-length scripts    |
 
 ## BDR Hierarchy (Decade → Thread → Bead)
