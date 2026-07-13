@@ -240,7 +240,7 @@ agent is granted `rsry_agent_run_event_record` for the feedback contract.
 | 0013 | Superseded | Bead substrate — adopt bd/Dolt as shared store (superseded by 0014)                                                                                                                     |
 | 0014 | Accepted   | Decouple rosary from bd — speak the bead format, own the store                                                                                                                          |
 | 0015 | Proposed   | Execution-lineage capsules — durable, resumable, proof-ready envelope                                                                                                                   |
-| 0016 | Proposed   | Dispatch agents as cloister bundles, not host subprocesses — slice-grant reign + isolate sandbox + vault creds + supervisor lifecycle + capsule lineage on jj; keeps Max-OAuth (no API-key regression) |
+| 0016 | Proposed   | Route agent dispatch through cloister's harness plane (rosary-side coordination) — defers to cloister ADR-0040 (control+cred+audit, L0 shipped)/0042/0044; harness runs host-side (workerd can't spawn); Max-OAuth = audit-not-custody; `--disallowedTools`/reaping are stopgaps until libkrun (ADR-0044) |
 | 0018 | Accepted   | Structural smell gate via mache's committed-baseline ratchet (`docs/smell-baseline.json` + `docs/smell-rules/*.json` + `task smells`); retired the bash god-file/file-length scripts    |
 
 ## BDR Hierarchy (Decade → Thread → Bead)

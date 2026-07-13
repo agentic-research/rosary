@@ -1,127 +1,84 @@
-# ADR-0016: Dispatch agents as cloister bundles, not host subprocesses
+# ADR-0016: Route agent dispatch through cloister's harness plane (rosary-side coordination)
 
 **Status:** Proposed
-**Date:** 2026-07-13
-**Relates to:** [ADR-0013](0013-bead-substrate.md) / cloister slice-grants (capability model), [ADR-0015](0015-execution-lineage-capsules.md) (execution-lineage capsules — durable context), [ADR-0012](0012-personal-root-bead-substrate.md) (root substrate), `project_rsry_in_cloister_bundle` (rosary already runs as a cloister bundle with vault-proxied creds). Supersedes the band-aid in `rosary-5251a0` (`--disallowedTools`). Subsumes `rosary-b1495c` (dispatch "Not logged in"), `rosary-82caac` (dead-dispatch corpses).
+**Date:** 2026-07-13 (rewritten same day after reading cloister's authoritative design)
+**Relates to (cloister is authoritative — this ADR is the rosary-side view):**
+[cloister ADR-0040](../../../cloister/docs/adr/0040-harness-in-cloister.md) (harness-in-cloister: control + credential + audit plane — **L0 shipped, L1 building**), cloister ADR-0042 (`task harness:dev` — vault-proxied harness creds, **shipped**), cloister ADR-0043 (skills/agents as signed artifacts), cloister ADR-0044 (**libkrun microVM** compute sandbox — the `find /` fix), cloister ADR-0033 (**workerd has no process-spawn** — the harness runs host-side). Locally: [ADR-0015](0015-execution-lineage-capsules.md) (capsule lineage), `rosary-5251a0` / `rosary-b1495c` / `rosary-82caac` (the symptoms).
+
+## Why this was rewritten (honesty)
+
+The first draft of this ADR proposed running the agent "inside a cloister bundle (isolate)" with reign as a slice-grant and creds as a vault-scoped token. **Two of those claims were wrong**, and the design already exists more precisely on the cloister side:
+
+- **You cannot run a harness inside a workerd isolate** — workerd has no `exec`/fork/host-fs (cloister ADR-0033). The harness (Claude Code / Codex) runs **host-side**. cloister is its **control + credential + audit plane, not its compute sandbox** (cloister ADR-0040).
+- **The credential claim has a ceiling for the operator's subscription.** cloister L1 vaults the LLM key for **API-key / enterprise-gateway** shapes (custody). For **Max / Pro OAuth** — the shape that drove `claude -p` — the token is minted in the client's keychain, so cloister gives **audit (receipts), not custody** (cloister ADR-0040, "Scope of the credential claim"). b1495c has a real ceiling here.
+- **The `find /` sandbox is a separate, in-progress substrate** — cloister ADR-0044 (libkrun microVM, host-mediated FUSE fs), not a workerd isolate.
+
+So this ADR is not a parallel design. It is the **rosary-side coordination**: what rosary must do so that dispatch flows through cloister's already-designed (and partly shipped) harness plane, and what remains a rosary stopgap until the cloister substrate lands.
 
 ## Context
 
-rosary is, everywhere except one place, a principled capability system: it runs as a **cloister external bundle**, holds **no plaintext credentials** (the vault proxies outbound creds), and is moving its execution state onto **capsules** (ADR-0015) with a jj-backed durable history. Then it dispatches an agent — and throws all of that away by shelling out to a **raw `claude -p` subprocess** on the host, with the operator's own Keychain OAuth, no capability boundary, no isolation, no lifecycle handle, and no durable context.
+rosary spawns agents by `Command::new("claude") -p …` on the host — bypassing cloister entirely, even though rosary already runs as a cloister bundle (`[[bundles]] name = "rosary"`, wired `ROSARY_BUNDLE` over UDS; `cluster.toml`). Every dispatch failure this session (reign not bound / `find /` — 5251a0; "Not logged in" — b1495c; corpses — 82caac; context death — ADR-0015) is a consequence of the spawn skipping the plane that was built to mediate it.
 
-Every dispatch failure we have hit traces to that one un-cloistered hole. Verified empirically this session:
-
-| Symptom | Root cause (raw host subprocess) | Substrate that should own it |
-| --- | --- | --- |
-| reign not enforced — a ReadOnly agent ran `find /` (5251a0) | `--allowedTools` is *advisory* to a CLI; there is no authoritative deny | cloister **slice-grant** (manifest capability, hypervisor-enforced) |
-| no filesystem sandbox | nothing confines a host subprocess | cloister **bundle isolate** (fs/service = exactly the granted slices) |
-| "Not logged in" dispatch death (b1495c) | detached process is *outside* the vault-proxied context, so it has no reachable cred | **vault-proxied scoped token** (agent never holds the Keychain) |
-| corpses — 14 "active" rows, 0 live workers; count only grows (82caac) | a detached subprocess has **no lifecycle handle**, so death is invisible | cloister **supervisor** (death is an event, not a `ps`-and-guess) |
-| context dies with the worktree | worktree is both execution surface *and* durable store | **capsule** on the jj op-log (ADR-0015) |
-| **can't unit-test any of it** | behaviour lives in an external binary — this ADR's author had to `printf` file-markers against the live `claude` CLI to prove reign, because there was nothing to assert against | a **programmatic agent loop** with a permission callback |
-
-The band-aids we shipped (`--disallowedTools` for read-only profiles, 5251a0) close the *reported* incident but cannot bind the Implement profile's scoped Bash and do not touch creds, corpses, or context. This ADR names the real fix.
+cloister's ADR-0040 already frames the fix in three layers with a hard boundary; this ADR records how rosary participates.
 
 ## Decision
 
-### D1 — The dispatch primitive is a cloister bundle, not a host process
+### D1 — Dispatch is *mediated* by cloister, *executed* host-side
 
-rosary dispatches an agent by asking cloister to spawn an **agent-execution bundle**, not by `Command::new("claude")` on the host. The bundle's manifest is the single place that declares the agent's *reign* (tools it may call), its *sandbox* (fs/service slices), and its *credential binding* (a vault handle, not a secret). The host process model — one object wearing "runtime," "sandbox," "credential holder," and "lifecycle" hats at once, none of them real — is retired.
+The authoritative model is cloister ADR-0040: cloister mediates the **decision** to dispatch and the **credential** the harness uses and **records** both; the harness process itself runs host-side (workerd can't contain it). rosary does not spawn a cloister bundle per agent; rosary's dispatch **requests flow through cloister's mediated surface**, and the spawned host process is pointed at cloister's credential plane.
 
-### D2 — Reign is a slice-grant capability, hypervisor-enforced (supersedes `--allowedTools`)
+### D2 — Orchestration mediation is L0, and it is **shipped** — rosary must not bypass it
 
-The tool allowlist becomes a **slice-grant** in the bundle manifest (ADR-0013). The hypervisor enforces it; the agent cannot call a tool it was not granted, the way a workerd isolate cannot reach a binding it was not given. This is categorically different from `--allowedTools`, which we proved is an *auto-approve* list an out-of-band tool call simply ignores. `find /` is not "denied" — the syscall surface to reach `/` is **not bound into the bundle**.
+`rsry_dispatch` reachable through cloister `/mcp` is lease-gated (who may dispatch) and attested (every dispatch on the §13.4 receipt chain) — cloister ADR-0040 L0, shipped via `cloister-cf7a3b`. rosary's obligation: **the dispatch path that actually spawns must sit behind that mediated surface**, not a raw host entrypoint that skips the lease gate. Today `rsry_dispatch` (MCP) is mediated, but the CLI/detached path spawns directly — that gap is the rosary-side work.
 
-### D3 — Sandbox is the bundle isolate, not an OS bolt-on
+### D3 — The compute sandbox is host-side libkrun (ADR-0044), and `--disallowedTools` is the **stopgap until it lands** — NOT superseded
 
-We do **not** wrap the subprocess in `sandbox-exec`/seccomp. The agent runs *inside* a cloister isolate whose filesystem is the mounted git worktree (D7) and whose outbound edges are its granted service-bindings. Unreachable beats denied.
+The `find /` class of failure is *local-tool* reign (Bash/fs), which cloister's control plane does not contain — that is cloister ADR-0044 (libkrun microVM, per-op FUSE mediation, `~/.ssh` never exposed), in progress. Until it lands, `rosary-5251a0`'s `--disallowedTools` denylist for read-only profiles is the correct **stopgap**, not a superseded band-aid. MCP-tool reign (the `rsry_*` surface) *is* mediated once dispatch goes through cloister's lease gate (D2); local-tool reign waits on libkrun.
 
-### D4 — Credentials are vault-proxied scoped tokens; the agent never holds the Keychain
+### D4 — Credentials via cloister L1, with the honest Max/OAuth ceiling
 
-The agent authenticates with a **short-lived, scoped credential vended by the vault** through a service-binding — the same posture rosary itself already runs under (`project_rsry_in_cloister_bundle`). The operator's Keychain OAuth never enters the agent's environment. This is the *correct* fix for b1495c: the detached subprocess fails auth because it *should not have had* the ambient credential in the first place.
+The spawned harness points `ANTHROPIC_BASE_URL` (and `OPENAI_BASE_URL` for codex) at cloister's `/vault/proxy/<name>` (both `anthropic` `x-api-key` and `openai` `authorizationBearer` services are **shipped**, cloister ADR-0040); cloister injects the vaulted key, streams the response, writes a receipt per call. Stock Claude Code doesn't mint Interlace lease headers, so this needs the lease-aware local shim from cloister ADR-0042 (`task harness:dev`, shipped for dev).
 
-### D5 — Auth model is preserved; **cost is the binding constraint** (the Max-account tell)
+**The b1495c ceiling, stated plainly:** for an **API-key** shape this is full custody (harness never sees the key). For the operator's **Max/Pro OAuth** it is **audit, not custody** — cloister receipts every call but cannot hold a token the keychain minted. So "the agent shouldn't hold the Keychain" is achievable for API-key dispatch; for Max-subscription dispatch, the realistic win is *receipts + a lease-scoped channel*, and the OAuth token stays client-side. This is why `claude -p`/Max is a genuine constraint, not just legacy.
 
-`claude -p` was almost certainly chosen not because it is good design but because it uses the operator's **Claude Max subscription** (flat-rate OAuth via the installed CLI) — no `ANTHROPIC_API_KEY`, no per-token API billing. Any "just use the Agent SDK" answer that silently requires an API key is a **cost regression**, not an upgrade.
+### D5 — Durability/lineage = ADR-0015 capsule + the cloister receipt chain
 
-So the decision is explicit: **cloister the exec, do not abandon the subscription.** The agent inside the bundle still runs under Max OAuth — either `claude -p` or the Agent SDK driven by a `claude setup-token` OAuth token (the token shape rosary already routes, `rosary-1be3b8`). Isolation, capability, and credential-scoping are **orthogonal to how the agent bills**. We keep flat-rate auth *and* gain the bundle boundary. Requiring an API key is a rejected alternative (below).
+Context death (ADR-0015) is unchanged by this ADR: the worktree stays the disposable surface, the capsule (on jj) stays the durable lineage. cloister's per-dispatch + per-LLM-call receipts are a **second, authenticated** lineage source that the capsule's proof projection can fold in (ADR-0015 D5 already anticipates APAS). rosary's job: emit dispatch attestation so the capsule and the cloister receipt chain reconcile.
 
-### D6 — Lifecycle is a supervisor handle; reaping is an event (subsumes 82caac)
+### D6 — Corpses (82caac): supervisor, not raw detach
 
-A bundle has a real lifecycle the supervisor observes. Death emits an event → the pipeline row is cleared and the capsule sealed *at death*, not "eventually, if a reconcile loop happens to be running." The corpse-accumulation of 82caac is structurally impossible when the runtime object is supervised rather than detached-and-forgotten. (82caac's terminal-filter + reap-on-read fix remains the correct stopgap for the *current* model until this lands.)
+Because the harness runs host-side, the lifecycle handle is rosary's (not cloister's) responsibility — which is why `82caac` (terminal-filtered `list_active_pipelines` + reap-on-read) remains the correct fix, and dispatch should hold a real child handle rather than detaching and forgetting. cloister's mediation records that a dispatch *happened*; rosary must record when it *ended*.
 
-### D7 — jj + git + cloister compose into durable-yet-disposable execution
+### D7 — The exec-out smell rule (V0), narrowed by the census
 
-The three substrates already in the stack compose exactly into what durable dispatch needs:
+A census this session found **126 non-test `Command::new` sites across 28 files** — but almost all are legitimate git/dolt/jj/`task` invocations, not agent spawns. So the V0 smell rule (`rosary-9be65d`) must be scoped to **agent-harness spawns** (the `claude`/`gemini`/`codex` exec in `src/dispatch/providers.rs`), flagging any *new* agent-spawn site outside the sanctioned, cloister-mediated seam — not a blanket `Command::new` ban.
 
-```
-git worktree   → disposable execution surface (mounted into the bundle; nuke-and-rebuild)
-cloister       → the isolation + capability + credential boundary around the agent
-jj (op-log)    → the orchestrator's durable, undoable operation history — the capsule's home
-capsule        → the typed, hash-linked lineage (ADR-0015) recorded onto that history
-```
+## What rosary actually does (the coordination effort)
 
-Losing the worktree loses nothing: reign lives in the manifest, creds in the vault, context in the capsule on jj's op-log. Resume = re-spawn the bundle, re-mount a fresh worktree at the capsule's `workspace_base_commit`, rehydrate context from the capsule. This is ADR-0015's D4 with cloister as the execution boundary and jj as the durable substrate.
+1. **Route the spawning path behind cloister's mediated `/mcp`** (D2) so every real dispatch inherits the lease gate + attestation — close the CLI/detached bypass.
+2. **Point the spawned host harness at cloister's credential plane** (`ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL` → `/vault/proxy`, via the ADR-0042 shim) (D4).
+3. **Keep the local-tool stopgaps** (`--disallowedTools`, 82caac reaping) until the cloister compute sandbox (ADR-0044) and a real supervisor land (D3, D6).
+4. **Emit dispatch attestation** so the capsule (ADR-0015) and cloister's receipt chain reconcile (D5).
+5. **Ship the narrowed exec-out smell rule** (D7) so no new *un-mediated* agent spawn is introduced.
 
-### D8 — In-bundle tool enforcement (SDK `canUseTool`) is an implementation detail — and the testability seam
-
-*Inside* the bundle, how the agent loop enforces its granted slices is an implementation choice: the Claude Agent SDK's `canUseTool` callback is the natural fit (deny anything outside the manifest's grant), and — critically — it makes dispatch **unit-testable**: mock the loop, assert the grant decision, no live binary, no real creds. This is a second, softer boundary under cloister's hard one (defense in depth), not a replacement for it. It is also what turns "we test spawning by running the real thing" into real tests.
-
-### D9 — A structural smell rule forbids un-sanctioned exec
-
-Re-introducing a raw host spawn is the regression this ADR exists to prevent. Add a committed smell rule (mache `docs/smell-rules/` or semgrep) that flags `std::process::Command` / `tokio::process::Command` **outside the one sanctioned dispatch seam** (`src/dispatch/providers.rs` cloister path). Exec-out becomes a gate failure, not a habit.
-
-## Architecture (sketch)
-
-```
-reconciler.dispatch(bead)
-  └─ cloister.spawn_bundle(manifest {
-        slices:   tool grants from PermissionProfile  (D2 — reign)
-        mounts:   git worktree @ workspace_base_commit (D7 — surface)
-        bindings: vault:agent-cred(scope=bead)         (D4 — creds)
-     })
-       └─ agent loop (claude -p | SDK, Max OAuth)      (D5 — cost preserved)
-            ├─ tool call → canUseTool ∈ slices?         (D8 — in-bundle gate)
-            ├─ emits capsule_events → jj op-log         (D7 — durable lineage, ADR-0015)
-            └─ exit/death → supervisor event            (D6 — reap + seal, no corpse)
-```
-
-## Migration
-
-`claude -p`-on-host stays the default until the cloister path is proven. Add a `cloister` variant to the `AgentProvider` axis (alongside `claude`/`codex`/`gemini`/`acp`); dispatch routes through it when configured. The 5251a0 `--disallowedTools` denylist remains the fallback for any non-cloister dispatch. No flag-day.
-
-## Phasing
-
-| Phase | Scope |
-| --- | --- |
-| **V0** | D9 smell rule — cheap guard, lands first, stops the bleeding from spreading. |
-| **V1** | Cloister-bundle dispatch for **claude** only: slice-grant reign (D2) + isolate (D3) + vault cred (D4) + supervisor handle (D6), under Max OAuth (D5). Proves the boundary. |
-| **V1.5** | Capsule lineage on jj (D7) — ties ADR-0015 V1; resume-from-capsule via re-spawn. |
-| **V2** | codex via its app-server (`codex_native.rs` already speaks it) hosted in-bundle; unify the provider seam. In-bundle `canUseTool` (D8) for SDK-driven loops. |
+None of this is net-new spawning technology — the plane exists (L0 shipped, L1 building, ADR-0042 runnable). It is wiring rosary's dispatch to stop skipping it.
 
 ## Consequences
 
-- reign, sandbox, creds, corpses, and context stop being five separate bugs and become **properties of the bundle + capsule** — one designed seam.
-- Dispatch becomes unit-testable (D8) instead of requiring a live binary + real credentials.
-- The Max-subscription cost model is preserved (D5) — no API-key regression.
-- **New dependency:** cloister must be able to host an *agent-execution* bundle (see Open questions). If it cannot yet, V1 is a cloister feature first.
-- One more integration surface (rosary↔cloister spawn protocol) and one more manifest schema to maintain.
+- Dispatch inherits cloister's lease gate + receipts (audit for all shapes; credential custody for API-key shapes) instead of running unaudited with the operator's ambient keychain.
+- Reign splits honestly: **MCP-tool reign** is mediated now; **local-tool reign** (the `find /` class) waits on libkrun (ADR-0044), with `--disallowedTools` as the interim.
+- The Max/OAuth ceiling is documented, not papered over: for the operator's subscription, expect **receipts, not custody**.
+- No API-key regression is *forced*: API-key/enterprise deployments get custody; Max stays subscription-billed with audit.
 
 ## Alternatives considered
 
-- **Agent SDK with `canUseTool`, no cloister.** Binds reign in-process and is testable, but an in-process callback is not a security boundary (a compromised loop bypasses it), gives no fs isolation or credential-scoping, and — if it forces `ANTHROPIC_API_KEY` — is a cost regression (D5). Kept only as the *in-bundle* enforcement detail (D8), under cloister.
-- **OS sandbox (`sandbox-exec`/seccomp) around the subprocess.** Adds fs confinement but nothing else — no capability model, no vault creds, no lifecycle, no durable context. A bolt-on where a substrate exists.
-- **Status quo + more `--disallowedTools` denylists.** Whack-a-mole; provably cannot bind Implement's scoped Bash (a broad `Bash` deny kills `cargo`); touches none of creds/corpses/context.
-- **Require an API key and drop the subscription.** Rejected: a direct, ongoing cost regression for the operator (D5).
+- **Run the harness inside a workerd isolate** — impossible (no process-spawn, ADR-0033). This was the original draft's error.
+- **A rosary-only OS sandbox around `claude -p`** — duplicates cloister ADR-0044 (libkrun) with less: no per-op FUSE mediation, no shared credential plane, no receipts.
+- **Keep raw host spawn + more `--disallowedTools`** — the current stopgap; fine as a stopgap, but it never gets the credential plane, the audit chain, or the compute sandbox, and it can't bind Implement's scoped Bash.
 
 ## What we are explicitly **not** claiming
 
-- Not claiming cloister hosts agent-execution bundles *today* — that may be net-new (Open questions).
-- Not replacing the Max subscription with per-token API billing.
-- Not signing capsule lineage in V1 (that is ADR-0015 V2).
-- Not that the 5251a0/82caac stopgaps were wrong — they are the right patches for the *current* model until this lands.
-
-## Open questions
-
-1. **Does cloister host agent-execution bundles today, or is that net-new?** If net-new, V1 begins as a cloister capability (a bundle kind that runs a long-lived agent loop with a git-worktree mount + vault binding), and rosary integrates against it.
-2. **Worktree mount into an isolate** — does the bundle get a real filesystem mount of the git worktree, or does the agent's file I/O go through a service-binding (VFS)? The former is simpler; the latter is a truer capability boundary.
-3. **jj as the capsule home** — does the capsule live *in* the jj op-log (operation = capsule event) or alongside it (backend store referencing jj change-ids)? ADR-0015 D3 currently says the orchestrator store; this ADR proposes jj as the durable substrate — reconcile the two.
+- Not claiming credential *custody* for Max/Pro OAuth — that shape gets **audit only** (cloister ADR-0040).
+- Not claiming this contains the *compute* (Bash/fs) — that is cloister ADR-0044, separate and in progress.
+- Not superseding `5251a0` or `82caac` — they are the correct stopgaps until the cloister substrate lands.
+- Not inventing new spawn technology — this is coordination onto an existing, partly-shipped cloister plane.
