@@ -9,6 +9,7 @@
 
 pub(crate) mod codex_native;
 pub mod prompt;
+pub mod provenance;
 pub mod providers;
 pub mod session;
 pub mod sweep;
@@ -131,6 +132,11 @@ impl PermissionProfile {
 
 /// Filename for the agent stdout stream log within a workspace.
 pub const STREAM_LOG_FILENAME: &str = ".rsry-stream.jsonl";
+
+/// Filename for the agent stderr log within a workspace. The tail of this file
+/// is what [`provenance::classify`](provenance::classify) reads to diagnose a
+/// failed dispatch (auth / skew / missing-binary / …).
+pub const STDERR_LOG_FILENAME: &str = ".rsry-stderr.log";
 
 /// True if the agent's stream-json result reports an auth failure
 /// ("Not logged in"). A credential-less agent exits ~instantly having done no

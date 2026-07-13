@@ -9,6 +9,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::dispatch;
+use crate::dispatch::provenance::{FailureClass, classify};
 use crate::dolt::observations::Verdict;
 use crate::pipeline::CompletionAction;
 use crate::store::WorkRef;
@@ -222,6 +223,26 @@ impl Reconciler {
             self.completed_work_dirs.remove(bead_id);
             self.on_fail_exit(bead_id);
         }
+    }
+
+    /// Classify *why* a dispatch failed by reading the tail of its stderr log,
+    /// so the recorded outcome (`failure:auth`, `failure:skew`, …) is the
+    /// diagnosis instead of an absence. Only process-level failures
+    /// (`exit_success == false`) are classified — a verify-tier failure exited 0
+    /// and carries no spawn/auth signature. Must be called *before*
+    /// `execute_action`, which drops `completed_work_dirs` on failure
+    /// (`handle_failure` above). Best-effort: an unreadable log yields
+    /// [`FailureClass::Unknown`], which qualifies to a bare base outcome.
+    fn classify_failure(&self, bead_id: &str, exit_success: bool) -> FailureClass {
+        if exit_success {
+            return FailureClass::Ok;
+        }
+        let tail = self
+            .completed_work_dirs
+            .get(bead_id)
+            .map(|(work_dir, _repo)| read_stderr_tail(work_dir))
+            .unwrap_or_default();
+        classify(false, &tail)
     }
 
     /// Write handoff, update tracker, persist pipeline state, set assignee, reopen.
@@ -475,6 +496,9 @@ impl Reconciler {
                 }
             }
 
+            // Classify before execute_action — it drops the work_dir on failure.
+            let failure_class = self.classify_failure(bead_id, *exit_success);
+
             let outcome = self
                 .execute_action(
                     bead_id,
@@ -498,7 +522,7 @@ impl Reconciler {
                 .and_then(|t| t.dispatch_id.as_deref())
             {
                 self.pipeline
-                    .complete_dispatch(dispatch_id, outcome_str)
+                    .complete_dispatch(dispatch_id, &failure_class.qualify(outcome_str))
                     .await;
             }
 
@@ -634,6 +658,9 @@ impl Reconciler {
                 let (action, verify_summary) =
                     self.verify_and_decide(bead_id, *exit_success, &completed_beads);
 
+                // Classify before execute_action — it drops the work_dir on failure.
+                let failure_class = self.classify_failure(bead_id, *exit_success);
+
                 let outcome = self
                     .execute_action(
                         bead_id,
@@ -658,7 +685,7 @@ impl Reconciler {
                     .and_then(|t| t.dispatch_id.as_deref())
                 {
                     self.pipeline
-                        .complete_dispatch(dispatch_id, outcome_str)
+                        .complete_dispatch(dispatch_id, &failure_class.qualify(outcome_str))
                         .await;
                 }
 
@@ -805,5 +832,45 @@ fn close_condition_text(bead: &crate::bead::Bead) -> String {
         ("", description) => description.to_string(),
         (acceptance_criteria, "") => acceptance_criteria.to_string(),
         (acceptance_criteria, description) => format!("{acceptance_criteria}\n{description}"),
+    }
+}
+
+/// Read up to the last 8 KiB of a workspace's stderr log for failure
+/// classification. Best-effort — a missing or unreadable log yields an empty
+/// string (which classifies to [`FailureClass::Unknown`]).
+fn read_stderr_tail(work_dir: &std::path::Path) -> String {
+    const MAX_TAIL_BYTES: usize = 8 * 1024;
+    let Ok(bytes) = std::fs::read(work_dir.join(dispatch::STDERR_LOG_FILENAME)) else {
+        return String::new();
+    };
+    let start = bytes.len().saturating_sub(MAX_TAIL_BYTES);
+    String::from_utf8_lossy(&bytes[start..]).into_owned()
+}
+
+#[cfg(test)]
+mod stderr_tail_tests {
+    use super::*;
+
+    #[test]
+    fn tail_of_stderr_log_classifies_the_failure() {
+        // The end-to-end seam: a workspace stderr log with a spawn-time auth
+        // failure → the classifier reads it and names the cause.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(dispatch::STDERR_LOG_FILENAME),
+            "Error: Not logged in. Please run `claude login`.\n",
+        )
+        .unwrap();
+
+        let tail = read_stderr_tail(dir.path());
+        assert_eq!(classify(false, &tail), FailureClass::Auth);
+    }
+
+    #[test]
+    fn missing_log_yields_empty_tail_and_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        // No .rsry-stderr.log written.
+        assert!(read_stderr_tail(dir.path()).is_empty());
+        assert_eq!(classify(false, ""), FailureClass::Unknown);
     }
 }
