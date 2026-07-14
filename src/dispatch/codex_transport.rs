@@ -178,6 +178,30 @@ fn default_codex_app_server_socket_path() -> PathBuf {
         .join("app-server-control.sock")
 }
 
+/// Cooperatively interrupt a running turn: open a fresh connection and send
+/// `turn/interrupt` for its `{threadId, turnId}` (verified against the
+/// app-server schema, v0.142.5). The event-loop thread owns the original
+/// connection, so the interrupt rides a new one — the server addresses turns by
+/// id, not by connection. Best-effort: the ack is drained but the turn ends via
+/// the loop observing `turn/completed` with an `interrupted` status.
+pub(crate) fn send_turn_interrupt(
+    connector: &dyn CodexConnector,
+    thread_id: &str,
+    turn_id: &str,
+) -> Result<()> {
+    let mut conn = connector
+        .connect()
+        .context("connecting to interrupt codex turn")?;
+    conn.send(&json!({
+        "jsonrpc": "2.0",
+        "id": "rsry-turn-interrupt",
+        "method": "turn/interrupt",
+        "params": { "threadId": thread_id, "turnId": turn_id },
+    }))?;
+    let _ = conn.recv(CODEX_RPC_TIMEOUT); // best-effort ack drain
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +320,36 @@ mod tests {
             "wait() must observe the streamed turn/completed"
         );
         server.join().expect("fake app-server exits");
+    }
+
+    #[test]
+    fn send_turn_interrupt_delivers_over_socket() {
+        // A fresh connection carrying turn/interrupt for {threadId, turnId},
+        // verified at the server — the cooperative kill path.
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("codex.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            let init = read_ws(&mut ws);
+            assert_eq!(init["method"], "initialize");
+            write_ws(
+                &mut ws,
+                json!({"jsonrpc": "2.0", "id": init["id"], "result": {}}),
+            );
+            assert_eq!(read_ws(&mut ws)["method"], "initialized");
+            let interrupt = read_ws(&mut ws);
+            assert_eq!(interrupt["method"], "turn/interrupt");
+            assert_eq!(interrupt["params"]["threadId"], "thread-1");
+            assert_eq!(interrupt["params"]["turnId"], "turn-1");
+            write_ws(
+                &mut ws,
+                json!({"jsonrpc": "2.0", "id": interrupt["id"], "result": {}}),
+            );
+        });
+        let connector = CodexUnixSocketConnector::new(socket_path);
+        send_turn_interrupt(&connector, "thread-1", "turn-1").expect("interrupt sends");
+        server.join().unwrap();
     }
 }
