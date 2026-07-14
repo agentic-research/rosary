@@ -1,18 +1,22 @@
 //! Native Codex transport — the experimental app-server / JSON-RPC provider,
 //! extracted from providers.rs (rosary-167459). Dormant until config selects it.
+//!
+//! This file holds the **wire contract** (request envelopes + params) and the
+//! provider/session surface. The **runtime** — the persistent connection and
+//! the event loop that reads past `turn/start`'s ack to observe real completion
+//! — lives in [`super::codex_runtime`].
 
 use std::collections::BTreeMap;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use serde::Serialize;
-use tungstenite::{Message, WebSocket};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use super::PermissionProfile;
+use super::codex_runtime::CodexAppServerRuntime;
+use super::codex_transport::CodexUnixSocketConnector;
 use super::providers::{AgentProvider, AgentRunSpec};
 use super::session::{AgentSession, AgentSessionRef};
 
@@ -120,236 +124,6 @@ fn codex_config(start: &CodexThreadStart) -> serde_json::Value {
     })
 }
 
-/// App-server client boundary: production speaks Codex's WebSocket/UDS JSON-RPC, tests inject an in-memory client.
-#[allow(dead_code)] // Production transport is the next slice; tests exercise the boundary now.
-pub trait CodexAppServerClient: Send + Sync {
-    fn request(&self, request: CodexAppServerRequest) -> Result<serde_json::Value>;
-}
-
-/// Remote Codex app-server client over the local control Unix socket — a native JSON-RPC/WebSocket transport, not `codex exec`.
-pub struct CodexUnixSocketClient {
-    socket_path: PathBuf,
-}
-
-impl Default for CodexUnixSocketClient {
-    fn default() -> Self {
-        Self {
-            socket_path: default_codex_app_server_socket_path(),
-        }
-    }
-}
-
-impl CodexUnixSocketClient {
-    #[cfg(test)]
-    pub(crate) fn new(socket_path: PathBuf) -> Self {
-        Self { socket_path }
-    }
-}
-
-impl CodexAppServerClient for CodexUnixSocketClient {
-    fn request(&self, request: CodexAppServerRequest) -> Result<serde_json::Value> {
-        request_codex_app_server(&self.socket_path, request)
-    }
-}
-
-/// Native Codex runtime backed by a Codex app-server client.
-#[allow(dead_code)] // Production transport is the next slice; tests exercise the boundary now.
-pub struct CodexAppServerRuntime {
-    client: Arc<dyn CodexAppServerClient>,
-}
-
-impl CodexAppServerRuntime {
-    #[allow(dead_code)] // Constructed by tests and future configured runtime factory.
-    pub fn new(client: Arc<dyn CodexAppServerClient>) -> Self {
-        Self { client }
-    }
-}
-
-impl CodexRuntime for CodexAppServerRuntime {
-    fn start_thread(&self, start: CodexThreadStart) -> Result<CodexNativeSession> {
-        let thread_response = self
-            .client
-            .request(CodexAppServerRequest::thread_start(
-                "rsry-thread-start",
-                &start,
-            ))
-            .context("starting codex app-server thread")?;
-        let thread_id = thread_id_from_thread_start_response(&thread_response)?;
-        self.client
-            .request(CodexAppServerRequest::turn_start(
-                "rsry-turn-start",
-                thread_id.clone(),
-                start.prompt,
-                &start.work_dir,
-                start.permissions,
-                start.model,
-            ))
-            .context("starting codex app-server turn")?;
-        Ok(CodexNativeSession::running(thread_id))
-    }
-}
-
-#[allow(dead_code)] // Used by the dormant Codex app-server runtime.
-fn thread_id_from_thread_start_response(response: &serde_json::Value) -> Result<String> {
-    response
-        .get("thread")
-        .and_then(|thread| thread.get("id"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .context("codex thread/start response missing thread.id")
-}
-
-fn default_codex_app_server_socket_path() -> PathBuf {
-    if let Ok(path) = std::env::var("RSRY_CODEX_APP_SERVER_SOCKET") {
-        return PathBuf::from(path);
-    }
-    if let Ok(path) = std::env::var("CODEX_APP_SERVER_SOCKET") {
-        return PathBuf::from(path);
-    }
-    let codex_home = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(dirs_next::home_dir)
-        .map(|home| {
-            if home.ends_with(".codex") {
-                home
-            } else {
-                home.join(".codex")
-            }
-        })
-        .unwrap_or_else(|| PathBuf::from(".codex"));
-    codex_home
-        .join("app-server-control")
-        .join("app-server-control.sock")
-}
-
-fn request_codex_app_server(
-    socket_path: &Path,
-    request: CodexAppServerRequest,
-) -> Result<serde_json::Value> {
-    let stream = std::os::unix::net::UnixStream::connect(socket_path).with_context(|| {
-        format!(
-            "connecting Codex app-server socket {}",
-            socket_path.display()
-        )
-    })?;
-    let (mut websocket, _response) = tungstenite::client::client("ws://localhost/", stream)
-        .with_context(|| {
-            format!(
-                "upgrading Codex app-server socket {}",
-                socket_path.display()
-            )
-        })?;
-
-    initialize_codex_app_server(&mut websocket)?;
-    let request_id = request.id.clone();
-    send_jsonrpc_value(&mut websocket, &serde_json::to_value(request)?)?;
-    read_jsonrpc_result(&mut websocket, &request_id, CODEX_RPC_TIMEOUT)
-}
-
-fn initialize_codex_app_server(
-    websocket: &mut WebSocket<std::os::unix::net::UnixStream>,
-) -> Result<()> {
-    send_jsonrpc_value(
-        websocket,
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": "rsry-initialize",
-            "method": "initialize",
-            "params": {
-                "clientInfo": {
-                    "name": "rosary",
-                    "title": "Rosary",
-                    "version": env!("CARGO_PKG_VERSION"),
-                },
-                "capabilities": {
-                    "experimentalApi": true,
-                    "requestAttestation": false,
-                    "mcpServerOpenaiFormElicitation": false,
-                }
-            }
-        }),
-    )?;
-    let _ = read_jsonrpc_result(websocket, "rsry-initialize", CODEX_RPC_TIMEOUT)?;
-    send_jsonrpc_value(
-        websocket,
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "initialized",
-        }),
-    )
-}
-
-fn send_jsonrpc_value(
-    websocket: &mut WebSocket<std::os::unix::net::UnixStream>,
-    value: &serde_json::Value,
-) -> Result<()> {
-    websocket
-        .send(Message::Text(serde_json::to_string(value)?.into()))
-        .context("sending Codex app-server JSON-RPC message")
-}
-
-/// Deadline for one Codex JSON-RPC round-trip; a hung server can't block forever (rosary-72fc26).
-const CODEX_RPC_TIMEOUT: Duration = Duration::from_secs(30);
-
-pub(crate) fn read_jsonrpc_result(
-    websocket: &mut WebSocket<std::os::unix::net::UnixStream>,
-    request_id: &str,
-    timeout: Duration,
-) -> Result<serde_json::Value> {
-    // Total deadline across the whole wait: a server that dribbles keep-alives
-    // but never answers still bounds out, and a fully-hung one trips the first read.
-    let deadline = Instant::now() + timeout;
-    loop {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .filter(|d| !d.is_zero())
-            .ok_or_else(|| {
-                anyhow::anyhow!("Codex app-server request {request_id} timed out after {timeout:?}")
-            })?;
-        websocket
-            .get_ref()
-            .set_read_timeout(Some(remaining))
-            .context("setting Codex app-server read timeout")?;
-        let message = match websocket.read() {
-            Ok(m) => m,
-            // The read is bounded by `remaining`, so any failure at/after the deadline
-            // is our timeout — key off the clock, not the errno (OSes wrap it differently).
-            Err(_) if Instant::now() >= deadline => {
-                anyhow::bail!("Codex app-server request {request_id} timed out after {timeout:?}")
-            }
-            // A pre-deadline per-read timeout or EINTR-interrupted read — both transient, re-read.
-            Err(tungstenite::Error::Io(io))
-                if matches!(
-                    io.kind(),
-                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
-                ) =>
-            {
-                continue;
-            }
-            Err(e) => return Err(e).context("reading Codex app-server JSON-RPC message"),
-        };
-        let payload = match message {
-            Message::Text(text) => text.to_string(),
-            Message::Binary(bytes) => String::from_utf8(bytes.to_vec())
-                .context("Codex app-server returned non-UTF8 binary JSON-RPC payload")?,
-            Message::Close(_) => anyhow::bail!("Codex app-server closed before {request_id}"),
-            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
-        };
-        let value: serde_json::Value =
-            serde_json::from_str(&payload).context("parsing Codex app-server JSON-RPC payload")?;
-        if value.get("id").and_then(serde_json::Value::as_str) != Some(request_id) {
-            continue;
-        }
-        if let Some(error) = value.get("error") {
-            anyhow::bail!("Codex app-server request {request_id} failed: {error}");
-        }
-        return value
-            .get("result")
-            .cloned()
-            .with_context(|| format!("Codex app-server response {request_id} missing result"));
-    }
-}
-
 /// Structured request for the native Codex runtime boundary — the subset of
 /// [`AgentRunSpec`] needed to start a thread; the adapter maps it to `ThreadStartParams`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -387,35 +161,42 @@ pub trait CodexRuntime: Send + Sync {
     fn start_thread(&self, start: CodexThreadStart) -> Result<CodexNativeSession>;
 }
 
-/// Native Codex session handle. It exposes a Codex thread id instead of an OS PID.
+/// Native Codex session handle. It exposes a Codex thread id instead of an OS
+/// PID, and its completion is resolved by the runtime's event-loop thread over a
+/// oneshot channel (mirroring `ComputeSession`) — so `wait` reflects the turn's
+/// real outcome rather than a placeholder.
 #[derive(Debug)]
 pub struct CodexNativeSession {
     thread_id: String,
-    result: Arc<Mutex<Option<bool>>>,
+    rx: Option<tokio::sync::oneshot::Receiver<bool>>,
+    result: Option<bool>,
 }
 
 impl CodexNativeSession {
-    #[allow(dead_code)] // Used by the dormant Codex app-server runtime.
-    pub fn running(thread_id: impl Into<String>) -> Self {
+    /// A running turn whose success is delivered by the event-loop thread on `rx`.
+    pub fn pending(thread_id: impl Into<String>, rx: tokio::sync::oneshot::Receiver<bool>) -> Self {
         Self {
             thread_id: thread_id.into(),
-            result: Arc::new(Mutex::new(None)),
+            rx: Some(rx),
+            result: None,
         }
     }
 
-    #[allow(dead_code)] // Public constructor for native runtime adapters and tests.
+    #[allow(dead_code)] // Pre-resolved handle for runtime tests.
     pub fn completed_success(thread_id: impl Into<String>) -> Self {
         Self {
             thread_id: thread_id.into(),
-            result: Arc::new(Mutex::new(Some(true))),
+            rx: None,
+            result: Some(true),
         }
     }
 
-    #[allow(dead_code)] // Useful for future Codex runtime tests.
+    #[allow(dead_code)] // Pre-resolved handle for runtime tests.
     pub fn completed_failure(thread_id: impl Into<String>) -> Self {
         Self {
             thread_id: thread_id.into(),
-            result: Arc::new(Mutex::new(Some(false))),
+            rx: None,
+            result: Some(false),
         }
     }
 }
@@ -423,15 +204,48 @@ impl CodexNativeSession {
 #[async_trait::async_trait]
 impl AgentSession for CodexNativeSession {
     fn try_wait(&mut self) -> Result<Option<bool>> {
-        Ok(*self.result.lock().unwrap())
+        if let Some(result) = self.result {
+            return Ok(Some(result));
+        }
+        let Some(rx) = self.rx.as_mut() else {
+            return Ok(None);
+        };
+        match rx.try_recv() {
+            Ok(success) => {
+                self.result = Some(success);
+                self.rx = None;
+                Ok(Some(success))
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => Ok(None),
+            // Loop thread dropped the sender without a result — a failed turn,
+            // never a hang.
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.result = Some(false);
+                self.rx = None;
+                Ok(Some(false))
+            }
+        }
     }
 
     async fn wait(&mut self) -> Result<bool> {
-        Ok(self.result.lock().unwrap().unwrap_or(false))
+        if let Some(result) = self.result {
+            return Ok(result);
+        }
+        if let Some(rx) = self.rx.take() {
+            let success = rx.await.unwrap_or(false);
+            self.result = Some(success);
+            Ok(success)
+        } else {
+            Ok(false)
+        }
     }
 
     fn kill(&mut self) -> Result<()> {
-        *self.result.lock().unwrap() = Some(false);
+        // Drop the receiver and resolve as failed; the event-loop thread's send
+        // becomes a no-op and it exits when the turn ends. A cooperative
+        // turn/interrupt is a follow-up.
+        self.rx = None;
+        self.result = Some(false);
         Ok(())
     }
 
@@ -452,7 +266,7 @@ impl Default for CodexProvider {
     fn default() -> Self {
         Self {
             runtime: Arc::new(CodexAppServerRuntime::new(Arc::new(
-                CodexUnixSocketClient::default(),
+                CodexUnixSocketConnector::default(),
             ))),
             model: None,
         }
