@@ -24,10 +24,16 @@
 //! `allow(dead_code)` until then — matching `codex_native.rs`.
 #![allow(dead_code)]
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
+
+use super::PermissionProfile;
+use super::codex_native::{
+    CodexAppServerRequest, CodexNativeSession, CodexRuntime, CodexThreadStart,
+};
 
 /// A live, ordered message channel to the Codex app-server. Unlike the one-shot
 /// request/response boundary, a connection is read repeatedly: after
@@ -148,6 +154,109 @@ pub fn run_turn_loop(
             }
             TurnSignal::Progress => continue,
         }
+    }
+}
+
+/// Deadline for one startup JSON-RPC round-trip (initialize / thread-start /
+/// turn-start) — a hung server can't block startup forever (rosary-72fc26).
+pub(crate) const CODEX_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Max silence between turn events before a running turn is treated as hung.
+/// A turn can be quiet for a while while the model works, so this is generous.
+const CODEX_TURN_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Opens persistent Codex app-server connections. Production dials the local
+/// control socket and performs the initialize handshake; tests inject a
+/// scripted connector.
+pub trait CodexConnector: Send + Sync {
+    fn connect(&self) -> Result<Box<dyn CodexConnection>>;
+}
+
+/// Native Codex runtime backed by a [`CodexConnector`]. `start_thread` opens one
+/// connection, starts the thread and the turn synchronously (their acks), then
+/// hands the connection to an event-loop thread that runs the turn to
+/// completion and resolves the session's oneshot.
+pub struct CodexAppServerRuntime {
+    connector: Arc<dyn CodexConnector>,
+}
+
+impl CodexAppServerRuntime {
+    pub fn new(connector: Arc<dyn CodexConnector>) -> Self {
+        Self { connector }
+    }
+}
+
+impl CodexRuntime for CodexAppServerRuntime {
+    fn start_thread(&self, start: CodexThreadStart) -> Result<CodexNativeSession> {
+        let mut conn = self
+            .connector
+            .connect()
+            .context("connecting codex app-server")?;
+
+        conn.send(&serde_json::to_value(CodexAppServerRequest::thread_start(
+            "rsry-thread-start",
+            &start,
+        ))?)?;
+        let thread_response = recv_result(conn.as_mut(), "rsry-thread-start", CODEX_RPC_TIMEOUT)
+            .context("starting codex app-server thread")?;
+        let thread_id = thread_id_from_thread_start_response(&thread_response)?;
+
+        conn.send(&serde_json::to_value(CodexAppServerRequest::turn_start(
+            "rsry-turn-start",
+            thread_id.clone(),
+            start.prompt.clone(),
+            &start.work_dir,
+            start.permissions,
+            start.model.clone(),
+        ))?)?;
+        recv_result(conn.as_mut(), "rsry-turn-start", CODEX_RPC_TIMEOUT)
+            .context("starting codex app-server turn")?;
+
+        // Within the sandbox, Implement may act; ReadOnly/Plan must not — so the
+        // loop denies any approval the server requests for them.
+        let approve = matches!(start.permissions, PermissionProfile::Implement);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let result =
+                run_turn_loop(conn.as_mut(), approve, CODEX_TURN_IDLE_TIMEOUT).unwrap_or(false);
+            let _ = tx.send(result);
+        });
+
+        Ok(CodexNativeSession::pending(thread_id, rx))
+    }
+}
+
+fn thread_id_from_thread_start_response(response: &Value) -> Result<String> {
+    response
+        .get("thread")
+        .and_then(|thread| thread.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .context("codex thread/start response missing thread.id")
+}
+
+/// Send a request already issued, then read until the JSON-RPC reply whose `id`
+/// matches, skipping unrelated notifications. Errors on a JSON-RPC error reply.
+fn recv_result(conn: &mut dyn CodexConnection, id: &str, timeout: Duration) -> Result<Value> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| {
+                anyhow::anyhow!("Codex app-server request {id} timed out after {timeout:?}")
+            })?;
+        let value = conn.recv(remaining)?;
+        if value.get("id").and_then(Value::as_str) != Some(id) {
+            continue;
+        }
+        if let Some(error) = value.get("error") {
+            anyhow::bail!("Codex app-server request {id} failed: {error}");
+        }
+        return value
+            .get("result")
+            .cloned()
+            .with_context(|| format!("Codex app-server response {id} missing result"));
     }
 }
 
@@ -297,5 +406,88 @@ mod tests {
         // never a silent success.
         let mut conn = ScriptedConnection::new(vec![json!({"method": "turn/started"})]);
         assert!(run_turn_loop(&mut conn, true, idle()).is_err());
+    }
+
+    // --- runtime over a scripted connector ---
+
+    use crate::dispatch::PermissionProfile;
+    use crate::dispatch::codex_native::{CodexRuntime, CodexThreadStart};
+    use crate::dispatch::session::{AgentSession, AgentSessionRef};
+    use std::sync::{Arc, Mutex};
+
+    /// A scripted connection whose sends are captured through a shared handle, so
+    /// the test can inspect them after the connection has moved into the
+    /// runtime's event-loop thread.
+    struct SharedScriptedConnection {
+        inbound: VecDeque<Value>,
+        sent: Arc<Mutex<Vec<Value>>>,
+    }
+    impl CodexConnection for SharedScriptedConnection {
+        fn send(&mut self, value: &Value) -> Result<()> {
+            self.sent.lock().unwrap().push(value.clone());
+            Ok(())
+        }
+        fn recv(&mut self, _idle: Duration) -> Result<Value> {
+            self.inbound
+                .pop_front()
+                .ok_or_else(|| anyhow::anyhow!("connection closed"))
+        }
+    }
+
+    struct ScriptedConnector {
+        inbound: Mutex<Option<VecDeque<Value>>>,
+        sent: Arc<Mutex<Vec<Value>>>,
+    }
+    impl CodexConnector for ScriptedConnector {
+        fn connect(&self) -> Result<Box<dyn CodexConnection>> {
+            let inbound = self.inbound.lock().unwrap().take().expect("connect once");
+            Ok(Box::new(SharedScriptedConnection {
+                inbound,
+                sent: self.sent.clone(),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_resolves_wait_from_streamed_completion() {
+        // The point of increment B: wait() reflects a real streamed
+        // turn/completed, not a hardcoded false. thread/start + turn/start acks,
+        // then the terminal event the loop observes.
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let inbound: VecDeque<Value> = vec![
+            json!({"jsonrpc": "2.0", "id": "rsry-thread-start", "result": {"thread": {"id": "thread-x"}}}),
+            json!({"jsonrpc": "2.0", "id": "rsry-turn-start", "result": {"turn": {"id": "t"}}}),
+            json!({"jsonrpc": "2.0", "method": "turn/completed", "params": {}}),
+        ]
+        .into();
+        let connector = Arc::new(ScriptedConnector {
+            inbound: Mutex::new(Some(inbound)),
+            sent: sent.clone(),
+        });
+        let runtime = CodexAppServerRuntime::new(connector);
+        let start = CodexThreadStart {
+            bead_id: Some("rosary-codex-b".into()),
+            agent_name: Some("dev-agent".into()),
+            prompt: "drive the loop".into(),
+            work_dir: std::path::PathBuf::from("/tmp/rsry-codex-work"),
+            permissions: PermissionProfile::Implement,
+            system_prompt: "developer rules".into(),
+            mcp_servers: std::collections::BTreeMap::new(),
+            expected_mcp_tools: vec!["rsry".into()],
+            model: None,
+        };
+
+        let mut session = runtime.start_thread(start).expect("runtime starts");
+        assert_eq!(
+            session.session_ref(),
+            Some(AgentSessionRef::new("codex", "thread-x"))
+        );
+        assert!(session.wait().await.expect("wait resolves"));
+
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0]["method"], "thread/start");
+        assert_eq!(sent[1]["method"], "turn/start");
+        assert_eq!(sent[1]["params"]["threadId"], "thread-x");
     }
 }

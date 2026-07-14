@@ -154,11 +154,16 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/codex_native.rs",
-      "count": 16
+      "count": 10
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/codex_runtime.rs",
+      "count": 12
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/dispatch/codex_transport.rs",
       "count": 6
     },
     {
@@ -199,7 +204,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/tests.rs",
-      "count": 22
+      "count": 21
     },
     {
       "rule_id": "duplicate_definitions",

@@ -9,6 +9,7 @@
 
 pub(crate) mod codex_native;
 pub mod codex_runtime;
+pub mod codex_transport;
 pub mod prompt;
 pub mod provenance;
 pub mod providers;
