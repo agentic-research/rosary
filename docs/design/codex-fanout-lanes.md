@@ -122,7 +122,7 @@ is also mutually non-colliding — a natural second wave for one worker or sever
 1. **Keep decomposing the god-files** (handlers.rs/main.rs) — the only way to
    shrink the 130-cluster structurally. Parallelism is a *decomposition* outcome,
    not a *scheduling* one.
-1. Cross-repo beads (signet/ll/conductor) living in the rosary store are a
+1. Cross-repo beads (signet/ley-line) living in the rosary store are a
    separate relocation concern (`rsry bead move`), out of scope here.
 
 > Thread/decade assignment + dependency edges (the "documented via bead metadata"

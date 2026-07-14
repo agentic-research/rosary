@@ -197,9 +197,8 @@ these fields.
 
 **Important:** `commits` captures the full chain of commits the agent made in
 the worktree, not just the checkpoint commit. If the agent was instructed not
-to commit (current behavior for Rust reconciler), the only commit is the
-orchestrator's checkpoint. If the agent does commit (conductor mode), those
-commits appear too.
+to commit (current behavior), the only commit is the orchestrator's checkpoint.
+If the agent does commit, those commits appear too.
 
 ### quality
 
@@ -245,7 +244,7 @@ redirect stdout to a file or pipe, parse the final `result` event.
 
 For providers that do not emit stream-json (Gemini, ACP), cost fields are
 null. ACP agents can report cost through the ACP protocol's
-`prompt/complete` notification, which the conductor already handles.
+`prompt/complete` notification, which rosary's ACP client handles.
 
 ### vcs
 
@@ -278,7 +277,7 @@ ______________________________________________________________________
 
 The manifest is assembled in three phases:
 
-### Phase 1: At Spawn (dispatch::spawn or conductor::AgentWorker.init)
+### Phase 1: At Spawn (dispatch::spawn)
 
 Pre-populate fields that are known before the agent starts:
 
@@ -289,8 +288,7 @@ session:  workspace_path, work_dir, repo_path, vcs_kind, started_at, pid
 vcs:      git_branch, base_commit
 ```
 
-Store this partial manifest in memory (Rust: alongside the AgentHandle;
-Elixir: in the GenServer state).
+Store this partial manifest in memory (alongside the AgentHandle).
 
 ### Phase 2: During Execution (stream-json / ACP events)
 
@@ -368,10 +366,10 @@ ______________________________________________________________________
    The `head_commit` field can be backfilled by re-reading after checkpoint,
    or the manifest can be amended.
 
-1. **Conductor (Elixir) parity:** The conductor has richer runtime
-   information (ACP messages, mid-execution validation results). Its
-   manifest could include additional fields (tool_calls, validation_runs).
-   These should be optional fields in the schema, not a separate schema.
+1. **Richer runtime fields:** Providers that surface more runtime information
+   (ACP tool-call messages, mid-execution validation results) could populate
+   additional fields (tool_calls, validation_runs). These should be optional
+   fields in the schema, not a separate schema.
 
 1. **Retention:** Manifests in workspaces are ephemeral (cleaned up with
    teardown). For long-term storage, the orchestrator should copy the

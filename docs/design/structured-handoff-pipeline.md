@@ -146,10 +146,10 @@ Your role: [staging-agent perspective from agents/staging-agent.md]
 
 The pipeline template specifies provider per phase:
 
-```elixir
-%Step{agent: "dev-agent",     provider: :claude,  mode: :implement}
-%Step{agent: "staging-agent", provider: :gemini,  mode: :read_only}
-%Step{agent: "prod-agent",    provider: :claude,  mode: :read_only}
+```text
+dev-agent      provider=claude  mode=implement
+staging-agent  provider=gemini  mode=read_only
+prod-agent     provider=claude  mode=read_only
 ```
 
 Different model = different biases = adversarial by construction. Claude reviews itself poorly. Gemini reviewing Claude's work catches different classes of bugs.
@@ -196,7 +196,7 @@ The handoff artifact is a JSON file in the workspace. It doesn't depend on:
 - Any specific provider (Claude, Gemini, ACP all produce handoffs)
 - Any specific execution backend (local, sprites — handoff is in the workspace)
 
-The orchestrator (Rust reconciler or Elixir conductor) writes the handoff. The backend stores the workspace. The handoff travels with the workspace.
+The orchestrator (the reconciler) writes the handoff. The backend stores the workspace. The handoff travels with the workspace.
 
 ## Implementation Order
 
