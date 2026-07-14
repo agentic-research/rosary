@@ -12,16 +12,10 @@ graph TB
         RC[Reconciler]
         SC[Scanner]
         TR[Triage / Queue]
-        DI[Dispatcher]
+        DI[Dispatcher<br/>AgentProvider]
         VE[Verifier]
         WS[Workspace<br/>jj / git worktree]
         HS[HierarchyStore<br/>decades / threads]
-    end
-
-    subgraph "Conductor (Elixir/OTP)"
-        ORCH[Orchestrator<br/>GenServer]
-        SUP[DynamicSupervisor]
-        AW[AgentWorker<br/>per-bead GenServer]
     end
 
     subgraph "Storage"
@@ -32,50 +26,21 @@ graph TB
 
     subgraph "External"
         LN[Linear API + Webhooks]
-        CC[Claude / Gemini / Qwen]
+        CC[Claude / Codex / Gemini]
         GH[GitHub]
     end
 
     CLI --> RC
     MCP --> RC
     MCP --> HS
-    ORCH -->|MCP HTTP| MCP
-    ORCH --> SUP --> AW
-    AW --> CC
     RC --> SC --> D1 & D2
     RC --> TR --> DI --> WS
+    DI --> CC
     RC --> VE
     RC --> HS --> DB
     RC -.-> LN
-    AW -.-> GH
+    WS -.-> GH
 ```
-
-## Dual Orchestrator
-
-Rosary has two orchestration paths:
-
-```mermaid
-graph LR
-    subgraph "Rust Reconciler"
-        RT[Triage + Scoring]
-        RV[Verification Pipeline]
-        RS[Dolt Persistence]
-        RH[Hierarchy Store]
-    end
-
-    subgraph "Elixir Conductor"
-        EL[Agent Lifecycle<br/>OTP supervision]
-        EP[Pipeline Phases<br/>dev → staging → prod]
-        EH[Handoff Writing]
-        EM[merge_or_pr]
-    end
-
-    RT -->|"MCP: rsry_scan, rsry_status"| EL
-    EL -->|"MCP: rsry_bead_close"| RS
-    EP --> EH --> EM
-```
-
-The Rust reconciler handles triage, verification, and persistence. The Elixir conductor handles agent lifecycle via OTP supervision — instant crash detection (`:DOWN` messages), automatic restart, and pipeline phase advancement as synchronous GenServer state.
 
 ## BDR Harmony Lattice
 
@@ -196,6 +161,13 @@ graph LR
         manifest["manifest.rs<br/>dispatch SBOM"]
     end
 
+    subgraph "Dispatch (providers)"
+        providers["dispatch/providers.rs<br/>claude · codex · gemini · acp"]
+        codex_rt["dispatch/codex_runtime.rs<br/>+ codex_transport.rs<br/>native app-server session"]
+        prov_d["dispatch/provenance.rs<br/>classified failure outcome"]
+        acp_m["acp.rs<br/>ACP client (per-tool approval)"]
+    end
+
     subgraph "Data"
         bead["bead.rs<br/>data model"]
         dolt["dolt/mod.rs<br/>MySQL client"]
@@ -239,6 +211,8 @@ graph LR
     reconcile --> scanner --> dolt
     reconcile --> queue --> bead
     reconcile --> dispatch --> workspace --> backend
+    dispatch --> providers --> codex_rt
+    dispatch --> prov_d
     reconcile --> verify
     reconcile --> store --> store_dolt
     serve --> pool --> dolt
@@ -342,5 +316,4 @@ All bead types require scopes for parallel dispatch:
 - **Kubernetes controllers**: desired state reconciliation, generation tracking
 - **driftlessaf** (Chainguard): workqueue with priority, NotBefore scheduling, exponential backoff
 - **beads** (steveyegge): AI-native issue tracking, Dolt-backed
-- **OpenAI Symphony**: OTP supervision patterns, Elixir conductor
 - **OpenAI Harmony**: 3-channel progressive disclosure (analysis/commentary/final → decade/thread/bead)
