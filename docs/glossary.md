@@ -32,7 +32,7 @@ Terms used across rosary, the conductor, agents, and ADRs.
 | **ComputeProvider** | Where the agent runs: `local` (host subprocess) or `sprites` (remote container via sprites.dev).                                                   |
 | **Workspace**       | Isolated VCS environment for an agent to work in. jj workspace (preferred) or git worktree (fallback). Destroyed after verification.               |
 | **Conductor**       | Elixir/OTP application that manages agent lifecycles via supervision trees. Talks to rsry over HTTP/MCP. Handles the WHICH/WHERE/HOW of execution. |
-| **ACP**             | Agent Client Protocol — standardized interface for AI model invocation. The conductor uses ACP adapters to talk to Claude, Gemini, etc.            |
+| **ACP**             | Agent Client Protocol — a language-neutral JSON-RPC interface for driving an agent with per-tool-call permission callbacks. rosary has a native ACP client (`src/acp.rs`).            |
 
 ## Verification
 
