@@ -8,6 +8,7 @@
 //! Codex, etc). `ClaudeProvider` is the default implementation.
 
 pub(crate) mod codex_native;
+pub mod codex_runtime;
 pub mod prompt;
 pub mod provenance;
 pub mod providers;
