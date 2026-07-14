@@ -165,20 +165,40 @@ pub trait CodexRuntime: Send + Sync {
 /// PID, and its completion is resolved by the runtime's event-loop thread over a
 /// oneshot channel (mirroring `ComputeSession`) — so `wait` reflects the turn's
 /// real outcome rather than a placeholder.
-#[derive(Debug)]
+/// A best-effort cooperative interrupt for a running turn — `kill` invokes it to
+/// send `turn/interrupt` over a fresh connection. Boxed so the session stays
+/// transport-agnostic. `Send + Sync` so the session remains an `AgentSession`.
+pub type TurnInterrupt = Box<dyn FnOnce() -> Result<()> + Send + Sync>;
+
 pub struct CodexNativeSession {
     thread_id: String,
     rx: Option<tokio::sync::oneshot::Receiver<bool>>,
     result: Option<bool>,
+    interrupt: Option<TurnInterrupt>,
+}
+
+impl std::fmt::Debug for CodexNativeSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexNativeSession")
+            .field("thread_id", &self.thread_id)
+            .field("result", &self.result)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CodexNativeSession {
-    /// A running turn whose success is delivered by the event-loop thread on `rx`.
-    pub fn pending(thread_id: impl Into<String>, rx: tokio::sync::oneshot::Receiver<bool>) -> Self {
+    /// A running turn whose success is delivered by the event-loop thread on
+    /// `rx`; `interrupt`, when present, cooperatively cancels it on `kill`.
+    pub fn pending(
+        thread_id: impl Into<String>,
+        rx: tokio::sync::oneshot::Receiver<bool>,
+        interrupt: Option<TurnInterrupt>,
+    ) -> Self {
         Self {
             thread_id: thread_id.into(),
             rx: Some(rx),
             result: None,
+            interrupt,
         }
     }
 
@@ -188,6 +208,7 @@ impl CodexNativeSession {
             thread_id: thread_id.into(),
             rx: None,
             result: Some(true),
+            interrupt: None,
         }
     }
 
@@ -197,6 +218,7 @@ impl CodexNativeSession {
             thread_id: thread_id.into(),
             rx: None,
             result: Some(false),
+            interrupt: None,
         }
     }
 }
@@ -241,9 +263,15 @@ impl AgentSession for CodexNativeSession {
     }
 
     fn kill(&mut self) -> Result<()> {
-        // Drop the receiver and resolve as failed; the event-loop thread's send
-        // becomes a no-op and it exits when the turn ends. A cooperative
-        // turn/interrupt is a follow-up.
+        // Cooperatively interrupt the running turn (turn/interrupt over a fresh
+        // connection); the loop thread then observes turn/completed with an
+        // interrupted status and resolves. Best-effort — either way we resolve
+        // the session as failed and drop the receiver.
+        if let Some(interrupt) = self.interrupt.take()
+            && let Err(e) = interrupt()
+        {
+            eprintln!("[codex] turn/interrupt on kill failed: {e:#}");
+        }
         self.rx = None;
         self.result = Some(false);
         Ok(())
@@ -309,5 +337,41 @@ impl AgentProvider for CodexProvider {
             runtime: Arc::clone(&self.runtime),
             model,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dispatch::session::AgentSession;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn kill_invokes_the_interrupt_and_resolves_failed() {
+        let fired = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&fired);
+        let (_tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        let interrupt: TurnInterrupt = Box::new(move || {
+            flag.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        let mut session = CodexNativeSession::pending("thread-k", rx, Some(interrupt));
+
+        session.kill().unwrap();
+
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "kill must invoke turn/interrupt"
+        );
+        assert_eq!(session.try_wait().unwrap(), Some(false));
+    }
+
+    #[test]
+    fn kill_without_interrupt_still_resolves_failed() {
+        let (_tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        let mut session = CodexNativeSession::pending("thread-k", rx, None);
+        session.kill().unwrap();
+        assert_eq!(session.try_wait().unwrap(), Some(false));
     }
 }

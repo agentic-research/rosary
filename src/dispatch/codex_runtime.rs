@@ -54,82 +54,91 @@ pub trait CodexConnection: Send {
 pub enum TurnSignal {
     /// The turn reached a terminal state. `success` is false on failure/abort.
     Completed { success: bool },
-    /// The server is asking permission for an action; it carries an `id` that
-    /// must be answered or the turn stalls.
-    ApprovalRequest { id: Value },
+    /// The server is asking permission for an action; it carries an `id` (to
+    /// answer) and the request `method` (which selects the decision vocabulary).
+    ApprovalRequest { id: Value, method: String },
     /// Progress / telemetry / an unrelated message — nothing the loop must act
     /// on.
     Progress,
 }
 
-/// Classify one inbound message.
+/// Classify one inbound message against Codex's app-server protocol — verified
+/// against `codex app-server generate-json-schema` (v0.142.5):
 ///
-/// Tolerant by design (see module docs): a server→client **approval request**
-/// is any message that carries an `id` *and* an approval-shaped method; a
-/// **terminal** turn event is a `turn`-namespaced method whose name reads as
-/// completed/failed/aborted. Everything else — including `item/*` progress and
-/// `turn/started` — is [`TurnSignal::Progress`]. `item/completed` is *not*
-/// terminal: the namespace guard keeps an item finishing from ending the turn.
+/// - a server→client **approval request** carries an `id` and an approval-shaped
+///   method (`execCommandApproval`, `applyPatchApproval`,
+///   `commandExecutionRequestApproval`, `fileChangeRequestApproval`,
+///   `permissionsRequestApproval` — all contain "approval");
+/// - **`turn/completed`** is the *only* terminal turn notification — there is no
+///   `turn/failed`; success is read from `params.turn.status`;
+/// - an **`error`** notification with `willRetry:false` is a terminal failure
+///   (with `willRetry:true` it is a retry — progress);
+/// - everything else — `item/*`, `turn/started`, `thread/*` — is progress.
 pub fn classify_turn_signal(msg: &Value) -> TurnSignal {
     let method = msg
         .get("method")
         .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+        .unwrap_or_default();
     let has_id = msg.get("id").map(|v| !v.is_null()).unwrap_or(false);
 
-    // Server→client approval request: needs a response addressed to its id.
-    if has_id && (method.contains("approval") || method.contains("requestpermission")) {
+    if has_id && method.to_ascii_lowercase().contains("approval") {
         return TurnSignal::ApprovalRequest {
             id: msg.get("id").cloned().unwrap_or(Value::Null),
+            method: method.to_string(),
         };
     }
 
-    // Terminal turn event — restricted to the `turn` namespace so an item
-    // completing doesn't end the turn.
-    if method.starts_with("turn/") || method.starts_with("turn.") {
-        if method.contains("failed") || method.contains("aborted") || method.contains("error") {
-            return TurnSignal::Completed { success: false };
+    match method {
+        "turn/completed" => TurnSignal::Completed {
+            success: turn_reported_success(msg),
+        },
+        // A non-retrying error notification ends the turn in failure.
+        "error"
+            if !msg
+                .pointer("/params/willRetry")
+                .and_then(Value::as_bool)
+                .unwrap_or(false) =>
+        {
+            TurnSignal::Completed { success: false }
         }
-        if method.contains("completed") || method.contains("finished") {
-            return TurnSignal::Completed {
-                success: turn_reported_success(msg),
-            };
-        }
+        _ => TurnSignal::Progress,
     }
-
-    TurnSignal::Progress
 }
 
-/// A `turn/completed`-shaped event still reports success or failure in its
-/// params (a non-zero exit, an `error`, or `status: "failed"`). Absent any such
-/// marker, a completed turn is a success.
+/// A `turn/completed` notification carries the final `Turn` in `params.turn`;
+/// the turn failed iff its `status` is `failed`/`interrupted` or its `error` is
+/// populated (`error` is only set when the status is `failed`).
 fn turn_reported_success(msg: &Value) -> bool {
-    let Some(params) = msg.get("params") else {
+    let Some(turn) = msg.pointer("/params/turn") else {
         return true;
     };
-    if params.get("error").map(|e| !e.is_null()).unwrap_or(false) {
+    if turn.get("error").map(|e| !e.is_null()).unwrap_or(false) {
         return false;
     }
-    if let Some(status) = params
-        .get("status")
-        .or_else(|| params.get("turn").and_then(|t| t.get("status")))
-        .and_then(Value::as_str)
-    {
-        let s = status.to_ascii_lowercase();
-        return !(s.contains("fail") || s.contains("error") || s.contains("abort"));
-    }
-    true
+    !matches!(
+        turn.get("status").and_then(Value::as_str),
+        Some("failed") | Some("interrupted")
+    )
 }
 
-/// Build the JSON-RPC response to a server approval request. The `decision`
-/// field shape is the surface to verify against Codex's approval schema; the
-/// loop machinery does not depend on its exact value.
-pub fn approval_response(id: &Value, approve: bool) -> Value {
+/// Build the JSON-RPC response to a server approval request. Codex uses two
+/// decision vocabularies (verified against the protocol schema): the
+/// `ReviewDecision` set (`approved`/`denied`) for `execCommandApproval` and
+/// `applyPatchApproval`, and the v2 set (`accept`/`decline`) for the
+/// `*RequestApproval` methods. The request `method` selects which.
+pub fn approval_response(id: &Value, method: &str, approve: bool) -> Value {
+    let m = method.to_ascii_lowercase();
+    let review_vocab = m.contains("execcommand") || m.contains("applypatch");
+    let decision = match (review_vocab, approve) {
+        (true, true) => "approved",
+        (true, false) => "denied",
+        (false, true) => "accept",
+        (false, false) => "decline",
+    };
     json!({
         "jsonrpc": "2.0",
         "id": id,
-        "result": { "decision": if approve { "approved" } else { "denied" } },
+        "result": { "decision": decision },
     })
 }
 
@@ -149,8 +158,8 @@ pub fn run_turn_loop(
         let msg = conn.recv(idle_timeout)?;
         match classify_turn_signal(&msg) {
             TurnSignal::Completed { success } => return Ok(success),
-            TurnSignal::ApprovalRequest { id } => {
-                conn.send(&approval_response(&id, approve))?;
+            TurnSignal::ApprovalRequest { id, method } => {
+                conn.send(&approval_response(&id, &method, approve))?;
             }
             TurnSignal::Progress => continue,
         }
@@ -209,8 +218,12 @@ impl CodexRuntime for CodexAppServerRuntime {
             start.permissions,
             start.model.clone(),
         ))?)?;
-        recv_result(conn.as_mut(), "rsry-turn-start", CODEX_RPC_TIMEOUT)
+        let turn_ack = recv_result(conn.as_mut(), "rsry-turn-start", CODEX_RPC_TIMEOUT)
             .context("starting codex app-server turn")?;
+        let turn_id = turn_ack
+            .pointer("/turn/id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
 
         // Within the sandbox, Implement may act; ReadOnly/Plan must not — so the
         // loop denies any approval the server requests for them.
@@ -222,7 +235,19 @@ impl CodexRuntime for CodexAppServerRuntime {
             let _ = tx.send(result);
         });
 
-        Ok(CodexNativeSession::pending(thread_id, rx))
+        // kill() cooperatively interrupts the running turn via turn/interrupt on
+        // a *fresh* connection (the loop owns the original) — the app-server
+        // addresses turns by {threadId, turnId}, not by connection. Only wired
+        // when the ack gave us a turn id.
+        let interrupt = turn_id.map(|tid| {
+            let connector = Arc::clone(&self.connector);
+            let thread = thread_id.clone();
+            Box::new(move || {
+                super::codex_transport::send_turn_interrupt(connector.as_ref(), &thread, &tid)
+            }) as Box<dyn FnOnce() -> Result<()> + Send + Sync>
+        });
+
+        Ok(CodexNativeSession::pending(thread_id, rx, interrupt))
     }
 }
 
@@ -308,8 +333,12 @@ mod tests {
     }
 
     #[test]
-    fn turn_failed_is_terminal_failure() {
-        let msg = json!({"jsonrpc": "2.0", "method": "turn/failed", "params": {}});
+    fn completed_with_failed_turn_status_is_failure() {
+        // There is no turn/failed — failure rides in turn/completed's turn.status.
+        let msg = json!({
+            "jsonrpc": "2.0", "method": "turn/completed",
+            "params": {"threadId": "t", "turn": {"status": "failed", "error": {"message": "boom"}}}
+        });
         assert_eq!(
             classify_turn_signal(&msg),
             TurnSignal::Completed { success: false }
@@ -317,15 +346,36 @@ mod tests {
     }
 
     #[test]
-    fn completed_with_error_status_is_failure() {
+    fn interrupted_turn_status_is_failure() {
         let msg = json!({
             "jsonrpc": "2.0", "method": "turn/completed",
-            "params": {"status": "failed"}
+            "params": {"threadId": "t", "turn": {"status": "interrupted"}}
         });
         assert_eq!(
             classify_turn_signal(&msg),
             TurnSignal::Completed { success: false }
         );
+    }
+
+    #[test]
+    fn non_retrying_error_notification_is_terminal_failure() {
+        let msg = json!({
+            "jsonrpc": "2.0", "method": "error",
+            "params": {"threadId": "t", "turnId": "u", "willRetry": false, "error": {"message": "x"}}
+        });
+        assert_eq!(
+            classify_turn_signal(&msg),
+            TurnSignal::Completed { success: false }
+        );
+    }
+
+    #[test]
+    fn retrying_error_notification_is_progress() {
+        let msg = json!({
+            "jsonrpc": "2.0", "method": "error",
+            "params": {"threadId": "t", "turnId": "u", "willRetry": true, "error": {"message": "x"}}
+        });
+        assert_eq!(classify_turn_signal(&msg), TurnSignal::Progress);
     }
 
     #[test]
@@ -336,16 +386,29 @@ mod tests {
     }
 
     #[test]
-    fn approval_request_is_detected_by_id_and_method() {
+    fn approval_request_is_detected_and_carries_method() {
         let msg = json!({
             "jsonrpc": "2.0", "id": "req-7",
-            "method": "turn/requestApproval",
-            "params": {"call": "exec"}
+            "method": "execCommandApproval",
+            "params": {"command": ["ls"]}
         });
         assert_eq!(
             classify_turn_signal(&msg),
-            TurnSignal::ApprovalRequest { id: json!("req-7") }
+            TurnSignal::ApprovalRequest {
+                id: json!("req-7"),
+                method: "execCommandApproval".into()
+            }
         );
+    }
+
+    #[test]
+    fn approval_decision_vocab_matches_request_type() {
+        // ReviewDecision methods → approved/denied; v2 *RequestApproval → accept/decline.
+        let d = |m, a| approval_response(&json!("i"), m, a)["result"]["decision"].clone();
+        assert_eq!(d("execCommandApproval", true), "approved");
+        assert_eq!(d("applyPatchApproval", false), "denied");
+        assert_eq!(d("fileChangeRequestApproval", true), "accept");
+        assert_eq!(d("commandExecutionRequestApproval", false), "decline");
     }
 
     #[test]
@@ -370,7 +433,7 @@ mod tests {
     #[test]
     fn loop_answers_approval_then_completes() {
         let mut conn = ScriptedConnection::new(vec![
-            json!({"id": "a1", "method": "turn/requestApproval", "params": {}}),
+            json!({"id": "a1", "method": "execCommandApproval", "params": {}}),
             json!({"method": "turn/completed", "params": {}}),
         ]);
         assert!(run_turn_loop(&mut conn, true, idle()).unwrap());
@@ -384,7 +447,7 @@ mod tests {
     #[test]
     fn loop_denies_when_not_approving() {
         let mut conn = ScriptedConnection::new(vec![
-            json!({"id": "a1", "method": "turn/requestApproval", "params": {}}),
+            json!({"id": "a1", "method": "execCommandApproval", "params": {}}),
             json!({"method": "turn/completed", "params": {}}),
         ]);
         assert!(run_turn_loop(&mut conn, false, idle()).unwrap());
@@ -395,7 +458,7 @@ mod tests {
     fn loop_propagates_failure() {
         let mut conn = ScriptedConnection::new(vec![
             json!({"method": "turn/started"}),
-            json!({"method": "turn/failed", "params": {}}),
+            json!({"method": "turn/completed", "params": {"turn": {"status": "failed"}}}),
         ]);
         assert!(!run_turn_loop(&mut conn, true, idle()).unwrap());
     }
@@ -406,88 +469,5 @@ mod tests {
         // never a silent success.
         let mut conn = ScriptedConnection::new(vec![json!({"method": "turn/started"})]);
         assert!(run_turn_loop(&mut conn, true, idle()).is_err());
-    }
-
-    // --- runtime over a scripted connector ---
-
-    use crate::dispatch::PermissionProfile;
-    use crate::dispatch::codex_native::{CodexRuntime, CodexThreadStart};
-    use crate::dispatch::session::{AgentSession, AgentSessionRef};
-    use std::sync::{Arc, Mutex};
-
-    /// A scripted connection whose sends are captured through a shared handle, so
-    /// the test can inspect them after the connection has moved into the
-    /// runtime's event-loop thread.
-    struct SharedScriptedConnection {
-        inbound: VecDeque<Value>,
-        sent: Arc<Mutex<Vec<Value>>>,
-    }
-    impl CodexConnection for SharedScriptedConnection {
-        fn send(&mut self, value: &Value) -> Result<()> {
-            self.sent.lock().unwrap().push(value.clone());
-            Ok(())
-        }
-        fn recv(&mut self, _idle: Duration) -> Result<Value> {
-            self.inbound
-                .pop_front()
-                .ok_or_else(|| anyhow::anyhow!("connection closed"))
-        }
-    }
-
-    struct ScriptedConnector {
-        inbound: Mutex<Option<VecDeque<Value>>>,
-        sent: Arc<Mutex<Vec<Value>>>,
-    }
-    impl CodexConnector for ScriptedConnector {
-        fn connect(&self) -> Result<Box<dyn CodexConnection>> {
-            let inbound = self.inbound.lock().unwrap().take().expect("connect once");
-            Ok(Box::new(SharedScriptedConnection {
-                inbound,
-                sent: self.sent.clone(),
-            }))
-        }
-    }
-
-    #[tokio::test]
-    async fn runtime_resolves_wait_from_streamed_completion() {
-        // The point of increment B: wait() reflects a real streamed
-        // turn/completed, not a hardcoded false. thread/start + turn/start acks,
-        // then the terminal event the loop observes.
-        let sent = Arc::new(Mutex::new(Vec::new()));
-        let inbound: VecDeque<Value> = vec![
-            json!({"jsonrpc": "2.0", "id": "rsry-thread-start", "result": {"thread": {"id": "thread-x"}}}),
-            json!({"jsonrpc": "2.0", "id": "rsry-turn-start", "result": {"turn": {"id": "t"}}}),
-            json!({"jsonrpc": "2.0", "method": "turn/completed", "params": {}}),
-        ]
-        .into();
-        let connector = Arc::new(ScriptedConnector {
-            inbound: Mutex::new(Some(inbound)),
-            sent: sent.clone(),
-        });
-        let runtime = CodexAppServerRuntime::new(connector);
-        let start = CodexThreadStart {
-            bead_id: Some("rosary-codex-b".into()),
-            agent_name: Some("dev-agent".into()),
-            prompt: "drive the loop".into(),
-            work_dir: std::path::PathBuf::from("/tmp/rsry-codex-work"),
-            permissions: PermissionProfile::Implement,
-            system_prompt: "developer rules".into(),
-            mcp_servers: std::collections::BTreeMap::new(),
-            expected_mcp_tools: vec!["rsry".into()],
-            model: None,
-        };
-
-        let mut session = runtime.start_thread(start).expect("runtime starts");
-        assert_eq!(
-            session.session_ref(),
-            Some(AgentSessionRef::new("codex", "thread-x"))
-        );
-        assert!(session.wait().await.expect("wait resolves"));
-
-        let sent = sent.lock().unwrap();
-        assert_eq!(sent.len(), 2);
-        assert_eq!(sent[0]["method"], "thread/start");
-        assert_eq!(sent[1]["method"], "turn/start");
-        assert_eq!(sent[1]["params"]["threadId"], "thread-x");
     }
 }

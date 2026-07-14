@@ -154,12 +154,12 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/codex_native.rs",
-      "count": 10
+      "count": 12
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/codex_runtime.rs",
-      "count": 12
+      "count": 9
     },
     {
       "rule_id": "duplicate_definitions",
