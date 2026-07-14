@@ -240,15 +240,11 @@ Then from Claude Code, the mache MCP tools are available:
 
 This is especially valuable when working with unfamiliar or decompiled codebases where you need to understand structure before you can make targeted changes.
 
-## Two orchestrators
+## The reconciler
 
-Rosary has two orchestration paths. You only need one to start.
+`rsry run --once` / `rsry run` drives the core loop: scan → triage → dispatch → verify → push branch → create PR. Agents work in isolated worktrees, verification runs compile/test/lint, and the terminal step rebases onto latest main and creates a PR via GitHub App.
 
-**Rust reconciler** (`rsry run --once` / `rsry run`): The core loop. Scan → triage → dispatch → verify → push branch → create PR. Agents work in isolated worktrees, verification runs compile/test/lint, and the terminal step rebases onto latest main and creates a PR via GitHub App. Single-phase by default (dev-agent only).
-
-**Elixir conductor** (`conductor/`): Full agent lifecycle management via OTP supervision trees. Adds multi-phase pipelines (dev → staging → prod), structured handoffs between agents, and crash recovery. Uses the rsry MCP over HTTP to read/write beads.
-
-**Start with the Rust reconciler.** It gives you the full bead → workspace → verify → PR workflow. The conductor adds multi-phase pipeline advancement and supervision — useful once you're running agents overnight.
+Single-phase (dev-agent) by default; multi-phase pipelines (dev → staging → prod) advance per issue type, carrying structured handoffs between phases (see [ARCHITECTURE.md](ARCHITECTURE.md#pipeline-phase-advancement)).
 
 ## What to know about jj + git
 
@@ -334,7 +330,7 @@ recorded as applied on the first read. If you still see this warning, your
 
 **Dolt connection errors**: Only `.beads/` directories that contain a `dolt/` subdir run a Dolt SQL server; a `.beads/` with just `beads.db` uses SQLite directly (no server, no port file). For Dolt-mode repos, check `dolt sql-server` is on your PATH and that the port file (`.beads/dolt-server.port`) isn't stale.
 
-**Agent dispatch fails immediately**: Check that `claude` CLI is in your PATH (the conductor uses `claude -p` for dispatch). The Rust reconciler uses the configured `[dispatch] provider`.
+**Agent dispatch fails immediately**: Check that the configured `[dispatch] provider` CLI (`claude`, `codex`, or `gemini`) is on your PATH.
 
 **Workspace cleanup**: Abandoned worktrees live in `~/.rsry/worktrees/`. Safe to delete if no agents are running.
 
