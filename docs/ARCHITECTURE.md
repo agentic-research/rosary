@@ -270,7 +270,7 @@ graph TB
 
 Connection safety: `dolt_transaction_commit=1` (auto-commit per statement), `max_connections=1` (session variable consistency), bail on known dead port (no silent empty DB).
 
-## MCP Tools (40)
+## MCP Tools (41)
 
 | Category   | Tools                                                                                                                                              |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
