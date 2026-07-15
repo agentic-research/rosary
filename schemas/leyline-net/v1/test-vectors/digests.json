@@ -1,0 +1,174 @@
+{
+  "$comment": "leyline-net/v1 conformance vector digests. `reference` is the reference-encoder byte form (plain write_message / capnp eval -b — what cloister's committed fixtures pin); `canonical` is strict canonical form (set_root_canonical, trailing zero words truncated). Both are over the .bin file bytes verbatim. Decoders MUST accept both forms; they are value-equal.",
+  "version": "cloister/leyline-net/v1",
+  "vectors": [
+    {
+      "name": "manifest-canonical",
+      "const": "manifestCanonical",
+      "reference": {
+        "blake3_hex": "3353d8fcf732a760a16b3239900a68d75a0ee7fb96b85f305560c9212602aa84",
+        "sha256_hex": "9fa3eeb2f647557ea789676f66b146cd6bb455256eff071827bc8d4ccf43ebc2",
+        "size": 176
+      },
+      "canonical": {
+        "blake3_hex": "3353d8fcf732a760a16b3239900a68d75a0ee7fb96b85f305560c9212602aa84",
+        "sha256_hex": "9fa3eeb2f647557ea789676f66b146cd6bb455256eff071827bc8d4ccf43ebc2",
+        "size": 176
+      }
+    },
+    {
+      "name": "manifest-zero-sequence",
+      "const": "manifestZeroSequence",
+      "reference": {
+        "blake3_hex": "fee14b099da3ba47d97e2bf5f5dc859c069bb808360dab509f79f51751aeeca9",
+        "sha256_hex": "96430ad146dc81db249c8857ac411d0604bc9c06dff521a56a9785eff980aa87",
+        "size": 176
+      },
+      "canonical": {
+        "blake3_hex": "21c900f40f002c73b92172e675c10328073dd9240bfaae348845f1047ed0b58f",
+        "sha256_hex": "3ca699df59fb08f65a057f27c296465d6ae5fa1e8d0b81492e0f577abc201ae2",
+        "size": 168
+      }
+    },
+    {
+      "name": "tool-call-basic",
+      "const": "toolCallBasic",
+      "reference": {
+        "blake3_hex": "c765422e012a160f24352d462eb01564329ef0877e2966365bcc2e1d0d6780bb",
+        "sha256_hex": "bdcd6632adf0407baf18e9d9e68b7bb33ab3c890a245ca3742e0c8ff0372607c",
+        "size": 72
+      },
+      "canonical": {
+        "blake3_hex": "c765422e012a160f24352d462eb01564329ef0877e2966365bcc2e1d0d6780bb",
+        "sha256_hex": "bdcd6632adf0407baf18e9d9e68b7bb33ab3c890a245ca3742e0c8ff0372607c",
+        "size": 72
+      }
+    },
+    {
+      "name": "tool-call-empty",
+      "const": "toolCallEmpty",
+      "reference": {
+        "blake3_hex": "0b1d3323e78d70f0d461fff3449110504615e365498495730e17b8246d4f4b94",
+        "sha256_hex": "cf9fc77727766960cc186a32dade7bc33b85c0dac8a5c45e2493336a5fe7da6c",
+        "size": 56
+      },
+      "canonical": {
+        "blake3_hex": "d8ed4f07a52ea8e3b0e29ce0ddac06a1e2ba1096b3c1417cdb873ea3f962186a",
+        "sha256_hex": "ad11a4d361d65e454761bd668381ce45711b46587655a2e2d3120a201e138f9a",
+        "size": 48
+      }
+    },
+    {
+      "name": "tool-call-with-args",
+      "const": "toolCallWithArgs",
+      "reference": {
+        "blake3_hex": "c7dd1743b27d098a7b1ed2a93fe92f323b5e68605d9b0f9e67b88d517e230d96",
+        "sha256_hex": "742135d40b801356cbd23cbf8569a3afb74aef63c711706dc92318eaa3ba4fba",
+        "size": 104
+      },
+      "canonical": {
+        "blake3_hex": "c7dd1743b27d098a7b1ed2a93fe92f323b5e68605d9b0f9e67b88d517e230d96",
+        "sha256_hex": "742135d40b801356cbd23cbf8569a3afb74aef63c711706dc92318eaa3ba4fba",
+        "size": 104
+      }
+    },
+    {
+      "name": "tool-result-empty",
+      "const": "toolResultEmpty",
+      "reference": {
+        "blake3_hex": "bacfd7083d752278f0064a32df23e749a689776a21ef568f0151047652126c52",
+        "sha256_hex": "70678c1f397ee844ceb5b9da026ceccd810d36da01aef7fa228f1b7e8d0d0d27",
+        "size": 40
+      },
+      "canonical": {
+        "blake3_hex": "4a271d252c4db7b7330e7063af44068f22e28cbd0c9911bf886b9292d6ebcf8e",
+        "sha256_hex": "e45d5dfb30a57fef7857c154808ae77cb86919addb23260350f90fbb8d1ced9d",
+        "size": 32
+      }
+    },
+    {
+      "name": "tool-result-error-empty",
+      "const": "toolResultErrorEmpty",
+      "reference": {
+        "blake3_hex": "01a04ef3cafda63c995e26d6d038ebc6d313b98ca97f6c5bdacca70d5f4a2b48",
+        "sha256_hex": "ca1fb4e1a960eae44aeeffe82ac933c30df86b0c385f2e0c8d5b78ef8cd08a80",
+        "size": 40
+      },
+      "canonical": {
+        "blake3_hex": "914b1477056f3a9ebbb32986b74ccba679e94ef4831db8fad755a794e4260342",
+        "sha256_hex": "dfacbf2c2495a200a88ec89d15fb9e2e56ad1337679864dc0e4586f2825c81bf",
+        "size": 40
+      }
+    },
+    {
+      "name": "tool-result-text",
+      "const": "toolResultText",
+      "reference": {
+        "blake3_hex": "cb4a82f59b2c50a3a0cf6a2212149a412c8389bf238811982181502e83e74ace",
+        "sha256_hex": "81d25e2e2b720f8349a3c7307b3991895815b90957f01e83fdacbe43eff78f9c",
+        "size": 72
+      },
+      "canonical": {
+        "blake3_hex": "2b1ee6b1aa6f67049692bc274987666d577f535a0c76293787247328913109b8",
+        "sha256_hex": "dd10d501465bab73ef24e16bb1d4e4d1c0f1d059f1c629dacaa3a470438ab55e",
+        "size": 56
+      }
+    },
+    {
+      "name": "tool-result-resource",
+      "const": "toolResultResource",
+      "reference": {
+        "blake3_hex": "c50b0ec8435ab260c4b3c67a51fb293e216e499a4817f108b85228b072da9058",
+        "sha256_hex": "927ed0595d62d5b9ec1e4e3545adb63caacc29e48540bfffa53d069ccc13e314",
+        "size": 64
+      },
+      "canonical": {
+        "blake3_hex": "27a81c39f32149c5da3c6da885500f406d7b0c8d57ca8754f18187eaeb29bc87",
+        "sha256_hex": "3e8b205a05901a213c3e66db9f63b3a444e86b984175489ec5b5f11e283065f8",
+        "size": 56
+      }
+    },
+    {
+      "name": "tool-result-binary",
+      "const": "toolResultBinary",
+      "reference": {
+        "blake3_hex": "e4f07fb8b4acc96632fc9aaffe7af2c2d3058f127c286d297386aa9b53b4ae96",
+        "sha256_hex": "b835fd21fa369eee0867c31ecbc04dcdbbe1bffdd3f2dee69b08f1b7bdca7df8",
+        "size": 96
+      },
+      "canonical": {
+        "blake3_hex": "f38780082f17f398a8f2caf67ab8dccad95031b631b03933c35fd686616579da",
+        "sha256_hex": "ddc44a8c9434277bf89ff8ef164ea28c55c51a647caa5b7ed6429f088fabaef0",
+        "size": 88
+      }
+    },
+    {
+      "name": "tool-result-mixed",
+      "const": "toolResultMixed",
+      "reference": {
+        "blake3_hex": "b59a8e618eaab40bc6362931553e9592e1c3f2d7de55fbb306d0f71a14ba87f3",
+        "sha256_hex": "a8bfe3b2e49564dbfa1c461f04db6edb15e43e526aa6c45a0e7d78424de2d8cd",
+        "size": 184
+      },
+      "canonical": {
+        "blake3_hex": "2e70fdd966e86fd06aa9eea3ac5c14ef522ce995cc3841f62e81b1cda1297473",
+        "sha256_hex": "a42fcac938fe8c1bae53f2231767b7711a663a129f5409e93520369d63db4ba2",
+        "size": 176
+      }
+    },
+    {
+      "name": "tool-result-error-with-text",
+      "const": "toolResultErrorWithText",
+      "reference": {
+        "blake3_hex": "e55bf92bc7ffe71e7a9b6b472ac54db3729873e985f4adaef923527abf55e9d8",
+        "sha256_hex": "81b4e03ada41c70a00f083701540cf74931d5197f7565ba1c0c0ba2915717f09",
+        "size": 96
+      },
+      "canonical": {
+        "blake3_hex": "d52292c3febc637f6ec11d8964a141c62aa8f50e090ddc0a5700b18c17fafa4d",
+        "sha256_hex": "a18af1b3dc85d1bcad8899dbb48e774d91c0bc142fe7073b0b0e962af40856e7",
+        "size": 88
+      }
+    }
+  ]
+}

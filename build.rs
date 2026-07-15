@@ -27,9 +27,12 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/heads/");
 
-    // capnp codegen for the cloister↔rosary wire schema (rosary-6371e3).
-    // Schema is vendored from cloister/wire/cloister.capnp; bump in sync
-    // with cloister when that file evolves.
+    // capnp codegen for the leyline-net wire schema (rosary-6371e3).
+    // schemas/cloister.capnp is vendored from ley-line-open's canonical
+    // rs/ll-core/schema-capnp/schemas/net.capnp (rosary-086973); re-vendor
+    // from there when it evolves. The generated module is `cloister_capnp`
+    // (capnpc-rust names it from the source filename), which src/main.rs and
+    // src/serve/ipc.rs reference — hence the filename stays `cloister.capnp`.
     //
     // Prereq: the `capnp` schema compiler must be on PATH. The `capnpc`
     // crate shells out to it — no external compiler, no Rust bindings.
