@@ -372,14 +372,21 @@ fn extract_bracket_ids(text: &str) -> Vec<String> {
     ids
 }
 
-/// Validate the `<prefix>-<suffix>` bead-id shape (lowercase-alpha prefix,
-/// alphanumeric suffix); returns the id (case-preserving) if valid.
+/// Validate the `<prefix>-<suffix>` bead-id shape and return the id
+/// (case-preserving) if valid. Repo prefixes are themselves multi-segment
+/// (`ley-line-open`), so the split is on the LAST dash: everything before it is
+/// the prefix (lowercase alpha, `.`, or `-`), everything after is the short-hash
+/// suffix (alphanumeric). Splitting on the FIRST dash mis-parsed
+/// `ley-line-open-e5addb` as prefix="ley"/suffix="line-open-e5addb" and rejected
+/// it, so those release squash commits never became closures (rosary-cb9321).
 fn valid_bead_id(id: &str) -> Option<String> {
-    let dash = id.find('-')?;
+    let dash = id.rfind('-')?;
     let (prefix, suffix) = (&id[..dash], &id[dash + 1..]);
     let ok = !prefix.is_empty()
         && !suffix.is_empty()
-        && prefix.chars().all(|c| c.is_ascii_lowercase() || c == '.')
+        && prefix
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c == '.' || c == '-')
         && suffix.chars().all(|c| c.is_ascii_alphanumeric());
     ok.then(|| id.to_string())
 }
@@ -543,6 +550,20 @@ mod tests {
     fn parse_merged_closures_empty_without_pr_marker() {
         // No (#N) on the subject → not a merge, even if the body has brackets.
         assert!(parse_merged_closures("wip [rosary-abc123] no pr marker").is_empty());
+    }
+
+    #[test]
+    fn parse_merged_closure_accepts_multi_segment_repo_prefix() {
+        // rosary-cb9321: repo prefixes carry dashes (`ley-line-open`). The id is
+        // <repo-prefix>-<short-hash> where the prefix itself may be multi-segment.
+        // Splitting on the FIRST dash mis-parses this as prefix="ley",
+        // suffix="line-open-e5addb" and rejects it — so the release squash commit
+        // `[ley-line-open-e5addb] … (#229)` never becomes a closure and the bead
+        // stays open (observed live as checked=0).
+        let c =
+            parse_merged_closure("[ley-line-open-e5addb] chore(release): 0.7.1 (#229)").unwrap();
+        assert_eq!(c.bead_id, "ley-line-open-e5addb");
+        assert_eq!(c.pr_number, 229);
     }
 
     #[test]

@@ -3331,8 +3331,11 @@ pub async fn run_close_merged_local_with_config(
         }
         // Recent merged-PR closures from local git (trunk, first-parent). Dedup
         // by bead id so a bead referenced by two recent commits is closed once.
+        // Bounded window of the last 100 first-parent commits — wide enough that
+        // a busy multi-PR session on an active trunk doesn't push a just-merged
+        // release commit out of range before the sweep sees it (rosary-cb9321).
         let mut seen = std::collections::HashSet::new();
-        let closures: Vec<vcs::MergedClosure> = vcs::scan_merged_closures(&resolved, 50)
+        let closures: Vec<vcs::MergedClosure> = vcs::scan_merged_closures(&resolved, 100)
             .into_iter()
             .filter(|c| seen.insert(c.bead_id.clone()))
             .collect();
@@ -3615,6 +3618,75 @@ mod tests {
             })
             .unwrap_or(false);
         assert!(terminal, "parent should be terminal, got {status:?}");
+    }
+
+    #[tokio::test]
+    async fn close_merged_local_closes_on_commit_evidence_without_pr_url() {
+        // rosary-cb9321: a bead created via MCP and merged carries NO pr_url
+        // event — the squash commit's `[bead-id] … (#N)` IS the merge evidence.
+        // The multi-segment repo prefix (`ley-line-open`) is the exact shape the
+        // first-dash parser rejected, leaving the bead open with checked=0.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        tgit(root, &["init", "-q", "-b", "main"]);
+        tgit(root, &["config", "user.email", "t@t.invalid"]);
+        tgit(root, &["config", "user.name", "t"]);
+        tgit(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("f"), "x").unwrap();
+        tgit(root, &["add", "f"]);
+        tgit(
+            root,
+            &[
+                "commit",
+                "-q",
+                "-m",
+                "[ley-line-open-e5addb] chore(release): 0.7.1 (#229)",
+            ],
+        );
+
+        // Open bead, NO pr_url event ever recorded.
+        let beads_dir = root.join(".beads");
+        let store = bead_sqlite::connect_bead_store(&beads_dir).await.unwrap();
+        store
+            .create_bead("ley-line-open-e5addb", "Release", "", 1, "task")
+            .await
+            .unwrap();
+        drop(store);
+
+        let cfg = config::Config {
+            repo: vec![config::RepoConfig {
+                name: "ley-line-open".to_string(),
+                path: root.to_path_buf(),
+                lang: None,
+                self_managed: false,
+                approval: config::DispatchApproval::Approved,
+            }],
+            ..Default::default()
+        };
+
+        let summary = run_close_merged_local_with_config(&cfg, None, false)
+            .await
+            .unwrap();
+
+        assert_eq!(summary.checked, 1, "the release commit must be scanned");
+        assert_eq!(
+            summary.merged_closed, 1,
+            "commit-message evidence alone must close the bead"
+        );
+        assert_eq!(summary.bead_ids_closed, vec!["ley-line-open-e5addb"]);
+
+        let store = bead_sqlite::connect_bead_store(&beads_dir).await.unwrap();
+        let status = store.get_status("ley-line-open-e5addb").await.unwrap();
+        let terminal = status
+            .as_deref()
+            .map(|s| {
+                matches!(
+                    bead::BeadState::from(s),
+                    bead::BeadState::Done | bead::BeadState::Rejected
+                )
+            })
+            .unwrap_or(false);
+        assert!(terminal, "bead should be terminal, got {status:?}");
     }
 
     #[test]
