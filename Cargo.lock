@@ -494,7 +494,16 @@ version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e92edec8974fcd7ece90bb021db782abe14a61c10c817f197f700fef7430eb8"
 dependencies = [
- "embedded-io",
+ "embedded-io 0.6.1",
+]
+
+[[package]]
+name = "capnp"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe8af2e2d255489928e31504fa51d86a41d040179098a8ad6828e0d11c54dcd6"
+dependencies = [
+ "embedded-io 0.7.1",
 ]
 
 [[package]]
@@ -503,7 +512,7 @@ version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d04478adeb234836f886ec554a0d96e3af3a939ba7b3962af5addddf7ab71231"
 dependencies = [
- "capnp",
+ "capnp 0.21.7",
  "futures-channel",
  "futures-util",
 ]
@@ -514,7 +523,7 @@ version = "0.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6da96dcb0a0e0c526daf42bac55e1550f18ad973df9ef9ba75204f332c80ad16"
 dependencies = [
- "capnp",
+ "capnp 0.21.7",
 ]
 
 [[package]]
@@ -1027,6 +1036,12 @@ name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
+name = "embedded-io"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
 
 [[package]]
 name = "encoding_rs"
@@ -1912,6 +1927,15 @@ dependencies = [
  "bytemuck",
  "memmap2",
  "serde",
+]
+
+[[package]]
+name = "leyline-schema-bridge"
+version = "0.8.0"
+source = "git+https://github.com/agentic-research/ley-line-open?rev=c9ec2bbf8bf59de1dd82d6c147f93486b95715a0#c9ec2bbf8bf59de1dd82d6c147f93486b95715a0"
+dependencies = [
+ "capnp 0.25.0",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2959,7 +2983,7 @@ dependencies = [
  "axum",
  "base64",
  "bdr",
- "capnp",
+ "capnp 0.21.7",
  "capnp-futures",
  "capnpc",
  "chrono",
@@ -2970,6 +2994,7 @@ dependencies = [
  "hmac",
  "jsonwebtoken",
  "leyline-core",
+ "leyline-schema-bridge",
  "libc",
  "openssl",
  "owo-colors",

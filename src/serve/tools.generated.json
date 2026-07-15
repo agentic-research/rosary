@@ -1,0 +1,63 @@
+[
+  {
+    "name": "rsry_scan",
+    "description": "Scan all configured repos for beads (work items). Returns a JSON array of beads with their status, priority, and metadata.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "rsry_status",
+    "description": "Return aggregated status counts across all repos: open, ready, dispatchable, in_progress, and blocked bead counts.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "rsry_active",
+    "description": "Show the merged active view: live session-registry entries plus backend active dispatch and pipeline rows.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "rsry_repo_list",
+    "description": "List repos registered by the current user.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "rsry_expand_ref",
+    "description": "Fetch a demoted context blob by its content hash (from the bounded pipeline-context envelope). Use when the prompt shows an 'Earlier context' ref you need in full.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "hash": { "type": "string", "description": "hex content hash of the demoted blob" }
+      },
+      "required": ["hash"]
+    }
+  },
+  {
+    "name": "rsry_list_beads",
+    "description": "List beads with optional filters. Paginated to avoid oversized responses. Returns beads array + total count.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "description": "Filter by status (open, in_progress, blocked, ready, dispatchable, done, etc.). If omitted, returns all beads." },
+        "repo": { "type": "string", "description": "Filter by repo name (e.g. 'rosary', 'mache'). If omitted, returns beads from all repos." },
+        "limit": { "type": "integer", "description": "Max beads to return (default 50, max 200).", "default": 50 },
+        "offset": { "type": "integer", "description": "Skip this many beads before returning results (for pagination).", "default": 0 }
+      },
+      "required": []
+    }
+  }
+]

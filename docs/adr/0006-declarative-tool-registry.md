@@ -2,7 +2,53 @@
 
 ## Status
 
-Proposed
+Accepted — partially implemented (2026-07-15, rosary-08a278). See
+**Implementation Status** below. The registry format is capnp (not the TOML
+sketched under *Decision* — that shape is illustrative only), consuming
+ley-line-open's schema-bridge annotation vocabulary + tooldefs emitter.
+
+## Implementation Status (rosary-08a278)
+
+The revival consumes LLO's `leyline-schema-bridge` (PR #232,
+ley-line-open-beb8bb): `_traits.capnp` annotations `$doc`/`$optional`/
+`$default`/`$op(OpInfo{name,input,…})` + a `capnpc-schema-bridge-tooldefs`
+plugin that lowers a `$op`-annotated struct into the MCP `tools/list` entry
+`{name, description, inputSchema}` verbatim.
+
+Shipped:
+
+- `schemas/registry.capnp` — the annotated tool schema; `schemas/_traits.capnp`
+  vendored from LLO (byte-identical annotation ordinals).
+- `src/serve/tools.generated.json` — committed plugin output; `tool_definitions()`
+  splices it in (the covered tools' hand-written literals are deleted — the
+  capnp registry is their source of truth).
+- Drift gate `task registry:check-drift` (in `task check`): regenerate + diff
+  against the committed JSON, mirroring cloister's `cluster:zod:check-drift`.
+
+**Incremental — 6 of 41 tools** (`rsry_scan`, `rsry_status`, `rsry_active`,
+`rsry_repo_list`, `rsry_expand_ref`, `rsry_list_beads`). Coverage is bounded by
+gaps in the current annotation vocabulary, NOT by the wiring:
+
+1. **snake_case field names (the load-bearing blocker).** `capnp compile`
+   rejects underscores in field names, and the tooldefs emitter uses the capnp
+   field name verbatim as the JSON property name (no camelCase→snake_case
+   conversion; it does not honor `$Json.name`). Every other rosary tool has
+   snake_case fields (`repo_path`, `issue_type`, `test_files`, `comment_id`, …).
+   LLO's `bead_create` tooldefs fixture passes only because it pokes raw
+   field-name bytes, bypassing the capnp frontend — it does not prove
+   `rsry_bead_create` round-trips through the real plugin pipeline.
+2. Inline nested objects (`session_ref`) — struct-typed fields emit a `$ref`,
+   and tooldefs has no `$defs` bag.
+3. Free-form objects (`payload`: `additionalProperties: true`) — capnp has no
+   any-object type.
+4. Array-of-object (`rsry_bead_import.beads`).
+5. Numeric bounds (`rsry_bead_search.limit`: `minimum`/`maximum`).
+
+Follow-ups (filed on rosary-08a278): an LLO annotation-vocabulary bead for the
+five gaps above, and rosary beads to migrate the remaining reproducible tools +
+add clap generation (Decision §1 second bullet) and the `agent_pipeline()`
+mapping (Decision §2) once the vocabulary lands. `src/bead_ops.rs` cores stay
+hand-written; the CLI/registry is a generated skin over them.
 
 ## Context
 

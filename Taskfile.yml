@@ -73,6 +73,86 @@ tasks:
       # grep is the accurate ratchet for this specific migration.
       - task: persist-status-ratchet
 
+  registry:build:
+    desc: >-
+      Build LLO's leyline-schema-bridge `tooldefs` capnp plugin (ADR-0006,
+      rosary-08a278) into target/release. SHA-pinned git dep anchored in
+      Cargo.toml; mirrors cloister's schema-bridge:build (PR #143). `cargo
+      build -p leyline-schema-bridge --bin …` emits the plugin into the shared
+      target/ so `capnp compile -o…` can invoke it as an argv[0]-dispatched
+      plugin.
+    cmds:
+      - cargo build --release -p leyline-schema-bridge --bin capnpc-schema-bridge-tooldefs
+    sources:
+      - Cargo.toml
+      - Cargo.lock
+    generates:
+      - target/release/capnpc-schema-bridge-tooldefs
+
+  registry:generate:
+    desc: >-
+      Regenerate src/serve/tools.generated.json from schemas/registry.capnp via
+      the tooldefs plugin. Run after editing registry.capnp, then commit the
+      result. `task registry:check-drift` (in `task check`) fails until you do.
+    deps: [registry:build]
+    cmds:
+      - |
+        set -eu
+        PLUGIN="$PWD/target/release/capnpc-schema-bridge-tooldefs"
+        TMPD=$(mktemp -d)
+        trap 'rm -rf "$TMPD"' EXIT
+        # `capnp compile` exits 0 even when the plugin errors and writes
+        # nothing — its stderr carries the real diagnostic. Generate into a
+        # tmpdir + existence-check + atomic move so a failed run can't leave a
+        # stale committed file silently passing (same shape as cloister's
+        # cluster:zod). `-I schemas` resolves registry.capnp's
+        # `import "/_traits.capnp"` against the vendored copy.
+        capnp compile -I schemas -o"$PLUGIN":"$TMPD" schemas/registry.capnp
+        if [ ! -f "$TMPD/registry.tools.json" ]; then
+          echo "FAIL — tooldefs plugin produced no registry.tools.json; check capnp stderr above" >&2
+          exit 1
+        fi
+        mv "$TMPD/registry.tools.json" src/serve/tools.generated.json
+        echo "Regenerated src/serve/tools.generated.json"
+    sources:
+      - schemas/registry.capnp
+      - schemas/_traits.capnp
+      - target/release/capnpc-schema-bridge-tooldefs
+    generates:
+      - src/serve/tools.generated.json
+
+  registry:check-drift:
+    desc: >-
+      Drift gate — regenerate the tool registry into a temp file and diff it
+      against the committed src/serve/tools.generated.json. Fails if
+      schemas/registry.capnp and the committed JSON diverge. Part of `task
+      check`. Mirrors cloister's cluster:zod:check-drift (PR #143).
+    deps: [registry:build]
+    cmds:
+      - |
+        set -eu
+        PLUGIN="$PWD/target/release/capnpc-schema-bridge-tooldefs"
+        TMPD=$(mktemp -d)
+        trap 'rm -rf "$TMPD"' EXIT
+        capnp compile -I schemas -o"$PLUGIN":"$TMPD" schemas/registry.capnp
+        if [ ! -f "$TMPD/registry.tools.json" ]; then
+          echo "FAIL — tooldefs plugin produced no registry.tools.json; check capnp stderr above" >&2
+          exit 1
+        fi
+        if ! diff -u src/serve/tools.generated.json "$TMPD/registry.tools.json"; then
+          echo "" >&2
+          echo "DRIFT — committed src/serve/tools.generated.json differs from what the" >&2
+          echo "tooldefs plugin generates from schemas/registry.capnp today. Run" >&2
+          echo "\`task registry:generate\` to regenerate, then commit." >&2
+          exit 1
+        fi
+        echo "OK — tools.generated.json matches the registry.capnp codegen output"
+    sources:
+      - schemas/registry.capnp
+      - schemas/_traits.capnp
+      - target/release/capnpc-schema-bridge-tooldefs
+      - src/serve/tools.generated.json
+
   smells:
     desc: >-
       mache structural-smell ratchet (ADR-0018) — the god_file/long_file/
@@ -146,6 +226,13 @@ tasks:
       - task: compile
       - task: lint
       - task: test
+      # Generated-tool-registry drift gate (ADR-0006, rosary-08a278): the
+      # committed src/serve/tools.generated.json must match what the
+      # leyline-schema-bridge tooldefs plugin regenerates from
+      # schemas/registry.capnp. Hard (no SKIP): capnp is already a build
+      # prereq (build.rs codegens schemas/cloister.capnp), so the CLI is
+      # always present on any host that can build rosary.
+      - task: registry:check-drift
       # Structural smell ratchet — enforced locally where mache is present, and in
       # CI via the reusable mache find-smells action (.github/workflows/smells.yml).
       # Skips (exit 0) when mache is absent, so the mache-less CI `verify` job that
