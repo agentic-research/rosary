@@ -5,12 +5,20 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-// Generated capnp bindings for the cloister↔rosary IPC wire (rosary-6371e3).
-// Source schema: schemas/cloister.capnp (vendored from cloister/wire/cloister.capnp).
+// Generated capnp bindings for the leyline-net IPC wire (rosary-6371e3).
+// Source schema: schemas/cloister.capnp, vendored from ley-line-open's
+// canonical net.capnp (rosary-086973). Drift gate: leyline_net_vectors.
 #[allow(clippy::all, dead_code, unused_imports)]
 mod cloister_capnp {
     include!(concat!(env!("OUT_DIR"), "/cloister_capnp.rs"));
 }
+
+// leyline-net/v1 conformance-vector drift gate (rosary-086973): rebuilds
+// LLO's pinned vectors with the generated bindings above and asserts
+// byte-equality + decode. Test-only; keeps schemas/cloister.capnp from
+// silently drifting from LLO's net.capnp.
+#[cfg(test)]
+mod leyline_net_vectors;
 
 mod acp;
 #[allow(dead_code)] // API surface — wired in rsry-e608bb (reconciler integration)
