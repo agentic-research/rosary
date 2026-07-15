@@ -4,21 +4,32 @@ if [ -d "$BEADS_DIR" ]; then
     (cd "$BEADS_DIR" && dolt pull 2>/dev/null) || true
 fi
 
-# Close beads whose PR just merged, rsry-native: read the squash-merge commits
-# `git pull` landed on the trunk (`[bead-id] … (#N)`) — no gh / webhook / tunnel.
-# Best-effort: never block or fail the merge.
-if command -v rsry >/dev/null 2>&1; then
-    rsry close-merged --local --repo "$REPO" >/dev/null 2>&1 || true
+# Resolve the rsry binary. `rsry hooks install` bakes the absolute path of the
+# installing binary in below so this hook fires even in PATH-restricted shells
+# (git GUIs, some CI runners) where `command -v rsry` finds nothing. Fall back
+# to a PATH lookup if the baked path is gone (binary moved / reinstalled). If
+# neither resolves, print ONE diagnostic line and skip — never fail the merge.
+RSRY="__RSRY_BIN__"
+if [ ! -x "$RSRY" ]; then
+    RSRY=$(command -v rsry 2>/dev/null || true)
 fi
+if [ -z "$RSRY" ]; then
+    echo "[rsry post-merge] rsry not found (baked path '__RSRY_BIN__' absent, not on PATH); skipping bead auto-close" >&2
+else
+    # Close beads whose PR just merged, rsry-native: read the squash-merge commits
+    # `git pull` landed on the trunk (`[bead-id] … (#N)`) — no gh / webhook / tunnel.
+    # Best-effort: never block or fail the merge.
+    "$RSRY" close-merged --local --repo "$REPO" >/dev/null 2>&1 || true
 
-# rsry version-drift nudge (rosary-d09889): in the rosary source repo, if this
-# pull moved the crate version past the installed binary, say so — the release
-# pull IS the trigger, so nobody has to notice manually. Warn-only: `task
-# install` codesigns + restarts the MCP service, too heavy to fire silently.
-if command -v rsry >/dev/null 2>&1 && grep -q '^name = "rosary"' Cargo.toml 2>/dev/null; then
-    repo_ver=$(grep -m1 '^version' Cargo.toml 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/')
-    inst_ver=$(rsry --version 2>/dev/null | awk '{print $2}')
-    if [ -n "$repo_ver" ] && [ -n "$inst_ver" ] && [ "$repo_ver" != "$inst_ver" ]; then
-        printf '⚠ rsry drift: installed %s, repo is %s — run `task install` to update the binary + MCP service.\n' "$inst_ver" "$repo_ver" >&2
+    # rsry version-drift nudge (rosary-d09889): in the rosary source repo, if this
+    # pull moved the crate version past the installed binary, say so — the release
+    # pull IS the trigger, so nobody has to notice manually. Warn-only: `task
+    # install` codesigns + restarts the MCP service, too heavy to fire silently.
+    if grep -q '^name = "rosary"' Cargo.toml 2>/dev/null; then
+        repo_ver=$(grep -m1 '^version' Cargo.toml 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/')
+        inst_ver=$("$RSRY" --version 2>/dev/null | awk '{print $2}')
+        if [ -n "$repo_ver" ] && [ -n "$inst_ver" ] && [ "$repo_ver" != "$inst_ver" ]; then
+            printf '⚠ rsry drift: installed %s, repo is %s — run `task install` to update the binary + MCP service.\n' "$inst_ver" "$repo_ver" >&2
+        fi
     fi
 fi
