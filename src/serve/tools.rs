@@ -2,70 +2,40 @@
 
 use serde_json::{Value, json};
 
-// Grandfathered (510 lines): one big JSON literal of every tool's schema —
-// inherently long, low-complexity. Refactor + remove this allow under
-// rosary-626db2.
-#[allow(clippy::too_many_lines)]
+/// Tools generated from `schemas/registry.capnp` by the leyline-schema-bridge
+/// `tooldefs` plugin (ADR-0006 revival, rosary-08a278). The capnp registry is
+/// the source of truth; this JSON is committed and drift-gated by `task
+/// registry:check-drift` (in `task check`), so an edit to the schema that is
+/// not regenerated + committed fails the gate.
+///
+/// INCREMENTAL: covers 6 of the 41 tools — those whose every field name is a
+/// single word. `capnp compile` rejects underscores in field names and the
+/// tooldefs emitter uses the capnp field name verbatim, so snake_case tools
+/// (repo_path, issue_type, …) plus nested/free-form objects and numeric
+/// bounds stay hand-written below until the LLO vocabulary can express them
+/// (see schemas/registry.capnp + the follow-up beads on rosary-08a278).
+const GENERATED_TOOLS_JSON: &str = include_str!("tools.generated.json");
+
 pub(crate) fn tool_definitions() -> Value {
-    json!({
-        "tools": [
-            {
-                "name": "rsry_scan",
-                "description": "Scan all configured repos for beads (work items). Returns a JSON array of beads with their status, priority, and metadata.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            },
-            {
-                "name": "rsry_expand_ref",
-                "description": "Fetch a demoted context blob by its content hash (from the bounded pipeline-context envelope). Use when the prompt shows an 'Earlier context' ref you need in full.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "hash": { "type": "string", "description": "hex content hash of the demoted blob" }
-                    },
-                    "required": ["hash"]
-                }
-            },
-            {
-                "name": "rsry_status",
-                "description": "Return aggregated status counts across all repos: open, ready, dispatchable, in_progress, and blocked bead counts.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            },
-            {
-                "name": "rsry_list_beads",
-                "description": "List beads with optional filters. Paginated to avoid oversized responses. Returns beads array + total count.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "type": "string",
-                            "description": "Filter by status (open, in_progress, blocked, ready, dispatchable, done, etc.). If omitted, returns all beads."
-                        },
-                        "repo": {
-                            "type": "string",
-                            "description": "Filter by repo name (e.g. 'rosary', 'mache'). If omitted, returns beads from all repos."
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Max beads to return (default 50, max 200).",
-                            "default": 50
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Skip this many beads before returning results (for pagination).",
-                            "default": 0
-                        }
-                    },
-                    "required": []
-                }
-            },
+    // Assemble the full MCP tools/list: the hand-written tools first, then the
+    // registry-generated ones spliced in. tools/list order is not contractual
+    // (clients look tools up by name); the tests assert presence, not order.
+    let generated: Vec<Value> = serde_json::from_str(GENERATED_TOOLS_JSON)
+        .expect("committed tools.generated.json is drift-gated valid JSON");
+    let mut tools = hand_written_tool_definitions();
+    tools.extend(generated);
+    json!({ "tools": tools })
+}
+
+// The tools NOT yet in the generated registry. Returns the array so
+// `tool_definitions()` can concatenate the generated slice.
+//
+// Grandfathered (long): one big JSON literal of every hand-written tool's
+// schema — inherently long, low-complexity. Shrinks as tools migrate to the
+// registry (rosary-08a278 follow-ups).
+#[allow(clippy::too_many_lines)]
+fn hand_written_tool_definitions() -> Vec<Value> {
+    let Value::Array(tools) = json!([
             {
                 "name": "rsry_run_once",
                 "description": "Run a reconciliation pass. With bead_id: starts the full pipeline in the background (async — returns immediately with status 'started', use rsry_active for the merged active view, or rsry_pipeline_query/rsry_dispatch_history for per-bead details). Without bead_id: single synchronous pass across all beads. Use dry_run=true to preview without dispatching.",
@@ -246,15 +216,6 @@ pub(crate) fn tool_definitions() -> Value {
                         "isolate": { "type": "boolean", "description": "Create an isolated workspace (git worktree / jj workspace) before dispatch. Defaults to true. Set to false only for single-concurrency in-place execution.", "default": true }
                     },
                     "required": ["bead_id", "repo_path"]
-                }
-            },
-            {
-                "name": "rsry_active",
-                "description": "Show the merged active view: live session-registry entries plus backend active dispatch and pipeline rows.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
                 }
             },
             {
@@ -567,15 +528,6 @@ pub(crate) fn tool_definitions() -> Value {
                 }
             },
             {
-                "name": "rsry_repo_list",
-                "description": "List repos registered by the current user.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            },
-            {
                 "name": "rsry_bead_import",
                 "description": "Import beads from a JSON array. Routes each bead to the correct repo using its 'repo' field (matched against configured repo names). Falls back to repo_path if no per-bead repo. Skips duplicates by exact title match. Use with `rsry bead export` for cross-instance migration.",
                 "inputSchema": {
@@ -639,13 +591,126 @@ pub(crate) fn tool_definitions() -> Value {
                     "required": ["ticket_id"]
                 }
             }
-        ]
-    })
+    ]) else {
+        unreachable!("json! array literal is always an array")
+    };
+    tools
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0006 / rosary-08a278 acceptance bar: the tools generated from
+    /// `schemas/registry.capnp` (via the leyline-schema-bridge tooldefs
+    /// plugin, committed to tools.generated.json) must reproduce the exact MCP
+    /// `tools/list` entries these 6 tools shipped as hand-written literals.
+    /// Golden expectations are copied verbatim from the prior tools.rs; two
+    /// independent producers (the capnp registry vs this literal) meeting in
+    /// the middle. Structural (`serde_json::Value`) equality — the drift gate
+    /// (`task registry:check-drift`) pins the generated JSON's exact bytes;
+    /// this pins its shape to the live surface it replaced.
+    #[test]
+    fn generated_registry_reproduces_live_tool_shapes() {
+        let generated: Vec<Value> =
+            serde_json::from_str(GENERATED_TOOLS_JSON).expect("generated JSON parses");
+
+        let expected = json!([
+            {
+                "name": "rsry_scan",
+                "description": "Scan all configured repos for beads (work items). Returns a JSON array of beads with their status, priority, and metadata.",
+                "inputSchema": { "type": "object", "properties": {}, "required": [] }
+            },
+            {
+                "name": "rsry_status",
+                "description": "Return aggregated status counts across all repos: open, ready, dispatchable, in_progress, and blocked bead counts.",
+                "inputSchema": { "type": "object", "properties": {}, "required": [] }
+            },
+            {
+                "name": "rsry_active",
+                "description": "Show the merged active view: live session-registry entries plus backend active dispatch and pipeline rows.",
+                "inputSchema": { "type": "object", "properties": {}, "required": [] }
+            },
+            {
+                "name": "rsry_repo_list",
+                "description": "List repos registered by the current user.",
+                "inputSchema": { "type": "object", "properties": {}, "required": [] }
+            },
+            {
+                "name": "rsry_expand_ref",
+                "description": "Fetch a demoted context blob by its content hash (from the bounded pipeline-context envelope). Use when the prompt shows an 'Earlier context' ref you need in full.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hash": { "type": "string", "description": "hex content hash of the demoted blob" }
+                    },
+                    "required": ["hash"]
+                }
+            },
+            {
+                "name": "rsry_list_beads",
+                "description": "List beads with optional filters. Paginated to avoid oversized responses. Returns beads array + total count.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status": { "type": "string", "description": "Filter by status (open, in_progress, blocked, ready, dispatchable, done, etc.). If omitted, returns all beads." },
+                        "repo": { "type": "string", "description": "Filter by repo name (e.g. 'rosary', 'mache'). If omitted, returns beads from all repos." },
+                        "limit": { "type": "integer", "description": "Max beads to return (default 50, max 200).", "default": 50 },
+                        "offset": { "type": "integer", "description": "Skip this many beads before returning results (for pagination).", "default": 0 }
+                    },
+                    "required": []
+                }
+            }
+        ]);
+        let expected = expected.as_array().unwrap();
+
+        // Every covered tool is present in the generated output and matches
+        // its golden shape (order-independent — matched by name).
+        for want in expected {
+            let name = want["name"].as_str().unwrap();
+            let got = generated
+                .iter()
+                .find(|t| t["name"] == want["name"])
+                .unwrap_or_else(|| panic!("generated registry is missing tool {name}"));
+            assert_eq!(
+                got, want,
+                "generated tool {name} drifted from its live shape"
+            );
+        }
+        assert_eq!(
+            generated.len(),
+            expected.len(),
+            "generated registry has {} tools, expected exactly the {} covered by registry.capnp",
+            generated.len(),
+            expected.len()
+        );
+    }
+
+    /// The spliced `tool_definitions()` still surfaces every generated tool
+    /// (the runtime consumes tools.generated.json, not a hand-written copy).
+    #[test]
+    fn generated_tools_are_present_in_tool_definitions() {
+        let defs = tool_definitions();
+        let names: Vec<&str> = defs["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        for generated in [
+            "rsry_scan",
+            "rsry_status",
+            "rsry_active",
+            "rsry_repo_list",
+            "rsry_expand_ref",
+            "rsry_list_beads",
+        ] {
+            assert!(
+                names.contains(&generated),
+                "spliced-in generated tool {generated} missing from tool_definitions()"
+            );
+        }
+    }
 
     #[test]
     fn tool_definitions_has_expected_tools() {

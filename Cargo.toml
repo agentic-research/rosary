@@ -45,6 +45,19 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 # rusqlite bump (rosary-7069df). Byte-identical to the prior blake3 impl per
 # rosary-bf6c74's golden vectors.
 leyline-core = { git = "https://github.com/agentic-research/ley-line-open", rev = "c3515b9", default-features = false }
+# Build-time codegen plugin anchor — NOT referenced from rosary's source (no
+# `use leyline_schema_bridge`), so its symbols are dead-stripped from rsry; it
+# is a normal dep only because `cargo build -p leyline-schema-bridge --bin
+# capnpc-schema-bridge-tooldefs` (Taskfile `registry:build`) needs it in the
+# resolved graph, and cargo 1.94 panics resolving a dev-dependency-only
+# external package via `-p`. Mirrors cloister's schema-bridge anchor (PR #143,
+# crates/cas). SHA-pinned at the tooldefs-capable commit (LLO PR #232,
+# ley-line-open-beb8bb): the `$doc`/`$optional`/`$default`/`$op` annotation
+# vocabulary + the tooldefs emitter that reproduces rosary's MCP tools/list
+# entries. The plugin builds against capnp =0.25 (LLO's workspace pin) in its
+# own subgraph; rosary's capnp 0.21 (cloister_capnp) is untouched — the two
+# capnp versions never cross the plugin's binary boundary.
+leyline-schema-bridge = { git = "https://github.com/agentic-research/ley-line-open", rev = "c9ec2bbf8bf59de1dd82d6c147f93486b95715a0", version = "0.8.0", package = "leyline-schema-bridge" }
 agent-client-protocol = "0.10.2"
 async-trait = "0.1.89"
 tokio-util = { version = "0.7", features = ["compat"] }
