@@ -54,7 +54,7 @@ else. `task ci` is also an alias for `task check`.
 | File                           | Purpose                                                                                                                                                              |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | src/serve/mod.rs               | MCP server (stdio + HTTP) + Linear/GitHub webhook handlers                                                                                                           |
-| src/serve/handlers/mod.rs      | MCP tool implementations (40 tools)                                                                                                                                  |
+| src/serve/handlers/mod.rs      | MCP tool implementations (41 tools)                                                                                                                                  |
 | src/serve/github_webhook.rs    | GitHub merge webhook → advance bead + unblock dependents                                                                                                             |
 | src/reconcile/mod.rs           | Reconciliation loop: scan → triage → dispatch → verify                                                                                                               |
 | src/bead.rs                    | Bead model, BeadState enum, Comment struct (audit-trail), Linear type mapping                                                                                        |
@@ -130,14 +130,14 @@ Pipeline mapping: issue_type → agent sequence (dispatch.rs `agent_pipeline()`)
 Beads are the distributed work tracking system. Each repo has `.beads/` with either a Dolt database (`.beads/dolt/`, server mode) or a SQLite `beads.db` (the default for single-user/local repos). Rosary reads/writes both in-process via `connect_bead_store` (`src/bead_sqlite/mod.rs`) — it never invokes the `bd` CLI. See [ADR-0014](docs/adr/0014-decouple-rosary-from-bd.md).
 
 ```bash
-# MCP tools (via rsry serve) — 40 tools
+# MCP tools (via rsry serve) — 41 tools
 # Beads
 rsry_bead_create / rsry_bead_update / rsry_bead_search / rsry_bead_close
 rsry_bead_link / rsry_bead_import / rsry_bead_history
 # Comments
 rsry_bead_comment / rsry_bead_comment_list / rsry_bead_comment_update / rsry_bead_comment_delete
 # Status + triage/review
-rsry_status / rsry_list_beads / rsry_scan / rsry_active / rsry_ticket_load / rsry_review
+rsry_status / rsry_list_beads / rsry_scan / rsry_active / rsry_ticket_load / rsry_review / rsry_expand_ref
 # Dispatch + pipeline
 rsry_dispatch / rsry_run_once / rsry_decompose
 rsry_pipeline_upsert / rsry_pipeline_query / rsry_dispatch_record / rsry_dispatch_history
@@ -280,7 +280,7 @@ if the plugin reports coverage below the threshold.
 
 ## MCP Integration
 
-Rosary exposes 40 MCP tools via `rsry serve`. Accessible from:
+Rosary exposes 41 MCP tools via `rsry serve`. Accessible from:
 
 - Claude Code (stdio transport, configured in MCP settings)
 - Claude web (HTTP transport via tunnel)

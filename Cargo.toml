@@ -2,14 +2,26 @@
 [workspace]
 members = [".", "crates/crypto", "crates/bdr"]
 
+[workspace.package]
+edition = "2024"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/agentic-research/rosary"
+homepage = "https://docs.rosary.bot"
+
 [package]
 name = "rosary"
 version = "0.6.0"
-edition = "2024"
+edition.workspace = true
 description = "Strings beads, repos, and review layers into coordinated work"
-license = "AGPL-3.0-or-later"
-repository = "https://github.com/agentic-research/rosary"
-homepage = "https://github.com/agentic-research/rosary"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["agents", "orchestration", "mcp", "issue-tracker", "automation"]
+categories = ["development-tools", "command-line-utilities"]
+# The `rosary` name on crates.io belongs to an unrelated crate; distribution is
+# binary + OCI image. Flip deliberately if a publish story lands (rosary-d19eca).
+publish = false
 
 [[bin]]
 name = "rsry"

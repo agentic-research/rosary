@@ -187,7 +187,7 @@ graph LR
 
     subgraph "Interface"
         main["main.rs<br/>CLI"]
-        serve["serve/<br/>MCP 40 tools + webhooks"]
+        serve["serve/<br/>MCP 41 tools + webhooks"]
         config["config/mod.rs<br/>TOML config"]
         plugin["plugin.rs<br/>kind=hook|mcp|dispatch|state_sink"]
     end

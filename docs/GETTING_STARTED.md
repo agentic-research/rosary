@@ -103,7 +103,7 @@ From any registered repo:
 claude
 ```
 
-If rsry is configured as an MCP server in your Claude Code settings, you now have 40 tools for managing beads, dispatching agents, and creating workspaces — all available inside your Claude session.
+If rsry is configured as an MCP server in your Claude Code settings, you now have 41 tools for managing beads, dispatching agents, and creating workspaces — all available inside your Claude session.
 
 To add rsry as an MCP server, add to your global Claude Code MCP config at `~/.claude/.mcp.json`:
 
