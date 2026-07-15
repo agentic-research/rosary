@@ -12,8 +12,8 @@ them.
 
 Part of the [rosary](https://github.com/agentic-research/rosary) workspace —
 this is the crate behind `rsry decompose` and `rsry capture`. Not published to
-crates.io. License: Apache-2.0 (deliberately more permissive than the
-workspace's AGPL — bdr is the liberally-licensed decomposition core).
+crates.io. License: AGPL-3.0-or-later (workspace license — see the repo root
+[LICENSE](../../LICENSE)).
 
 ```bash
 cargo test -p bdr

@@ -3,9 +3,7 @@ name = "bdr"
 version = "0.3.0"
 edition.workspace = true
 description = "Bead Decision Records — Harmony lattice decomposition for ADRs"
-# Deliberately Apache-2.0 (not the workspace AGPL): bdr is the liberally-licensed
-# decomposition core.
-license = "Apache-2.0"
+license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
