@@ -866,6 +866,51 @@ fn git_config_user_name(repo_root: &Path) -> Option<String> {
 
 /// Resolve the .beads/ directory for a repo, handling git/jj worktrees.
 /// In a worktree, .beads/ lives in the main worktree — resolve via git commondir.
+/// Search every registered repo's store for `query` — the fallback when a
+/// bead search runs outside any bead-tracked repo (rosary-560953). Read-only:
+/// repos whose store is missing or unopenable are skipped with a warning,
+/// never created.
+async fn cross_repo_search(query: &str) -> Result<()> {
+    let cfg = config::load_global()?;
+    if cfg.repo.is_empty() {
+        anyhow::bail!(
+            "not inside a bead-tracked repo and no repos are registered — \
+             cd into a repo, pass --repo <path>, or onboard one with `rsry init <path>`"
+        );
+    }
+    let mut all: Vec<bead::Bead> = Vec::new();
+    let mut searched = 0usize;
+    for r in &cfg.repo {
+        let root = scanner::resolve_repo_path(&r.path);
+        let beads_dir = resolve_beads_dir(&root);
+        if !beads_dir.exists() {
+            continue;
+        }
+        match bead_sqlite::connect_bead_store(&beads_dir).await {
+            Ok(store) => match store.search_beads(query, &r.name, 50).await {
+                Ok(mut beads) => {
+                    searched += 1;
+                    all.append(&mut beads);
+                }
+                Err(e) => eprintln!("  [warn] search failed for {}: {e}", r.name),
+            },
+            Err(e) => eprintln!("  [warn] could not open store for {}: {e}", r.name),
+        }
+    }
+    if searched == 0 {
+        // Every registered repo was missing or unopenable — "nothing was
+        // searched" must not masquerade as "nothing matched" (exit 0).
+        anyhow::bail!(
+            "no registered repo could be searched ({} registered, 0 reachable) — \
+             `rsry doctor` shows per-repo store health",
+            cfg.repo.len()
+        );
+    }
+    eprintln!("(not in a bead-tracked repo — searched {searched} registered repos)");
+    cli::bead_search_results(&all, query);
+    Ok(())
+}
+
 pub fn resolve_beads_dir(repo_root: &Path) -> PathBuf {
     if repo_root.join(".beads").exists() {
         return repo_root.join(".beads");
@@ -1550,12 +1595,21 @@ async fn main() -> Result<()> {
             }
         }
         Command::Bead { action, repo } => {
+            let repo_was_defaulted = repo == ".";
             let repo_root = scanner::resolve_repo_path(Path::new(&repo));
             let beads_dir = resolve_beads_dir(&repo_root);
 
-            // Backup/restore operate at the file level and must run BEFORE the
-            // store is opened — connect_bead_store would create an empty
-            // beads.db, defeating restore's overwrite guard. Handle + return.
+            // rosary-560953: a bead op must never fabricate a store. Without
+            // this gate, `connect_bead_store` creates an empty beads.db at
+            // whatever `resolve_beads_dir` fell back to — so `bead search`
+            // from a non-repo cwd silently searched a phantom store (exit 0),
+            // and `bead create` could black-hole work items into a store no
+            // scan reads. Store creation is explicit: `rsry init` / `enable`.
+            // Backup/restore operate at the file level and must run BEFORE
+            // both the store-existence gate and the store open: backup fails
+            // loud on a missing store itself, and restore must be able to
+            // bootstrap a missing .beads/ (fresh clone / disaster recovery) —
+            // gating it would strand exactly the user it exists for.
             match &action {
                 BeadAction::Backup { output } => {
                     let out = bead_backup::backup(&beads_dir, Path::new(output))?;
@@ -1572,6 +1626,26 @@ async fn main() -> Result<()> {
                     return Ok(());
                 }
                 _ => {}
+            }
+
+            if !beads_dir.exists() {
+                if repo_was_defaulted {
+                    // Search degrades gracefully: fall back to the global
+                    // registry, matching `rsry status`'s cross-repo posture.
+                    if let BeadAction::Search { query } = &action {
+                        return cross_repo_search(query).await;
+                    }
+                    anyhow::bail!(
+                        "no bead store here ({} does not exist) — cd into a bead-tracked repo, \
+                         pass --repo <path>, or onboard this repo with `rsry init`",
+                        beads_dir.display()
+                    );
+                }
+                anyhow::bail!(
+                    "no bead store at {} — run `rsry init {}` to onboard it first",
+                    beads_dir.display(),
+                    repo_root.display()
+                );
             }
 
             let client = bead_sqlite::connect_bead_store(&beads_dir).await?;
@@ -1617,6 +1691,16 @@ async fn main() -> Result<()> {
                 BeadAction::Move { id, dest } => {
                     let dest_root = scanner::resolve_repo_path(Path::new(&dest));
                     let dest_dir = resolve_beads_dir(&dest_root);
+                    // Same fabrication gate as the source store (rosary-560953):
+                    // moving into an un-onboarded repo would black-hole the bead
+                    // into a store no scan or registry knows about.
+                    if !dest_dir.exists() {
+                        anyhow::bail!(
+                            "destination has no bead store at {} — run `rsry init {}` first",
+                            dest_dir.display(),
+                            dest_root.display()
+                        );
+                    }
                     let dest_client = bead_sqlite::connect_bead_store(&dest_dir).await?;
                     let dest_name = dest_root
                         .file_name()
@@ -2156,6 +2240,76 @@ async fn main() -> Result<()> {
                 );
             } else {
                 println!("\nNo drift.");
+            }
+
+            // Config + store health (rosary-560953). Filesystem-only checks —
+            // no store connects, no server spawns, no mutations: a doctor
+            // that heals by accident is the bug this section exists to catch.
+            let global = config::load_global();
+            println!(
+                "\nconfig health — {} registered repos",
+                global.as_ref().map(|c| c.repo.len()).unwrap_or(0)
+            );
+            match global {
+                Err(e) => println!("  ✗ global config unreadable: {e}"),
+                Ok(cfg) if cfg.repo.is_empty() => {
+                    println!("  no repos registered — `rsry init <path>` onboards one");
+                }
+                Ok(cfg) => {
+                    let mut seen = std::collections::HashSet::new();
+                    for r in &cfg.repo {
+                        if !seen.insert(r.name.clone()) {
+                            println!("  {:<16} ✗ duplicate name in registry", r.name);
+                            continue;
+                        }
+                        let root = scanner::resolve_repo_path(&r.path);
+                        if !root.exists() {
+                            println!("  {:<16} ✗ path missing: {}", r.name, root.display());
+                            continue;
+                        }
+                        let beads_dir = resolve_beads_dir(&root);
+                        if !beads_dir.exists() {
+                            println!(
+                                "  {:<16} ⚠ registered but no .beads store — `rsry init {}`",
+                                r.name,
+                                root.display()
+                            );
+                            continue;
+                        }
+                        let has_dolt = beads_dir.join("dolt").exists();
+                        let has_sqlite = beads_dir.join("beads.db").exists();
+                        let backend = match (has_dolt, has_sqlite) {
+                            (true, _) => "dolt-server",
+                            (false, true) => "sqlite",
+                            (false, false) => {
+                                println!(
+                                    "  {:<16} ✗ .beads exists but holds neither dolt/ nor beads.db",
+                                    r.name
+                                );
+                                continue;
+                            }
+                        };
+                        let mut warns: Vec<String> = Vec::new();
+                        if beads_dir.join("embeddeddolt").exists() && !has_dolt {
+                            warns.push(
+                                "bd-era embeddeddolt/ cruft present (store itself is fine)"
+                                    .to_string(),
+                            );
+                        }
+                        if !has_dolt
+                            && let Ok(meta) =
+                                std::fs::read_to_string(beads_dir.join("metadata.json"))
+                            && meta.contains("\"dolt\"")
+                        {
+                            warns.push("metadata.json claims dolt but store is sqlite".to_string());
+                        }
+                        if warns.is_empty() {
+                            println!("  {:<16} ✓ {backend}", r.name);
+                        } else {
+                            println!("  {:<16} ⚠ {backend} — {}", r.name, warns.join("; "));
+                        }
+                    }
+                }
             }
         }
         Command::Init {
