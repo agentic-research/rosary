@@ -897,6 +897,15 @@ async fn cross_repo_search(query: &str) -> Result<()> {
             Err(e) => eprintln!("  [warn] could not open store for {}: {e}", r.name),
         }
     }
+    if searched == 0 {
+        // Every registered repo was missing or unopenable — "nothing was
+        // searched" must not masquerade as "nothing matched" (exit 0).
+        anyhow::bail!(
+            "no registered repo could be searched ({} registered, 0 reachable) — \
+             `rsry doctor` shows per-repo store health",
+            cfg.repo.len()
+        );
+    }
     eprintln!("(not in a bead-tracked repo — searched {searched} registered repos)");
     cli::bead_search_results(&all, query);
     Ok(())
@@ -1596,6 +1605,29 @@ async fn main() -> Result<()> {
             // from a non-repo cwd silently searched a phantom store (exit 0),
             // and `bead create` could black-hole work items into a store no
             // scan reads. Store creation is explicit: `rsry init` / `enable`.
+            // Backup/restore operate at the file level and must run BEFORE
+            // both the store-existence gate and the store open: backup fails
+            // loud on a missing store itself, and restore must be able to
+            // bootstrap a missing .beads/ (fresh clone / disaster recovery) —
+            // gating it would strand exactly the user it exists for.
+            match &action {
+                BeadAction::Backup { output } => {
+                    let out = bead_backup::backup(&beads_dir, Path::new(output))?;
+                    println!(
+                        "backed up {} bead store → {}",
+                        out.backend,
+                        out.path.display()
+                    );
+                    return Ok(());
+                }
+                BeadAction::Restore { input, force } => {
+                    bead_backup::restore(&beads_dir, Path::new(input), *force)?;
+                    println!("restored bead store from {input}");
+                    return Ok(());
+                }
+                _ => {}
+            }
+
             if !beads_dir.exists() {
                 if repo_was_defaulted {
                     // Search degrades gracefully: fall back to the global
@@ -1614,27 +1646,6 @@ async fn main() -> Result<()> {
                     beads_dir.display(),
                     repo_root.display()
                 );
-            }
-
-            // Backup/restore operate at the file level and must run BEFORE the
-            // store is opened — connect_bead_store would create an empty
-            // beads.db, defeating restore's overwrite guard. Handle + return.
-            match &action {
-                BeadAction::Backup { output } => {
-                    let out = bead_backup::backup(&beads_dir, Path::new(output))?;
-                    println!(
-                        "backed up {} bead store → {}",
-                        out.backend,
-                        out.path.display()
-                    );
-                    return Ok(());
-                }
-                BeadAction::Restore { input, force } => {
-                    bead_backup::restore(&beads_dir, Path::new(input), *force)?;
-                    println!("restored bead store from {input}");
-                    return Ok(());
-                }
-                _ => {}
             }
 
             let client = bead_sqlite::connect_bead_store(&beads_dir).await?;
@@ -1680,6 +1691,16 @@ async fn main() -> Result<()> {
                 BeadAction::Move { id, dest } => {
                     let dest_root = scanner::resolve_repo_path(Path::new(&dest));
                     let dest_dir = resolve_beads_dir(&dest_root);
+                    // Same fabrication gate as the source store (rosary-560953):
+                    // moving into an un-onboarded repo would black-hole the bead
+                    // into a store no scan or registry knows about.
+                    if !dest_dir.exists() {
+                        anyhow::bail!(
+                            "destination has no bead store at {} — run `rsry init {}` first",
+                            dest_dir.display(),
+                            dest_root.display()
+                        );
+                    }
                     let dest_client = bead_sqlite::connect_bead_store(&dest_dir).await?;
                     let dest_name = dest_root
                         .file_name()

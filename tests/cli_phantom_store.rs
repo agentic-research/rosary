@@ -200,6 +200,131 @@ fn search_falls_back_to_registered_repos() {
 }
 
 // ---------------------------------------------------------------------------
+// 4b. `bead move` must not fabricate a store at the DESTINATION (fresh-eyes
+//     review blocker on the first cut of this fix).
+// ---------------------------------------------------------------------------
+#[test]
+fn move_to_uninitialized_dest_refuses() {
+    let home = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    let dest = TempDir::new().unwrap();
+    git_init(repo.path());
+
+    let repo_str = repo.path().to_string_lossy().into_owned();
+    let init = run_rsry(home.path(), repo.path(), &["init", &repo_str]);
+    assert!(init.status.success(), "init: {}", stderr_str(&init));
+
+    let create = run_rsry(
+        home.path(),
+        repo.path(),
+        &["bead", "create", "movable target", "--files", "src/lib.rs"],
+    );
+    assert!(create.status.success(), "create: {}", stderr_str(&create));
+    // Bead id is `<repo-dirname>-<hex>`; recover it via search.
+    let found = run_rsry(home.path(), repo.path(), &["bead", "search", "movable"]);
+    let id = stdout_str(&found)
+        .split_whitespace()
+        .find(|w| w.contains('-'))
+        .expect("bead id in search output")
+        .to_string();
+
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    let out = run_rsry(home.path(), repo.path(), &["bead", "move", &id, &dest_str]);
+
+    assert!(
+        !out.status.success(),
+        "move into un-onboarded dest must refuse; stdout={:?}",
+        stdout_str(&out)
+    );
+    assert!(
+        !dest.path().join(".beads").exists(),
+        "move fabricated a store at the destination"
+    );
+    assert!(
+        stderr_str(&out).contains("rsry init"),
+        "error should point at `rsry init`, got: {}",
+        stderr_str(&out)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4c. `bead restore` must still bootstrap a MISSING .beads/ (disaster
+//     recovery) — the store gate must not run before backup/restore.
+// ---------------------------------------------------------------------------
+#[test]
+fn restore_bootstraps_missing_store() {
+    let home = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    git_init(repo.path());
+
+    let repo_str = repo.path().to_string_lossy().into_owned();
+    let init = run_rsry(home.path(), repo.path(), &["init", &repo_str]);
+    assert!(init.status.success(), "init: {}", stderr_str(&init));
+    let create = run_rsry(
+        home.path(),
+        repo.path(),
+        &[
+            "bead",
+            "create",
+            "survives disaster",
+            "--files",
+            "src/lib.rs",
+        ],
+    );
+    assert!(create.status.success(), "create: {}", stderr_str(&create));
+
+    let backup_path = repo.path().join("store.backup");
+    let backup_str = backup_path.to_string_lossy().into_owned();
+    let backup = run_rsry(home.path(), repo.path(), &["bead", "backup", &backup_str]);
+    assert!(backup.status.success(), "backup: {}", stderr_str(&backup));
+
+    // Disaster: the store is gone entirely.
+    std::fs::remove_dir_all(repo.path().join(".beads")).unwrap();
+
+    let restore = run_rsry(home.path(), repo.path(), &["bead", "restore", &backup_str]);
+    assert!(
+        restore.status.success(),
+        "restore into a repo with no .beads must bootstrap it: {}",
+        stderr_str(&restore)
+    );
+    let found = run_rsry(home.path(), repo.path(), &["bead", "search", "survives"]);
+    assert!(
+        stdout_str(&found).contains("survives"),
+        "restored store should contain the bead; stdout: {}",
+        stdout_str(&found)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4d. Cross-repo fallback with a registry full of ghosts: "nothing was
+//     searched" must not masquerade as "nothing matched".
+// ---------------------------------------------------------------------------
+#[test]
+fn search_with_only_ghost_repos_fails_loud() {
+    let home = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+
+    let rsry_dir = home.path().join(".rsry");
+    std::fs::create_dir_all(&rsry_dir).unwrap();
+    std::fs::write(
+        rsry_dir.join("config.toml"),
+        "[[repo]]\nname = \"ghost\"\npath = \"/nonexistent/ghost-repo\"\n",
+    )
+    .unwrap();
+
+    let out = run_rsry(home.path(), cwd.path(), &["bead", "search", "anything"]);
+    assert!(
+        !out.status.success(),
+        "0-reachable-repos search must exit non-zero; stdout={:?}",
+        stdout_str(&out)
+    );
+    assert!(
+        !cwd.path().join(".beads").exists(),
+        "ghost-registry search fabricated a store"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 5. Doctor reports config/store health, not just version drift.
 // ---------------------------------------------------------------------------
 #[test]
