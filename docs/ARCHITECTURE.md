@@ -187,7 +187,7 @@ graph LR
 
     subgraph "Interface"
         main["main.rs<br/>CLI"]
-        serve["serve/<br/>MCP 40 tools + webhooks"]
+        serve["serve/<br/>MCP 41 tools + webhooks"]
         config["config/mod.rs<br/>TOML config"]
         plugin["plugin.rs<br/>kind=hook|mcp|dispatch|state_sink"]
     end
@@ -270,7 +270,7 @@ graph TB
 
 Connection safety: `dolt_transaction_commit=1` (auto-commit per statement), `max_connections=1` (session variable consistency), bail on known dead port (no silent empty DB).
 
-## MCP Tools (40)
+## MCP Tools (41)
 
 | Category   | Tools                                                                                                                                              |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |

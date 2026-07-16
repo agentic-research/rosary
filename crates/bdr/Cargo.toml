@@ -1,9 +1,16 @@
 [package]
 name = "bdr"
 version = "0.3.0"
-edition = "2024"
+edition.workspace = true
 description = "Bead Decision Records — Harmony lattice decomposition for ADRs"
-license = "Apache-2.0"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["adr", "decomposition", "agents", "planning"]
+categories = ["development-tools"]
+# Not yet published; `bdr` is free on crates.io as of 2026-07-15 (rosary-d19eca).
+publish = false
 
 [dependencies]
 openai-harmony = "0.0.8"
