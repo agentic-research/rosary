@@ -60,6 +60,7 @@ mod model_provider;
 mod notes;
 #[allow(dead_code)] // ADR-0010 substrate; observers wired in obs-* follow-up beads
 mod observation;
+mod openai_compat;
 mod orchestrate;
 mod pipeline;
 mod plugin;

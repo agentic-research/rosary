@@ -69,11 +69,77 @@ impl ProviderKind {
     }
 }
 
-/// A model provider: knows its kind and carries its [`Credential`]. The async
-/// call surface (`generate`/`stream`) is added in a later slice.
+/// A chat role in a normalized request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    System,
+    User,
+    Assistant,
+}
+
+impl Role {
+    pub(crate) fn wire(self) -> &'static str {
+        match self {
+            Role::System => "system",
+            Role::User => "user",
+            Role::Assistant => "assistant",
+        }
+    }
+}
+
+/// One message in a normalized chat request.
+#[derive(Debug, Clone)]
+pub struct ChatMessage {
+    pub role: Role,
+    pub content: String,
+}
+
+/// A normalized chat request — the one shape every provider adapter maps to its
+/// native wire format. `provider_options` is the namespaced pass-through bag
+/// (AI SDK pattern): keyed by provider prefix, only the matching adapter reads
+/// its entry, so provider-specific params never touch the common shape.
+#[derive(Debug, Clone, Default)]
+pub struct ChatRequest {
+    pub model_id: String,
+    pub messages: Vec<ChatMessage>,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f64>,
+    pub provider_options: HashMap<String, serde_json::Value>,
+}
+
+/// Token accounting from a response.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
+/// A non-fatal degradation — an unsupported knob dropped, etc. Providers push
+/// these instead of erroring (AI SDK pattern: degrade honestly, don't fail).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Warning {
+    pub feature: String,
+    pub message: String,
+}
+
+/// A normalized chat response.
+#[derive(Debug, Clone)]
+pub struct ChatResponse {
+    pub content: String,
+    pub finish_reason: String,
+    pub usage: Usage,
+    pub warnings: Vec<Warning>,
+}
+
+/// A model provider: knows its kind, carries its [`Credential`], and makes
+/// calls. `generate` is object-safe via `async_trait` so the [`Registry`] can
+/// hold `Box<dyn ModelProvider>`. Streaming (`stream`) + the middleware wrapper
+/// land in the next slice.
+#[async_trait::async_trait]
 pub trait ModelProvider: Send + Sync {
     fn kind(&self) -> ProviderKind;
     fn credential(&self) -> &Credential;
+    async fn generate(&self, req: &ChatRequest) -> Result<ChatResponse>;
 }
 
 /// A resolved provider + the bare model id (prefix stripped).
@@ -164,12 +230,21 @@ mod tests {
         cred: Credential,
     }
 
+    #[async_trait::async_trait]
     impl ModelProvider for FakeProvider {
         fn kind(&self) -> ProviderKind {
             self.kind
         }
         fn credential(&self) -> &Credential {
             &self.cred
+        }
+        async fn generate(&self, _req: &ChatRequest) -> Result<ChatResponse> {
+            Ok(ChatResponse {
+                content: "fake".into(),
+                finish_reason: "stop".into(),
+                usage: Usage::default(),
+                warnings: vec![],
+            })
         }
     }
 
@@ -251,5 +326,26 @@ mod tests {
             Credential::OAuth(o) => assert!(o.client_secret.is_some()),
             _ => panic!("gemini provider should carry an OAuth credential"),
         }
+    }
+
+    // ── slice 3: the async call surface integrates through the trait object ──
+    // (adapter transform tests live with the adapter in src/openai_compat.rs)
+
+    #[tokio::test]
+    async fn generate_flows_through_the_trait() {
+        let p: Box<dyn ModelProvider> = Box::new(FakeProvider {
+            kind: ProviderKind::OpenAI,
+            cred: Credential::api_key("k"),
+        });
+        let req = ChatRequest {
+            model_id: "gpt-5".into(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: "hi".into(),
+            }],
+            ..Default::default()
+        };
+        let resp = p.generate(&req).await.unwrap();
+        assert_eq!(resp.content, "fake");
     }
 }
