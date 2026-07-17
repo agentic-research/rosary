@@ -35,6 +35,7 @@ mod cas;
 mod cli;
 mod config;
 mod context;
+mod credential;
 mod decompose;
 mod dispatch;
 mod dolt;
@@ -55,9 +56,11 @@ mod linear_tracker;
 mod manifest;
 #[allow(dead_code)]
 mod migrate;
+mod model_provider;
 mod notes;
 #[allow(dead_code)] // ADR-0010 substrate; observers wired in obs-* follow-up beads
 mod observation;
+mod openai_compat;
 mod orchestrate;
 mod pipeline;
 mod plugin;
