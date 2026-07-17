@@ -56,6 +56,7 @@ mod linear_tracker;
 mod manifest;
 #[allow(dead_code)]
 mod migrate;
+mod model_provider;
 mod notes;
 #[allow(dead_code)] // ADR-0010 substrate; observers wired in obs-* follow-up beads
 mod observation;
