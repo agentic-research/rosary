@@ -259,7 +259,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/github.rs",
-      "count": 3
+      "count": 4
     },
     {
       "rule_id": "duplicate_definitions",
@@ -294,7 +294,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/main.rs",
-      "count": 12
+      "count": 13
     },
     {
       "rule_id": "duplicate_definitions",
@@ -354,7 +354,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/observation/mod.rs",
-      "count": 11
+      "count": 12
     },
     {
       "rule_id": "duplicate_definitions",
@@ -539,7 +539,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/session.rs",
-      "count": 3
+      "count": 4
     },
     {
       "rule_id": "duplicate_definitions",
@@ -914,6 +914,21 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/context/cache.rs",
+      "count": 5
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/credential.rs",
+      "count": 7
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/model_provider.rs",
+      "count": 13
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/openai_compat.rs",
       "count": 5
     }
   ]
