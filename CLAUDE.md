@@ -242,6 +242,7 @@ agent is granted `rsry_agent_run_event_record` for the feedback contract.
 | 0015 | Proposed   | Execution-lineage capsules — durable, resumable, proof-ready envelope                                                                                                                   |
 | 0016 | Proposed   | Route agent dispatch through cloister's harness plane (rosary-side coordination) — defers to cloister ADR-0040 (control+cred+audit, L0 shipped)/0042/0044; harness runs host-side (workerd can't spawn); Max-OAuth = audit-not-custody; `--disallowedTools`/reaping are stopgaps until libkrun (ADR-0044) |
 | 0018 | Accepted   | Structural smell gate via mache's committed-baseline ratchet (`docs/smell-baseline.json` + `docs/smell-rules/*.json` + `task smells`); retired the bash god-file/file-length scripts    |
+| 0019 | Proposed   | Harness is the **licensed runtime**, not a swappable front-end — `RuntimeProvider` drives it (seat, `claude -p`), `ModelProvider` replaces it (needs an **API key**, not the subscription OAuth); local models via `ANTHROPIC_BASE_URL`/localhost collapse the wall. Generalizes the custody ceiling (cloister ADR-0040, rosary ADR-0016); empirical evidence rosary-470270. Frames rosary-c79331 |
 
 ## BDR Hierarchy (Decade → Thread → Bead)
 
