@@ -35,6 +35,7 @@ mod cas;
 mod cli;
 mod config;
 mod context;
+mod credential;
 mod decompose;
 mod dispatch;
 mod dolt;
