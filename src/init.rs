@@ -58,13 +58,21 @@ pub struct InitOutcome {
 pub async fn run(repo_root: &Path, use_dolt: bool) -> Result<InitOutcome> {
     let beads_dir = repo_root.join(".beads");
     let store = init_store(repo_root, &beads_dir, use_dolt).await?;
+    // Never git-track the store binary: a committed binary DB has no git 3-way
+    // merge, so ordinary resolutions silently eat live bead state
+    // (rosary-05fbe0). Idempotent — also drops the guard into an existing repo
+    // that predates it.
+    write_beads_gitignore(&beads_dir)?;
     let agents = write_agents(&repo_root.join("AGENTS.md"))?;
     Ok(InitOutcome { store, agents })
 }
 
-/// Create the bead store if absent. SQLite is the default (a single
-/// `beads.db`, committed to git so anyone who clones gets the beads); `--dolt`
-/// opts into the Dolt server path. Idempotent.
+/// Create the bead store if absent. SQLite is the default — a single local
+/// `beads.db` that is **git-ignored** (see [`write_beads_gitignore`]): a binary
+/// DB has no git 3-way merge, so committing it lets ordinary resolutions eat
+/// live state (rosary-05fbe0). SQLite is single-user/local; `--dolt` opts into
+/// the Dolt server path for repos that must share bead state across clones
+/// (Dolt syncs over its own remote, not git). Idempotent.
 async fn init_store(repo_root: &Path, beads_dir: &Path, use_dolt: bool) -> Result<StoreOutcome> {
     if beads_dir.join("dolt").exists() {
         return Ok(StoreOutcome::AlreadyPresent);
@@ -90,6 +98,58 @@ async fn init_store(repo_root: &Path, beads_dir: &Path, use_dolt: bool) -> Resul
             .with_context(|| format!("writing {}", meta.display()))?;
     }
     Ok(StoreOutcome::CreatedSqlite)
+}
+
+/// Canonical `.beads/.gitignore`. The bead-store binary is LOCAL and must never
+/// be git-tracked: a committed binary DB has no git 3-way merge, so ordinary
+/// resolutions (`checkout --theirs/--ours`, `reset --hard`, `stash pop`)
+/// silently overwrite live bead state (rosary-05fbe0). `metadata.json` /
+/// `config.yaml` stay tracked so a clone still knows the backend.
+const BEADS_GITIGNORE: &str = "\
+# Managed by `rsry init`. The bead-store binary is LOCAL — never git-tracked.
+# A committed binary DB has no git 3-way merge; ordinary resolutions
+# (checkout --theirs/--ours, reset --hard, stash pop) silently eat live bead
+# state (rosary-05fbe0). SQLite is single-user/local; share across clones with
+# `--dolt` (Dolt syncs over its own remote). metadata.json/config.yaml stay
+# tracked so a clone knows the backend.
+
+# SQLite store + WAL/journal sidecars
+beads.db
+beads.db-shm
+beads.db-wal
+beads.db-journal
+beads.db.migrated
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Dolt store + server runtime (synced via dolt remote, not git)
+dolt/
+dolt-server.pid
+dolt-server.log
+dolt-server.port
+dolt-server.lock
+dolt-access.lock
+
+# Host-local runtime + credential
+.beads-credential-key
+.local_version
+last-touched
+backup/
+";
+
+/// Write `.beads/.gitignore` if absent so the store binary is never tracked
+/// (rosary-05fbe0). Non-clobbering: an existing gitignore (e.g. a legacy bd
+/// one) is left untouched. Returns whether a file was written.
+fn write_beads_gitignore(beads_dir: &Path) -> Result<bool> {
+    let path = beads_dir.join(".gitignore");
+    if path.exists() {
+        return Ok(false);
+    }
+    std::fs::write(&path, BEADS_GITIGNORE)
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(true)
 }
 
 /// Write or refresh the managed AGENTS.md section.
@@ -236,10 +296,41 @@ mod tests {
         assert!(root.join(".beads/metadata.json").exists());
         assert!(root.join("AGENTS.md").exists());
 
+        // The store binary is git-ignored, never tracked (rosary-05fbe0), while
+        // metadata stays tracked so a clone knows the backend.
+        let gi = std::fs::read_to_string(root.join(".beads/.gitignore")).unwrap();
+        assert!(gi.contains("beads.db"), "must ignore the store binary");
+        assert!(gi.contains("*.db"), "must ignore db sidecars");
+        assert!(gi.contains("dolt/"), "must ignore the Dolt store");
+        assert!(
+            !gi.lines().any(|l| l.trim() == "metadata.json"),
+            "metadata must stay tracked (no ignore pattern for it)"
+        );
+
         // Re-run is idempotent: store already present, AGENTS.md unchanged.
         let second = run(root, false).await.unwrap();
         assert_eq!(second.store, StoreOutcome::AlreadyPresent);
         assert_eq!(second.agents, AgentsOutcome::Unchanged);
+    }
+
+    #[test]
+    fn gitignore_written_once_and_never_clobbered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let beads = tmp.path().join(".beads");
+        std::fs::create_dir_all(&beads).unwrap();
+
+        // First call writes the guard.
+        assert!(write_beads_gitignore(&beads).unwrap());
+        assert!(beads.join(".gitignore").exists());
+
+        // A pre-existing gitignore (e.g. a legacy bd one) is preserved, not
+        // overwritten — the call is non-clobbering and returns false.
+        std::fs::write(beads.join(".gitignore"), "custom-user-content\n").unwrap();
+        assert!(!write_beads_gitignore(&beads).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(beads.join(".gitignore")).unwrap(),
+            "custom-user-content\n"
+        );
     }
 
     #[test]
