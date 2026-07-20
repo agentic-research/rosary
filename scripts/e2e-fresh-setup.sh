@@ -2,9 +2,12 @@
 # End-to-end "fresh setup" test.
 #
 # Walks the path a brand-new user would take per docs/GETTING_STARTED.md:
-#   1. `rsry enable` is rejected with an actionable error when dolt has no
-#      global identity (regression test for the silent half-init bug)
-#   2. After `dolt config --global` is set, `rsry enable` succeeds end-to-end
+#   1. `rsry enable` defaults to SQLite and succeeds with NO dolt identity,
+#      writing the .beads/.gitignore guard (rosary-75af4d / rosary-05fbe0)
+#   1b. `rsry enable --dolt` still preflights dolt identity — rejected with an
+#      actionable error + no half-init when absent (the half-init regression
+#      guard, now on the Dolt path)
+#   2. After `dolt config --global` is set, `rsry enable --dolt` succeeds
 #   3. `rsry bead create` + `rsry bead list` + `rsry status` work
 #   4. No `[migrate] ... migration 001_add_user_id failed` warning appears
 #      (regression test for the dolt 2.x duplicate-column heuristic)
@@ -36,14 +39,18 @@ command -v git  >/dev/null 2>&1 || fail "git not on PATH"
 # `dolt config --global` writes under $HOME — so this single override makes
 # the test safe to run on a developer machine without trampling state.
 rm -rf "$WORK"
-mkdir -p "$WORK/home" "$WORK/sample"
+mkdir -p "$WORK/home" "$WORK/sample" "$WORK/sample-sqlite"
 export HOME="$WORK/home"
 
+# Two sample repos: `sample` exercises the `--dolt` path, `sample-sqlite` the
+# SQLite-default path (rosary-75af4d).
+for s in sample sample-sqlite; do
+  git -C "$WORK/$s" init -q
+  git -C "$WORK/$s" -c user.email=t@t.t -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m init
+done
 cd "$WORK/sample"
-git init -q
-git -c user.email=t@t.t -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m init
 
-# --- Phase 1: dolt has no identity → enable must fail with actionable hint ---
+# --- Phase 1: `rsry enable` defaults to SQLite — succeeds with NO dolt identity ---
 
 # HOME is a clean scratch dir, so dolt has no global identity here by
 # construction. The explicit --unset calls are defensive in case the script
@@ -51,28 +58,53 @@ git -c user.email=t@t.t -c user.name=t -c commit.gpgsign=false commit -q --allow
 dolt config --global --unset user.email >/dev/null 2>&1 || true
 dolt config --global --unset user.name  >/dev/null 2>&1 || true
 
+# rosary-75af4d: `enable` used to hardcode a Dolt store (needing dolt identity);
+# it now defaults to a single-file SQLite store, so a fresh enable must SUCCEED
+# even with no dolt identity — and must NOT create a Dolt store.
 set +e
-OUT=$("$RSRY" enable "$WORK/sample" 2>&1)
+OUT=$("$RSRY" enable "$WORK/sample-sqlite" 2>&1)
 RC=$?
 set -e
 
-[ "$RC" -ne 0 ] || fail "expected enable to fail without dolt identity (got rc=0)"
-echo "$OUT" | grep -q 'dolt config --global --add user' \
-    || fail "missing actionable hint in error:\n$OUT"
-[ ! -d "$WORK/sample/.beads" ] \
-    || fail "enable left a half-initialized .beads/ behind"
-pass "rsry enable refuses without dolt identity, no half-init"
+[ "$RC" -eq 0 ] \
+    || fail "expected enable (SQLite default) to succeed without dolt identity (rc=$RC):\n$OUT"
+[ -f "$WORK/sample-sqlite/.beads/beads.db" ] \
+    || fail "enable (SQLite) did not create .beads/beads.db"
+[ ! -d "$WORK/sample-sqlite/.beads/dolt" ] \
+    || fail "enable (SQLite default) unexpectedly created a Dolt store"
+[ -f "$WORK/sample-sqlite/.beads/.gitignore" ] \
+    || fail "enable (SQLite) did not write the .beads/.gitignore guard (rosary-05fbe0)"
+pass "rsry enable defaults to SQLite, no dolt identity required"
 
-# --- Phase 2: configure identity, enable must now succeed ---
+# --- Phase 1b: `rsry enable --dolt` still preflights dolt identity ---
+
+# The silent half-init regression guard now lives on the Dolt path: `--dolt`
+# with no global identity must fail with an actionable hint and leave no
+# half-init behind.
+set +e
+OUT=$("$RSRY" enable --dolt "$WORK/sample" 2>&1)
+RC=$?
+set -e
+
+[ "$RC" -ne 0 ] || fail "expected enable --dolt to fail without dolt identity (got rc=0)"
+echo "$OUT" | grep -q 'dolt config --global --add user' \
+    || fail "missing actionable hint in --dolt error:\n$OUT"
+[ ! -d "$WORK/sample/.beads" ] \
+    || fail "enable --dolt left a half-initialized .beads/ behind"
+pass "rsry enable --dolt refuses without dolt identity, no half-init"
+
+# --- Phase 2: configure identity, `enable --dolt` must now succeed ---
 
 dolt config --global --add user.email "e2e@example.com" >/dev/null
 dolt config --global --add user.name  "e2e"             >/dev/null
 
-"$RSRY" enable "$WORK/sample" >/dev/null 2>&1 \
-    || fail "rsry enable failed after dolt identity was set"
+"$RSRY" enable --dolt "$WORK/sample" >/dev/null 2>&1 \
+    || fail "rsry enable --dolt failed after dolt identity was set"
 [ -f "$WORK/sample/.beads/metadata.json" ] \
-    || fail "enable did not produce .beads/metadata.json"
-pass "rsry enable end-to-end after dolt identity is configured"
+    || fail "enable --dolt did not produce .beads/metadata.json"
+[ -d "$WORK/sample/.beads/dolt" ] \
+    || fail "enable --dolt did not create a Dolt store"
+pass "rsry enable --dolt end-to-end after dolt identity is configured"
 
 # --- Phase 3: bead create + list + status, capture stderr for noise check ---
 
