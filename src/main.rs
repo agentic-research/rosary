@@ -266,6 +266,9 @@ enum Command {
         /// Path to repo root (defaults to current directory)
         #[arg(default_value = ".")]
         path: String,
+        /// Use a Dolt server store instead of the default single-file SQLite.
+        #[arg(long)]
+        dolt: bool,
     },
     /// Unregister a repo from the global registry by name or path
     Disable {
@@ -1281,11 +1284,14 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Enable { path } => {
+        Command::Enable { path, dolt } => {
             let entry = config::enable_repo(Path::new(&path))?;
-            // Init .beads/ Dolt DB if not present
+            // Create the store the SAME way `rsry init` does — SQLite by
+            // default (rosary-05fbe0 "SQLite = local"), Dolt only on --dolt.
+            // Was: an unconditional hardcoded dolt::init_beads_db that spawned a
+            // dolt-server per enabled repo regardless of intent (rosary-75af4d).
             if !entry.path.join(".beads").exists() {
-                dolt::init_beads_db(&entry.path).await?;
+                init::run(&entry.path, dolt).await?;
             }
             cli::repo_enabled(&entry.name, &entry.path.to_string_lossy());
         }
