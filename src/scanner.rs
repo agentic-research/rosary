@@ -65,6 +65,17 @@ pub fn expand_path(path: &std::path::Path) -> std::path::PathBuf {
     std::path::PathBuf::from(shellexpand::tilde(&s).to_string())
 }
 
+/// Expand `~` AND resolve symlinks, so two path aliases of the same physical
+/// repo compare equal — e.g. `~/github/art/X` → `~/remotes/art/X` (a real
+/// symlink here), or macOS's `/var` → `/private/var`. Falls back to the
+/// tilde-expanded path when canonicalize fails (e.g. the path doesn't exist
+/// yet). Use this for repo-path *matching* (rosary-617010) — NOT where a
+/// symlinked path must be preserved verbatim (see `workspace/lifecycle.rs`).
+pub fn canonicalize_repo_path(path: &std::path::Path) -> std::path::PathBuf {
+    let expanded = expand_path(path);
+    std::fs::canonicalize(&expanded).unwrap_or(expanded)
+}
+
 /// Resolve a user-supplied repo path to an absolute repo root.
 ///
 /// Handles: "." → cwd, "~" → home, walks up to find .git/.beads/Cargo.toml.

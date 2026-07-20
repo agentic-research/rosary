@@ -160,15 +160,18 @@ impl RepoPool {
     }
 
     /// Get a BeadStore by repo path (resolves name from path).
-    /// Resolves repo path via discover_repo_root (no symlink resolution).
+    /// Canonicalizes symlink aliases on both sides, so the same physical repo
+    /// addressed via a different alias (e.g. `~/github/art/X` vs
+    /// `~/remotes/art/X`, or macOS `/var` vs `/private/var`) matches its
+    /// registered entry instead of silently missing (rosary-617010).
     /// Returns `None` if the repo's Dolt port changed since startup.
     pub fn get_by_path(&self, repo_path: &str) -> Option<(&str, &dyn BeadStore)> {
         let target = Path::new(repo_path);
         let discovered = config::discover_repo_root(target).unwrap_or_else(|| target.to_path_buf());
-        let root = crate::scanner::expand_path(&discovered);
+        let root = crate::scanner::canonicalize_repo_path(&discovered);
 
         for (name, path) in &self.paths {
-            if *path == root {
+            if crate::scanner::canonicalize_repo_path(path) == root {
                 if is_dolt_port_stale(&self.known_ports, &self.beads_dirs, name) {
                     eprintln!("[pool] {name}: Dolt port changed, bypassing stale pool entry");
                     return None;
@@ -205,6 +208,41 @@ mod tests {
         assert!(pool.get("nonexistent").is_none());
         assert!(pool.get_by_path("/tmp/fake").is_none());
         assert!(pool.path_for("nonexistent").is_none());
+    }
+
+    /// rosary-617010: a repo registered under its real path must be found when
+    /// looked up via a SYMLINK ALIAS of the same physical dir (the ~/github →
+    /// ~/remotes case). Before the fix, get_by_path compared paths with exact
+    /// equality and silently missed the alias → "search returns empty".
+    #[test]
+    fn get_by_path_matches_symlink_alias() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real = tmp.path().join("real-repo");
+        std::fs::create_dir_all(real.join(".beads")).unwrap();
+        let store =
+            crate::bead_sqlite::SqliteBeadStore::connect(&real.join(".beads/beads.db")).unwrap();
+
+        // An alias dir symlinking to the real repo (mirrors ~/github/art/X → ~/remotes/art/X).
+        let alias = tmp.path().join("alias-repo");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+
+        let pool = RepoPool::from_client("myrepo", real.clone(), Box::new(store));
+
+        // Found via the real path (sanity)…
+        assert!(
+            pool.get_by_path(real.to_str().unwrap()).is_some(),
+            "real path should match its registered store"
+        );
+        // …AND via the symlink alias — the bug was this used to return None.
+        assert!(
+            pool.get_by_path(alias.to_str().unwrap()).is_some(),
+            "symlink alias must resolve to the same registered store"
+        );
+        // A genuinely unrelated path still misses.
+        assert!(
+            pool.get_by_path("/tmp/definitely-not-a-repo-617010")
+                .is_none()
+        );
     }
 
     #[test]
