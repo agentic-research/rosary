@@ -2736,17 +2736,28 @@ async fn tool_thread_list(args: &Value, backend: Option<&dyn BackendStore>) -> R
     // Option 1: list threads for a decade
     if let Some(decade_id) = args.get("decade_id").and_then(|v| v.as_str()) {
         let threads = backend.list_threads(decade_id).await?;
-        let items: Vec<Value> = threads
-            .iter()
-            .map(|t| {
-                json!({
-                    "id": t.id,
-                    "name": t.name,
-                    "decade_id": t.decade_id,
-                    "feature_branch": t.feature_branch,
-                })
-            })
-            .collect();
+        let mut items: Vec<Value> = Vec::with_capacity(threads.len());
+        for t in &threads {
+            // Include members — thread membership lives in the orchestrator
+            // lattice, not the per-repo bead store, so rsry_bead_search can't
+            // surface it. Without this, every thread renders as an empty shell
+            // and the hierarchy looks skipped even when it's fully populated.
+            let bead_ids: Vec<String> = backend
+                .list_beads_in_thread(&t.id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|b| b.bead_id)
+                .collect();
+            items.push(json!({
+                "id": t.id,
+                "name": t.name,
+                "decade_id": t.decade_id,
+                "feature_branch": t.feature_branch,
+                "bead_count": bead_ids.len(),
+                "beads": bead_ids,
+            }));
+        }
         return Ok(json!({ "count": items.len(), "threads": items }));
     }
 
