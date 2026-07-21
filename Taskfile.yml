@@ -261,11 +261,12 @@ tasks:
       - cargo fmt
 
   server-json:check:
-    desc: "server.json version must match Cargo.toml (hand-maintained MCP manifest drift gate)"
+    desc: "server.json (hand-maintained MCP manifest) must match Cargo.toml version AND the registered tool set"
     silent: true
     cmds:
       - |
         set -euo pipefail
+        # 1. version must track Cargo.toml (both the top-level and the OCI package).
         CARGO="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
         TOP="$(jq -r '.version' server.json)"
         PKG="$(jq -r '.packages[0].version' server.json)"
@@ -273,7 +274,23 @@ tasks:
           echo "server.json version drift: Cargo.toml=$CARGO server.json.version=$TOP packages[0].version=$PKG — reconcile to $CARGO"
           exit 1
         fi
-        echo "server.json version OK: $CARGO"
+        # 2. the standalone tool list must equal the tools the dispatcher registers.
+        # server.json is hand-maintained (no generator yet — rosary-1a4c0b/ADR-0006),
+        # so this gate is what stops it silently drifting (it had dropped
+        # rsry_expand_ref). Source of truth: the dispatch match arms in handlers.
+        ACTUAL="$(grep -oE '"rsry_[a-z_]+" =>' src/serve/handlers/mod.rs | grep -oE 'rsry_[a-z_]+' | sort -u)"
+        LISTED="$(jq -r '._meta["io.github.agentic-research.rosary/tools"].standalone[]' server.json | sort -u)"
+        AF="$(mktemp)"; LF="$(mktemp)"
+        printf '%s\n' "$ACTUAL" > "$AF"; printf '%s\n' "$LISTED" > "$LF"
+        if ! diff -q "$AF" "$LF" >/dev/null; then
+          echo "server.json tool drift vs src/serve/handlers/mod.rs dispatch arms:"
+          echo "  missing from server.json: $(comm -23 "$AF" "$LF" | tr '\n' ' ')"
+          echo "  stale in server.json:     $(comm -13 "$AF" "$LF" | tr '\n' ' ')"
+          rm -f "$AF" "$LF"
+          exit 1
+        fi
+        rm -f "$AF" "$LF"
+        echo "server.json OK: version $CARGO, $(printf '%s\n' "$ACTUAL" | wc -l | tr -d ' ') tools match handlers"
 
   persist-status-ratchet:
     desc: "Imperative persist_status() call sites may only decrease (R4b — state = fold, not scattered mutation)"
