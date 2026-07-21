@@ -246,7 +246,7 @@ pub async fn init_beads_db(repo_path: &Path) -> Result<()> {
 
     std::fs::write(
         beads_dir.join("metadata.json"),
-        format!(r#"{{"dolt_database": "{db_name}"}}"#),
+        format!(r#"{{"backend": "dolt", "dolt_database": "{db_name}"}}"#),
     )?;
 
     let config = DoltConfig::from_beads_dir(&beads_dir)?;
