@@ -111,7 +111,8 @@ const BEADS_GITIGNORE: &str = "\
 # (checkout --theirs/--ours, reset --hard, stash pop) silently eat live bead
 # state (rosary-05fbe0). SQLite is single-user/local; share across clones with
 # `--dolt` (Dolt syncs over its own remote). metadata.json/config.yaml stay
-# tracked so a clone knows the backend.
+# tracked so a clone knows the backend, and the JSONL export stays tracked as
+# the text, 3-way-mergeable share surface (never ignored — see below).
 
 # SQLite store + WAL/journal sidecars
 beads.db
@@ -137,6 +138,11 @@ dolt-access.lock
 .local_version
 last-touched
 backup/
+
+# Shareable bead export — the JSONL mirror is the git-tracked source of truth
+# (text, mergeable). Never ignore it, even under a parent `*` / `*.jsonl` rule.
+!beads.jsonl
+!events.jsonl
 ";
 
 /// Write `.beads/.gitignore` if absent so the store binary is never tracked
@@ -305,6 +311,10 @@ mod tests {
         assert!(
             !gi.lines().any(|l| l.trim() == "metadata.json"),
             "metadata must stay tracked (no ignore pattern for it)"
+        );
+        assert!(
+            gi.contains("!beads.jsonl"),
+            "the JSONL export must stay tracked as the mergeable share surface"
         );
 
         // Re-run is idempotent: store already present, AGENTS.md unchanged.

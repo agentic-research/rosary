@@ -233,6 +233,9 @@ tasks:
       # prereq (build.rs codegens schemas/cloister.capnp), so the CLI is
       # always present on any host that can build rosary.
       - task: registry:check-drift
+      # server.json (hand-maintained MCP manifest) version must track Cargo.toml —
+      # it silently drifted to 0.5.1 while releases went to 0.8.1 (rosary-7e4698).
+      - task: server-json:check
       # Structural smell ratchet — enforced locally where mache is present, and in
       # CI via the reusable mache find-smells action (.github/workflows/smells.yml).
       # Skips (exit 0) when mache is absent, so the mache-less CI `verify` job that
@@ -256,6 +259,21 @@ tasks:
     desc: Format code
     cmds:
       - cargo fmt
+
+  server-json:check:
+    desc: "server.json version must match Cargo.toml (hand-maintained MCP manifest drift gate)"
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        CARGO="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
+        TOP="$(jq -r '.version' server.json)"
+        PKG="$(jq -r '.packages[0].version' server.json)"
+        if [ "$TOP" != "$CARGO" ] || [ "$PKG" != "$CARGO" ]; then
+          echo "server.json version drift: Cargo.toml=$CARGO server.json.version=$TOP packages[0].version=$PKG — reconcile to $CARGO"
+          exit 1
+        fi
+        echo "server.json version OK: $CARGO"
 
   persist-status-ratchet:
     desc: "Imperative persist_status() call sites may only decrease (R4b — state = fold, not scattered mutation)"
