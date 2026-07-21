@@ -304,7 +304,14 @@ fn assign_thread_group(atom: &Atom) -> String {
         "decision".to_string()
     } else if section.contains("consequence") || section.contains("impact") {
         "consequences".to_string()
-    } else if section.contains("implementation") || section.contains("phase") {
+    } else if section.contains("implementation")
+        || section.contains("phase")
+        || section.contains("plan")
+    {
+        // Keep in lockstep with the ADR section classifier (parse.rs
+        // classify_adr_section), which also treats "plan" as Implementation —
+        // otherwise a "Migration plan" section's Phase atoms are classified as
+        // Phase but grouped into "general" instead of "implementation".
         "implementation".to_string()
     } else if section.contains("validation") || section.contains("metric") {
         "validation".to_string()
@@ -365,6 +372,16 @@ mod tests {
             channel_for_atom(AtomKind::ValidationPoint),
             BdrChannel::Bead
         );
+    }
+
+    #[test]
+    fn migration_plan_section_groups_into_implementation() {
+        // "Migration plan" contains neither "implementation" nor "phase", but
+        // parse.rs classify_adr_section treats "plan" as Implementation, so its
+        // Phase atoms must land in the "implementation" thread, not "general".
+        let mut atom = sample_atom(AtomKind::Phase);
+        atom.source_section = "Migration plan".to_string();
+        assert_eq!(assign_thread_group(&atom), "implementation");
     }
 
     #[test]
