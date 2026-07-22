@@ -77,8 +77,13 @@ pub async fn migrate_store(
     // Pass 2: dependency edges + live comments (all targets now exist).
     for b in &beads {
         for dep in source.get_dependencies(&b.id).await.unwrap_or_default() {
+            // restore_dependency (not add_dependency): preserve CROSS-REPO edges
+            // verbatim — a rosary bead may block on a mache bead, which the
+            // target holds as a dangling depends_on_id (no FK) but which
+            // add_dependency's existence check would reject (found by the dry
+            // run against the live store, 7/237 edges).
             target
-                .add_dependency(&b.id, &dep)
+                .restore_dependency(&b.id, &dep)
                 .await
                 .with_context(|| format!("copying dependency {} -> {dep}", b.id))?;
             report.dependencies += 1;
@@ -144,8 +149,20 @@ pub async fn verify_migration(
         }
         same!(title);
         same!(description);
-        same!(status);
         same!(priority);
+        // Status is compared CANONICALLY: the migration normalizes legacy
+        // aliases (Dolt's "closed" → "done"), which is intended, not data loss —
+        // so compare BeadState, not the raw string.
+        if crate::bead::BeadState::from(t.status.as_str())
+            != crate::bead::BeadState::from(b.status.as_str())
+        {
+            anyhow::bail!(
+                "bead {}: status mismatch after migration ({:?} != {:?})",
+                b.id,
+                t.status,
+                b.status
+            );
+        }
         same!(issue_type);
         same!(owner);
         same!(scope);
@@ -240,6 +257,27 @@ mod tests {
             vec!["dep-1".to_string()]
         );
         assert_eq!(tgt.list_comments("b-1", false).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn migrate_preserves_cross_repo_dependency() {
+        // The dry-run against the live store found rosary beads blocking on
+        // mache beads — a dangling (cross-repo) depends_on_id that
+        // add_dependency's existence check rejects. The migration must preserve
+        // it verbatim (restore_dependency).
+        let src = store();
+        src.create_bead("x", "t", "", 2, "task").await.unwrap();
+        src.restore_dependency("x", "mache-cbf644").await.unwrap();
+
+        let tgt = store();
+        let report = migrate_store(&src, &tgt, "repo").await.unwrap();
+        assert_eq!(report.dependencies, 1, "cross-repo edge is copied");
+        verify_migration(&src, &tgt, "repo").await.unwrap();
+        assert_eq!(
+            tgt.get_dependencies("x").await.unwrap(),
+            vec!["mache-cbf644".to_string()],
+            "cross-repo edge preserved verbatim"
+        );
     }
 
     #[tokio::test]

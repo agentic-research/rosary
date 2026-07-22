@@ -360,6 +360,27 @@ impl SqliteBeadStore {
         Ok(())
     }
 
+    /// Insert a dependency edge **verbatim**, without checking that
+    /// `depends_on_id` resolves to a local bead. For RESTORE contexts only —
+    /// migration must preserve **cross-repo** edges (a rosary bead blocking on
+    /// a mache bead), which the target legitimately holds as a dangling
+    /// `depends_on_id` (the table has no FK), but which `add_dependency`'s
+    /// existence check rejects. Inherent, so the bypass stays out of normal
+    /// code paths.
+    pub(crate) async fn restore_dependency(
+        &self,
+        issue_id: &str,
+        depends_on_id: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO dependencies (issue_id, depends_on_id) VALUES (?1, ?2)",
+            params![issue_id, depends_on_id],
+        )
+        .with_context(|| format!("restoring dependency {issue_id} -> {depends_on_id}"))?;
+        Ok(())
+    }
+
     pub fn connect(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
