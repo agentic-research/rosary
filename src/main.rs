@@ -581,14 +581,23 @@ enum BeadAction {
         #[arg(long)]
         force: bool,
     },
-    /// Migrate this repo's bead store from Dolt to SQLite (ADR-0021). DRY RUN:
-    /// reads the source, builds a throwaway SQLite copy, verifies field-level
-    /// fidelity, and reports — it changes NOTHING. The atomic swap (`--commit`)
-    /// is a separate, backup-gated step.
+    /// Migrate this repo's bead store from Dolt to SQLite (ADR-0021). Default is
+    /// a DRY RUN: reads the source, builds a throwaway SQLite copy, verifies
+    /// field-level fidelity, and reports — it changes NOTHING. `--commit`
+    /// performs the atomic swap (dolt → dolt.bak backup, never deleted).
     Migrate {
         /// Target backend. Only `sqlite` is supported.
         #[arg(long, default_value = "sqlite")]
         to: String,
+        /// Perform the migration for real: after a verified dry run, atomically
+        /// swap `.beads/dolt` → `.beads/dolt.bak` and install the SQLite store.
+        /// Without this flag, nothing is changed.
+        #[arg(long)]
+        commit: bool,
+        /// Emit the result as JSON (repeatable diagnostic: backend, counts,
+        /// cross-repo edges, stub presence, verify status).
+        #[arg(long)]
+        json: bool,
     },
     /// List beads with optional filters (rosary-e1c759). Defaults to the active
     /// (open) set; pass `--status all` (or a terminal status like `done`/`closed`)
@@ -930,61 +939,157 @@ async fn cross_repo_search(query: &str) -> Result<()> {
     Ok(())
 }
 
-/// ADR-0021 slice 4b — DRY RUN of the Dolt→SQLite bead-store migration. Reads
-/// the live source, builds a THROWAWAY temp SQLite copy, runs the full
-/// migration + field-level verify, reports, then discards the temp. It changes
-/// nothing on disk; the atomic swap (`--commit`) is a separate, backup-gated
-/// step (rosary-3a0e19 slice 4b).
-async fn bead_migrate_dry_run(
+/// ADR-0021 slice 4 — Dolt→SQLite bead-store migration.
+///
+/// Always builds the SQLite store and runs field-level `verify_migration`
+/// first. Without `commit` it's a **dry run**: the built store is a throwaway
+/// temp file, nothing on disk changes. With `commit`, the SAME verified build is
+/// atomically swapped in (`.beads/dolt` → `.beads/dolt.bak`, never deleted) and
+/// the dolt-server stopped — verify gates the swap, so a mismatch aborts leaving
+/// the source untouched. `json` emits the result as a repeatable diagnostic.
+async fn bead_migrate_run(
     beads_dir: &Path,
     repo_root: &Path,
     repo: &str,
     to: &str,
+    commit: bool,
+    json: bool,
 ) -> Result<()> {
     if to != "sqlite" {
         anyhow::bail!("only `--to sqlite` is supported (got `{to}`)");
-    }
-    if bead_backup::detect_backend(beads_dir) != bead_backup::Backend::Dolt {
-        println!(
-            "bead store at {} is already SQLite — nothing to migrate",
-            beads_dir.display()
-        );
-        return Ok(());
     }
     let repo_name = repo_root
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| repo.to_string());
 
-    let source = bead_sqlite::connect_bead_store(beads_dir).await?;
+    if bead_backup::detect_backend(beads_dir) != bead_backup::Backend::Dolt {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "repo": repo_name, "source_backend": "sqlite",
+                    "migratable": false, "reason": "already SQLite",
+                })
+            );
+        } else {
+            println!(
+                "bead store at {} is already SQLite — nothing to migrate",
+                beads_dir.display()
+            );
+        }
+        return Ok(());
+    }
 
-    // Throwaway target: a temp SQLite file, discarded after the report.
-    let tmp = std::env::temp_dir().join(format!("rsry-migrate-dryrun-{}.db", std::process::id()));
-    let cleanup = || {
+    // Build the SQLite store: for a commit, at `.beads/beads.db.new` (swapped in
+    // on success); for a dry run, a throwaway temp discarded after.
+    let built = if commit {
+        beads_dir.join("beads.db.new")
+    } else {
+        std::env::temp_dir().join(format!("rsry-migrate-dryrun-{}.db", std::process::id()))
+    };
+    let cleanup_built = || {
         for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", tmp.display()));
+            let _ = std::fs::remove_file(format!("{}{suffix}", built.display()));
         }
     };
-    let target = bead_sqlite::SqliteBeadStore::connect(&tmp)?;
+    cleanup_built(); // clear any stale build before starting
 
+    let source = bead_sqlite::connect_bead_store(beads_dir).await?;
+    let target = bead_sqlite::SqliteBeadStore::connect(&built)?;
     let result = async {
         let report = bead_migrate::migrate_store(source.as_ref(), &target, &repo_name).await?;
         bead_migrate::verify_migration(source.as_ref(), &target, &repo_name).await?;
         Ok::<_, anyhow::Error>(report)
     }
     .await;
-    cleanup();
+    drop(source);
+    drop(target);
 
-    let report = result.map_err(|e| {
-        anyhow::anyhow!("DRY RUN ✗ migration verify failed — do NOT migrate: {e:#}")
-    })?;
-    println!(
-        "DRY RUN ✓ Dolt → SQLite verified for `{repo_name}`: {} beads, {} dependencies, \
-         {} comments — field-level fidelity OK. Nothing was changed.",
-        report.beads, report.dependencies, report.comments
-    );
-    println!("  Next (deliberate, backup-first): the atomic `--commit` swap is slice 4b.");
+    let report = match result {
+        Ok(r) => r,
+        Err(e) => {
+            cleanup_built();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "repo": repo_name, "source_backend": "dolt",
+                        "verify": "failed", "committed": false,
+                        "error": format!("{e:#}"),
+                    })
+                );
+                return Ok(());
+            }
+            anyhow::bail!("✗ migration verify failed — NOT migrated: {e:#}");
+        }
+    };
+    let stub_present = beads_dir
+        .join("beads.db")
+        .metadata()
+        .map(|m| m.len() == 0)
+        .unwrap_or(false);
+
+    if commit {
+        // Verify passed → perform the atomic swap. Stop the dolt-server first so
+        // it isn't serving a renamed directory, then swap, then flip metadata.
+        stop_dolt_server(beads_dir);
+        bead_migrate::swap_dolt_to_sqlite(beads_dir, &built).context("atomic swap")?;
+        if let Err(e) = bead_migrate::flip_metadata_to_sqlite(beads_dir) {
+            eprintln!("[migrate] warning: metadata.json not updated: {e:#}");
+        }
+    } else {
+        cleanup_built();
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "repo": repo_name,
+                "source_backend": "dolt",
+                "target_backend": "sqlite",
+                "verify": "ok",
+                "committed": commit,
+                "beads": report.beads,
+                "dependencies": report.dependencies,
+                "cross_repo_dependencies": report.cross_repo_dependencies,
+                "comments": report.comments,
+                "stub_present": stub_present,
+            })
+        );
+    } else if commit {
+        println!(
+            "✓ MIGRATED `{repo_name}` Dolt → SQLite: {} beads, {} dependencies \
+             ({} cross-repo), {} comments. Dolt store backed up at .beads/dolt.bak \
+             (not deleted); dolt-server stopped.",
+            report.beads, report.dependencies, report.cross_repo_dependencies, report.comments
+        );
+    } else {
+        println!(
+            "DRY RUN ✓ Dolt → SQLite verified for `{repo_name}`: {} beads, {} dependencies \
+             ({} cross-repo), {} comments — field-level fidelity OK. Nothing was changed.",
+            report.beads, report.dependencies, report.cross_repo_dependencies, report.comments
+        );
+        println!("  Run again with `--commit` to perform the swap (backs up dolt → dolt.bak).");
+    }
     Ok(())
+}
+
+/// Stop the per-repo dolt-server (best-effort) after a migration swap, and clear
+/// its pid/port files so nothing reconnects to the dead port.
+fn stop_dolt_server(beads_dir: &Path) {
+    if let Ok(pid_str) = std::fs::read_to_string(beads_dir.join("dolt-server.pid"))
+        && let Ok(pid) = pid_str.trim().parse::<i32>()
+    {
+        // SIGTERM the server; ignore failure (already dead / not ours).
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+    }
+    for f in ["dolt-server.pid", "dolt-server.port"] {
+        let _ = std::fs::remove_file(beads_dir.join(f));
+    }
 }
 
 pub fn resolve_beads_dir(repo_root: &Path) -> PathBuf {
@@ -1651,8 +1756,9 @@ async fn main() -> Result<()> {
                     println!("restored bead store from {input}");
                     return Ok(());
                 }
-                BeadAction::Migrate { to } => {
-                    return bead_migrate_dry_run(&beads_dir, &repo_root, &repo, to).await;
+                BeadAction::Migrate { to, commit, json } => {
+                    return bead_migrate_run(&beads_dir, &repo_root, &repo, to, *commit, *json)
+                        .await;
                 }
                 _ => {}
             }
