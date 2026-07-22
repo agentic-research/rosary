@@ -13,6 +13,8 @@
 //! its tests exercise the boundary now, so `allow(dead_code)`.
 #![allow(dead_code)]
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 
 use crate::bead::Bead;
@@ -24,6 +26,11 @@ use crate::store::{BeadStore, NewBead};
 pub struct MigrationReport {
     pub beads: usize,
     pub dependencies: usize,
+    /// Subset of `dependencies` whose target bead is NOT in this repo (a
+    /// dangling cross-repo edge, e.g. a rosary bead blocking on a mache bead).
+    /// Preserved verbatim; surfaced as a diagnostic because it's the edge class
+    /// that broke the naive migration.
+    pub cross_repo_dependencies: usize,
     pub comments: usize,
 }
 
@@ -74,6 +81,9 @@ pub async fn migrate_store(
         report.beads += 1;
     }
 
+    // Set of this repo's bead ids, to flag dangling cross-repo edges.
+    let local_ids: std::collections::HashSet<&str> = beads.iter().map(|b| b.id.as_str()).collect();
+
     // Pass 2: dependency edges + live comments (all targets now exist).
     for b in &beads {
         for dep in source.get_dependencies(&b.id).await.unwrap_or_default() {
@@ -87,6 +97,9 @@ pub async fn migrate_store(
                 .await
                 .with_context(|| format!("copying dependency {} -> {dep}", b.id))?;
             report.dependencies += 1;
+            if !local_ids.contains(dep.as_str()) {
+                report.cross_repo_dependencies += 1;
+            }
         }
         for c in source.list_comments(&b.id, false).await.unwrap_or_default() {
             target
@@ -187,6 +200,71 @@ pub async fn verify_migration(
     Ok(())
 }
 
+/// Atomically switch a verified `.beads/` from Dolt to SQLite. `built_db` is a
+/// complete SQLite store already migrated + verified. Order is chosen so there
+/// is **no empty-store window**: the full `beads.db` is put in place *before*
+/// `dolt/` is renamed away — while `dolt/` exists, `connect_bead_store` returns
+/// Dolt and ignores `beads.db`; the instant `dolt/` becomes `dolt.bak`,
+/// `beads.db` is already the complete store. `dolt/` is renamed to `dolt.bak`,
+/// **never deleted** (it is the backup). Pure filesystem — the caller stops the
+/// dolt-server and flips `metadata.json` around this.
+pub fn swap_dolt_to_sqlite(beads_dir: &Path, built_db: &Path) -> Result<()> {
+    let dolt = beads_dir.join("dolt");
+    let dolt_bak = beads_dir.join("dolt.bak");
+    let final_db = beads_dir.join("beads.db");
+    if !dolt.is_dir() {
+        anyhow::bail!(
+            "{} is not a Dolt store — refusing to swap",
+            beads_dir.display()
+        );
+    }
+    if dolt_bak.exists() {
+        anyhow::bail!(
+            "{} already exists — refusing to clobber a prior backup",
+            dolt_bak.display()
+        );
+    }
+    if !built_db.is_file() {
+        anyhow::bail!("built store {} is missing", built_db.display());
+    }
+    // Clear stale SQLite artifacts (the 0-byte eadfbe stub, the migrated marker,
+    // and any journals) so the moved store is authoritative.
+    for f in [
+        "beads.db",
+        "beads.db.migrated",
+        "beads.db-wal",
+        "beads.db-shm",
+    ] {
+        let _ = std::fs::remove_file(beads_dir.join(f));
+    }
+    // Put the full store in place (still ignored while dolt/ exists).
+    std::fs::rename(built_db, &final_db)
+        .with_context(|| format!("moving built store into {}", final_db.display()))?;
+    // THE switch: after this rename, connect_bead_store resolves to beads.db.
+    std::fs::rename(&dolt, &dolt_bak)
+        .with_context(|| format!("renaming {} -> {}", dolt.display(), dolt_bak.display()))?;
+    Ok(())
+}
+
+/// Rewrite `.beads/metadata.json` to declare the SQLite backend after a swap.
+/// Best-effort but reported: preserves other keys, sets `backend`/`database` to
+/// `sqlite` and drops the `dolt_*` keys.
+pub fn flip_metadata_to_sqlite(beads_dir: &Path) -> Result<()> {
+    let path = beads_dir.join("metadata.json");
+    let mut meta: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(obj) = meta.as_object_mut() {
+        obj.insert("backend".into(), serde_json::json!("sqlite"));
+        obj.insert("database".into(), serde_json::json!("sqlite"));
+        obj.remove("dolt_mode");
+        obj.remove("dolt_database");
+    }
+    std::fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&meta)?))
+        .with_context(|| format!("writing {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +273,70 @@ mod tests {
 
     fn store() -> SqliteBeadStore {
         SqliteBeadStore::connect(Path::new(":memory:")).unwrap()
+    }
+
+    // --- atomic swap (pure filesystem) ---
+
+    #[test]
+    fn swap_puts_sqlite_in_place_and_preserves_dolt_as_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let beads = tmp.path().join(".beads");
+        std::fs::create_dir_all(beads.join("dolt")).unwrap();
+        std::fs::write(beads.join("dolt/data"), b"dolt-store").unwrap();
+        // A pre-existing 0-byte stub (the eadfbe artifact) that must be cleared.
+        std::fs::write(beads.join("beads.db"), b"").unwrap();
+        let built = beads.join("beads.db.new");
+        std::fs::write(&built, b"MIGRATED-SQLITE").unwrap();
+
+        swap_dolt_to_sqlite(&beads, &built).unwrap();
+
+        // dolt/ preserved as dolt.bak (never deleted), and gone from its slot.
+        assert!(!beads.join("dolt").exists(), "dolt/ moved away");
+        assert!(
+            beads.join("dolt.bak/data").exists(),
+            "dolt preserved as backup"
+        );
+        // The full store is now beads.db (the built one, not the empty stub).
+        assert_eq!(
+            std::fs::read(beads.join("beads.db")).unwrap(),
+            b"MIGRATED-SQLITE"
+        );
+        assert!(!built.exists(), "built .new consumed by the rename");
+    }
+
+    #[test]
+    fn swap_refuses_to_clobber_existing_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let beads = tmp.path().join(".beads");
+        std::fs::create_dir_all(beads.join("dolt")).unwrap();
+        std::fs::create_dir_all(beads.join("dolt.bak")).unwrap(); // prior backup
+        let built = beads.join("beads.db.new");
+        std::fs::write(&built, b"x").unwrap();
+        let err = swap_dolt_to_sqlite(&beads, &built).unwrap_err();
+        assert!(err.to_string().contains("dolt.bak"), "must refuse: {err}");
+        assert!(
+            beads.join("dolt").is_dir(),
+            "source left untouched on refusal"
+        );
+    }
+
+    #[test]
+    fn flip_metadata_declares_sqlite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let beads = tmp.path().join(".beads");
+        std::fs::create_dir_all(&beads).unwrap();
+        std::fs::write(
+            beads.join("metadata.json"),
+            r#"{"backend":"dolt","dolt_mode":"server","dolt_database":"rosary","keep":"me"}"#,
+        )
+        .unwrap();
+        flip_metadata_to_sqlite(&beads).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(beads.join("metadata.json")).unwrap())
+                .unwrap();
+        assert_eq!(v["backend"], "sqlite");
+        assert!(v.get("dolt_mode").is_none(), "dolt_mode dropped");
+        assert_eq!(v["keep"], "me", "unrelated keys preserved");
     }
 
     fn seed_full(id: &str, acceptance: &str) -> NewBead {
@@ -238,6 +380,7 @@ mod tests {
             MigrationReport {
                 beads: 2,
                 dependencies: 1,
+                cross_repo_dependencies: 0,
                 comments: 1
             }
         );
