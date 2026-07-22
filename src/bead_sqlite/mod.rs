@@ -341,6 +341,46 @@ impl SqliteBeadStore {
     }
 
     /// Open or create the bead database at the given path.
+    /// Set a bead's status **verbatim**, bypassing the state-machine transition
+    /// guard that `update_status` enforces. For RESTORE contexts only — store
+    /// migration and import reconstruct *existing* state (a bead is already
+    /// `blocked`/`done`), they don't perform a live transition, so `open →
+    /// blocked` must be writable. Canonicalizes the input exactly like
+    /// `update_status` so no reader has to absorb aliases. Inherent (not on the
+    /// `BeadStore` trait) so the guard-bypass can't leak into normal code paths.
+    pub(crate) async fn restore_status(&self, id: &str, status: &str) -> Result<()> {
+        let next = crate::bead::BeadState::from(status);
+        let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, id)?;
+        conn.execute(
+            "UPDATE issues SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![next.to_string(), full_id],
+        )
+        .with_context(|| format!("restoring status for {id}"))?;
+        Ok(())
+    }
+
+    /// Insert a dependency edge **verbatim**, without checking that
+    /// `depends_on_id` resolves to a local bead. For RESTORE contexts only —
+    /// migration must preserve **cross-repo** edges (a rosary bead blocking on
+    /// a mache bead), which the target legitimately holds as a dangling
+    /// `depends_on_id` (the table has no FK), but which `add_dependency`'s
+    /// existence check rejects. Inherent, so the bypass stays out of normal
+    /// code paths.
+    pub(crate) async fn restore_dependency(
+        &self,
+        issue_id: &str,
+        depends_on_id: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO dependencies (issue_id, depends_on_id) VALUES (?1, ?2)",
+            params![issue_id, depends_on_id],
+        )
+        .with_context(|| format!("restoring dependency {issue_id} -> {depends_on_id}"))?;
+        Ok(())
+    }
+
     pub fn connect(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -448,40 +488,21 @@ CREATE TABLE IF NOT EXISTS events (
 ";
 
 /// SQL for listing beads with dependency/comment counts (non-closed).
-const LIST_BEADS_SQL: &str = "
-SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
-       i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
-       i.created_by, i.scope,
-       COALESCE(dep.cnt, 0) as dep_count,
-       COALESCE(deps.cnt, 0) as dependency_count,
-       COALESCE(cmt.cnt, 0) as comment_count
-FROM issues i
-LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
-     ON dep.depends_on_id = i.id
-LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
-          FROM dependencies d
-          JOIN issues dep_i ON dep_i.id = d.depends_on_id
-          WHERE dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic'
-          GROUP BY d.issue_id) deps
-     ON deps.issue_id = i.id
-LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
-     ON cmt.issue_id = i.id
-WHERE i.status NOT IN ('closed', 'done')
-ORDER BY i.priority ASC, i.created_at DESC
-";
+/// Canonical per-issue column projection — every reader selects exactly this,
+/// so no query can silently omit a field `bead_from_row` reads (ADR-0021 slice
+/// 1). Adding a bead column is one edit here, not four. `acceptance_criteria`
+/// lives here because it was the field every reader used to drop.
+const BEAD_ISSUE_COLUMNS: &str = "i.id, i.title, i.description, i.status, i.priority, \
+    i.issue_type, i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at, \
+    i.created_by, i.scope, i.acceptance_criteria";
 
-// Same as LIST_BEADS_SQL but WITHOUT the active-status filter — full
-// enumeration (incl. closed/done) for export/backup/migration (rosary-91e712).
-// Keep in sync with LIST_BEADS_SQL; the only difference is the absent
-// `WHERE i.status NOT IN ('closed','done')` line.
-const LIST_ALL_BEADS_SQL: &str = "
-SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
-       i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
-       i.created_by, i.scope,
-       COALESCE(dep.cnt, 0) as dep_count,
-       COALESCE(deps.cnt, 0) as dependency_count,
-       COALESCE(cmt.cnt, 0) as comment_count
-FROM issues i
+/// The three count columns `bead_from_row` reads, computed by [`BEAD_COUNT_JOINS`].
+const BEAD_COUNT_COLUMNS: &str = "COALESCE(dep.cnt, 0) as dep_count, \
+    COALESCE(deps.cnt, 0) as dependency_count, COALESCE(cmt.cnt, 0) as comment_count";
+
+/// Joins backing [`BEAD_COUNT_COLUMNS`]. `dependency_count` counts only open,
+/// non-epic blockers (what triage cares about).
+const BEAD_COUNT_JOINS: &str = "
 LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
      ON dep.depends_on_id = i.id
 LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
@@ -491,15 +512,27 @@ LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
           GROUP BY d.issue_id) deps
      ON deps.issue_id = i.id
 LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
-     ON cmt.issue_id = i.id
-ORDER BY i.priority ASC, i.created_at DESC
-";
+     ON cmt.issue_id = i.id";
+
+/// Build a bead read query from the one canonical projection + joins, with a
+/// caller-supplied WHERE and ORDER BY. Single source for every reader (list,
+/// list-all, scoped, get) so their column sets can't drift (ADR-0021 slice 1) —
+/// this retires the two "keep in sync" `LIST_BEADS_SQL` / `LIST_ALL_BEADS_SQL`
+/// constants, which differed only by a WHERE clause.
+fn bead_read_sql(where_clause: &str, order_by: &str) -> String {
+    format!(
+        "SELECT {BEAD_ISSUE_COLUMNS}, {BEAD_COUNT_COLUMNS} FROM issues i {BEAD_COUNT_JOINS} {where_clause} {order_by}"
+    )
+}
+
+const BEAD_READ_ORDER: &str = "ORDER BY i.priority ASC, i.created_at DESC";
 
 #[async_trait]
 impl BeadStore for SqliteBeadStore {
     async fn list_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(LIST_BEADS_SQL)?;
+        let sql = bead_read_sql("WHERE i.status NOT IN ('closed', 'done')", BEAD_READ_ORDER);
+        let mut stmt = conn.prepare(&sql)?;
         let beads = stmt
             .query_map([], |row| bead_from_row(row, repo_name))?
             .filter_map(|r| r.ok())
@@ -509,7 +542,8 @@ impl BeadStore for SqliteBeadStore {
 
     async fn list_all_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(LIST_ALL_BEADS_SQL)?;
+        let sql = bead_read_sql("", BEAD_READ_ORDER);
+        let mut stmt = conn.prepare(&sql)?;
         // Fail loud: export/backup must never silently drop a malformed row
         // (rosary-91e712). Unlike list_beads (triage), we propagate parse errors.
         let beads = stmt
@@ -522,28 +556,11 @@ impl BeadStore for SqliteBeadStore {
         match user_id {
             Some(uid) => {
                 let conn = self.conn.lock().unwrap();
-                let sql_scoped = "
-                    SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
-                           i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
-                           i.created_by, i.scope,
-                           COALESCE(dep.cnt, 0) as dep_count,
-                           COALESCE(deps.cnt, 0) as dependency_count,
-                           COALESCE(cmt.cnt, 0) as comment_count
-                    FROM issues i
-                    LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
-                         ON dep.depends_on_id = i.id
-                    LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
-                              FROM dependencies d
-                              JOIN issues dep_i ON dep_i.id = d.depends_on_id
-                              WHERE dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic'
-                              GROUP BY d.issue_id) deps
-                         ON deps.issue_id = i.id
-                    LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
-                         ON cmt.issue_id = i.id
-                    WHERE i.status NOT IN ('closed', 'done') AND i.user_id = ?1
-                    ORDER BY i.priority ASC, i.created_at DESC
-                ";
-                let mut stmt = conn.prepare(sql_scoped)?;
+                let sql_scoped = bead_read_sql(
+                    "WHERE i.status NOT IN ('closed', 'done') AND i.user_id = ?1",
+                    BEAD_READ_ORDER,
+                );
+                let mut stmt = conn.prepare(&sql_scoped)?;
                 let beads = stmt
                     .query_map(params![uid], |row| bead_from_row(row, repo_name))?
                     .filter_map(|r| r.ok())
@@ -560,19 +577,8 @@ impl BeadStore for SqliteBeadStore {
             Ok(id) => id,
             Err(_) => return Ok(None),
         };
-        let mut stmt = conn.prepare(
-            "SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
-                    i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
-                    i.created_by, i.scope,
-                    (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
-                    (SELECT COUNT(*) FROM dependencies d
-                            JOIN issues dep_i ON dep_i.id = d.depends_on_id
-                            WHERE d.issue_id = i.id
-                            AND dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic') as dependency_count,
-                    (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
-             FROM issues i
-             WHERE i.id = ?1",
-        )?;
+        let sql = bead_read_sql("WHERE i.id = ?1", "");
+        let mut stmt = conn.prepare(&sql)?;
         let bead = stmt
             .query_row(params![full_id], |row| bead_from_row(row, repo_name))
             .optional()?;
@@ -587,19 +593,27 @@ impl BeadStore for SqliteBeadStore {
         priority: u8,
         issue_type: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_at, updated_at)
-             VALUES (?1, ?2, ?3, '', '', '', 'open', ?4, ?5, datetime('now'), datetime('now'))",
-            params![id, title, description, priority as i32, issue_type],
-        )
-        .with_context(|| format!("creating bead {id}"))?;
-        // Sync FTS index (best-effort)
-        let _ = conn.execute(
-            "INSERT INTO bead_fts(id, title, description) VALUES (?1, ?2, ?3)",
-            params![id, title, description],
-        );
-        Ok(())
+        // ADR-0021 slice 2: one writer. The basic create is a thin projection of
+        // the canonical NewBead onto `create_bead_full` (empty owner/files/deps/
+        // acceptance), so there is a single INSERT the column set can't drift
+        // across — not a second, divergent statement.
+        self.create_bead_full(NewBead {
+            id: id.to_string(),
+            title: title.to_string(),
+            description: description.to_string(),
+            priority,
+            issue_type: issue_type.to_string(),
+            owner: String::new(),
+            files: Vec::new(),
+            test_files: Vec::new(),
+            depends_on: Vec::new(),
+            created_by: None,
+            scope: String::new(),
+            derived_from: Vec::new(),
+            acceptance_criteria: String::new(),
+        })
+        .await
+        .with_context(|| format!("creating bead {id}"))
     }
 
     async fn create_bead_full(&self, bead: NewBead) -> Result<()> {
@@ -707,6 +721,13 @@ impl BeadStore for SqliteBeadStore {
                 params![owner, full_id],
             )?;
             updated_fields.push("owner".to_string());
+        }
+        if let Some(ref ac) = update.acceptance_criteria {
+            conn.execute(
+                "UPDATE issues SET acceptance_criteria = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![ac, full_id],
+            )?;
+            updated_fields.push("acceptance_criteria".to_string());
         }
         if update.files.is_some() || update.test_files.is_some() {
             // Read existing notes to preserve fields not being updated

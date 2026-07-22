@@ -14,11 +14,12 @@ brew install rustup task capnp                  # rustup for cargo, task for the
 rustup-init                                     # capnp for the build.rs codegen step
                                                 # (apt: capnproto on Debian/Ubuntu)
 
-# Beads storage — Dolt is required at runtime, not just for builds
+# Beads storage — SQLite by default (a local `.beads/beads.db`, no daemon).
+# Dolt is OPTIONAL: only needed if you opt a repo into server mode with
+# `rsry init --dolt` (version-controlled, multi-writer). Install it only then:
 brew install dolt
-dolt config --global --add user.email "you@example.com"   # `rsry enable` shells out
-dolt config --global --add user.name  "Your Name"         # to `dolt init`, which
-                                                          # refuses without an identity
+dolt config --global --add user.email "you@example.com"   # dolt init refuses
+dolt config --global --add user.name  "Your Name"         # without an identity
 
 # Version control + FUSE bridge (macOS uses fuse-t; on Linux fuse3 is enough)
 brew install jj fuse-t
@@ -82,8 +83,9 @@ cd ~/path/to/your/project
 rsry enable .
 ```
 
-This registers the repo in `~/.rsry/config.toml`, runs `dolt init` to create
-`.beads/dolt/<repo-name>/`, writes `.beads/metadata.json`, and installs git hooks.
+This registers the repo in `~/.rsry/config.toml`, creates a **SQLite** bead
+store (`.beads/beads.db`) — or a Dolt server store (`.beads/dolt/<repo-name>/`)
+if you pass `--dolt` — writes `.beads/metadata.json`, and installs git hooks.
 You can also edit the config directly:
 
 ```toml
@@ -297,9 +299,10 @@ to the Cap'n Proto schema compiler to generate Rust bindings from
 `schemas/cloister.capnp`. Install it with `brew install capnp` (macOS) or
 `apt-get install capnproto` (Debian/Ubuntu).
 
-**`rsry enable` errors with "dolt has no global user.name set"**: `rsry enable`
-runs `dolt init`, which refuses to operate without a configured identity.
-Configure once, then retry:
+**`rsry enable --dolt` errors with "dolt has no global user.name set"**: the
+`--dolt` (server-mode) path runs `dolt init`, which refuses to operate without a
+configured identity. (The default SQLite path needs none.) Configure once, then
+retry:
 
 ```bash
 dolt config --global --add user.email "you@example.com"

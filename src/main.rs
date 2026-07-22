@@ -30,6 +30,7 @@ mod bead_dolt;
 #[allow(dead_code)]
 // identity primitive — wired into create + resolve() in the P1 follow-on (rosary-160bb2)
 mod bead_genesis;
+mod bead_migrate;
 mod bead_move;
 mod bead_ops;
 mod bead_sqlite;
@@ -580,6 +581,15 @@ enum BeadAction {
         #[arg(long)]
         force: bool,
     },
+    /// Migrate this repo's bead store from Dolt to SQLite (ADR-0021). DRY RUN:
+    /// reads the source, builds a throwaway SQLite copy, verifies field-level
+    /// fidelity, and reports — it changes NOTHING. The atomic swap (`--commit`)
+    /// is a separate, backup-gated step.
+    Migrate {
+        /// Target backend. Only `sqlite` is supported.
+        #[arg(long, default_value = "sqlite")]
+        to: String,
+    },
     /// List beads with optional filters (rosary-e1c759). Defaults to the active
     /// (open) set; pass `--status all` (or a terminal status like `done`/`closed`)
     /// to include terminal beads — the active-only default is why closed/done
@@ -917,6 +927,63 @@ async fn cross_repo_search(query: &str) -> Result<()> {
     }
     eprintln!("(not in a bead-tracked repo — searched {searched} registered repos)");
     cli::bead_search_results(&all, query);
+    Ok(())
+}
+
+/// ADR-0021 slice 4b — DRY RUN of the Dolt→SQLite bead-store migration. Reads
+/// the live source, builds a THROWAWAY temp SQLite copy, runs the full
+/// migration + field-level verify, reports, then discards the temp. It changes
+/// nothing on disk; the atomic swap (`--commit`) is a separate, backup-gated
+/// step (rosary-3a0e19 slice 4b).
+async fn bead_migrate_dry_run(
+    beads_dir: &Path,
+    repo_root: &Path,
+    repo: &str,
+    to: &str,
+) -> Result<()> {
+    if to != "sqlite" {
+        anyhow::bail!("only `--to sqlite` is supported (got `{to}`)");
+    }
+    if bead_backup::detect_backend(beads_dir) != bead_backup::Backend::Dolt {
+        println!(
+            "bead store at {} is already SQLite — nothing to migrate",
+            beads_dir.display()
+        );
+        return Ok(());
+    }
+    let repo_name = repo_root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| repo.to_string());
+
+    let source = bead_sqlite::connect_bead_store(beads_dir).await?;
+
+    // Throwaway target: a temp SQLite file, discarded after the report.
+    let tmp = std::env::temp_dir().join(format!("rsry-migrate-dryrun-{}.db", std::process::id()));
+    let cleanup = || {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", tmp.display()));
+        }
+    };
+    let target = bead_sqlite::SqliteBeadStore::connect(&tmp)?;
+
+    let result = async {
+        let report = bead_migrate::migrate_store(source.as_ref(), &target, &repo_name).await?;
+        bead_migrate::verify_migration(source.as_ref(), &target, &repo_name).await?;
+        Ok::<_, anyhow::Error>(report)
+    }
+    .await;
+    cleanup();
+
+    let report = result.map_err(|e| {
+        anyhow::anyhow!("DRY RUN ✗ migration verify failed — do NOT migrate: {e:#}")
+    })?;
+    println!(
+        "DRY RUN ✓ Dolt → SQLite verified for `{repo_name}`: {} beads, {} dependencies, \
+         {} comments — field-level fidelity OK. Nothing was changed.",
+        report.beads, report.dependencies, report.comments
+    );
+    println!("  Next (deliberate, backup-first): the atomic `--commit` swap is slice 4b.");
     Ok(())
 }
 
@@ -1637,6 +1704,9 @@ async fn main() -> Result<()> {
                     println!("restored bead store from {input}");
                     return Ok(());
                 }
+                BeadAction::Migrate { to } => {
+                    return bead_migrate_dry_run(&beads_dir, &repo_root, &repo, to).await;
+                }
                 _ => {}
             }
 
@@ -1741,9 +1811,11 @@ async fn main() -> Result<()> {
                         );
                     }
                 }
-                // Backup/Restore are handled before the store is opened (above).
-                BeadAction::Backup { .. } | BeadAction::Restore { .. } => {
-                    unreachable!("backup/restore handled before connect_bead_store")
+                // Backup/Restore/Migrate are handled before the store is opened (above).
+                BeadAction::Backup { .. }
+                | BeadAction::Restore { .. }
+                | BeadAction::Migrate { .. } => {
+                    unreachable!("backup/restore/migrate handled before connect_bead_store")
                 }
                 BeadAction::List {
                     mut status,

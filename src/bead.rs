@@ -349,6 +349,10 @@ pub struct BeadUpdate {
     pub owner: Option<String>,
     pub files: Option<Vec<String>>,
     pub test_files: Option<Vec<String>>,
+    /// Structured close condition. Previously absent, so a bead created without
+    /// a close condition could never gain one — the "not patchable by
+    /// rsry_bead_update" half of rosary-4887d0 (ADR-0021 slice 3b).
+    pub acceptance_criteria: Option<String>,
 }
 
 impl BeadUpdate {
@@ -361,6 +365,7 @@ impl BeadUpdate {
             && self.owner.is_none()
             && self.files.is_none()
             && self.test_files.is_none()
+            && self.acceptance_criteria.is_none()
     }
 }
 

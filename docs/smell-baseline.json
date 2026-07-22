@@ -304,7 +304,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/migrate.rs",
-      "count": 3
+      "count": 4
     },
     {
       "rule_id": "duplicate_definitions",
@@ -930,6 +930,11 @@
       "rule_id": "duplicate_definitions",
       "source_id": "src/openai_compat.rs",
       "count": 5
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/bead_migrate.rs",
+      "count": 3
     }
   ]
 }

@@ -71,6 +71,210 @@ async fn create_and_get_bead() {
     assert_eq!(bead.priority, 2);
 }
 
+/// ADR-0021 slice 3b: `acceptance_criteria` must be patchable via
+/// `update_bead_fields` — rosary-4887d0's "not patchable by rsry_bead_update"
+/// half. Create a bead with no close condition, then add one via update.
+#[tokio::test]
+async fn update_can_patch_acceptance_criteria() {
+    let store = test_store();
+    store.create_bead("b", "t", "", 2, "task").await.unwrap();
+    let before = store.get_bead("b", "r").await.unwrap().unwrap();
+    assert_eq!(
+        before.acceptance_criteria, "",
+        "starts with no close condition"
+    );
+
+    let update = crate::bead::BeadUpdate {
+        acceptance_criteria: Some("cargo test green".into()),
+        ..Default::default()
+    };
+    let changed = store.update_bead_fields("b", &update).await.unwrap();
+    assert!(
+        changed.contains(&"acceptance_criteria".to_string()),
+        "update must report acceptance_criteria as changed, got {changed:?}"
+    );
+
+    let after = store.get_bead("b", "r").await.unwrap().unwrap();
+    assert_eq!(after.acceptance_criteria, "cargo test green");
+}
+
+/// ADR-0021 slice 3b gate: an EXHAUSTIVE `BeadUpdate` literal — adding a field
+/// won't COMPILE here until it's set, and each is asserted to persist through
+/// `update_bead_fields`. So "add a `BeadUpdate` field, forget the SET clause"
+/// becomes a build/test failure, the update-surface analog of slice 3a.
+#[tokio::test]
+async fn update_gate_every_field_round_trips() {
+    let store = test_store();
+    store
+        .create_bead("u", "old", "old", 3, "task")
+        .await
+        .unwrap();
+    let update = crate::bead::BeadUpdate {
+        title: Some("new title".into()),
+        description: Some("new body".into()),
+        priority: Some(0),
+        issue_type: Some("feature".into()),
+        owner: Some("dev-agent".into()),
+        files: Some(vec!["a.rs".into()]),
+        test_files: Some(vec!["a_t.rs".into()]),
+        acceptance_criteria: Some("done when X".into()),
+    };
+    store.update_bead_fields("u", &update).await.unwrap();
+
+    let b = store.get_bead("u", "r").await.unwrap().unwrap();
+    assert_eq!(b.title, "new title");
+    assert_eq!(b.description, "new body");
+    assert_eq!(b.priority, 0);
+    assert_eq!(b.issue_type, "feature");
+    assert_eq!(b.owner.as_deref(), Some("dev-agent"));
+    assert_eq!(b.files, vec!["a.rs".to_string()]);
+    assert_eq!(b.test_files, vec!["a_t.rs".to_string()]);
+    assert_eq!(b.acceptance_criteria, "done when X");
+}
+
+/// ADR-0021 slice 3 — the drift gate. An EXHAUSTIVE `NewBead` literal (every
+/// field a distinctive value) round-tripped through the one writer and the one
+/// reader. Two properties turn "add a field, forget the store" into a build/test
+/// failure instead of a silent drop:
+///   1. the literal will not COMPILE when a field is added to `NewBead` until
+///      it is given a value here, and
+///   2. every value is asserted to survive `create_bead_full` → `get_bead`.
+/// This locks slice 1 (reads) and slice 2 (writes) against regression.
+#[tokio::test]
+async fn drift_gate_store_round_trip_preserves_every_field() {
+    let store = test_store();
+    // A real dependency target so `depends_on` is exercised, not defaulted-empty.
+    store
+        .create_bead("dep-target", "dep", "", 2, "task")
+        .await
+        .unwrap();
+
+    let nb = crate::store::NewBead {
+        id: "rt-1".into(),
+        title: "round trip title".into(),
+        description: "round trip body".into(),
+        priority: 0,
+        issue_type: "feature".into(),
+        owner: "dev-agent".into(),
+        files: vec!["src/a.rs".into(), "src/b.rs".into()],
+        test_files: vec!["tests/a.rs".into()],
+        depends_on: vec!["dep-target".into()],
+        created_by: Some("alice".into()),
+        scope: "auth".into(),
+        derived_from: vec![bdr::provenance::ProvenanceRef::Doc {
+            path: "docs/x.md".into(),
+        }],
+        acceptance_criteria: "cargo test rt green".into(),
+    };
+    store.create_bead_full(nb).await.unwrap();
+
+    let got = store.get_bead("rt-1", "repo").await.unwrap().unwrap();
+    assert_eq!(got.id, "rt-1");
+    assert_eq!(got.title, "round trip title");
+    assert_eq!(got.description, "round trip body");
+    assert_eq!(got.priority, 0);
+    assert_eq!(got.issue_type, "feature");
+    assert_eq!(got.owner.as_deref(), Some("dev-agent"));
+    assert_eq!(
+        got.files,
+        vec!["src/a.rs".to_string(), "src/b.rs".to_string()]
+    );
+    assert_eq!(got.test_files, vec!["tests/a.rs".to_string()]);
+    assert_eq!(got.created_by.as_deref(), Some("alice"));
+    assert_eq!(got.scope, "auth");
+    assert_eq!(got.acceptance_criteria, "cargo test rt green");
+    assert_eq!(got.derived_from.len(), 1, "provenance must survive");
+    let deps = store.get_dependencies("rt-1").await.unwrap();
+    assert_eq!(
+        deps,
+        vec!["dep-target".to_string()],
+        "depends_on must survive"
+    );
+}
+
+/// ADR-0021 slice 2: `create_bead` is a thin projection onto the one writer
+/// (`create_bead_full`), so the basic and full create paths must produce the
+/// same stored row for equivalent inputs — they can't drift into two INSERTs.
+#[tokio::test]
+async fn create_bead_agrees_with_create_bead_full() {
+    let store = test_store();
+    store
+        .create_bead("basic-1", "same", "body", 3, "chore")
+        .await
+        .unwrap();
+    store
+        .create_bead_full(crate::store::NewBead {
+            id: "full-1".into(),
+            title: "same".into(),
+            description: "body".into(),
+            priority: 3,
+            issue_type: "chore".into(),
+            owner: String::new(),
+            files: vec![],
+            test_files: vec![],
+            depends_on: vec![],
+            created_by: None,
+            scope: String::new(),
+            derived_from: vec![],
+            acceptance_criteria: String::new(),
+        })
+        .await
+        .unwrap();
+
+    let basic = store.get_bead("basic-1", "r").await.unwrap().unwrap();
+    let full = store.get_bead("full-1", "r").await.unwrap().unwrap();
+    // Every field that could drift between the two INSERTs must match.
+    assert_eq!(basic.status, full.status);
+    assert_eq!(basic.priority, full.priority);
+    assert_eq!(basic.issue_type, full.issue_type);
+    assert_eq!(basic.scope, full.scope);
+    assert_eq!(basic.created_by, full.created_by);
+    assert_eq!(basic.acceptance_criteria, full.acceptance_criteria);
+    assert_eq!(basic.owner, full.owner);
+    assert_eq!(basic.files, full.files);
+}
+
+/// ADR-0021 slice 1: `acceptance_criteria` is WRITTEN by `create_bead_full`
+/// but every reader's SELECT omitted it, so `bead_from_row`'s
+/// `.unwrap_or_default()` silently returned "" — the close condition was
+/// unreadable on any SQLite store. Every reader must project it, and `get_bead`
+/// and `list_all_beads` must agree.
+#[tokio::test]
+async fn readers_project_acceptance_criteria_consistently() {
+    let store = test_store();
+    store
+        .create_bead_full(crate::store::NewBead {
+            id: "ac-1".into(),
+            title: "has a close condition".into(),
+            description: String::new(),
+            priority: 1,
+            issue_type: "bug".into(),
+            owner: String::new(),
+            files: vec![],
+            test_files: vec![],
+            depends_on: vec![],
+            created_by: None,
+            scope: String::new(),
+            derived_from: vec![],
+            acceptance_criteria: "cargo test export green".into(),
+        })
+        .await
+        .unwrap();
+
+    let got = store.get_bead("ac-1", "repo").await.unwrap().unwrap();
+    assert_eq!(
+        got.acceptance_criteria, "cargo test export green",
+        "get_bead must project the close condition, not silently drop it"
+    );
+
+    let listed = store.list_all_beads("repo").await.unwrap();
+    let l = listed.iter().find(|b| b.id == "ac-1").unwrap();
+    assert_eq!(
+        l.acceptance_criteria, "cargo test export green",
+        "list_all_beads must agree with get_bead (one field set)"
+    );
+}
+
 /// Status aliases are canonicalized on connect (migration) — no reader has to
 /// absorb `closed`/`deadletter` at read time. Transform early, store canonical.
 #[tokio::test]
