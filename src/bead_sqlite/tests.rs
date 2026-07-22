@@ -71,6 +71,66 @@ async fn create_and_get_bead() {
     assert_eq!(bead.priority, 2);
 }
 
+/// ADR-0021 slice 3 — the drift gate. An EXHAUSTIVE `NewBead` literal (every
+/// field a distinctive value) round-tripped through the one writer and the one
+/// reader. Two properties turn "add a field, forget the store" into a build/test
+/// failure instead of a silent drop:
+///   1. the literal will not COMPILE when a field is added to `NewBead` until
+///      it is given a value here, and
+///   2. every value is asserted to survive `create_bead_full` → `get_bead`.
+/// This locks slice 1 (reads) and slice 2 (writes) against regression.
+#[tokio::test]
+async fn drift_gate_store_round_trip_preserves_every_field() {
+    let store = test_store();
+    // A real dependency target so `depends_on` is exercised, not defaulted-empty.
+    store
+        .create_bead("dep-target", "dep", "", 2, "task")
+        .await
+        .unwrap();
+
+    let nb = crate::store::NewBead {
+        id: "rt-1".into(),
+        title: "round trip title".into(),
+        description: "round trip body".into(),
+        priority: 0,
+        issue_type: "feature".into(),
+        owner: "dev-agent".into(),
+        files: vec!["src/a.rs".into(), "src/b.rs".into()],
+        test_files: vec!["tests/a.rs".into()],
+        depends_on: vec!["dep-target".into()],
+        created_by: Some("alice".into()),
+        scope: "auth".into(),
+        derived_from: vec![bdr::provenance::ProvenanceRef::Doc {
+            path: "docs/x.md".into(),
+        }],
+        acceptance_criteria: "cargo test rt green".into(),
+    };
+    store.create_bead_full(nb).await.unwrap();
+
+    let got = store.get_bead("rt-1", "repo").await.unwrap().unwrap();
+    assert_eq!(got.id, "rt-1");
+    assert_eq!(got.title, "round trip title");
+    assert_eq!(got.description, "round trip body");
+    assert_eq!(got.priority, 0);
+    assert_eq!(got.issue_type, "feature");
+    assert_eq!(got.owner.as_deref(), Some("dev-agent"));
+    assert_eq!(
+        got.files,
+        vec!["src/a.rs".to_string(), "src/b.rs".to_string()]
+    );
+    assert_eq!(got.test_files, vec!["tests/a.rs".to_string()]);
+    assert_eq!(got.created_by.as_deref(), Some("alice"));
+    assert_eq!(got.scope, "auth");
+    assert_eq!(got.acceptance_criteria, "cargo test rt green");
+    assert_eq!(got.derived_from.len(), 1, "provenance must survive");
+    let deps = store.get_dependencies("rt-1").await.unwrap();
+    assert_eq!(
+        deps,
+        vec!["dep-target".to_string()],
+        "depends_on must survive"
+    );
+}
+
 /// ADR-0021 slice 2: `create_bead` is a thin projection onto the one writer
 /// (`create_bead_full`), so the basic and full create paths must produce the
 /// same stored row for equivalent inputs — they can't drift into two INSERTs.
