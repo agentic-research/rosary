@@ -497,6 +497,11 @@ impl DoltClient {
             bind_values.push(owner.clone());
             updated_fields.push("owner".to_string());
         }
+        if let Some(ref ac) = update.acceptance_criteria {
+            set_clauses.push("acceptance_criteria = ?");
+            bind_values.push(ac.clone());
+            updated_fields.push("acceptance_criteria".to_string());
+        }
         if update.files.is_some() || update.test_files.is_some() {
             // Files/test_files are stored as JSON in the notes column.
             // Read existing notes first to preserve fields not being updated.

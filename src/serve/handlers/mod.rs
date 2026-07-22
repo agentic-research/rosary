@@ -715,6 +715,10 @@ async fn tool_bead_update(
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
             }),
+        acceptance_criteria: args
+            .get("acceptance_criteria")
+            .and_then(|v| v.as_str())
+            .map(String::from),
     };
 
     if update.is_empty() {
