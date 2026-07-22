@@ -2581,6 +2581,10 @@ mod hooks {
     pub(crate) const HOOKS: &[(&str, &str)] = &[
         ("post-push", include_str!("../docs/git-hooks/post-push")),
         ("post-merge", include_str!("../docs/git-hooks/post-merge")),
+        // Export half of JSONL bead sync (rosary-4ebf52): refresh the
+        // git-tracked export so bead state rides with the commit. Inert unless
+        // `.beads/beads.jsonl` is already tracked — opt-in by tracking.
+        ("pre-commit", include_str!("../docs/git-hooks/pre-commit")),
         // The commit contract (Rule 11 + Conventional Commits) — the same body
         // that enforces at commit-msg time. Embedded so a fresh `rsry hooks
         // install` configures it without any manual symlink to ~/.rsry/hooks.
