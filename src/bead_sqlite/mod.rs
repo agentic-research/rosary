@@ -701,6 +701,13 @@ impl BeadStore for SqliteBeadStore {
             )?;
             updated_fields.push("owner".to_string());
         }
+        if let Some(ref ac) = update.acceptance_criteria {
+            conn.execute(
+                "UPDATE issues SET acceptance_criteria = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![ac, full_id],
+            )?;
+            updated_fields.push("acceptance_criteria".to_string());
+        }
         if update.files.is_some() || update.test_files.is_some() {
             // Read existing notes to preserve fields not being updated
             let existing_notes: serde_json::Value = conn

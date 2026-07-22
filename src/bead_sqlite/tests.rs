@@ -71,6 +71,67 @@ async fn create_and_get_bead() {
     assert_eq!(bead.priority, 2);
 }
 
+/// ADR-0021 slice 3b: `acceptance_criteria` must be patchable via
+/// `update_bead_fields` — rosary-4887d0's "not patchable by rsry_bead_update"
+/// half. Create a bead with no close condition, then add one via update.
+#[tokio::test]
+async fn update_can_patch_acceptance_criteria() {
+    let store = test_store();
+    store.create_bead("b", "t", "", 2, "task").await.unwrap();
+    let before = store.get_bead("b", "r").await.unwrap().unwrap();
+    assert_eq!(
+        before.acceptance_criteria, "",
+        "starts with no close condition"
+    );
+
+    let update = crate::bead::BeadUpdate {
+        acceptance_criteria: Some("cargo test green".into()),
+        ..Default::default()
+    };
+    let changed = store.update_bead_fields("b", &update).await.unwrap();
+    assert!(
+        changed.contains(&"acceptance_criteria".to_string()),
+        "update must report acceptance_criteria as changed, got {changed:?}"
+    );
+
+    let after = store.get_bead("b", "r").await.unwrap().unwrap();
+    assert_eq!(after.acceptance_criteria, "cargo test green");
+}
+
+/// ADR-0021 slice 3b gate: an EXHAUSTIVE `BeadUpdate` literal — adding a field
+/// won't COMPILE here until it's set, and each is asserted to persist through
+/// `update_bead_fields`. So "add a `BeadUpdate` field, forget the SET clause"
+/// becomes a build/test failure, the update-surface analog of slice 3a.
+#[tokio::test]
+async fn update_gate_every_field_round_trips() {
+    let store = test_store();
+    store
+        .create_bead("u", "old", "old", 3, "task")
+        .await
+        .unwrap();
+    let update = crate::bead::BeadUpdate {
+        title: Some("new title".into()),
+        description: Some("new body".into()),
+        priority: Some(0),
+        issue_type: Some("feature".into()),
+        owner: Some("dev-agent".into()),
+        files: Some(vec!["a.rs".into()]),
+        test_files: Some(vec!["a_t.rs".into()]),
+        acceptance_criteria: Some("done when X".into()),
+    };
+    store.update_bead_fields("u", &update).await.unwrap();
+
+    let b = store.get_bead("u", "r").await.unwrap().unwrap();
+    assert_eq!(b.title, "new title");
+    assert_eq!(b.description, "new body");
+    assert_eq!(b.priority, 0);
+    assert_eq!(b.issue_type, "feature");
+    assert_eq!(b.owner.as_deref(), Some("dev-agent"));
+    assert_eq!(b.files, vec!["a.rs".to_string()]);
+    assert_eq!(b.test_files, vec!["a_t.rs".to_string()]);
+    assert_eq!(b.acceptance_criteria, "done when X");
+}
+
 /// ADR-0021 slice 3 — the drift gate. An EXHAUSTIVE `NewBead` literal (every
 /// field a distinctive value) round-tripped through the one writer and the one
 /// reader. Two properties turn "add a field, forget the store" into a build/test
