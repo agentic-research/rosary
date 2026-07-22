@@ -43,9 +43,83 @@ pub fn read_beads_jsonl(file: Option<String>) -> Result<Vec<Value>> {
     Ok(out)
 }
 
+/// Parse a contract timestamp (RFC3339, as `bead_to_contract_value` emits).
+/// Returns `None` for missing/unparseable — treated as "not newer", so a
+/// malformed record can never win a last-writer-wins comparison.
+/// Truncated to whole seconds: the store persists timestamps at 1-second
+/// resolution, so an incoming record carrying sub-seconds would compare as
+/// strictly-newer than its own round-tripped copy and "update" on every sync
+/// forever. Comparing at the store's real resolution is what makes a
+/// steady-state sync a genuine no-op.
+fn parse_ts(s: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::Timelike as _;
+    s.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| t.with_timezone(&chrono::Utc))
+        .and_then(|t| t.with_nanosecond(0))
+}
+
+/// Write the record's `created_at`/`updated_at` verbatim. Must run AFTER any
+/// write that stamps `now()` (create/status/field updates), or it gets clobbered.
+async fn restore_ts(
+    store: &crate::bead_sqlite::SqliteBeadStore,
+    bead: &Value,
+    id: &str,
+) -> Result<()> {
+    if let (Some(c), Some(u)) = (
+        parse_ts(bead["created_at"].as_str()),
+        parse_ts(bead["updated_at"].as_str()),
+    ) {
+        store
+            .restore_timestamps(id, c, u)
+            .await
+            .with_context(|| format!("restoring timestamps for {id}"))?;
+    }
+    Ok(())
+}
+
+/// Apply a strictly-newer incoming record onto an existing bead (LWW winner):
+/// scalar fields, then status verbatim (bypassing the transition guard — a
+/// sync reconstructs a peer's state, it doesn't transition), then the source
+/// timestamps last.
+async fn apply_incoming(
+    store: &crate::bead_sqlite::SqliteBeadStore,
+    bead: &Value,
+    id: &str,
+) -> Result<()> {
+    let update = crate::bead::BeadUpdate {
+        title: bead["title"].as_str().map(str::to_string),
+        description: bead["description"].as_str().map(str::to_string),
+        priority: bead["priority"].as_u64().map(|p| p as u8),
+        issue_type: bead["issue_type"].as_str().map(str::to_string),
+        owner: bead["owner"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        files: None,
+        test_files: None,
+        acceptance_criteria: bead["acceptance_criteria"].as_str().map(str::to_string),
+    };
+    if !update.is_empty() {
+        store
+            .update_bead_fields(id, &update)
+            .await
+            .with_context(|| format!("applying incoming fields to {id}"))?;
+    }
+    if let Some(status) = bead["status"].as_str() {
+        store
+            .restore_status(id, status)
+            .await
+            .with_context(|| format!("applying incoming status to {id}"))?;
+    }
+    restore_ts(store, bead, id).await
+}
+
 /// Result of an id-preserving restore.
 pub struct RestoreResult {
     pub restored: usize,
+    /// Existing beads whose incoming record was NEWER and was applied (LWW).
+    pub updated: usize,
+    /// Existing beads left alone because the local copy was same-or-newer.
     pub skipped_existing: usize,
     pub dependencies: usize,
     pub comments: usize,
@@ -81,11 +155,13 @@ pub async fn restore_beads_from_contract(
 
     let mut result = RestoreResult {
         restored: 0,
+        updated: 0,
         skipped_existing: 0,
         dependencies: 0,
         comments: 0,
     };
-    // Only wire edges/comments (pass 2) for ids we actually restored here.
+    // Wire edges/comments (pass 2) for every bead we created OR updated — not
+    // for ones we left alone, so a no-op sync stays a no-op.
     let mut restored_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let str_array = |bead: &Value, key: &str| -> Vec<String> {
@@ -104,10 +180,26 @@ pub async fn restore_beads_from_contract(
         let id = bead["id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("bead contract record missing `id`"))?;
-        if store.get_bead(id, repo_name).await?.is_some() {
-            result.skipped_existing += 1;
+        let incoming_updated = parse_ts(bead["updated_at"].as_str());
+
+        // ── Already present: last-writer-wins on updated_at ──
+        // A restore must never silently lose a peer's state transition (the
+        // "vigil closed it but no other machine knows" case, rosary-4ebf52),
+        // nor clobber a local edit that is newer than the incoming record.
+        if let Some(local) = store.get_bead(id, repo_name).await? {
+            let local_updated = Some(local.updated_at);
+            // Tie => keep local. Convergent: two machines holding byte-equal
+            // records both no-op, so a steady-state sync writes nothing.
+            if incoming_updated.is_none() || incoming_updated <= local_updated {
+                result.skipped_existing += 1;
+                continue;
+            }
+            apply_incoming(store, bead, id).await?;
+            restored_ids.insert(id.to_string());
+            result.updated += 1;
             continue;
         }
+
         let issue_type = bead["issue_type"].as_str().unwrap_or("task");
         store
             .create_bead_full(crate::store::NewBead {
@@ -149,6 +241,10 @@ pub async fn restore_beads_from_contract(
                 .await
                 .with_context(|| format!("restoring external_ref for {id}"))?;
         }
+        // LAST: create_bead_full and restore_status both stamp now(); rewrite
+        // the source timestamps verbatim so LWW stays meaningful and a
+        // re-export is byte-identical to what we ingested.
+        restore_ts(store, bead, id).await?;
         restored_ids.insert(id.to_string());
         result.restored += 1;
     }
@@ -167,6 +263,17 @@ pub async fn restore_beads_from_contract(
             result.dependencies += 1;
         }
         if let Some(comments) = bead.get("comments").and_then(|v| v.as_array()) {
+            // Comments are append-only and this pass now also runs for beads
+            // updated by LWW, so adding blindly would duplicate every comment
+            // on every sync. Dedup on (author, text) against what's stored —
+            // which keeps the sync idempotent for comments too.
+            let existing: std::collections::HashSet<(String, String)> = store
+                .list_comments(id, true)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|c| (c.author, c.text))
+                .collect();
             for c in comments {
                 let body = c
                     .get("text")
@@ -180,6 +287,9 @@ pub async fn restore_beads_from_contract(
                     .get("author")
                     .and_then(|v| v.as_str())
                     .unwrap_or("restore");
+                if existing.contains(&(author.to_string(), body.to_string())) {
+                    continue;
+                }
                 store
                     .add_comment(id, body, author)
                     .await
@@ -281,6 +391,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r2.restored, 0, "already-present id is skipped");
+        assert_eq!(r2.updated, 0, "equal timestamps => tie => keep local");
         assert_eq!(r2.skipped_existing, 1);
         assert_eq!(
             store
@@ -290,6 +401,93 @@ mod tests {
                 .len(),
             1,
             "no duplicate comment on re-restore"
+        );
+    }
+
+    /// rosary-4ebf52: a peer's state transition must actually land. This is the
+    /// "vigil closed it but no other machine knows" case — under the old
+    /// skip-existing rule the close was silently dropped.
+    #[tokio::test]
+    async fn lww_applies_newer_incoming_and_keeps_newer_local() {
+        let store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+        let t0 = chrono::DateTime::parse_from_rfc3339("2026-07-20T10:00:00+00:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let mut b = make_bead("rosary-lww001", "bug", "rosary");
+        b.title = "Original".to_string();
+        b.status = "open".to_string();
+        b.created_at = t0;
+        b.updated_at = t0;
+        let v0 = bead_to_contract_value(&b, &[], &[]);
+        let r = restore_beads_from_contract(&[v0], &store, "rosary")
+            .await
+            .unwrap();
+        assert_eq!(r.restored, 1);
+
+        // Timestamps preserved verbatim — the precondition that makes LWW
+        // meaningful and keeps a re-export byte-stable.
+        let got = store
+            .get_bead("rosary-lww001", "rosary")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            got.updated_at, t0,
+            "updated_at preserved, not stamped now()"
+        );
+
+        // A NEWER peer record closing the bead must win.
+        let mut newer = b.clone();
+        newer.status = "closed".to_string();
+        newer.title = "Closed by peer".to_string();
+        newer.updated_at = t0 + chrono::Duration::hours(1);
+        let r2 = restore_beads_from_contract(
+            &[bead_to_contract_value(&newer, &[], &[])],
+            &store,
+            "rosary",
+        )
+        .await
+        .unwrap();
+        assert_eq!(r2.updated, 1, "newer incoming applied");
+        assert_eq!(r2.skipped_existing, 0);
+        let got = store
+            .get_bead("rosary-lww001", "rosary")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            crate::bead::BeadState::from(got.status.as_str()),
+            crate::bead::BeadState::Done,
+            "peer's close propagated"
+        );
+        assert_eq!(got.title, "Closed by peer");
+        assert_eq!(got.updated_at, newer.updated_at, "winner's timestamp kept");
+
+        // An OLDER record must NOT clobber the newer local state.
+        let mut older = b.clone();
+        older.status = "open".to_string();
+        older.title = "Stale".to_string();
+        older.updated_at = t0 - chrono::Duration::hours(1);
+        let r3 = restore_beads_from_contract(
+            &[bead_to_contract_value(&older, &[], &[])],
+            &store,
+            "rosary",
+        )
+        .await
+        .unwrap();
+        assert_eq!(r3.updated, 0, "older incoming ignored");
+        assert_eq!(r3.skipped_existing, 1);
+        let got = store
+            .get_bead("rosary-lww001", "rosary")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.title, "Closed by peer", "local newer state survived");
+        assert_eq!(
+            crate::bead::BeadState::from(got.status.as_str()),
+            crate::bead::BeadState::Done
         );
     }
 }

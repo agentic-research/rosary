@@ -1784,8 +1784,8 @@ async fn main() -> Result<()> {
                     let beads = restore::read_beads_jsonl(file.clone())?;
                     let r = restore::restore_beads_from_contract(&beads, &store, &repo).await?;
                     println!(
-                        "restored {} beads ({} deps, {} comments), skipped {} already present",
-                        r.restored, r.dependencies, r.comments, r.skipped_existing
+                        "restored {} new, updated {} (newer incoming), skipped {} (local same-or-newer) — {} deps, {} comments",
+                        r.restored, r.updated, r.skipped_existing, r.dependencies, r.comments
                     );
                     return Ok(());
                 }

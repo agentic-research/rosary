@@ -360,6 +360,42 @@ impl SqliteBeadStore {
         Ok(())
     }
 
+    /// Write `created_at` / `updated_at` **verbatim**. For RESTORE contexts
+    /// only. `create_bead_full` and `restore_status` both stamp `now()`, which
+    /// is fine for a one-shot migration but breaks *sync* (rosary-4ebf52) two
+    /// ways: LWW comparison becomes meaningless (every restored bead looks
+    /// locally-newest, so peers flap authority back and forth), and each
+    /// machine's re-export differs from its source, churning the git-tracked
+    /// JSONL instead of leaving it byte-stable. Preserving the source
+    /// timestamps is what makes the export a *convergent* value.
+    /// Takes typed instants and formats them in the store's canonical
+    /// `%Y-%m-%d %H:%M:%S` — the ONLY shape `parse_datetime` accepts. Passing
+    /// an RFC3339 string straight through (with its `+00:00` offset) matches
+    /// neither reader pattern, and `parse_datetime` falls back to `Utc::now()`
+    /// on failure, so the write would look like it worked and read back as
+    /// "now" — silently defeating LWW. Owning the format here keeps that trap
+    /// out of callers.
+    pub(crate) async fn restore_timestamps(
+        &self,
+        id: &str,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        const STORE_FMT: &str = "%Y-%m-%d %H:%M:%S";
+        let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, id)?;
+        conn.execute(
+            "UPDATE issues SET created_at = ?1, updated_at = ?2 WHERE id = ?3",
+            params![
+                created_at.format(STORE_FMT).to_string(),
+                updated_at.format(STORE_FMT).to_string(),
+                full_id
+            ],
+        )
+        .with_context(|| format!("restoring timestamps for {id}"))?;
+        Ok(())
+    }
+
     /// Insert a dependency edge **verbatim**, without checking that
     /// `depends_on_id` resolves to a local bead. For RESTORE contexts only —
     /// migration must preserve **cross-repo** edges (a rosary bead blocking on
