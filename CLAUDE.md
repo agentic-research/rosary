@@ -61,8 +61,12 @@ else. `task ci` is also an alias for `task check`.
 | src/bead_ops.rs                | Shared bead-op core (the API in CLI↔MCP): BeadCreateArgs + validate/create/close gates enforced 1:1 across `rsry bead` (CLI) and `rsry_bead_*` (MCP)                 |
 | src/bead_sqlite/mod.rs         | `connect_bead_store` — the single entry point for ALL bead I/O; `SqliteBeadStore` reads `.beads/beads.db` directly (rusqlite) when there's no `.beads/dolt/`         |
 | src/bead_dolt.rs               | `DoltBeadStore` — `BeadStore` over the Dolt MySQL client (used when `.beads/dolt/` exists)                                                                           |
+| src/bead_migrate.rs            | `migrate_store` + field-level `verify_migration` — Dolt→SQLite bead-store migration (ADR-0021 slice 4). `rsry bead migrate --to sqlite` dry-runs it; `restore_status`/`restore_dependency` are the verbatim-write primitives it needs (state machine + cross-repo edges bypass the opinionated create/add paths) |
 | src/dispatch/mod.rs            | Agent dispatch, pipeline mapping, execution                                                                                                                          |
 | src/dispatch/providers.rs      | AgentProvider trait — claude / gemini / **codex (`codex exec`)** / acp / plugin-kind="dispatch"; `resolve_launch_env` cred routing (OAuth vs API key, rosary-1be3b8) |
+| src/dispatch/codex_runtime.rs  | Codex app-server **runtime** — `classify_turn_signal` + `run_turn_loop` (read past `turn/start`'s ack, answer approvals, observe real completion) + `CodexAppServerRuntime` (oneshot-backed session; `wait()` reflects the turn). Protocol verified vs `codex app-server generate-json-schema` v0.142.5 |
+| src/dispatch/codex_transport.rs| Persistent `CodexWebSocketConnection` + `CodexUnixSocketConnector` over the codex Unix control socket; `send_turn_interrupt` (cooperative `kill`)                       |
+| src/dispatch/provenance.rs     | `FailureClass` classifier — reads the agent stderr tail → a *classified* dispatch outcome (`failure:auth` / `:skew` / `:missing-binary` / …) so the failure record is the diagnosis (subsumes b1495c/82caac/ACP-skew) |
 | src/dispatch/sweep.rs          | Orphan-dispatch detection — self-heals stuck `Dispatched` beads (rosary-67c43d)                                                                                      |
 | src/epic.rs                    | Semantic clustering, dedup, file overlap detection                                                                                                                   |
 | src/dolt/mod.rs                | Dolt client (per-repo beads, server mode) — used only when `.beads/dolt/` exists                                                                                     |
@@ -161,6 +165,7 @@ rsry bead create / list / search / close / reopen   # `close` requires a close c
 rsry bead list --dispatchable / --status all # `--dispatchable` = ready + close-condition + bounded scope + refined (Bead::is_dispatchable); `--status all` includes terminal beads (list defaults to the active-only view)
 rsry bead move <id> <dest-repo>              # cross-repo relocation (no bd): provenance+comments fwd, source tombstoned (ADR-0014)
 rsry bead backup <file> / restore <file>     # restorable store backup (SQLite VACUUM INTO); Dolt repos pointed at `dolt backup`. Distinct from export --jsonl (interop-only)
+rsry bead migrate --to sqlite                # DRY RUN Dolt→SQLite bead-store migration (ADR-0021): reads source → throwaway SQLite copy → field-level verify → reports; changes nothing. The `--commit` atomic swap is a follow-up (rosary-3a0e19)
 rsry bead comment add <id> <body>            # append a comment (rosary-a96b06)
 rsry bead comment list <id> [--include-deleted]
 rsry bead comment update <id> <comment_id> --body <text> [--reason <why>]
