@@ -71,6 +71,48 @@ async fn create_and_get_bead() {
     assert_eq!(bead.priority, 2);
 }
 
+/// ADR-0021 slice 2: `create_bead` is a thin projection onto the one writer
+/// (`create_bead_full`), so the basic and full create paths must produce the
+/// same stored row for equivalent inputs — they can't drift into two INSERTs.
+#[tokio::test]
+async fn create_bead_agrees_with_create_bead_full() {
+    let store = test_store();
+    store
+        .create_bead("basic-1", "same", "body", 3, "chore")
+        .await
+        .unwrap();
+    store
+        .create_bead_full(crate::store::NewBead {
+            id: "full-1".into(),
+            title: "same".into(),
+            description: "body".into(),
+            priority: 3,
+            issue_type: "chore".into(),
+            owner: String::new(),
+            files: vec![],
+            test_files: vec![],
+            depends_on: vec![],
+            created_by: None,
+            scope: String::new(),
+            derived_from: vec![],
+            acceptance_criteria: String::new(),
+        })
+        .await
+        .unwrap();
+
+    let basic = store.get_bead("basic-1", "r").await.unwrap().unwrap();
+    let full = store.get_bead("full-1", "r").await.unwrap().unwrap();
+    // Every field that could drift between the two INSERTs must match.
+    assert_eq!(basic.status, full.status);
+    assert_eq!(basic.priority, full.priority);
+    assert_eq!(basic.issue_type, full.issue_type);
+    assert_eq!(basic.scope, full.scope);
+    assert_eq!(basic.created_by, full.created_by);
+    assert_eq!(basic.acceptance_criteria, full.acceptance_criteria);
+    assert_eq!(basic.owner, full.owner);
+    assert_eq!(basic.files, full.files);
+}
+
 /// ADR-0021 slice 1: `acceptance_criteria` is WRITTEN by `create_bead_full`
 /// but every reader's SELECT omitted it, so `bead_from_row`'s
 /// `.unwrap_or_default()` silently returned "" — the close condition was
