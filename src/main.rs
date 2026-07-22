@@ -71,6 +71,7 @@ mod pool;
 mod queue;
 mod reconcile;
 mod repo_cache;
+mod restore;
 mod scan_assay;
 mod scanner;
 mod status;
@@ -691,6 +692,14 @@ enum BeadAction {
     Import {
         /// JSON file path (reads stdin if omitted)
         file: Option<String>,
+        /// Restore from the contract **JSONL** (the `bead export --jsonl`
+        /// format), preserving each bead's ORIGINAL id, status, dependency
+        /// edges, and comments — the bd-free `bd init --from-jsonl` equivalent
+        /// (ADR-0014, rosary-9d4951). Idempotent: ids already present are
+        /// skipped, never clobbered. Without this flag the input is a rosary
+        /// JSON *array* and beads are re-keyed. SQLite repos only.
+        #[arg(long)]
+        jsonl: bool,
     },
 }
 
@@ -1761,6 +1770,25 @@ async fn main() -> Result<()> {
                     return bead_migrate_run(&beads_dir, &repo_root, &repo, to, *commit, *json)
                         .await;
                 }
+                // Id-preserving restore from contract JSONL (rosary-9d4951) —
+                // handled here (like Migrate) because it needs a concrete
+                // SqliteBeadStore, not the `dyn` store the post-connect path uses.
+                BeadAction::Import { file, jsonl: true } => {
+                    if beads_dir.join("dolt").is_dir() {
+                        anyhow::bail!(
+                            "import --jsonl (id-preserving restore) is SQLite-only; \
+                             Dolt repos recover via `dolt backup` / branches"
+                        );
+                    }
+                    let store = bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db"))?;
+                    let beads = restore::read_beads_jsonl(file.clone())?;
+                    let r = restore::restore_beads_from_contract(&beads, &store, &repo).await?;
+                    println!(
+                        "restored {} beads ({} deps, {} comments), skipped {} already present",
+                        r.restored, r.dependencies, r.comments, r.skipped_existing
+                    );
+                    return Ok(());
+                }
                 _ => {}
             }
 
@@ -2057,7 +2085,9 @@ async fn main() -> Result<()> {
                         None => println!("{out}"),
                     }
                 }
-                BeadAction::Import { file } => {
+                // jsonl:true (id-preserving restore) is handled pre-connect; only
+                // the array/re-key path reaches here.
+                BeadAction::Import { file, jsonl: _ } => {
                     let beads_json = import::read_beads_json(file)?;
                     let r = import::import_beads(&beads_json, &*client, &repo_name).await?;
                     println!(

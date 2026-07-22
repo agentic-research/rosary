@@ -79,7 +79,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead_backup.rs",
-      "count": 1
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -274,7 +274,12 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/import.rs",
-      "count": 1
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/restore.rs",
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -294,7 +299,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/main.rs",
-      "count": 15
+      "count": 16
     },
     {
       "rule_id": "duplicate_definitions",
