@@ -314,20 +314,26 @@ impl DoltClient {
         priority: u8,
         issue_type: &str,
     ) -> Result<()> {
-        query(
-            r#"INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_at, updated_at)
-               VALUES (?, ?, ?, '', '', '', 'open', ?, ?, NOW(), NOW())"#,
-        )
-        .bind(id)
-        .bind(title)
-        .bind(description)
-        .bind(priority as i32)
-        .bind(issue_type)
-        .execute(&self.pool)
+        // ADR-0021 slice 2: one writer per backend. The basic create projects
+        // onto create_bead_full (empty owner/files/deps/acceptance) — a single
+        // INSERT the column set can't drift across, and the basic path now also
+        // gains create_bead_full's secret-scrubbing.
+        self.create_bead_full(crate::store::NewBead {
+            id: id.to_string(),
+            title: title.to_string(),
+            description: description.to_string(),
+            priority,
+            issue_type: issue_type.to_string(),
+            owner: String::new(),
+            files: Vec::new(),
+            test_files: Vec::new(),
+            depends_on: Vec::new(),
+            created_by: None,
+            scope: String::new(),
+            derived_from: Vec::new(),
+            acceptance_criteria: String::new(),
+        })
         .await
-        .with_context(|| format!("creating bead {id}"))?;
-        self.auto_commit(&format!("create {id}")).await;
-        Ok(())
     }
 
     /// Create a bead with all metadata in a single transaction (one dolt commit).

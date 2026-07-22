@@ -553,19 +553,27 @@ impl BeadStore for SqliteBeadStore {
         priority: u8,
         issue_type: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_at, updated_at)
-             VALUES (?1, ?2, ?3, '', '', '', 'open', ?4, ?5, datetime('now'), datetime('now'))",
-            params![id, title, description, priority as i32, issue_type],
-        )
-        .with_context(|| format!("creating bead {id}"))?;
-        // Sync FTS index (best-effort)
-        let _ = conn.execute(
-            "INSERT INTO bead_fts(id, title, description) VALUES (?1, ?2, ?3)",
-            params![id, title, description],
-        );
-        Ok(())
+        // ADR-0021 slice 2: one writer. The basic create is a thin projection of
+        // the canonical NewBead onto `create_bead_full` (empty owner/files/deps/
+        // acceptance), so there is a single INSERT the column set can't drift
+        // across — not a second, divergent statement.
+        self.create_bead_full(NewBead {
+            id: id.to_string(),
+            title: title.to_string(),
+            description: description.to_string(),
+            priority,
+            issue_type: issue_type.to_string(),
+            owner: String::new(),
+            files: Vec::new(),
+            test_files: Vec::new(),
+            depends_on: Vec::new(),
+            created_by: None,
+            scope: String::new(),
+            derived_from: Vec::new(),
+            acceptance_criteria: String::new(),
+        })
+        .await
+        .with_context(|| format!("creating bead {id}"))
     }
 
     async fn create_bead_full(&self, bead: NewBead) -> Result<()> {
