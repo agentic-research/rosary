@@ -448,40 +448,21 @@ CREATE TABLE IF NOT EXISTS events (
 ";
 
 /// SQL for listing beads with dependency/comment counts (non-closed).
-const LIST_BEADS_SQL: &str = "
-SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
-       i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
-       i.created_by, i.scope,
-       COALESCE(dep.cnt, 0) as dep_count,
-       COALESCE(deps.cnt, 0) as dependency_count,
-       COALESCE(cmt.cnt, 0) as comment_count
-FROM issues i
-LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
-     ON dep.depends_on_id = i.id
-LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
-          FROM dependencies d
-          JOIN issues dep_i ON dep_i.id = d.depends_on_id
-          WHERE dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic'
-          GROUP BY d.issue_id) deps
-     ON deps.issue_id = i.id
-LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
-     ON cmt.issue_id = i.id
-WHERE i.status NOT IN ('closed', 'done')
-ORDER BY i.priority ASC, i.created_at DESC
-";
+/// Canonical per-issue column projection — every reader selects exactly this,
+/// so no query can silently omit a field `bead_from_row` reads (ADR-0021 slice
+/// 1). Adding a bead column is one edit here, not four. `acceptance_criteria`
+/// lives here because it was the field every reader used to drop.
+const BEAD_ISSUE_COLUMNS: &str = "i.id, i.title, i.description, i.status, i.priority, \
+    i.issue_type, i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at, \
+    i.created_by, i.scope, i.acceptance_criteria";
 
-// Same as LIST_BEADS_SQL but WITHOUT the active-status filter — full
-// enumeration (incl. closed/done) for export/backup/migration (rosary-91e712).
-// Keep in sync with LIST_BEADS_SQL; the only difference is the absent
-// `WHERE i.status NOT IN ('closed','done')` line.
-const LIST_ALL_BEADS_SQL: &str = "
-SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
-       i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
-       i.created_by, i.scope,
-       COALESCE(dep.cnt, 0) as dep_count,
-       COALESCE(deps.cnt, 0) as dependency_count,
-       COALESCE(cmt.cnt, 0) as comment_count
-FROM issues i
+/// The three count columns `bead_from_row` reads, computed by [`BEAD_COUNT_JOINS`].
+const BEAD_COUNT_COLUMNS: &str = "COALESCE(dep.cnt, 0) as dep_count, \
+    COALESCE(deps.cnt, 0) as dependency_count, COALESCE(cmt.cnt, 0) as comment_count";
+
+/// Joins backing [`BEAD_COUNT_COLUMNS`]. `dependency_count` counts only open,
+/// non-epic blockers (what triage cares about).
+const BEAD_COUNT_JOINS: &str = "
 LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
      ON dep.depends_on_id = i.id
 LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
@@ -491,15 +472,27 @@ LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
           GROUP BY d.issue_id) deps
      ON deps.issue_id = i.id
 LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
-     ON cmt.issue_id = i.id
-ORDER BY i.priority ASC, i.created_at DESC
-";
+     ON cmt.issue_id = i.id";
+
+/// Build a bead read query from the one canonical projection + joins, with a
+/// caller-supplied WHERE and ORDER BY. Single source for every reader (list,
+/// list-all, scoped, get) so their column sets can't drift (ADR-0021 slice 1) —
+/// this retires the two "keep in sync" `LIST_BEADS_SQL` / `LIST_ALL_BEADS_SQL`
+/// constants, which differed only by a WHERE clause.
+fn bead_read_sql(where_clause: &str, order_by: &str) -> String {
+    format!(
+        "SELECT {BEAD_ISSUE_COLUMNS}, {BEAD_COUNT_COLUMNS} FROM issues i {BEAD_COUNT_JOINS} {where_clause} {order_by}"
+    )
+}
+
+const BEAD_READ_ORDER: &str = "ORDER BY i.priority ASC, i.created_at DESC";
 
 #[async_trait]
 impl BeadStore for SqliteBeadStore {
     async fn list_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(LIST_BEADS_SQL)?;
+        let sql = bead_read_sql("WHERE i.status NOT IN ('closed', 'done')", BEAD_READ_ORDER);
+        let mut stmt = conn.prepare(&sql)?;
         let beads = stmt
             .query_map([], |row| bead_from_row(row, repo_name))?
             .filter_map(|r| r.ok())
@@ -509,7 +502,8 @@ impl BeadStore for SqliteBeadStore {
 
     async fn list_all_beads(&self, repo_name: &str) -> Result<Vec<Bead>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(LIST_ALL_BEADS_SQL)?;
+        let sql = bead_read_sql("", BEAD_READ_ORDER);
+        let mut stmt = conn.prepare(&sql)?;
         // Fail loud: export/backup must never silently drop a malformed row
         // (rosary-91e712). Unlike list_beads (triage), we propagate parse errors.
         let beads = stmt
@@ -522,28 +516,11 @@ impl BeadStore for SqliteBeadStore {
         match user_id {
             Some(uid) => {
                 let conn = self.conn.lock().unwrap();
-                let sql_scoped = "
-                    SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
-                           i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
-                           i.created_by, i.scope,
-                           COALESCE(dep.cnt, 0) as dep_count,
-                           COALESCE(deps.cnt, 0) as dependency_count,
-                           COALESCE(cmt.cnt, 0) as comment_count
-                    FROM issues i
-                    LEFT JOIN (SELECT depends_on_id, COUNT(*) as cnt FROM dependencies GROUP BY depends_on_id) dep
-                         ON dep.depends_on_id = i.id
-                    LEFT JOIN (SELECT d.issue_id, COUNT(*) as cnt
-                              FROM dependencies d
-                              JOIN issues dep_i ON dep_i.id = d.depends_on_id
-                              WHERE dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic'
-                              GROUP BY d.issue_id) deps
-                         ON deps.issue_id = i.id
-                    LEFT JOIN (SELECT issue_id, COUNT(*) as cnt FROM comments GROUP BY issue_id) cmt
-                         ON cmt.issue_id = i.id
-                    WHERE i.status NOT IN ('closed', 'done') AND i.user_id = ?1
-                    ORDER BY i.priority ASC, i.created_at DESC
-                ";
-                let mut stmt = conn.prepare(sql_scoped)?;
+                let sql_scoped = bead_read_sql(
+                    "WHERE i.status NOT IN ('closed', 'done') AND i.user_id = ?1",
+                    BEAD_READ_ORDER,
+                );
+                let mut stmt = conn.prepare(&sql_scoped)?;
                 let beads = stmt
                     .query_map(params![uid], |row| bead_from_row(row, repo_name))?
                     .filter_map(|r| r.ok())
@@ -560,19 +537,8 @@ impl BeadStore for SqliteBeadStore {
             Ok(id) => id,
             Err(_) => return Ok(None),
         };
-        let mut stmt = conn.prepare(
-            "SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
-                    i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
-                    i.created_by, i.scope,
-                    (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
-                    (SELECT COUNT(*) FROM dependencies d
-                            JOIN issues dep_i ON dep_i.id = d.depends_on_id
-                            WHERE d.issue_id = i.id
-                            AND dep_i.status NOT IN ('closed', 'done') AND dep_i.issue_type != 'epic') as dependency_count,
-                    (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) as comment_count
-             FROM issues i
-             WHERE i.id = ?1",
-        )?;
+        let sql = bead_read_sql("WHERE i.id = ?1", "");
+        let mut stmt = conn.prepare(&sql)?;
         let bead = stmt
             .query_row(params![full_id], |row| bead_from_row(row, repo_name))
             .optional()?;
