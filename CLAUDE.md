@@ -166,6 +166,8 @@ rsry bead list --dispatchable / --status all # `--dispatchable` = ready + close-
 rsry bead move <id> <dest-repo>              # cross-repo relocation (no bd): provenance+comments fwd, source tombstoned (ADR-0014)
 rsry bead backup <file> / restore <file>     # restorable store backup (SQLite VACUUM INTO); Dolt repos pointed at `dolt backup`. Distinct from export --jsonl (interop-only)
 rsry bead migrate --to sqlite                # DRY RUN Dolt→SQLite bead-store migration (ADR-0021): reads source → throwaway SQLite copy → field-level verify → reports; changes nothing. The `--commit` atomic swap is a follow-up (rosary-3a0e19)
+rsry bead import <file>                       # import a rosary JSON *array* — RE-KEYS (fresh ids), for copying beads into another repo/instance
+rsry bead import --jsonl <file>               # id-PRESERVING restore from the `bead export --jsonl` contract (inverse of export): original ids + status + deps + comments verbatim, idempotent (skips present ids). The bd-free `bd init --from-jsonl` (ADR-0014, rosary-9d4951). SQLite-only; the primitive a stash-clobbered store recovery needs
 rsry bead comment add <id> <body>            # append a comment (rosary-a96b06)
 rsry bead comment list <id> [--include-deleted]
 rsry bead comment update <id> <comment_id> --body <text> [--reason <why>]
