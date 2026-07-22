@@ -27,6 +27,7 @@ mod bdr_enrich;
 mod bead;
 mod bead_backup;
 mod bead_dolt;
+mod bead_migrate;
 mod bead_move;
 mod bead_ops;
 mod bead_sqlite;

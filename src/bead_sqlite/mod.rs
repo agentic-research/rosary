@@ -341,6 +341,25 @@ impl SqliteBeadStore {
     }
 
     /// Open or create the bead database at the given path.
+    /// Set a bead's status **verbatim**, bypassing the state-machine transition
+    /// guard that `update_status` enforces. For RESTORE contexts only — store
+    /// migration and import reconstruct *existing* state (a bead is already
+    /// `blocked`/`done`), they don't perform a live transition, so `open →
+    /// blocked` must be writable. Canonicalizes the input exactly like
+    /// `update_status` so no reader has to absorb aliases. Inherent (not on the
+    /// `BeadStore` trait) so the guard-bypass can't leak into normal code paths.
+    pub(crate) async fn restore_status(&self, id: &str, status: &str) -> Result<()> {
+        let next = crate::bead::BeadState::from(status);
+        let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, id)?;
+        conn.execute(
+            "UPDATE issues SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![next.to_string(), full_id],
+        )
+        .with_context(|| format!("restoring status for {id}"))?;
+        Ok(())
+    }
+
     pub fn connect(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
