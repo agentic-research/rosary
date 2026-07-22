@@ -62,7 +62,9 @@ fn status_counts_include_dispatchable_subset() {
         "cargo test",
     );
 
-    let counts = status_counts(&[scoped_impl, merely_ready, blocked]);
+    // Exercises the single-source rollup (crate::status) that both the CLI and
+    // MCP now project from.
+    let counts = crate::status::status_json(&[scoped_impl, merely_ready, blocked]);
     assert_eq!(counts["total"].as_u64(), Some(3));
     assert_eq!(counts["ready"].as_u64(), Some(2));
     assert_eq!(counts["dispatchable"].as_u64(), Some(1));
