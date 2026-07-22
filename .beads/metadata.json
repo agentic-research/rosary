@@ -1,7 +1,5 @@
 {
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "server",
-  "dolt_database": "rosary",
+  "database": "sqlite",
+  "backend": "sqlite",
   "project_id": "6bd9792d-00af-4508-a3ff-005c69f5d4f9"
 }
