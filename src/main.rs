@@ -2520,6 +2520,18 @@ async fn main() -> Result<()> {
                 init::AgentsOutcome::Unchanged => "AGENTS.md already current",
             };
             println!("  agents  : {agents_line}");
+            let sync_line = match outcome.sync {
+                init::SyncOutcome::Seeded => {
+                    "seeded .beads/beads.jsonl — git-tracked bead sync (commit it to turn on)"
+                }
+                init::SyncOutcome::AlreadyPresent => {
+                    "export already present (.beads/beads.jsonl) — bead sync on"
+                }
+                init::SyncOutcome::NotApplicableDolt => {
+                    "n/a — Dolt syncs over its own remote, not git"
+                }
+            };
+            println!("  sync    : {sync_line}");
             match registered {
                 Some(entry) => println!("  config  : registered as '{}'", entry.name),
                 None => println!("  config  : not registered (--no-register)"),
@@ -2529,6 +2541,14 @@ async fn main() -> Result<()> {
                  AGENTS.md so collaborators get the store on clone; they run `rsry init` to wire\n\
                  up their own hooks. Create your first bead with `rsry bead create`."
             );
+            if outcome.sync == init::SyncOutcome::Seeded {
+                println!(
+                    "\nBead sync: `.beads/beads.db` is git-IGNORED (a binary store has no 3-way\n\
+                     merge), so bead state travels as `.beads/beads.jsonl` — one line per bead,\n\
+                     reviewable and line-mergeable. `git add .beads/beads.jsonl` to switch it on:\n\
+                     pre-commit then keeps it current and post-merge ingests peers' changes."
+                );
+            }
         }
     }
 

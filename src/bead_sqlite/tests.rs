@@ -1180,7 +1180,10 @@ fn parse_datetime_accepts_contract_shapes_and_fails_loud() {
 
     // garbage must ERROR rather than resolve to now()
     let err = parse_datetime("not-a-timestamp");
-    assert!(err.is_err(), "malformed timestamp must fail loud, not become now()");
+    assert!(
+        err.is_err(),
+        "malformed timestamp must fail loud, not become now()"
+    );
     assert!(
         format!("{}", err.unwrap_err()).contains("not-a-timestamp"),
         "error should name the offending value"

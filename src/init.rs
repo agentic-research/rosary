@@ -52,6 +52,18 @@ pub enum AgentsOutcome {
 pub struct InitOutcome {
     pub store: StoreOutcome,
     pub agents: AgentsOutcome,
+    pub sync: SyncOutcome,
+}
+
+/// What happened to the git-tracked JSONL sync channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncOutcome {
+    /// Seeded `.beads/beads.jsonl` — sync is on once it's committed.
+    Seeded,
+    /// Export already present; left as-is.
+    AlreadyPresent,
+    /// Dolt store: syncs over its own remote, not git.
+    NotApplicableDolt,
 }
 
 /// Bootstrap the repo-local store + metadata + AGENTS.md section.
@@ -63,8 +75,43 @@ pub async fn run(repo_root: &Path, use_dolt: bool) -> Result<InitOutcome> {
     // (rosary-05fbe0). Idempotent — also drops the guard into an existing repo
     // that predates it.
     write_beads_gitignore(&beads_dir)?;
+    let sync = seed_sync_export(&beads_dir, use_dolt)?;
     let agents = write_agents(&repo_root.join("AGENTS.md"))?;
-    Ok(InitOutcome { store, agents })
+    Ok(InitOutcome {
+        store,
+        agents,
+        sync,
+    })
+}
+
+/// Seed the git-tracked JSONL export that carries bead state between clones
+/// (rosary-4ebf52).
+///
+/// The `.gitignore` written above already declares the intent — every `*.db`
+/// ignored, `!beads.jsonl` un-ignored — but nothing ever *created* the file, so
+/// the sync hooks (`pre-commit` export / `post-merge` restore) stayed dormant
+/// forever: they are opt-in by tracking, and an untracked file is never tracked
+/// by itself. Seeding it here makes the opt-in an explicit, stated part of
+/// onboarding instead of a step nobody knows to take.
+///
+/// Empty is the correct seed: a fresh store has no beads, and the export is
+/// convergent, so the first `pre-commit` rewrites it to real content with a
+/// clean one-line-per-bead diff. Non-clobbering — an existing export (e.g. a
+/// repo that already syncs) is left untouched.
+///
+/// Dolt stores are skipped: they sync over their own remote, so a git-tracked
+/// export would be a second, competing source of truth.
+fn seed_sync_export(beads_dir: &Path, use_dolt: bool) -> Result<SyncOutcome> {
+    if use_dolt || beads_dir.join("dolt").exists() {
+        return Ok(SyncOutcome::NotApplicableDolt);
+    }
+    let export = beads_dir.join("beads.jsonl");
+    if export.exists() {
+        return Ok(SyncOutcome::AlreadyPresent);
+    }
+    std::fs::write(&export, "")
+        .with_context(|| format!("seeding sync export {}", export.display()))?;
+    Ok(SyncOutcome::Seeded)
 }
 
 /// Create the bead store if absent. SQLite is the default — a single local
@@ -350,5 +397,55 @@ mod tests {
         assert_eq!(outcome, AgentsOutcome::AppendedSection);
         assert!(out.starts_with("# Agent Instructions\n\nDo the thing.\n"));
         assert!(out.contains(MARKER_START));
+    }
+}
+
+#[cfg(test)]
+mod sync_seed_tests {
+    use super::*;
+
+    /// rosary-4ebf52: the `.gitignore` init writes already un-ignores
+    /// `beads.jsonl`, but nothing created it — so the sync hooks (opt-in by
+    /// tracking) stayed dormant forever. Init must seed it, idempotently.
+    #[test]
+    fn seeds_sync_export_once_and_skips_dolt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let beads = tmp.path().join(".beads");
+        std::fs::create_dir_all(&beads).unwrap();
+
+        // First run seeds an empty export (correct: a fresh store has no beads,
+        // and the export is convergent so pre-commit fills it in).
+        assert_eq!(
+            seed_sync_export(&beads, false).unwrap(),
+            SyncOutcome::Seeded
+        );
+        let export = beads.join("beads.jsonl");
+        assert!(
+            export.exists(),
+            "export must be created so it can be tracked"
+        );
+
+        // Non-clobbering: a repo already syncing keeps its content.
+        std::fs::write(&export, "{\"id\":\"x\"}\n").unwrap();
+        assert_eq!(
+            seed_sync_export(&beads, false).unwrap(),
+            SyncOutcome::AlreadyPresent
+        );
+        assert_eq!(
+            std::fs::read_to_string(&export).unwrap(),
+            "{\"id\":\"x\"}\n",
+            "existing export must never be clobbered"
+        );
+
+        // Dolt syncs over its own remote — a git-tracked export would be a
+        // second, competing source of truth.
+        let d = tempfile::tempdir().unwrap();
+        let dbeads = d.path().join(".beads");
+        std::fs::create_dir_all(&dbeads).unwrap();
+        assert_eq!(
+            seed_sync_export(&dbeads, true).unwrap(),
+            SyncOutcome::NotApplicableDolt
+        );
+        assert!(!dbeads.join("beads.jsonl").exists());
     }
 }
