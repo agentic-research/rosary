@@ -71,6 +71,47 @@ async fn create_and_get_bead() {
     assert_eq!(bead.priority, 2);
 }
 
+/// ADR-0021 slice 1: `acceptance_criteria` is WRITTEN by `create_bead_full`
+/// but every reader's SELECT omitted it, so `bead_from_row`'s
+/// `.unwrap_or_default()` silently returned "" — the close condition was
+/// unreadable on any SQLite store. Every reader must project it, and `get_bead`
+/// and `list_all_beads` must agree.
+#[tokio::test]
+async fn readers_project_acceptance_criteria_consistently() {
+    let store = test_store();
+    store
+        .create_bead_full(crate::store::NewBead {
+            id: "ac-1".into(),
+            title: "has a close condition".into(),
+            description: String::new(),
+            priority: 1,
+            issue_type: "bug".into(),
+            owner: String::new(),
+            files: vec![],
+            test_files: vec![],
+            depends_on: vec![],
+            created_by: None,
+            scope: String::new(),
+            derived_from: vec![],
+            acceptance_criteria: "cargo test export green".into(),
+        })
+        .await
+        .unwrap();
+
+    let got = store.get_bead("ac-1", "repo").await.unwrap().unwrap();
+    assert_eq!(
+        got.acceptance_criteria, "cargo test export green",
+        "get_bead must project the close condition, not silently drop it"
+    );
+
+    let listed = store.list_all_beads("repo").await.unwrap();
+    let l = listed.iter().find(|b| b.id == "ac-1").unwrap();
+    assert_eq!(
+        l.acceptance_criteria, "cargo test export green",
+        "list_all_beads must agree with get_bead (one field set)"
+    );
+}
+
 /// Status aliases are canonicalized on connect (migration) — no reader has to
 /// absorb `closed`/`deadletter` at read time. Transform early, store canonical.
 #[tokio::test]
