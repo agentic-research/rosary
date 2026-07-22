@@ -924,7 +924,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/model_provider.rs",
-      "count": 13
+      "count": 14
     },
     {
       "rule_id": "duplicate_definitions",
@@ -935,6 +935,11 @@
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead_migrate.rs",
       "count": 3
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/bead_genesis.rs",
+      "count": 5
     }
   ]
 }
