@@ -1160,3 +1160,29 @@ async fn derived_from_round_trip() {
     assert_eq!(bead.derived_from[0].label(), "adr:ADR-007");
     assert_eq!(bead.derived_from[1].label(), "doc:docs/spec.md");
 }
+
+/// rosary-4ebf52: an unreadable timestamp must FAIL, not silently become "now".
+/// The old `.unwrap_or_else(|_| Utc::now())` invented history — a corrupted row
+/// read back as freshly-updated, which is indistinguishable from a real edit and
+/// would win every last-writer-wins comparison forever. Also pins RFC3339
+/// support: that is the shape `bead export --jsonl` emits, so the reader must
+/// accept its own contract round-tripping back in.
+#[test]
+fn parse_datetime_accepts_contract_shapes_and_fails_loud() {
+    // canonical store format
+    assert!(parse_datetime("2026-07-20 10:00:00").is_ok());
+    // T-separated variant
+    assert!(parse_datetime("2026-07-20T10:00:00").is_ok());
+    // RFC3339 with offset — what the JSONL export emits
+    let rfc = parse_datetime("2026-07-20T10:00:00+00:00")
+        .expect("RFC3339 must parse: it is our own export format");
+    assert_eq!(rfc.to_rfc3339(), "2026-07-20T10:00:00+00:00");
+
+    // garbage must ERROR rather than resolve to now()
+    let err = parse_datetime("not-a-timestamp");
+    assert!(err.is_err(), "malformed timestamp must fail loud, not become now()");
+    assert!(
+        format!("{}", err.unwrap_err()).contains("not-a-timestamp"),
+        "error should name the offending value"
+    );
+}
