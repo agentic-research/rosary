@@ -3,7 +3,7 @@
   "name": "io.github.agentic-research/rosary",
   "title": "rosary",
   "description": "Agent orchestration and bead work-tracking: scan repos for work, dispatch agents (claude/codex/gemini), reconcile pipeline state, and sync to Linear — exposed as MCP over stdio and Streamable HTTP.",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "repository": {
     "url": "https://github.com/agentic-research/rosary",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "oci",
       "identifier": "ghcr.io/agentic-research/rosary",
-      "version": "0.8.1"
+      "version": "0.9.0"
     }
   ],
   "remotes": [
