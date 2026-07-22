@@ -27,6 +27,9 @@ mod bdr_enrich;
 mod bead;
 mod bead_backup;
 mod bead_dolt;
+#[allow(dead_code)]
+// identity primitive — wired into create + resolve() in the P1 follow-on (rosary-160bb2)
+mod bead_genesis;
 mod bead_migrate;
 mod bead_move;
 mod bead_ops;
