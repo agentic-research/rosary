@@ -187,6 +187,50 @@ async fn create_bead_visible_to_new_connection() {
     assert_eq!(bead.unwrap().title, "Cross-session visibility");
 }
 
+/// The Dolt reader must project `acceptance_criteria`. It silently didn't (its
+/// SELECTs omitted the column while the row-mapper `try_get`'d it → ""), so a
+/// Dolt→SQLite migration dropped EVERY close condition and `verify` couldn't
+/// see it (lossy source == lossy target). This guards that regression:
+/// write a close condition, read it back via BOTH get_bead and list_all_beads.
+#[tokio::test]
+async fn dolt_reader_projects_acceptance_criteria() {
+    let sandbox = match SandboxBeads::new().await {
+        Some(s) => s,
+        None => return,
+    };
+    let client = sandbox.fresh_client().await;
+    client
+        .create_bead_full(crate::store::NewBead {
+            id: "ac-dolt-1".into(),
+            title: "has a close condition".into(),
+            description: String::new(),
+            priority: 1,
+            issue_type: "bug".into(),
+            owner: String::new(),
+            files: vec![],
+            test_files: vec![],
+            depends_on: vec![],
+            created_by: None,
+            scope: String::new(),
+            derived_from: vec![],
+            acceptance_criteria: "cargo test dolt green".into(),
+        })
+        .await
+        .unwrap();
+
+    let got = client.get_bead("ac-dolt-1", "test").await.unwrap().unwrap();
+    assert_eq!(
+        got.acceptance_criteria, "cargo test dolt green",
+        "get_bead must project acceptance_criteria (migration data-loss guard)"
+    );
+    let listed = client.list_all_beads("test").await.unwrap();
+    let l = listed.iter().find(|b| b.id == "ac-dolt-1").unwrap();
+    assert_eq!(
+        l.acceptance_criteria, "cargo test dolt green",
+        "list_all_beads must agree with get_bead"
+    );
+}
+
 /// Every write path must auto-commit: update_status, close_bead,
 /// add_comment, update_bead_fields. Verified by checking from a fresh connection.
 #[tokio::test]
