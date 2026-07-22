@@ -1,7 +1,6 @@
 #![recursion_limit = "256"]
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -71,6 +70,7 @@ mod reconcile;
 mod repo_cache;
 mod scan_assay;
 mod scanner;
+mod status;
 // `ScopeId` for rosary-b5da2f scope abstraction. Pure type + parsing in
 // PR 1; threaded through stores + MCP handlers in later PRs. Allow
 // dead_code while the call sites are still on `repo_path: &str`.
@@ -1159,64 +1159,11 @@ async fn main() -> Result<()> {
             // active filter hides closed/done, so status lied about the backlog.
             let beads = scanner::scan_repos_all(&repos).await?;
             if json {
-                // Use the canonical predicates from `Bead` so this path
-                // agrees with the CLI text output AND the `rsry_status`
-                // MCP tool. Before this fix, the JSON path used naive
-                // status-string equality, which under-counted `blocked`
-                // wildly: a bead with `status="open"` but unresolved
-                // dependencies is conceptually blocked (the rendering
-                // and MCP paths both treated it that way), but the JSON
-                // path missed it. Statusline integrations consuming this
-                // JSON saw nonsense numbers — the CLI showed "51 blocked"
-                // and the JSON showed "1".
-                let open = beads.iter().filter(|b| b.status == "open").count();
-                let in_progress = beads
-                    .iter()
-                    .filter(|b| b.status == "in_progress" || b.status == "dispatched")
-                    .count();
-                let blocked = beads.iter().filter(|b| b.is_blocked()).count();
-                let ready = beads.iter().filter(|b| b.is_ready()).count();
-                // Dispatchable is a strict subset of ready: open + unblocked AND
-                // has a close condition, bounded scope, and a refined description.
-                // "ready" alone overstates what's safe to fan out (rosary-d4bb09).
-                let dispatchable = beads.iter().filter(|b| b.is_dispatchable()).count();
-                let done = beads
-                    .iter()
-                    .filter(|b| b.status == "done" || b.status == "closed")
-                    .count();
-
-                // Per-repo breakdown — same predicates per repo, same
-                // semantics as the global counts above.
-                let mut per_repo = std::collections::BTreeMap::new();
-                for bead in &beads {
-                    let entry = per_repo.entry(bead.repo.clone()).or_insert_with(|| {
-                        serde_json::json!({"open": 0, "in_progress": 0, "blocked": 0, "done": 0})
-                    });
-                    if bead.status == "done" || bead.status == "closed" {
-                        entry["done"] = json!(entry["done"].as_u64().unwrap_or(0) + 1);
-                    } else if bead.is_blocked() {
-                        entry["blocked"] = json!(entry["blocked"].as_u64().unwrap_or(0) + 1);
-                    } else if bead.status == "in_progress" || bead.status == "dispatched" {
-                        entry["in_progress"] =
-                            json!(entry["in_progress"].as_u64().unwrap_or(0) + 1);
-                    } else if bead.status == "open" {
-                        entry["open"] = json!(entry["open"].as_u64().unwrap_or(0) + 1);
-                    }
-                }
-
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "total": beads.len(),
-                        "open": open,
-                        "ready": ready,
-                        "dispatchable": dispatchable,
-                        "in_progress": in_progress,
-                        "blocked": blocked,
-                        "done": done,
-                        "repos": per_repo,
-                    })
-                );
+                // Single source (ADR-0021/0006): the CLI and `rsry_status` (MCP)
+                // both emit `status::status_json`, so the two surfaces can't
+                // drift. `scan_repos_all` (above) includes terminal beads so
+                // `done` is real, not structurally zero.
+                println!("{}", status::status_json(&beads));
             } else {
                 cli::print_status_summary(&beads);
                 cli::print_ready_beads(&beads, 10);

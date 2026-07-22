@@ -311,8 +311,12 @@ async fn tool_status(config_path: &str) -> Result<Value> {
         }
     }
 
-    let beads = crate::scanner::scan_repos(&cfg.repo).await?;
-    Ok(status_counts(&beads))
+    // scan_repos_all (terminal beads included) + the shared rollup, so
+    // `rsry_status` emits the SAME JSON as `rsry status --json` — `done` and
+    // per-repo included (previously `status_counts` omitted both and the scan
+    // was open-only). Single source: crate::status::status_json (ADR-0021/0006).
+    let beads = crate::scanner::scan_repos_all(&cfg.repo).await?;
+    Ok(crate::status::status_json(&beads))
 }
 
 async fn tool_list_beads(
@@ -345,32 +349,6 @@ async fn tool_list_beads(
         "limit": limit,
         "beads": page,
     }))
-}
-
-/// Canonical status rollup for MCP `rsry_status`.
-///
-/// Predicates must match `cli.rs::print_status_summary` and `rsry status --json`
-/// in main.rs, otherwise the same numbers disagree across the render surfaces
-/// (statusline, terminal, MCP).
-fn status_counts(beads: &[crate::bead::Bead]) -> Value {
-    let open = beads.iter().filter(|b| b.status == "open").count();
-    let in_progress = beads
-        .iter()
-        .filter(|b| b.status == "in_progress" || b.status == "dispatched")
-        .count();
-    let blocked = beads.iter().filter(|b| b.is_blocked()).count();
-    let ready = beads.iter().filter(|b| b.is_ready()).count();
-    let dispatchable = beads.iter().filter(|b| b.is_dispatchable()).count();
-    let total = beads.len();
-
-    json!({
-        "total": total,
-        "open": open,
-        "ready": ready,
-        "dispatchable": dispatchable,
-        "in_progress": in_progress,
-        "blocked": blocked,
-    })
 }
 
 fn bead_matches_status(bead: &crate::bead::Bead, status: Option<&str>) -> bool {
