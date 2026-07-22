@@ -32,6 +32,11 @@ pub struct MigrationReport {
     /// that broke the naive migration.
     pub cross_repo_dependencies: usize,
     pub comments: usize,
+    /// Beads carrying a non-empty `acceptance_criteria` in the MIGRATED store.
+    /// Surfaced because a read-lossy source reader once silently dropped every
+    /// close condition and `verify` couldn't see it (lossy==lossy) — a visible
+    /// non-zero count here is the human-checkable proof it survived.
+    pub beads_with_acceptance: usize,
 }
 
 /// Copy every bead (+ dependency edges + live comments) from `source` into
@@ -55,7 +60,17 @@ pub async fn migrate_store(
         .list_all_beads(repo_name)
         .await
         .context("reading source beads")?;
-    let mut report = MigrationReport::default();
+    // Count close conditions the SOURCE reader actually saw. If the reader is
+    // lossy on acceptance_criteria (the rosary-a18a1f class), this is 0 even
+    // when the raw store has them — a visible red flag in the dry-run diagnostic.
+    let beads_with_acceptance = beads
+        .iter()
+        .filter(|b| !b.acceptance_criteria.trim().is_empty())
+        .count();
+    let mut report = MigrationReport {
+        beads_with_acceptance,
+        ..Default::default()
+    };
 
     // Pass 1: every bead, so dependency targets exist for pass 2.
     for b in &beads {
@@ -381,7 +396,9 @@ mod tests {
                 beads: 2,
                 dependencies: 1,
                 cross_repo_dependencies: 0,
-                comments: 1
+                comments: 1,
+                // b-1 carries a close condition; dep-1 does not.
+                beads_with_acceptance: 1,
             }
         );
 

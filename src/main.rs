@@ -1055,6 +1055,7 @@ async fn bead_migrate_run(
                 "dependencies": report.dependencies,
                 "cross_repo_dependencies": report.cross_repo_dependencies,
                 "comments": report.comments,
+                "beads_with_acceptance": report.beads_with_acceptance,
                 "stub_present": stub_present,
             })
         );

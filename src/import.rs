@@ -87,6 +87,10 @@ pub fn bead_to_contract_value(
         "external_ref": bead.external_ref,
         "branch": bead.branch,
         "pr_url": bead.pr_url,
+        // The structured close condition — import_bead reads it, so export must
+        // emit it or the round-trip silently loses every bead's "done" gate
+        // (rosary-a18a1f; the ADR-0021 field-set gap on the export surface).
+        "acceptance_criteria": bead.acceptance_criteria,
     })
 }
 
@@ -320,6 +324,7 @@ mod tests {
         b.title = "Fix the thing".to_string();
         b.status = "closed".to_string();
         b.priority = 1;
+        b.acceptance_criteria = "cargo test green".to_string();
         b.dependency_count = 1;
         b.comment_count = 1;
         let deps = vec!["rosary-dep001".to_string()];

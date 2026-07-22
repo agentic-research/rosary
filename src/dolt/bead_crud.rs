@@ -37,7 +37,7 @@ impl DoltClient {
         let rows = query(
             r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                       i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
-                      i.created_by, i.scope,
+                      i.created_by, i.scope, i.acceptance_criteria,
                       COALESCE(dep.cnt, 0) as dep_count,
                       COALESCE(deps.cnt, 0) as dependency_count,
                       COALESCE(cmt.cnt, 0) as comment_count
@@ -105,7 +105,7 @@ impl DoltClient {
         let rows = query(
             r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                       i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
-                      i.created_by, i.scope,
+                      i.created_by, i.scope, i.acceptance_criteria,
                       COALESCE(dep.cnt, 0) as dep_count,
                       COALESCE(deps.cnt, 0) as dependency_count,
                       COALESCE(cmt.cnt, 0) as comment_count
@@ -146,7 +146,7 @@ impl DoltClient {
                 let rows = query(
                     r#"SELECT i.id, i.title, i.description, i.status, i.priority, i.issue_type,
                               i.assignee, i.external_ref, i.notes, i.created_at, i.updated_at,
-                              i.created_by, i.scope,
+                              i.created_by, i.scope, i.acceptance_criteria,
                               COALESCE(dep.cnt, 0) as dep_count,
                               COALESCE(deps.cnt, 0) as dependency_count,
                               COALESCE(cmt.cnt, 0) as comment_count
@@ -220,7 +220,7 @@ impl DoltClient {
         let row = query(
             r#"SELECT id, title, description, status, priority, issue_type,
                       assignee, external_ref, notes, created_at, updated_at,
-                      created_by, scope,
+                      created_by, scope, acceptance_criteria,
                       (SELECT COUNT(*) FROM dependencies d WHERE d.depends_on_id = i.id) as dep_count,
                       (SELECT COUNT(*) FROM dependencies d
                               JOIN issues dep_i ON dep_i.id = d.depends_on_id
