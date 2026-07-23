@@ -168,6 +168,7 @@ rsry bead backup <file> / restore <file>     # restorable store backup (SQLite V
 rsry bead migrate --to sqlite                # DRY RUN Dolt→SQLite bead-store migration (ADR-0021): reads source → throwaway SQLite copy → field-level verify → reports; changes nothing. The `--commit` atomic swap is a follow-up (rosary-3a0e19)
 rsry bead import <file>                       # import a rosary JSON *array* — RE-KEYS (fresh ids), for copying beads into another repo/instance
 rsry bead import --jsonl <file>               # id-PRESERVING restore from the `bead export --jsonl` contract (inverse of export): original ids + status + deps + comments verbatim, idempotent (skips present ids). The bd-free `bd init --from-jsonl` (ADR-0014, rosary-9d4951). SQLite-only; the primitive a stash-clobbered store recovery needs
+rsry bead merge-jsonl <O> <A> <B>            # git merge driver for the tracked `.beads/beads.jsonl` export (rosary-f9516f) — merges by RECORD not by line: 3-way per bead id, id-sorted output over `%A`, clean for unambiguous edits, LOUD conflict (non-zero + both records kept) when both sides changed the same bead. Never picks a winner. `.gitattributes` references it; `rsry hooks install` configures `merge.beads-jsonl.*`. TRANSITIONAL until dual bead state (rosary-610ad8)
 rsry bead comment add <id> <body>            # append a comment (rosary-a96b06)
 rsry bead comment list <id> [--include-deleted]
 rsry bead comment update <id> <comment_id> --body <text> [--reason <why>]
@@ -175,7 +176,7 @@ rsry bead comment delete <id> <comment_id> [--reason <why>] [--hard]   # --hard 
 rsry close-merged                            # catch-up sweep (gh): close beads whose PRs already merged
 rsry close-merged --local                    # rsry-native: close beads from local `git log` squash commits ([bead-id] … (#N)) — no gh/webhook/tunnel; run by the git post-merge hook
 rsry init [path] [--dolt] [--no-register]    # onboard a repo (bd-init equivalent, ADR-0014): create `.beads/` store (SQLite default, `--dolt` for server mode) + metadata.json + managed AGENTS.md section (replaces a legacy bd block) + `hooks install` + global register. Idempotent.
-rsry hooks install / status                  # install/report the post-merge + post-push bead-sync hooks (post-merge runs `close-merged --local`)
+rsry hooks install / status                  # install/report the post-merge + post-push bead-sync hooks (post-merge runs `close-merged --local`) + the `beads-jsonl` merge driver config
 rsry thread-reparent <thread_id> <decade_id> [--name <new>]  # re-parent threads under a different decade
 rsry capture --from-session <path>           # transcript → BeadSpecs via LLM (Session provenance)
 rsry capture --from-code <repo> <path>       # source file → BeadSpecs via LLM (Code provenance)

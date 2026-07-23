@@ -45,6 +45,10 @@
 
 # === TOOLING ===
 !/.gitignore
+# Points `.beads/beads.jsonl` at the `beads-jsonl` merge driver (rosary-f9516f).
+# The whitelist would otherwise silently drop it and the export would fall back
+# to git's line-wise text merge.
+!/.gitattributes
 !/.mcp.json
 # MCP capability manifest — importable into a cloister cluster (see server.json).
 !/server.json

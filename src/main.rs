@@ -701,6 +701,25 @@ enum BeadAction {
         #[arg(long)]
         jsonl: bool,
     },
+    /// git merge driver for the tracked `.beads/beads.jsonl` export
+    /// (rosary-f9516f). Not for direct human use — git invokes it via the
+    /// `merge=beads-jsonl` attribute, passing `%O %A %B`.
+    ///
+    /// Merges the three versions **by bead record** rather than by line: a
+    /// standard 3-way decision per bead id, id-sorted output written over
+    /// `<ours>` (`%A`), as gitattributes(5) requires. Never picks a winner
+    /// between two genuinely diverged edits — a bead both sides changed
+    /// differently is emitted as a conflict block and the command exits
+    /// non-zero, as does an unparseable input. Configure with
+    /// `rsry hooks install`.
+    MergeJsonl {
+        /// `%O` — the common-ancestor version
+        ancestor: String,
+        /// `%A` — the current/"ours" version; the merge result is written HERE
+        ours: String,
+        /// `%B` — the other/"theirs" version
+        theirs: String,
+    },
 }
 
 /// Subcommands of `rsry bead comment` (rosary-a96b06).
@@ -1736,6 +1755,47 @@ async fn main() -> Result<()> {
             }
         }
         Command::Bead { action, repo } => {
+            // The git merge driver (rosary-f9516f) operates purely on the three
+            // temp files git hands it — no store, no repo resolution. Handle it
+            // before ANY repo/store machinery so it works in a bare-ish merge
+            // context (rebase, `git merge-file`, CI) where cwd may not resolve
+            // to a bead-tracked repo at all.
+            if let BeadAction::MergeJsonl {
+                ancestor,
+                ours,
+                theirs,
+            } = &action
+            {
+                let out = restore::merge::merge_jsonl_files(
+                    Path::new(ancestor),
+                    Path::new(ours),
+                    Path::new(theirs),
+                )?;
+                eprintln!(
+                    "[merge-jsonl] {} added, {} ours-changed, {} theirs-changed, {} resurrected, {} conflicted",
+                    out.added,
+                    out.ours_changed,
+                    out.theirs_changed,
+                    out.resurrected,
+                    out.conflicts.len()
+                );
+                if !out.is_clean() {
+                    // gitattributes(5): non-zero exit = conflict (>128 would be
+                    // read as the driver crashing). `%A` has already been
+                    // written with both sides inside conflict blocks, so git
+                    // leaves a resolvable working-tree file and stops.
+                    anyhow::bail!(
+                        "{} bead(s) changed on BOTH sides — refusing to discard either: {}. \
+                         Resolve {} (or regenerate it with `rsry bead export --jsonl --status all \
+                         -o .beads/beads.jsonl` after reconciling the stores).",
+                        out.conflicts.len(),
+                        out.conflicts.join(", "),
+                        ours
+                    );
+                }
+                return Ok(());
+            }
+
             let repo_was_defaulted = repo == ".";
             let repo_root = scanner::resolve_repo_path(Path::new(&repo));
             let beads_dir = resolve_beads_dir(&repo_root);
@@ -2095,6 +2155,9 @@ async fn main() -> Result<()> {
                         r.imported, r.skipped
                     );
                 }
+                // Handled pre-connect (it needs no store at all) — see the
+                // early return at the top of this arm.
+                BeadAction::MergeJsonl { .. } => unreachable!("handled pre-connect"),
             }
         }
         Command::Lattice { action } => match action {
@@ -2768,6 +2831,86 @@ mod hooks {
         }
     }
 
+    /// Name of the git merge driver for `.beads/beads.jsonl` — the token the
+    /// root `.gitattributes` references as `merge=beads-jsonl`.
+    pub(crate) const MERGE_DRIVER: &str = "beads-jsonl";
+
+    /// Build the `merge.beads-jsonl.driver` command line (rosary-f9516f).
+    ///
+    /// `%O`/`%A`/`%B` are git's ancestor/ours/theirs temp paths; the driver
+    /// overwrites `%A` with the result. Same `__RSRY_BIN__` reasoning as the
+    /// hooks: git GUIs, CI runners, and `git merge` invoked from a launchd
+    /// context all have restricted PATHs, so bake the absolute path of the
+    /// installing binary. Falls back to a bare `rsry` (PATH lookup) when the
+    /// path is unusable — an empty `current_exe`, or one carrying shell
+    /// metacharacters, which would otherwise produce an injectable command
+    /// (git runs the driver through the shell).
+    pub(crate) fn merge_driver_command(rsry_bin: &str) -> String {
+        let bin = if rsry_bin.is_empty() || rsry_bin.contains(['"', '$', '`', '\\', '\n', '\'']) {
+            "rsry".to_string()
+        } else {
+            format!("\"{rsry_bin}\"")
+        };
+        format!("{bin} bead merge-jsonl \"%O\" \"%A\" \"%B\"")
+    }
+
+    /// Read a single git config value from `repo_root`, `None` if unset.
+    fn git_config_get(repo_root: &Path, key: &str) -> Option<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["config", "--get", key])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!v.is_empty()).then_some(v)
+    }
+
+    /// Install the `beads-jsonl` merge driver into the repo's git config
+    /// (rosary-f9516f).
+    ///
+    /// gitattributes(5): the driver DEFINITION must live in git config — a
+    /// `.gitattributes` entry only *references* it by name. That is also why
+    /// this can't be committed: config is per-clone, so every clone has to run
+    /// `rsry hooks install` (the `.gitattributes` comment says so).
+    ///
+    /// `merge.<name>.recursive` is deliberately left unset: unset means "use
+    /// this driver for the internal merges between multiple common ancestors
+    /// too", which is exactly right for a driver that is itself a total,
+    /// never-conflicting function of three inputs.
+    ///
+    /// Idempotent: `git config <key> <value>` overwrites in place, so a
+    /// re-install converges on the same two keys.
+    fn install_merge_driver(repo_root: &Path, rsry_bin: &str) -> Result<()> {
+        let entries = [
+            (
+                format!("merge.{MERGE_DRIVER}.name"),
+                "rosary bead JSONL export — union by bead id, last-writer-wins on updated_at"
+                    .to_string(),
+            ),
+            (
+                format!("merge.{MERGE_DRIVER}.driver"),
+                merge_driver_command(rsry_bin),
+            ),
+        ];
+        for (key, value) in entries {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(repo_root)
+                .args(["config", &key, &value])
+                .status()
+                .with_context(|| format!("invoking `git config {key}`"))?;
+            if !status.success() {
+                anyhow::bail!("`git config {key}` failed (exit {status})");
+            }
+        }
+        println!("[hooks] configured merge driver merge.{MERGE_DRIVER} (.beads/beads.jsonl)");
+        Ok(())
+    }
+
     pub fn install(repo_root: &Path) -> Result<()> {
         // Migrate off the stale bd-era hooks path before resolving. `bd init`
         // installed hooks into `.beads/hooks` and pointed `core.hooksPath`
@@ -2817,6 +2960,11 @@ mod hooks {
             }
             println!("[hooks] installed {} → {}", name, dst.display());
         }
+
+        // The tracked `.beads/beads.jsonl` export is merged by record, not by
+        // line (rosary-f9516f). The driver definition lives in git config, so
+        // it must be (re)installed per clone — `.gitattributes` only names it.
+        install_merge_driver(repo_root, &rsry_bin)?;
 
         // Warn if Dolt remote is not configured — hooks will silently no-op otherwise.
         let repo_name = repo_root
@@ -2873,6 +3021,24 @@ mod hooks {
                 "△ exists, no rsry markers (run `rsry hooks install` to merge in)"
             };
             println!("  {state}  {name}");
+        }
+
+        // Merge driver (rosary-f9516f) — config-resident, so it's per-clone
+        // state that `.gitattributes` alone can't carry.
+        println!();
+        println!("merge driver ({MERGE_DRIVER}):");
+        match git_config_get(repo_root, &format!("merge.{MERGE_DRIVER}.driver")) {
+            Some(cmd) => println!("  ✓ configured: {cmd}"),
+            None => println!("  ✗ not configured (run `rsry hooks install`)"),
+        }
+        let attrs = repo_root.join(".gitattributes");
+        let referenced = std::fs::read_to_string(&attrs)
+            .map(|c| c.contains(&format!("merge={MERGE_DRIVER}")))
+            .unwrap_or(false);
+        if referenced {
+            println!("  ✓ referenced by .gitattributes");
+        } else {
+            println!("  △ no `merge={MERGE_DRIVER}` line in .gitattributes (driver is inert)");
         }
 
         let repo_name = repo_root
@@ -3249,6 +3415,53 @@ mod hooks {
                     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
                     assert_eq!(mode, 0o755, "{name} should be executable (0o755)");
                 }
+            }
+        }
+
+        /// rosary-f9516f: `hooks install` also configures the `beads-jsonl`
+        /// merge driver, because gitattributes(5) requires the DEFINITION to
+        /// live in git config — the committed `.gitattributes` can only
+        /// reference it by name. Idempotent: a second install converges.
+        #[test]
+        fn install_configures_merge_driver_idempotently() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            install(dir.path()).unwrap();
+
+            let driver =
+                git_config_get(dir.path(), &format!("merge.{MERGE_DRIVER}.driver")).unwrap();
+            assert!(driver.contains("bead merge-jsonl"), "{driver}");
+            for ph in ["%O", "%A", "%B"] {
+                assert!(driver.contains(ph), "driver must pass {ph}: {driver}");
+            }
+            assert!(git_config_get(dir.path(), &format!("merge.{MERGE_DRIVER}.name")).is_some());
+
+            install(dir.path()).unwrap();
+            let again =
+                git_config_get(dir.path(), &format!("merge.{MERGE_DRIVER}.driver")).unwrap();
+            assert_eq!(driver, again, "re-install must converge");
+            // `git config --get` errors on a multi-valued key; a successful
+            // read after two installs proves we overwrote rather than appended.
+        }
+
+        /// The driver command bakes the absolute binary path (git GUIs / CI
+        /// runners have restricted PATHs) but degrades to a bare `rsry` when
+        /// the path is empty or carries shell metacharacters — git runs the
+        /// driver through a shell, so an unquotable path must never be
+        /// interpolated.
+        #[test]
+        fn merge_driver_command_quotes_or_falls_back() {
+            let cmd = merge_driver_command("/opt/bin/rsry");
+            assert!(
+                cmd.starts_with("\"/opt/bin/rsry\" bead merge-jsonl "),
+                "{cmd}"
+            );
+            for bad in ["", "/tmp/a\"b/rsry", "/tmp/$(id)/rsry", "/tmp/a'b/rsry"] {
+                let cmd = merge_driver_command(bad);
+                assert!(
+                    cmd.starts_with("rsry bead merge-jsonl "),
+                    "{bad:?} should fall back to PATH lookup, got {cmd}"
+                );
             }
         }
 
