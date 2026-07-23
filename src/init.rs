@@ -152,7 +152,7 @@ async fn init_store(repo_root: &Path, beads_dir: &Path, use_dolt: bool) -> Resul
 /// resolutions (`checkout --theirs/--ours`, `reset --hard`, `stash pop`)
 /// silently overwrite live bead state (rosary-05fbe0). `metadata.json` /
 /// `config.yaml` stay tracked so a clone still knows the backend.
-const BEADS_GITIGNORE: &str = "\
+pub(crate) const BEADS_GITIGNORE: &str = "\
 # Managed by `rsry init`. The bead-store binary is LOCAL — never git-tracked.
 # A committed binary DB has no git 3-way merge; ordinary resolutions
 # (checkout --theirs/--ours, reset --hard, stash pop) silently eat live bead
@@ -174,6 +174,11 @@ beads.db.migrated
 
 # Dolt store + server runtime (synced via dolt remote, not git)
 dolt/
+# `bead migrate --commit` renames dolt/ to dolt.bak/ and never deletes it
+# (rosary-3a0e19). It is the same binary Dolt store under a new name, so the
+# rosary-05fbe0 footgun applies verbatim — and it HAS been staged accidentally.
+dolt.bak/
+dolt.bak.*/
 dolt-server.pid
 dolt-server.log
 dolt-server.port
