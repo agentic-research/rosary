@@ -1019,6 +1019,10 @@ async fn isolated_workspace_is_never_the_main_checkout() {
         ws.work_dir.exists(),
         "isolated work_dir must actually exist on disk"
     );
+
+    // Clean up: the workspace root lives outside `tmp`, so dropping the TempDir
+    // does not reclaim it (rosary-a63159).
+    sweep::cleanup_git_worktree(repo, "iso-1");
 }
 
 /// rosary-a63159: `workspace_dir` must be PURE. It used to `create_dir_all` its
@@ -1026,12 +1030,16 @@ async fn isolated_workspace_is_never_the_main_checkout() {
 /// existence check — created a directory. With tempdir repo paths that leaked
 /// one permanent dir per test run into the developer's real $HOME (>20k of them
 /// had accumulated since March, invisible because they are dot-prefixed).
+///
+/// Deliberately sets **no environment variable**. The first draft of this test
+/// did (`unsafe { set_var(WORKTREE_ROOT_ENV, ..) }` with a "single-threaded test
+/// scope" claim that is simply false — `cargo test` is multi-threaded, and std
+/// says the only sound option is not to call `set_var` in a multi-threaded
+/// program at all). Concurrent tests read the same variable, and its `TempDir`
+/// was dropped out from under them. Not needed: `cfg!(test)` already redirects
+/// the default root to a temp dir, and purity is observable without redirection.
 #[test]
 fn workspace_dir_is_pure_and_repo_identity_keyed() {
-    let root = tempfile::TempDir::new().unwrap();
-    // SAFETY: single-threaded test scope; set before any workspace_dir call.
-    unsafe { std::env::set_var(crate::workspace::WORKTREE_ROOT_ENV, root.path()) };
-
     let repo = tempfile::TempDir::new().unwrap();
     let p = crate::workspace::workspace_dir(repo.path(), "bead-1");
 
@@ -1048,12 +1056,13 @@ fn workspace_dir_is_pure_and_repo_identity_keyed() {
     // IDENTITY-KEYED: two repos sharing a basename must NOT share a root.
     // Previously both mapped to <root>/api/<id>, so Workspace::create's
     // reuse-if-exists branch could hand repo B's workspace to an agent in A.
-    let a = root.path().join("a");
-    let b = root.path().join("b");
-    std::fs::create_dir_all(a.join("api")).unwrap();
-    std::fs::create_dir_all(b.join("api")).unwrap();
-    let pa = crate::workspace::workspace_dir(&a.join("api"), "same-bead");
-    let pb = crate::workspace::workspace_dir(&b.join("api"), "same-bead");
+    let holder = tempfile::TempDir::new().unwrap();
+    let a = holder.path().join("a").join("api");
+    let b = holder.path().join("b").join("api");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let pa = crate::workspace::workspace_dir(&a, "same-bead");
+    let pb = crate::workspace::workspace_dir(&b, "same-bead");
     assert_ne!(
         pa, pb,
         "same-basename repos must not collide onto one workspace path"
@@ -1062,6 +1071,104 @@ fn workspace_dir_is_pure_and_repo_identity_keyed() {
         pa.to_string_lossy().contains("api-") && pb.to_string_lossy().contains("api-"),
         "basename should remain readable in the key: {pa:?} {pb:?}"
     );
+}
 
-    unsafe { std::env::remove_var(crate::workspace::WORKTREE_ROOT_ENV) };
+/// The root key is normalized: a trailing separator is not a different repo.
+/// The key used to hash `to_string_lossy()`, so `/a/b/` and `/a/b` — which are
+/// `Path`-EQUAL everywhere else in this codebase — landed in different roots.
+#[test]
+fn workspace_root_ignores_trailing_separator() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let with_sep = std::path::PathBuf::from(format!("{}/", repo.path().display()));
+    assert_eq!(
+        crate::workspace::workspace_root(repo.path()),
+        crate::workspace::workspace_root(&with_sep),
+        "trailing separator must not fork the workspace root"
+    );
+}
+
+/// rosary-617010 consistency: `scanner::canonicalize_repo_path` exists so path
+/// aliases of ONE physical repo compare equal. The workspace root must agree —
+/// otherwise the same repo reached via a symlink gets a second "isolated" root
+/// while git's worktree registry (which lives in the physical `.git`) sees one.
+#[test]
+fn workspace_root_is_alias_stable() {
+    let holder = tempfile::TempDir::new().unwrap();
+    let real = holder.path().join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    let alias = holder.path().join("alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+
+    assert_eq!(
+        crate::workspace::workspace_root(&real),
+        crate::workspace::workspace_root(&alias),
+        "a symlink alias of one physical repo must map to ONE workspace root"
+    );
+}
+
+/// rosary-a63159 (the relocated leak): creating and then cleaning up a workspace
+/// must leave **no** directory behind — not in `$HOME`, not in `$TMPDIR`.
+///
+/// The first fix only stopped `workspace_dir` from mkdir-ing; `ensure_workspace_root`
+/// still created a per-repo root on every creation attempt that nothing ever
+/// removed, so the same ~9 dirs/run simply moved from `$HOME` to `$TMPDIR`.
+#[tokio::test]
+async fn workspace_lifecycle_leaves_no_directory_behind() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap()
+    };
+    git(&["init", "-q", "."]);
+    std::fs::write(repo.join("f.txt"), "x").unwrap();
+    git(&["add", "f.txt"]);
+    git(&["commit", "-qm", "seed"]);
+
+    let root = crate::workspace::workspace_root(repo);
+    assert!(!root.exists(), "precondition: root must not exist yet");
+
+    let ws = Workspace::create("leak-1", "repo", repo, true)
+        .await
+        .expect("isolation must succeed");
+    assert!(ws.work_dir.starts_with(&root));
+
+    sweep::cleanup_git_worktree(repo, "leak-1");
+    assert!(
+        !root.exists(),
+        "the per-repo workspace root must be pruned once empty — leaving it is \
+         the leak, merely relocated: {}",
+        root.display()
+    );
+}
+
+/// A creation attempt that FAILS must not leave a root behind either — that was
+/// the largest single source of the relocated leak, since the failure paths have
+/// no cleanup call at all.
+#[tokio::test]
+async fn failed_isolation_leaves_no_directory_behind() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path().canonicalize().unwrap();
+    // `.git` exists so detect_vcs says Git, but it is not a real repo, so
+    // `git worktree add` fails.
+    std::fs::create_dir(repo.join(".git")).unwrap();
+
+    let root = crate::workspace::workspace_root(&repo);
+    assert!(
+        Workspace::create("leak-2", "repo", &repo, true)
+            .await
+            .is_err()
+    );
+    assert!(
+        !root.exists(),
+        "a failed workspace creation must create nothing: {}",
+        root.display()
+    );
 }

@@ -22,13 +22,13 @@ use std::path::{Path, PathBuf};
 use crate::backend::ExecHandle;
 
 // Re-export public API from submodules.
-#[allow(unused_imports)]
-// API surface (WORKTREE_ROOT_ENV/ensure_workspace_root used by tests + creation sites)
+#[allow(unused_imports)] // API surface (WORKTREE_ROOT_ENV is a documented config knob)
 pub use sweep::{
-    WORKTREE_ROOT_ENV, ensure_thread_branch, ensure_workspace_root, merge_or_pr_with_base,
-    sweep_agent_branches, sweep_orphaned, thread_branch_name, workspace_root,
+    WORKTREE_ROOT_ENV, ensure_thread_branch, existing_workspace_dir, merge_or_pr_with_base,
+    sweep_agent_branches, sweep_orphaned, thread_branch_name, workspace_dir, workspace_root,
+    workspace_roots,
 };
-pub(crate) use sweep::{cleanup_git_worktree, cleanup_jj_workspace, workspace_dir};
+pub(crate) use sweep::{cleanup_git_worktree, cleanup_jj_workspace};
 
 /// VCS backend for code isolation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,11 +92,12 @@ impl Workspace {
     /// a previous call. Does not create anything — just rebuilds the struct.
     pub fn from_existing(id: &str, repo: &str, repo_path: &Path) -> Self {
         let vcs = detect_vcs(repo_path);
-        let ws_dir = workspace_dir(repo_path, id);
-        let (work_dir, vcs) = if ws_dir.exists() {
-            (ws_dir, vcs)
-        } else {
-            (repo_path.to_path_buf(), VcsKind::None)
+        // Legacy-aware: a workspace created before the root re-key still counts
+        // (rosary-a63159) — otherwise `rsry review` reports workspace: null for
+        // beads that demonstrably have one.
+        let (work_dir, vcs) = match existing_workspace_dir(repo_path, id) {
+            Some(ws_dir) => (ws_dir, vcs),
+            None => (repo_path.to_path_buf(), VcsKind::None),
         };
         Workspace {
             id: id.to_string(),

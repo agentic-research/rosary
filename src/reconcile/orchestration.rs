@@ -321,18 +321,20 @@ impl Reconciler {
         }
 
         for (repo_name, (repo_path, _lang)) in &self.repo_info {
-            // Workspaces live at ~/.rsry/worktrees/<repo_name>/<bead_id>/
-            // (see workspace::workspace_dir). workspace_dir(path, "") returns the
-            // per-repo worktrees root — scan that, not the repo root.
-            let ws_root = crate::workspace::workspace_root(repo_path);
-            let entries: Vec<PathBuf> = match std::fs::read_dir(&ws_root) {
-                Ok(dir) => dir
-                    .filter_map(|e| e.ok())
-                    .map(|e| e.path().join(".rsry-orchestrator.json"))
-                    .filter(|p| p.exists())
-                    .collect(),
-                Err(_) => continue,
-            };
+            // Workspaces live at <workspace-root>/<bead_id>/ — see
+            // workspace::workspace_root. Scan the roots, not the repo root, and
+            // include the legacy basename-keyed root so a crash that straddles
+            // the rosary-a63159 re-key still recovers its orchestrators.
+            let entries: Vec<PathBuf> = crate::workspace::workspace_roots(repo_path)
+                .iter()
+                .filter_map(|root| std::fs::read_dir(root).ok())
+                .flat_map(|dir| {
+                    dir.filter_map(|e| e.ok())
+                        .map(|e| e.path().join(".rsry-orchestrator.json"))
+                        .filter(|p| p.exists())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
 
             for record_path in entries {
                 let json = match std::fs::read_to_string(&record_path) {

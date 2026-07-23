@@ -19,35 +19,56 @@ pub const WORKTREE_ROOT_ENV: &str = "RSRY_WORKTREE_ROOT";
 /// created it. Every caller that only wanted the path — including the existence
 /// check in `Workspace::create` — silently made a directory, and because tests
 /// pass `TempDir` paths (random `.tmpXXXX` basenames) the suite leaked one
-/// permanent directory per run into the real `$HOME` (rosary-a63159). Callers
-/// that actually materialize a workspace call [`ensure_workspace_root`].
+/// permanent directory per run into the real `$HOME` (rosary-a63159).
 ///
-/// Keyed on repo **identity**, not basename. The old scheme used only
-/// `file_name()`, so `~/work/api` and `~/other/api` shared
-/// `~/.rsry/worktrees/api/<bead-id>` — and since `Workspace::create` reuses any
-/// directory that merely *exists*, an agent in one repo could be handed the
-/// other's workspace and told it was isolated. The path digest disambiguates
-/// them while keeping the basename readable (rosary-6e5fc1 is the general fix).
+/// Keyed on repo **identity**, not basename — see [`repo_key`].
 pub fn workspace_dir(repo_path: &Path, id: &str) -> PathBuf {
     workspace_root(repo_path).join(id)
 }
 
 /// Root directory holding every workspace for `repo_path`.
 pub fn workspace_root(repo_path: &Path) -> PathBuf {
-    let repo_name = repo_path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    // Disambiguate same-named repos by a digest of the full path. Do NOT
-    // canonicalize: that resolves symlinks and would collapse ~/github →
-    // ~/remotes, which this codebase deliberately keeps distinct.
-    let digest = crate::cas::content_hash(repo_path.to_string_lossy().as_bytes());
-    let key = format!("{repo_name}-{}", &digest[..8.min(digest.len())]);
-
     let base = std::env::var(WORKTREE_ROOT_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_worktree_base());
-    base.join(key)
+    base.join(repo_key(repo_path))
+}
+
+/// Per-repo directory name: `{basename}-{digest[..8]}`.
+///
+/// **Identity, not basename.** The old scheme used `file_name()` alone, so
+/// `~/work/api` and `~/other/api` shared `~/.rsry/worktrees/api/<bead-id>` —
+/// and since `Workspace::create` reuses any directory that merely *exists*, an
+/// agent in one repo could be handed the other's workspace and told it was
+/// isolated. The digest disambiguates them; the basename stays readable
+/// (rosary-6e5fc1 is the general repo-addressing fix).
+///
+/// **The key IS canonicalized** — deliberately, and contrary to an earlier
+/// draft of this change which argued that `~/github` → `~/remotes` are
+/// "distinct on purpose". They are not distinct for *identity*:
+/// `scanner::canonicalize_repo_path` (rosary-617010) exists precisely so those
+/// aliases compare **equal** when matching repos, and the workspace key must
+/// agree with that invariant. If it did not, one physical repo reached via two
+/// aliases would get two isolated roots — but `git worktree`'s own registry
+/// lives in the *physical* `.git`, so the "isolation" would be a lie at the git
+/// layer while the reuse-if-exists branch silently missed the live workspace.
+/// What must stay un-canonicalized is the path rosary *hands to git/jj*
+/// (`workspace/lifecycle.rs` — a symlinked checkout must be entered verbatim);
+/// that is untouched here, only the directory *name* is derived canonically.
+///
+/// The digest is over the path's `components()`, not `to_string_lossy()`, so
+/// `/a/b/` and `/a/b` — `Path`-equal everywhere else in this codebase — hash to
+/// the same root, and non-UTF-8 paths are not silently collapsed by lossy
+/// replacement.
+fn repo_key(repo_path: &Path) -> String {
+    let canonical = crate::scanner::canonicalize_repo_path(repo_path);
+    let repo_name = canonical
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let normalized: PathBuf = canonical.components().collect();
+    let digest = crate::cas::content_hash(normalized.as_os_str().as_encoded_bytes());
+    format!("{repo_name}-{}", &digest[..8.min(digest.len())])
 }
 
 /// Default workspace root. In **test builds** this is a temp directory, not
@@ -65,12 +86,87 @@ fn default_worktree_base() -> PathBuf {
         .join("worktrees")
 }
 
-/// Create the workspace root for `repo_path`. Call this only where a workspace
-/// is actually materialized — never from a path lookup.
-pub fn ensure_workspace_root(repo_path: &Path) -> PathBuf {
+/// The pre-rosary-a63159 root: `~/.rsry/worktrees/{basename}`, keyed on the repo
+/// basename alone.
+///
+/// **Read-only compat.** Re-keying the root would otherwise make every workspace
+/// that existed at upgrade time unreachable: resume-after-death would cut a
+/// second worktree, `sweep_orphan_dispatches` would revert a *live* `Dispatched`
+/// bead to open (duplicate dispatch onto a repo an agent is editing), `rsry
+/// review` would report `workspace: null`, and crash recovery would not find
+/// `.rsry-orchestrator.json`. [`existing_workspace_dir`] checks here as a
+/// fallback so the migration is invisible.
+///
+/// `None` in test builds and whenever `RSRY_WORKTREE_ROOT` is set: neither ever
+/// had legacy workspaces, and pointing a *test* at the real `$HOME` is exactly
+/// how the original bug ended up writing there.
+fn legacy_workspace_root(repo_path: &Path) -> Option<PathBuf> {
+    if cfg!(test) || std::env::var_os(WORKTREE_ROOT_ENV).is_some() {
+        return None;
+    }
+    let repo_name = repo_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    Some(
+        dirs_next::home_dir()?
+            .join(".rsry")
+            .join("worktrees")
+            .join(repo_name),
+    )
+}
+
+/// Every root that may hold workspaces for `repo_path`: the current one first,
+/// then the legacy basename-keyed one when it applies. For scanners that must
+/// enumerate workspaces rather than test one id.
+pub fn workspace_roots(repo_path: &Path) -> Vec<PathBuf> {
+    let current = workspace_root(repo_path);
+    match legacy_workspace_root(repo_path) {
+        Some(legacy) if legacy != current => vec![current, legacy],
+        _ => vec![current],
+    }
+}
+
+/// Locate an *existing* workspace for `id`, current layout first, then the
+/// legacy basename-keyed one. `None` when the bead genuinely has no workspace.
+///
+/// Every "does this bead have a workspace?" reader must use this rather than
+/// `workspace_dir(..).exists()`, or the re-key silently orphans live work.
+pub fn existing_workspace_dir(repo_path: &Path, id: &str) -> Option<PathBuf> {
+    let current = workspace_dir(repo_path, id);
+    if current.exists() {
+        return Some(current);
+    }
+    let legacy = legacy_workspace_root(repo_path)?.join(id);
+    legacy.exists().then_some(legacy)
+}
+
+/// Create the workspace root for `repo_path`, returning the workspace path.
+///
+/// Only `jj` needs this: `git worktree add` creates every leading directory
+/// itself (verified empirically — a probe against a path whose grandparent did
+/// not exist succeeded and materialized the whole chain), whereas
+/// `jj workspace add` creates only the leaf and errors with
+/// `Cannot access <path>: No such file or directory` if the parent is missing.
+///
+/// Calling this from the *git* path is what relocated the original leak instead
+/// of fixing it: the root was created even when creation then failed, and
+/// nothing ever removed it — ~9 empty dot-prefixed roots per suite run, just in
+/// `$TMPDIR` instead of `$HOME`. The cleanup paths now [`prune_workspace_root`].
+fn ensure_workspace_root(repo_path: &Path) -> PathBuf {
     let root = workspace_root(repo_path);
     let _ = std::fs::create_dir_all(&root);
     root
+}
+
+/// Remove the per-repo root if it is now empty.
+///
+/// `remove_dir` is non-recursive, so this is a no-op whenever another workspace
+/// (or any file) is still inside — it can never delete live work. This is what
+/// makes the "nothing creates a directory that nothing removes" invariant hold
+/// for the one root we still have to materialize (jj's).
+fn prune_workspace_root(repo_path: &Path) {
+    let _ = std::fs::remove_dir(workspace_root(repo_path));
 }
 
 // ---------------------------------------------------------------------------
@@ -80,7 +176,8 @@ pub fn ensure_workspace_root(repo_path: &Path) -> PathBuf {
 /// Create a jj workspace for isolated agent work.
 pub(super) async fn create_jj_workspace(repo_path: &Path, id: &str) -> Result<PathBuf> {
     let workspace_name = format!("fix-{id}");
-    // Materialization site: this is where the root legitimately gets created.
+    // `jj workspace add` does NOT create leading directories (it errors), so the
+    // root must exist first. `cleanup_jj_workspace` prunes it again when empty.
     ensure_workspace_root(repo_path);
     let workspace_path = workspace_dir(repo_path, id);
 
@@ -126,6 +223,7 @@ pub fn cleanup_jj_workspace(repo_path: &Path, id: &str) {
 
     let ws_dir = workspace_dir(repo_path, id);
     let _ = std::fs::remove_dir_all(ws_dir);
+    prune_workspace_root(repo_path);
 }
 
 // ---------------------------------------------------------------------------
@@ -138,8 +236,9 @@ pub fn cleanup_jj_workspace(repo_path: &Path, id: &str) {
 /// `fix/{id}` branch — deletes the stale branch and retries.
 pub(super) async fn create_git_worktree(repo_path: &Path, id: &str) -> Result<PathBuf> {
     let branch_name = format!("fix/{id}");
-    // Materialization site: this is where the root legitimately gets created.
-    ensure_workspace_root(repo_path);
+    // No `ensure_workspace_root` here on purpose: `git worktree add` creates
+    // every leading directory itself. Pre-creating the root leaked one empty
+    // directory per failed creation with no cleanup path (rosary-a63159).
     let worktree_path = workspace_dir(repo_path, id);
 
     // Fetch latest origin/main so the worktree branches from current remote HEAD,
@@ -245,6 +344,10 @@ pub fn cleanup_git_worktree(repo_path: &Path, id: &str) {
         .args(["branch", "-D", &branch_name])
         .current_dir(repo_path)
         .output();
+
+    // `git worktree remove` deletes the worktree dir but leaves the root it
+    // created; drop it too once the last workspace is gone.
+    prune_workspace_root(repo_path);
 }
 
 // ---------------------------------------------------------------------------
@@ -409,16 +512,18 @@ pub async fn sweep_agent_branches(repo_path: &Path, dry_run: bool) -> BranchSwee
 // Orphan sweep
 // ---------------------------------------------------------------------------
 
-/// Scan `.rsry-workspaces/` directories and clean up any that don't
-/// correspond to active bead IDs. Call on startup to reclaim leaked workspaces.
+/// Scan each repo's workspace root and clean up any workspace that doesn't
+/// correspond to an active bead ID. Call on startup to reclaim leaked workspaces.
+///
+/// Uses [`workspace_root`] — it must resolve the root exactly the way creation
+/// does. It previously hand-built `~/.rsry/worktrees/<basename>`, which ignored
+/// the digest, `RSRY_WORKTREE_ROOT` and the test redirect: as the *only*
+/// orphan-reclaim mechanism (`reconcile/mod.rs`) that made reclaim a permanent
+/// no-op for every re-keyed workspace, while pointing its `remove_dir_all` at
+/// the developer's real `$HOME` from test builds.
 pub fn sweep_orphaned(repo_paths: &[PathBuf], active_bead_ids: &[String]) {
-    let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("."));
     for repo_path in repo_paths {
-        let repo_name = repo_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        let ws_root = home.join(".rsry").join("worktrees").join(&repo_name);
+        let ws_root = workspace_root(repo_path);
         if !ws_root.exists() {
             continue;
         }
