@@ -1173,27 +1173,160 @@ async fn failed_isolation_leaves_no_directory_behind() {
     );
 }
 
-/// SPIKE PROOF (rosary-efd300): does jj workspace creation actually work
-/// through jj-lib, with NO `jj` binary involved?
+/// Build a **git-backed**, non-colocated jj repo with one committed file,
+/// entirely through jj-lib — no `jj` binary.
 ///
-/// The other 30 tests do NOT answer this — `detect_vcs_jj` only mkdirs a fake
-/// `.jj`, and colocated repos route to git worktree. So they prove the git
-/// paths still work, not that the jj-lib swap functions. This one builds a
-/// REAL jj repo in-process and drives the real code path.
+/// Git-backed is the load-bearing word. `leyline_vcs::JjIntegration::init`
+/// (what the first version of this test used) calls `Workspace::init_simple`,
+/// which builds a **SimpleBackend** repo — a shape that exists only in tests.
+/// jj-lib gates its Git backend behind `#[cfg(feature = "git")]` and
+/// leyline-vcs used to compile it out, so `JjIntegration::open` failed with
+/// "Cannot read the repo" on every repo `jj git init` produces. A SimpleBackend
+/// fixture therefore passed **exactly where production failed**
+/// (ley-line-open #257).
+///
+/// Non-colocated matters too: `detect_vcs` routes anything with a `.git` to the
+/// git-worktree path, so a colocated fixture would never reach the jj branch and
+/// this test would silently assert nothing about jj.
+fn git_backed_jj_repo(repo: &std::path::Path) {
+    use jj_lib::backend::TreeValue;
+    use jj_lib::config::StackedConfig;
+    use jj_lib::merged_tree::MergedTree;
+    use jj_lib::ref_name::WorkspaceName;
+    use jj_lib::repo::Repo as _;
+    use jj_lib::repo_path::RepoPathBuf;
+    use jj_lib::settings::UserSettings;
+    use jj_lib::tree_builder::TreeBuilder;
+    use jj_lib::workspace::{Workspace as JjWorkspace, default_working_copy_factories};
+    use pollster::FutureExt as _;
+
+    std::fs::create_dir_all(repo).unwrap();
+    let settings = UserSettings::from_config(StackedConfig::with_defaults()).unwrap();
+    JjWorkspace::init_internal_git(&settings, repo)
+        .block_on()
+        .expect("init_internal_git — needs jj-lib's `git` feature");
+
+    // Commit one file and check it out in the default workspace, so the repo
+    // looks like a checkout someone has been working in and we can assert the
+    // agent's workspace receives the content.
+    let ws = JjWorkspace::load(
+        &settings,
+        repo,
+        &Default::default(),
+        &default_working_copy_factories(),
+    )
+    .expect("load git-backed workspace");
+    let base = ws.repo_loader().load_at_head().block_on().unwrap();
+    let store = base.store().clone();
+
+    let file_id = store
+        .write_file(
+            &RepoPathBuf::from_internal_string("hello.txt").unwrap(),
+            &mut b"hello".as_slice(),
+        )
+        .block_on()
+        .unwrap();
+    let mut builder = TreeBuilder::new(store.clone(), store.empty_tree_id().clone());
+    builder.set(
+        RepoPathBuf::from_internal_string("hello.txt").unwrap(),
+        TreeValue::File {
+            id: file_id,
+            executable: false,
+            copy_id: jj_lib::backend::CopyId::placeholder(),
+        },
+    );
+    let tree_id = builder.write_tree().block_on().unwrap();
+    let tree = MergedTree::resolved(store.clone(), tree_id);
+
+    let mut tx = base.start_transaction();
+    let seed = tx
+        .repo_mut()
+        .new_commit(vec![store.root_commit_id().clone()], tree)
+        .set_description("seed")
+        .write()
+        .block_on()
+        .unwrap();
+    tx.repo_mut()
+        .check_out(WorkspaceName::DEFAULT.to_owned(), &seed)
+        .block_on()
+        .unwrap();
+    tx.repo_mut().rebase_descendants().block_on().unwrap();
+    tx.commit("seed").block_on().unwrap();
+}
+
+/// Workspace names registered in the repo's shared jj store.
+fn jj_workspace_names(repo: &std::path::Path) -> Vec<String> {
+    leyline_vcs::JjIntegration::open(repo)
+        .expect("open git-backed jj repo")
+        .workspace_names()
+        .expect("list workspaces")
+}
+
+/// The Git backend must be in the **normal** dependency graph, not just the
+/// test one.
+///
+/// This is the smoking gun from the review that falsified this change: `grep
+/// 'name = "gix"' Cargo.lock` had **no match**, because leyline-vcs took jj-lib
+/// with `default-features = false` and jj-lib gates its Git backend behind
+/// `#[cfg(feature = "git")]`. `JjIntegration::open` then failed with "Cannot
+/// read the repo" on every repo `jj git init` produces.
+///
+/// The behavioural tests below cannot police this on their own. rosary declares
+/// jj-lib as a **dev-dependency** with `features = ["git"]` to build a
+/// git-backed fixture, and cargo unifies features across the test build — so
+/// under `cargo test` leyline-vcs would get the Git backend even if its own
+/// manifest stopped asking for it. `cargo build` does not resolve
+/// dev-dependencies, so the shipped `rsry` would be broken while the suite
+/// stayed green: exactly the review's finding, one level up.
+///
+/// `Cargo.lock` records the resolved **normal** graph, so checking it here
+/// closes that hole. A repin of `leyline-vcs` that loses the backend fails this
+/// test.
+#[test]
+fn workspace_root_pins_the_jj_git_backend() {
+    let lock = include_str!("../../Cargo.lock");
+    assert!(
+        lock.lines().any(|l| l == r#"name = "gix""#),
+        "gix is absent from Cargo.lock — jj-lib's Git backend has been compiled \
+         out again, which makes every non-colocated jj repo unopenable \
+         (ley-line-open #257). Check leyline-vcs's jj-lib feature list."
+    );
+}
+
+/// SPIKE PROOF (rosary-efd300): jj workspace creation through jj-lib, on the
+/// repo shape production actually has.
+///
+/// The other 30 workspace tests do NOT answer this — `detect_vcs_jj` only
+/// mkdirs a fake `.jj`, and colocated repos route to git worktree. So they
+/// prove the git paths still work, not that the jj-lib swap functions.
+///
+/// This asserts three things, each of which was false at some point in this
+/// change's life:
+///   1. a **git-backed** jj repo can be opened at all (it could not — the Git
+///      backend was compiled out of leyline-vcs; ley-line-open #257);
+///   2. the workspace is **registered** in the shared jj store under its
+///      bead-derived name — an ordinary directory cannot satisfy this;
+///   3. the workspace **contains the repo's files**. `jj-lib`'s
+///      `init_workspace_with_existing_repo` checks out the EMPTY ROOT COMMIT,
+///      so before #257 this produced a directory holding nothing but `.jj`.
+///      An agent needs source, not a registered empty dir, and nothing in the
+///      original test would have noticed.
+///
+/// It writes under `RSRY_WORKTREE_ROOT` (rosary-a63159, #405), so it neither
+/// touches `$HOME` nor leaves state that makes a SECOND `cargo test` run fail —
+/// which the first version of this test did, deterministically.
 #[tokio::test]
 async fn jj_lib_creates_a_real_isolated_workspace_without_the_jj_binary() {
     let tmp = tempfile::TempDir::new().unwrap();
     let repo = tmp.path().join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
-
-    // Real jj repo, created through jj-lib — no `jj` process.
-    let jj = leyline_vcs::JjIntegration::init(&repo).expect("jj-lib must init a real jj repo");
-    let before = jj.workspace_names().expect("list workspaces");
+    git_backed_jj_repo(&repo);
+    assert_eq!(jj_workspace_names(&repo), vec!["default".to_string()]);
 
     let ws = Workspace::create("spike-1", "repo", &repo, true)
         .await
-        .expect("jj-lib workspace creation must succeed on a real jj repo");
+        .expect("jj-lib workspace creation must succeed on a GIT-BACKED jj repo");
 
+    assert_eq!(ws.vcs, VcsKind::Jj, "must have taken the jj path");
     assert!(ws.work_dir.exists(), "work_dir must exist on disk");
     assert_ne!(
         ws.work_dir.canonicalize().unwrap(),
@@ -1201,15 +1334,53 @@ async fn jj_lib_creates_a_real_isolated_workspace_without_the_jj_binary() {
         "must be isolated, not the main checkout"
     );
 
-    // The workspace must be REGISTERED in the shared jj store — this is what
-    // distinguishes a real jj workspace from an ordinary directory.
-    let after = jj.workspace_names().expect("list workspaces");
-    assert!(
-        after.len() > before.len(),
-        "jj store must register the new workspace: before={before:?} after={after:?}"
-    );
+    // (2) REGISTERED in the shared jj store.
+    let after = jj_workspace_names(&repo);
     assert!(
         after.iter().any(|n| n == "fix-spike-1"),
         "workspace must be registered under its bead-derived name, got {after:?}"
     );
+
+    // (3) POPULATED. The whole point: an agent needs source.
+    assert_eq!(
+        std::fs::read_to_string(ws.work_dir.join("hello.txt")).unwrap(),
+        "hello",
+        "the agent's workspace must contain the repo's files, not just `.jj`"
+    );
+}
+
+/// Teardown must never leave the bead **stuck**.
+///
+/// `add_workspace` rejects a duplicate name, so the dangerous state is "name
+/// still registered in the jj store, directory deleted": the next dispatch for
+/// this bead then fails on the duplicate name, forever. `cleanup_jj_workspace`
+/// therefore only deletes the directory once the forget succeeded — so either
+/// outcome (cleaned, or left in place) is one the next dispatch can recover
+/// from. This asserts the property that actually matters and holds in both
+/// worlds: **the same bead can be dispatched again**.
+#[tokio::test]
+async fn jj_workspace_teardown_never_wedges_the_next_dispatch() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    git_backed_jj_repo(&repo);
+
+    let ws = Workspace::create("spike-2", "repo", &repo, true)
+        .await
+        .expect("first create");
+    let work_dir = ws.work_dir.clone();
+    ws.teardown(&crate::backend::LocalProvider).await.unwrap();
+
+    // Consistency: the name is registered if and only if the directory remains.
+    let still_registered = jj_workspace_names(&repo).iter().any(|n| n == "fix-spike-2");
+    assert_eq!(
+        still_registered,
+        work_dir.exists(),
+        "teardown must not leave the jj name registered with the directory gone — \
+         that is the state that makes the next dispatch fail permanently"
+    );
+
+    let again = Workspace::create("spike-2", "repo", &repo, true)
+        .await
+        .expect("re-dispatch of the same bead must succeed after teardown");
+    assert!(again.work_dir.exists());
 }

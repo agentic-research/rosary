@@ -54,20 +54,40 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 # to the prior blake3 impl per rosary-bf6c74's golden vectors.
 #
 # rosary-30374f previously justified shelling out to the `jj` CLI because taking
-# leyline-vcs would drag in "the heavy leyline-fs/jj-lib subtree". MEASURED and
-# partly FALSE (rosary-efd300, scripts/jj-lib-cost-gate.sh): leyline-vcs takes
-# leyline-fs with default-features=false, and NO fuser/nfsserve/tree-sitter
-# appears in the dependency tree. The real cost is jj-lib's own subtree — +34
-# crates, +5.7 MiB — of which only 4 crates are leyline's; taking jj-lib
-# directly instead would save 4 crates and 0.18 MiB, i.e. nothing. The rusqlite
-# bump this needed (0.34 -> 0.39, rosary-7069df) required zero source changes.
+# leyline-vcs would drag in "the heavy leyline-fs/jj-lib subtree". MEASURED
+# (rosary-efd300, scripts/jj-lib-cost-gate.sh, baseline pinned at f8f6fbd):
+#
+#   baseline               349 crates    19.0 MiB
+#   jj-lib direct (+git)   440 (+91)     24.5 MiB
+#   leyline-vcs (this)     444 (+95)     24.6 MiB
+#
+# The *leyline-fs* half of the premise is false: leyline-fs comes in with
+# default-features=false and no fuser/nfsserve/tree-sitter enters the tree, and
+# only 4 of the 95 new crates are leyline's — taking jj-lib directly would save
+# 4 crates and 0.15 MiB, i.e. nothing. The *heavy subtree* half is TRUE and was
+# under-reported: an earlier run of this gate measured +34, but that was against
+# a jj-lib with `default-features = false` and hence no Git backend — a build
+# that cannot open a repo `jj git init` created. The real subtree is jj-lib's
+# `gix` dependency and it costs +95 crates for +5.6 MiB.
+# The rusqlite bump this needed (0.34 -> 0.39, rosary-7069df) required zero
+# source changes, but does move libsqlite3-sys 0.32 -> 0.37 and with it the
+# BUNDLED SQLITE ENGINE 3.49.1 -> 3.51.3.
 leyline-core = { git = "https://github.com/agentic-research/ley-line-open", rev = "c3515b9", default-features = false }
 # jj workspace creation driven IN-PROCESS via jj-lib (rosary-efd300) — no `jj`
 # subprocess, and jj's native multi-workspace feature shares ONE backend store,
 # so agent workspaces are copy-on-write instead of N full checkouts.
 # rev-pinned like leyline-core. Takes leyline-fs with default-features=false, so
 # no fuser/nfsserve/tree-sitter ride along (measured: scripts/jj-lib-cost-gate.sh).
-leyline-vcs = { git = "https://github.com/agentic-research/ley-line-open", rev = "41541f6", package = "leyline-vcs" }
+#
+# THE PIN MUST BE >= ley-line-open PR #257. Before it, leyline-vcs declared
+# `jj-lib = { default-features = false }`, which compiled OUT jj-lib's
+# `#[cfg(feature = "git")]` Git backend: `JjIntegration::open` then failed with
+# "Cannot read the repo" on every repo `jj git init` produced, and
+# `add_workspace` handed back a directory containing nothing but `.jj`. Both are
+# hard dispatch failures for rosary. 1671942 is that PR's squash-merge commit on
+# ley-line-open main. `workspace_root_pins_the_jj_git_backend` in
+# src/workspace/tests.rs fails if a future repin drops the backend again.
+leyline-vcs = { git = "https://github.com/agentic-research/ley-line-open", rev = "1671942", package = "leyline-vcs" }
 # Build-time codegen plugin anchor — NOT referenced from rosary's source (no
 # `use leyline_schema_bridge`), so its symbols are dead-stripped from rsry; it
 # is a normal dep only because `cargo build -p leyline-schema-bridge --bin
@@ -113,6 +133,15 @@ openssl = { version = "0.10", features = ["vendored"] }
 capnpc = "0.21"
 
 [dev-dependencies]
+# TEST FIXTURE ONLY. `leyline_vcs::JjIntegration::init` builds a SimpleBackend
+# repo (`Workspace::init_simple`) — a shape that exists only in tests, and the
+# exact shape that made the first version of the jj workspace test pass while
+# production failed. Building a GIT-BACKED repo (`init_internal_git`) is the
+# only way to exercise what rosary actually runs against, and leyline-vcs does
+# not expose an init for it. Adds nothing to the dependency graph: jj-lib is
+# already there via leyline-vcs, same version, same features.
+jj-lib = { version = "0.42", default-features = false, features = ["git"] }
+pollster = "0.4"
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"

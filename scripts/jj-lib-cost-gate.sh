@@ -69,7 +69,13 @@ cd "$ROOT_DIR"
 LEYLINE_DIR="${LEYLINE_DIR:-$ROOT_DIR/../ley-line-open}"
 LLVCS_PATH="$LEYLINE_DIR/rs/ll-open/vcs"
 WARM_REPEATS="${WARM_REPEATS:-3}"
-BUDGET_NEW_DEPS="${BUDGET_NEW_DEPS:-40}"
+# 40 was set when the leyline-vcs probe measured +34 crates — a number produced
+# by a leyline-vcs whose jj-lib had `default-features = false` and therefore NO
+# Git backend, i.e. a build that cannot open a real jj repo. With the backend
+# enabled (ley-line-open PR #257) the honest figure is +95, driven by the `gix`
+# subtree. 100 is the accepted budget for that decision; it is not room to grow
+# into, it is the measured cost plus a small margin.
+BUDGET_NEW_DEPS="${BUDGET_NEW_DEPS:-100}"
 BUDGET_BIN_MB="${BUDGET_BIN_MB:-15}"
 BUDGET_COLD_PCT="${BUDGET_COLD_PCT:-40}"
 
@@ -78,14 +84,21 @@ if [ "$JJLIB_ONLY" -eq 0 ] && [ ! -d "$LLVCS_PATH" ]; then
   JJLIB_ONLY=1
 fi
 
-# Resolve ONE commit up front. HEAD can move under us mid-run on a shared
-# branch (observed in practice — do not re-resolve HEAD per worktree).
-BASE_COMMIT="$(git rev-parse HEAD)"
-if ! git diff --quiet -- Cargo.toml Cargo.lock 2>/dev/null; then
-  echo "NOTE: Cargo.toml/Cargo.lock have uncommitted changes — the gate measures"
-  echo "      the last COMMIT ($BASE_COMMIT), not your working tree, by design"
-  echo "      (worktrees are pinned to a commit)."
-fi
+# The baseline is a FIXED PRE-ADOPTION COMMIT, not HEAD.
+#
+# This used to be `git rev-parse HEAD`, which is self-defeating: the moment the
+# jj-lib adoption lands, HEAD *contains* jj-lib, so "net new crates for adopting
+# jj-lib" is measured against a tree that already adopted it — the answer is
+# ~0 and BUDGET_NEW_DEPS can never bind. The gate would report PASS forever
+# while measuring nothing.
+#
+# f8f6fbd is rosary's main immediately before the jj-lib adoption
+# (rosary-efd300 / PR #403). Every future run compares against the same
+# pre-adoption tree, so the number stays meaningful and the budget stays live.
+# Override for ad-hoc "what does X cost from here" runs, but do not change the
+# committed default without a reason recorded here.
+PRE_ADOPTION_COMMIT="${PRE_ADOPTION_COMMIT:-f8f6fbd}"
+BASE_COMMIT="$(git rev-parse "$PRE_ADOPTION_COMMIT")"
 
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/rosary-jjcost.XXXXXX")"
 # Worktree paths are tracked in a manifest FILE, not a bash array: every
@@ -156,29 +169,48 @@ open(p, "w").write(s)
 PYEOF
 }
 
+RUSQLITE_TARGET_VERSION="${RUSQLITE_TARGET_VERSION:-0.39}"
+
 add_dep_line() {
   # Insert a new [dependencies] line right after rosary's rusqlite dep line
   # (a stable, always-present anchor).
+  #
+  # The version in that anchor is read DYNAMICALLY. It used to be hardcoded to
+  # "0.34" — and the very commit that added this script bumped the pin to
+  # "0.39", so `--quick` aborted with "rusqlite anchor line not found". A gate
+  # that a normal pin bump breaks is not a gate.
   local dir="$1" line="$2"
   python3 - "$dir/Cargo.toml" "$line" <<'PYEOF'
-import sys
+import re, sys
 p, line = sys.argv[1], sys.argv[2]
 s = open(p).read()
-anchor = 'rusqlite = { version = "0.34", features = ["bundled"] }'
-assert anchor in s, "rusqlite anchor line not found in Cargo.toml — pin changed"
-s = s.replace(anchor, anchor + "\n" + line, 1)
+m = re.search(r'^rusqlite = \{ version = "[^"]+".*\}$', s, re.M)
+assert m, "no `rusqlite = { version = ... }` line in Cargo.toml — anchor gone, not just moved"
+s = s[:m.end()] + "\n" + line + s[m.end():]
 open(p, "w").write(s)
 PYEOF
 }
 
 bump_rusqlite_line() {
-  # leyline-fs's workspace pins rusqlite 0.39.0; rosary pins 0.34. Cargo's
-  # `links = "sqlite3"` uniqueness rule means ONE version must win across the
-  # whole graph — this bump IS part of the leyline-vcs integration's real
-  # cost, not an artifact of our probe. Recorded, not hidden.
+  # leyline-fs's workspace pins rusqlite 0.39.0; the pre-adoption baseline
+  # pinned 0.34. Cargo's `links = "sqlite3"` uniqueness rule means ONE version
+  # must win across the whole graph — this bump IS part of the leyline-vcs
+  # integration's real cost, not an artifact of our probe. Recorded, not hidden.
+  # It also drags libsqlite3-sys 0.32 -> 0.37, i.e. the BUNDLED SQLITE ENGINE
+  # from 3.49.1 to 3.51.3.
+  #
+  # Rewrites whatever version is pinned to $RUSQLITE_TARGET_VERSION, so this
+  # is a no-op once the baseline itself is at that version rather than a
+  # silently-dead sed.
   local dir="$1"
-  sed -i.bak 's/rusqlite = { version = "0.34", features = \["bundled"\] }/rusqlite = { version = "0.39", features = ["bundled"] }/' "$dir/Cargo.toml"
-  rm -f "$dir/Cargo.toml.bak"
+  python3 - "$dir/Cargo.toml" "$RUSQLITE_TARGET_VERSION" <<'PYEOF'
+import re, sys
+p, target = sys.argv[1], sys.argv[2]
+s = open(p).read()
+s2, n = re.subn(r'(^rusqlite = \{ version = )"[^"]+"', r'\g<1>"%s"' % target, s, count=1, flags=re.M)
+assert n == 1, "no rusqlite version to rewrite in Cargo.toml"
+open(p, "w").write(s2)
+PYEOF
 }
 
 write_probe_jjlib_direct() {
@@ -311,7 +343,12 @@ run_probe baseline "$BASELINE_WT"
 
 # --- probe: jj-lib direct ------------------------------------------------
 JJLIB_WT="$(new_worktree probe-jjlib)"
-add_dep_line "$JJLIB_WT" 'jj-lib = { version = "0.42", default-features = false }
+# `features = ["git"]` is not optional in a HONEST measurement. jj-lib gates its
+# Git backend behind `#[cfg(feature = "git")]`; without it the probe links a
+# jj-lib that cannot open any repo `jj git init` created — i.e. any real one.
+# The first version of this script measured `default-features = false` alone and
+# reported "+30 crates", which is the cost of a configuration nobody can ship.
+add_dep_line "$JJLIB_WT" 'jj-lib = { version = "0.42", default-features = false, features = ["git"] }
 pollster = "0.4"'
 write_probe_jjlib_direct "$JJLIB_WT"
 inject_main_hook "$JJLIB_WT"

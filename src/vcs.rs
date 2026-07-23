@@ -4,9 +4,15 @@
 //! (bead status update, triage score, dispatch record) auto-snapshots: the hot
 //! path writes to SQLite, the cold path snapshots to jj asynchronously.
 //!
-//! Uses the `jj` CLI throughout — init, snapshot, and push all shell out — so
-//! rosary carries none of leyline-vcs's heavy transitive deps (leyline-fs /
-//! jj-lib / rusqlite) for what is a handful of subprocess calls (rosary-30374f).
+//! **This** module still uses the `jj` CLI throughout — init, snapshot, and
+//! push all shell out. rosary as a whole no longer avoids jj-lib, though: since
+//! rosary-efd300 `src/workspace/sweep.rs` links `leyline-vcs` (→ jj-lib → gix)
+//! to create agent workspaces in-process, so the deps are already paid for and
+//! the old rationale here — "rosary carries none of leyline-vcs's heavy
+//! transitive deps" (rosary-30374f) — is no longer true. What keeps these calls
+//! as subprocesses is inertia plus the fact that jj-lib's snapshot/push surface
+//! is a bigger port than the workspace one; not a dependency argument. Migrating
+//! them is unclaimed work, not a decision.
 //!
 //! Agents never interact with this directly — it's pure plumbing.
 

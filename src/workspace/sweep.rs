@@ -199,12 +199,25 @@ pub(super) async fn create_jj_workspace(repo_path: &Path, id: &str) -> Result<Pa
     .await
     .context("jj-lib workspace task")??;
 
-    // Set jj description so workspace shows bead context in `jj workspace list`
-    let _ = tokio::process::Command::new("jj")
+    // Cosmetic: label the workspace so `jj workspace list` shows bead context.
+    // Still a subprocess, and genuinely optional — a missing description costs
+    // a human some legibility and nothing else — but a *silent* `let _ =` hid
+    // the fact that this whole path degrades on a `jj`-less host. Say so.
+    match tokio::process::Command::new("jj")
         .args(["describe", "-m", &format!("bead:{id}")])
         .current_dir(&workspace_path)
         .output()
-        .await;
+        .await
+    {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => eprintln!(
+            "[workspace] jj describe failed for {id} (workspace is fine, label missing): {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) => eprintln!(
+            "[workspace] no `jj` binary for describe ({e}) — workspace is fine, label missing"
+        ),
+    }
 
     eprintln!(
         "[workspace] created jj workspace: {}",
@@ -213,13 +226,66 @@ pub(super) async fn create_jj_workspace(repo_path: &Path, id: &str) -> Result<Pa
     Ok(workspace_path)
 }
 
-/// Clean up a jj workspace. Best-effort — don't propagate errors.
+/// Clean up a jj workspace. Best-effort about *reporting*, strict about
+/// **ordering**: the directory is removed only if the jj store forgot the name.
+///
+/// This is the half of the lifecycle that is still a subprocess while `create`
+/// is jj-lib (leyline-vcs has no `forget_workspace` at the pinned rev —
+/// ley-line-open #258 adds one; this migrates when the pin moves). The mismatch
+/// used to be actively dangerous, because both steps were unconditional:
+///
+/// > `jj` not on PATH → forget silently no-ops → `remove_dir_all` deletes the
+/// > directory anyway → the name stays registered in the shared store forever →
+/// > the next dispatch for this bead hits `add_workspace`'s duplicate-name
+/// > rejection and **fails permanently**.
+///
+/// A host without `jj` on PATH is precisely the case that motivated moving off
+/// the CLI, so this was reachable in exactly the environment the change exists
+/// to serve — and it converted a retryable failure into a per-bead dead end.
+///
+/// Gating the delete on the forget bounds the blast radius to "cleanup didn't
+/// happen": name registered AND directory present is a *consistent* state, and
+/// `Workspace::create`'s reuse-if-exists branch picks that directory back up on
+/// the next dispatch. Leaked, and noisy about it, beats stuck.
 pub fn cleanup_jj_workspace(repo_path: &Path, id: &str) {
     let workspace_name = format!("fix-{id}");
-    let _ = std::process::Command::new("jj")
+    let forgot = match std::process::Command::new("jj")
         .args(["workspace", "forget", &workspace_name])
         .current_dir(repo_path)
-        .output();
+        .output()
+    {
+        Ok(out) if out.status.success() => true,
+        // Already gone (a previous partial cleanup) is success for our purpose:
+        // what we need is "the name is not registered", not "we removed it".
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("No such workspace") || stderr.contains("not found") {
+                true
+            } else {
+                eprintln!(
+                    "[workspace] jj workspace forget {workspace_name} failed: {}",
+                    stderr.trim()
+                );
+                false
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "[workspace] could not run `jj workspace forget` ({e}) — leaving {workspace_name} in place"
+            );
+            false
+        }
+    };
+
+    if !forgot {
+        eprintln!(
+            "[workspace] KEEPING {} — deleting it while {workspace_name} is still \
+             registered in the jj store would make the next dispatch for {id} fail \
+             permanently (duplicate workspace name)",
+            workspace_dir(repo_path, id).display()
+        );
+        return;
+    }
 
     let ws_dir = workspace_dir(repo_path, id);
     let _ = std::fs::remove_dir_all(ws_dir);
