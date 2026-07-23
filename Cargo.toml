@@ -48,15 +48,26 @@ dirs-next = "2.0.0"
 sqlx-core = { version = "0.8.6", features = ["chrono", "tokio", "_rt-tokio"], default-features = false }
 sqlx-mysql = { version = "0.8.6", features = ["chrono"], default-features = false }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
-# The ONLY LLO dependency: the light content-address substrate
-# (ContentAddressed::hash, BLAKE3-locked) — the single source of truth for
-# content addresses across the ecosystem, so a bead's hash == a mache
-# derivation's == the same CAS. Light (no FUSE/rusqlite). vcs uses the `jj` CLI
-# rather than leyline-vcs, so rosary carries none of the heavy leyline-fs/jj-lib
-# subtree (rosary-30374f). rev-pinned; adopting current LLO wholesale needs a
-# rusqlite bump (rosary-7069df). Byte-identical to the prior blake3 impl per
-# rosary-bf6c74's golden vectors.
+# The light content-address substrate (ContentAddressed::hash, BLAKE3-locked) —
+# the single source of truth for content addresses across the ecosystem, so a
+# bead's hash == a mache derivation's == the same CAS. rev-pinned. Byte-identical
+# to the prior blake3 impl per rosary-bf6c74's golden vectors.
+#
+# rosary-30374f previously justified shelling out to the `jj` CLI because taking
+# leyline-vcs would drag in "the heavy leyline-fs/jj-lib subtree". MEASURED and
+# partly FALSE (rosary-efd300, scripts/jj-lib-cost-gate.sh): leyline-vcs takes
+# leyline-fs with default-features=false, and NO fuser/nfsserve/tree-sitter
+# appears in the dependency tree. The real cost is jj-lib's own subtree — +34
+# crates, +5.7 MiB — of which only 4 crates are leyline's; taking jj-lib
+# directly instead would save 4 crates and 0.18 MiB, i.e. nothing. The rusqlite
+# bump this needed (0.34 -> 0.39, rosary-7069df) required zero source changes.
 leyline-core = { git = "https://github.com/agentic-research/ley-line-open", rev = "c3515b9", default-features = false }
+# jj workspace creation driven IN-PROCESS via jj-lib (rosary-efd300) — no `jj`
+# subprocess, and jj's native multi-workspace feature shares ONE backend store,
+# so agent workspaces are copy-on-write instead of N full checkouts.
+# rev-pinned like leyline-core. Takes leyline-fs with default-features=false, so
+# no fuser/nfsserve/tree-sitter ride along (measured: scripts/jj-lib-cost-gate.sh).
+leyline-vcs = { git = "https://github.com/agentic-research/ley-line-open", rev = "41541f6", package = "leyline-vcs" }
 # Build-time codegen plugin anchor — NOT referenced from rosary's source (no
 # `use leyline_schema_bridge`), so its symbols are dead-stripped from rsry; it
 # is a normal dep only because `cargo build -p leyline-schema-bridge --bin
@@ -89,7 +100,7 @@ base64 = "0.22"
 owo-colors = "4.3.0"
 jsonwebtoken = "9"
 socket2 = "0.5"
-rusqlite = { version = "0.34", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 capnp = "0.21"
 capnp-futures = "0.21"
 # Force vendored OpenSSL so the musl cross-build (`task image` via krust)

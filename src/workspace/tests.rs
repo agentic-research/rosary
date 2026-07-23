@@ -1172,3 +1172,44 @@ async fn failed_isolation_leaves_no_directory_behind() {
         root.display()
     );
 }
+
+/// SPIKE PROOF (rosary-efd300): does jj workspace creation actually work
+/// through jj-lib, with NO `jj` binary involved?
+///
+/// The other 30 tests do NOT answer this — `detect_vcs_jj` only mkdirs a fake
+/// `.jj`, and colocated repos route to git worktree. So they prove the git
+/// paths still work, not that the jj-lib swap functions. This one builds a
+/// REAL jj repo in-process and drives the real code path.
+#[tokio::test]
+async fn jj_lib_creates_a_real_isolated_workspace_without_the_jj_binary() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    // Real jj repo, created through jj-lib — no `jj` process.
+    let jj = leyline_vcs::JjIntegration::init(&repo).expect("jj-lib must init a real jj repo");
+    let before = jj.workspace_names().expect("list workspaces");
+
+    let ws = Workspace::create("spike-1", "repo", &repo, true)
+        .await
+        .expect("jj-lib workspace creation must succeed on a real jj repo");
+
+    assert!(ws.work_dir.exists(), "work_dir must exist on disk");
+    assert_ne!(
+        ws.work_dir.canonicalize().unwrap(),
+        repo.canonicalize().unwrap(),
+        "must be isolated, not the main checkout"
+    );
+
+    // The workspace must be REGISTERED in the shared jj store — this is what
+    // distinguishes a real jj workspace from an ordinary directory.
+    let after = jj.workspace_names().expect("list workspaces");
+    assert!(
+        after.len() > before.len(),
+        "jj store must register the new workspace: before={before:?} after={after:?}"
+    );
+    assert!(
+        after.iter().any(|n| n == "fix-spike-1"),
+        "workspace must be registered under its bead-derived name, got {after:?}"
+    );
+}

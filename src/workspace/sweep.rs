@@ -181,23 +181,23 @@ pub(super) async fn create_jj_workspace(repo_path: &Path, id: &str) -> Result<Pa
     ensure_workspace_root(repo_path);
     let workspace_path = workspace_dir(repo_path, id);
 
-    let output = tokio::process::Command::new("jj")
-        .args([
-            "workspace",
-            "add",
-            &workspace_path.to_string_lossy(),
-            "--name",
-            &workspace_name,
-        ])
-        .current_dir(repo_path)
-        .output()
-        .await
-        .context("jj workspace add")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("jj workspace add failed: {stderr}");
-    }
+    // SPIKE (rosary-efd300): drive jj-lib in-process instead of spawning `jj`.
+    // Same jj multi-workspace primitive the CLI used, minus the subprocess —
+    // and `add_workspace` additionally REJECTS a duplicate workspace name,
+    // which the CLI path silently allowed (jj-lib's init is last-wins, so two
+    // agents could collide and break the isolation this exists to provide).
+    let repo_owned = repo_path.to_path_buf();
+    let ws_owned = workspace_path.clone();
+    let name_owned = workspace_name.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let jj =
+            leyline_vcs::JjIntegration::open(&repo_owned).context("opening jj repo via jj-lib")?;
+        jj.add_workspace(&ws_owned, &name_owned)
+            .context("jj-lib add_workspace")?;
+        Ok(())
+    })
+    .await
+    .context("jj-lib workspace task")??;
 
     // Set jj description so workspace shows bead context in `jj workspace list`
     let _ = tokio::process::Command::new("jj")
