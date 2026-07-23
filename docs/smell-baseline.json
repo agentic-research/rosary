@@ -314,7 +314,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/main.rs",
-      "count": 16
+      "count": 17
     },
     {
       "rule_id": "duplicate_definitions",
