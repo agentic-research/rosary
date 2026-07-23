@@ -218,6 +218,27 @@ tasks:
         cargo llvm-cov --json --output-path "$COV" --workspace
         python3 scripts/coverage-ratchet.py --write "$COV"
 
+  jj-lib-cost:
+    desc: >-
+      Falsifiable jj-lib adoption cost gate (rosary-efd300) — measures, with
+      real numbers instead of inherited belief, what depending on jj-lib
+      (directly, and via leyline-vcs) would cost rosary: net-new transitive
+      crates, cold+warm release build time, and the `rsry` release binary
+      size — each against an unmodified baseline built from the same commit.
+      Settles whether the "heavy leyline-fs/jj-lib subtree" premise behind
+      rosary-30374f (see the leyline-core comment in Cargo.toml) survives
+      measurement. Runs entirely in scratch git worktrees + isolated
+      CARGO_TARGET_DIRs and cleans up via `trap ... EXIT INT TERM` — never
+      touches the committed Cargo.toml/Cargo.lock (the real working tree is
+      byte-identical after any run, including Ctrl-C). NOT part of `task
+      check`: a full run does 2-3 full release builds and is slow by design
+      — run it deliberately when jj-lib adoption is actually on the table.
+      `task jj-lib-cost -- --quick` does the dependency-count axis only
+      (seconds, no builds). See scripts/jj-lib-cost-gate.sh for the declared
+      budgets and how build-time noise is handled.
+    cmds:
+      - bash scripts/jj-lib-cost-gate.sh {{.CLI_ARGS}}
+
   check:
     desc: Canonical verification gate (Taskfile source of truth)
     cmds:
