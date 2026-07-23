@@ -1136,7 +1136,7 @@ mod detached_tests {
         // Child writes a marker, sleeps long enough for assertions to run.
         let provider = ShellProvider {
             binary: "sh".into(),
-            args: vec!["-c".into(), "printf started > marker; sleep 5".into()],
+            args: vec!["-c".into(), "printf started > marker; sleep 30".into()],
         };
         let perms = PermissionProfile::default();
 
@@ -1148,7 +1148,7 @@ mod detached_tests {
         // Child must reach its first statement (write marker) — proves the
         // spawn actually exec'd, not just forked-and-died.
         // Wait on the CONTENT, not merely the file's existence (rosary-87ff99).
-        // The child does `echo started > marker`, which creates the inode before
+        // The child does `printf started > marker`, which creates the inode before
         // the bytes land, so polling `.exists()` and then immediately reading
         // could observe an empty file and fail the equality check — a TOCTOU
         // between "created" and "written". Waiting for the value we actually
@@ -1156,7 +1156,7 @@ mod detached_tests {
         let marker = dir.path().join("marker");
         assert!(
             wait_for(
-                || std::fs::read_to_string(&marker).is_ok_and(|s| s.trim() == "started"),
+                || std::fs::read_to_string(&marker).is_ok_and(|s| s == "started"),
                 Duration::from_secs(5)
             )
             .await,
