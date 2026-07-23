@@ -1140,6 +1140,49 @@ fn stop_dolt_server(beads_dir: &Path) {
     }
 }
 
+#[derive(Debug, Default)]
+struct InitSyncSummary {
+    restored: usize,
+    updated: usize,
+    skipped_existing: usize,
+    merged_closed: usize,
+}
+
+/// Rebuild a clone-local SQLite store from the tracked public projection, then
+/// overlay terminal state derived from trunk merge commits.
+///
+/// The projection necessarily predates the merge that closes its own PR, so
+/// importing JSONL alone can leave a fresh clone permanently `open`. Merge
+/// history is the terminal authority. This reads only records present in the
+/// projection and never exports the live store, preserving intentionally
+/// scrubbed/omitted records.
+async fn bootstrap_git_tracked_beads(
+    repo_root: &Path,
+    repo_entry: &config::RepoConfig,
+) -> Result<InitSyncSummary> {
+    let beads_dir = resolve_beads_dir(repo_root);
+    let jsonl = beads_dir.join("beads.jsonl");
+    if beads_dir.join("dolt").is_dir() || !jsonl.is_file() {
+        return Ok(InitSyncSummary::default());
+    }
+
+    let store = bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db"))?;
+    let records = restore::read_beads_jsonl(Some(jsonl.to_string_lossy().into_owned()))?;
+    let restored = restore::restore_beads_from_contract(&records, &store, &repo_entry.name).await?;
+    let cfg = config::Config {
+        repo: vec![repo_entry.clone()],
+        ..Default::default()
+    };
+    let closed = run_close_merged_local_with_config(&cfg, Some(&repo_entry.name), false).await?;
+
+    Ok(InitSyncSummary {
+        restored: restored.restored,
+        updated: restored.updated,
+        skipped_existing: restored.skipped_existing,
+        merged_closed: closed.merged_closed,
+    })
+}
+
 /// Resolve a `rsry lattice` `--repo` argument to `(repo_path, repo_name)`.
 ///
 /// The name is the lattice's `WorkRef.repo`, so `audit` and `backfill` MUST
@@ -2606,7 +2649,23 @@ async fn main() -> Result<()> {
                 Some(config::enable_repo(&repo_root)?)
             };
 
-            // 6: report.
+            // 6: rebuild a clone-local SQLite store from the tracked public
+            // projection, then let merge history close the PR's own bead. The
+            // checked-in snapshot cannot contain a transition caused by the
+            // commit that carries it (rosary-64494d).
+            let repo_entry = registered.clone().unwrap_or_else(|| config::RepoConfig {
+                name: repo_root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "unnamed".to_string()),
+                path: repo_root.clone(),
+                lang: None,
+                self_managed: false,
+                approval: config::DispatchApproval::Approved,
+            });
+            let bootstrap = bootstrap_git_tracked_beads(&repo_root, &repo_entry).await?;
+
+            // 7: report.
             println!("\nrsry init — {}", repo_root.display());
             let store_line = match outcome.store {
                 init::StoreOutcome::CreatedSqlite => "created SQLite store (.beads/beads.db)",
@@ -2639,6 +2698,18 @@ async fn main() -> Result<()> {
             match registered {
                 Some(entry) => println!("  config  : registered as '{}'", entry.name),
                 None => println!("  config  : not registered (--no-register)"),
+            }
+            if bootstrap.restored + bootstrap.updated + bootstrap.skipped_existing > 0 {
+                println!(
+                    "  restore : {} new, {} updated, {} already current",
+                    bootstrap.restored, bootstrap.updated, bootstrap.skipped_existing
+                );
+            }
+            if bootstrap.merged_closed > 0 {
+                println!(
+                    "  merges  : reconciled {} merged bead(s) from trunk history",
+                    bootstrap.merged_closed
+                );
             }
             println!(
                 "\nDone. This repo's work is now tracked as beads via rsry. Commit `.beads/` and\n\
