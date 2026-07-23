@@ -45,6 +45,7 @@ pub mod algebra_flat;
 pub mod algebra_lww;
 pub mod algebra_orset;
 pub mod audit;
+pub mod backfill;
 pub mod fold;
 pub mod log;
 pub mod log_sqlite;

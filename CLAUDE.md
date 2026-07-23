@@ -183,6 +183,7 @@ rsry capture --from-code <repo> <path>       # source file → BeadSpecs via LLM
 rsry decompose <path> --stub-output <repo>   # also emit Rust stubs for design review
 rsry notes rotate --scope <s> --add-recipient <r>  # re-encrypt scope with new age recipient list
 rsry lattice audit [--repo <path>]           # fold each bead's observations, diff vs persist_status — R4b corpus evidence for the source-of-truth flip
+rsry lattice backfill [--repo <path>] [--limit N] [--dry-run]  # replay the trunk's `[bead-id] … (#N)` squash merges into the lattice as `PipelineVerdict::Done` observations — the corpus `audit` needs. Behavior-neutral (writes `observation` events only; persist_status untouched), idempotent on the commit sha. Git witnesses the terminal MERGE, so a backfilled bead gets ONE Done observation, not a reconstructed lifecycle
 ```
 
 ## Triage & Dispatch
