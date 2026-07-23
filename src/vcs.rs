@@ -403,16 +403,48 @@ fn trailing_pr_number(subject: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+/// Resolve the ref whose first-parent history is "the trunk" for merged-PR
+/// scanning (rosary-fb8310). Preference order: the remote's own default-branch
+/// pointer (`refs/remotes/origin/HEAD`), then the conventional trunk names on
+/// origin, then `HEAD` — the pre-fix behavior, kept as the fallback so
+/// remoteless repos (tests, scratch fixtures) scan exactly as before.
+///
+/// Why not just HEAD: the checkout at the registered repo path may sit on a
+/// feature branch (or merely behind), in which case merged trunk commits are
+/// only reachable from the remote-tracking ref a `git fetch` updates — a
+/// fetch-only refresh (vigil, cron, IDE) makes closures visible without
+/// anyone mutating the working tree.
+fn trunk_scan_ref(repo_path: &Path) -> &'static str {
+    for candidate in [
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+        "refs/remotes/origin/master",
+    ] {
+        let verified = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", candidate])
+            .current_dir(repo_path)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if verified {
+            return candidate;
+        }
+    }
+    "HEAD"
+}
+
 /// Scan the trunk's recent first-parent commits for merged-PR closures via
 /// `git log` (full message per commit, NUL-separated). VCS-agnostic (works on
-/// pure-git and jj-colocated repos — the git `post-merge` hook fires after
-/// `git pull` lands the squash commit on the current branch). Idempotent:
-/// returns every closure in the window; the caller closes only beads that are
-/// still open, so re-running is harmless.
+/// pure-git and jj-colocated repos). The scanned ref is the remote trunk when
+/// one exists (see [`trunk_scan_ref`]) — so a bare `git fetch` is enough to
+/// surface closures; the checkout's own branch/dirtiness is irrelevant.
+/// Idempotent: returns every closure in the window; the caller closes only
+/// beads that are still open, so re-running is harmless.
 pub fn scan_merged_closures(repo_path: &Path, limit: usize) -> Vec<MergedClosure> {
     let output = std::process::Command::new("git")
         .args([
             "log",
+            trunk_scan_ref(repo_path),
             "--first-parent",
             "-n",
             &limit.to_string(),
