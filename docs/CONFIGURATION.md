@@ -240,6 +240,7 @@ token_env = "CF_API_TOKEN"
 | `LINEAR_WEBHOOK_SECRET`   | Webhook signing               | `[linear] webhook_secret`      |
 | `SPRITES_TOKEN`           | Sprites compute API token     | `[compute.sprites] token_env`  |
 | `GITHUB_TOKEN`            | Auth for `rsry sync --github` | `[github] token`               |
+| `RSRY_WORKTREE_ROOT`      | Base dir for agent worktrees  | —                              |
 
 ## File Locations
 
@@ -248,7 +249,7 @@ token_env = "CF_API_TOKEN"
 | `~/.rsry/config.toml`                 | Global config                                     |
 | `~/.rsry/plugins/*.toml`              | Global plugin discovery                           |
 | `~/.rsry/dolt/rosary/`                | Backend state DB (decades, threads, pipelines)    |
-| `~/.rsry/worktrees/{repo}/{bead-id}/` | Agent worktree isolation                          |
+| `~/.rsry/worktrees/{repo}-{digest}/{bead-id}/` | Agent worktree isolation (`{digest}` = first 8 hex of the canonical repo path's hash, so two checkouts named `api` cannot collide; override the base with `RSRY_WORKTREE_ROOT`) |
 | `{repo}/.beads/`                      | Per-repo bead store directory                     |
 | `{repo}/.beads/beads.db`              | SQLite bead store (used when no `dolt/` subdir)   |
 | `{repo}/.beads/dolt/`                 | Dolt bead store (server mode)                     |

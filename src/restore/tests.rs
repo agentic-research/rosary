@@ -40,7 +40,7 @@ async fn restore_from_contract_preserves_id_status_and_deps() {
     )];
     let v = bead_to_contract_value(&b, &deps, &comments);
 
-    let r = restore_beads_from_contract(&[v.clone()], &store, "ley-line-open")
+    let r = restore_beads_from_contract(std::slice::from_ref(&v), &store, "ley-line-open")
         .await
         .unwrap();
     assert_eq!(r.restored, 1);

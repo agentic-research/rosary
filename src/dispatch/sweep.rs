@@ -5,8 +5,9 @@
 //!   `"in_progress"` — Linear's vocabulary maps to the same state per
 //!   `bead.rs:147`)
 //! - **and** there is no live agent process working on it: no entry in the
-//!   session registry with a live PID, **and** no worktree on disk at
-//!   `~/.rsry/worktrees/<repo>/<bead>/`
+//!   session registry with a live PID, **and** no worktree on disk under the
+//!   repo's workspace root (`workspace::existing_workspace_dir` — which also
+//!   covers the pre-rosary-a63159 basename-keyed layout)
 //!
 //! This happens when `rsry_dispatch` stages a worktree + flips status,
 //! the caller never spawns the agent (or removes the worktree before
@@ -130,8 +131,10 @@ pub async fn sweep_orphan_dispatches(
         // No live session — does a worktree still exist on disk?
         // If so, leave it alone: the agent process may have died but
         // there's unmerged work to recover via rsry_workspace_merge.
-        let workspace = crate::workspace::workspace_dir(repo_path, &bead.id);
-        if workspace.exists() {
+        // Legacy-aware (rosary-a63159): missing the pre-re-key layout here would
+        // revert a LIVE Dispatched bead to open on every rsry_status poll and
+        // duplicate-dispatch onto a repo an agent is actively editing.
+        if crate::workspace::existing_workspace_dir(repo_path, &bead.id).is_some() {
             continue;
         }
 
@@ -329,9 +332,9 @@ mod tests {
             .unwrap();
         store.update_status("guarded", "dispatched").await.unwrap();
 
-        // The sweep computes the worktree path from `repo_path` basename
-        // (`workspace::workspace_dir`), so pre-create at exactly that path
-        // — otherwise the lookup misses and the bead gets falsely reverted.
+        // The sweep resolves the worktree path via `workspace::workspace_dir`
+        // (repo-identity keyed), so pre-create at exactly that path — otherwise
+        // the lookup misses and the bead gets falsely reverted.
         let workspace = crate::workspace::workspace_dir(tmp.path(), "guarded");
         std::fs::create_dir_all(&workspace).unwrap();
 
@@ -347,8 +350,10 @@ mod tests {
             .unwrap();
         assert_eq!(bead.status, "dispatched");
 
-        // Cleanup — remove the test worktree dir so re-runs don't accumulate.
+        // Cleanup — remove the test worktree dir AND the per-repo root it sits
+        // in, so re-runs accumulate nothing anywhere (rosary-a63159).
         let _ = std::fs::remove_dir_all(&workspace);
+        let _ = std::fs::remove_dir(crate::workspace::workspace_root(tmp.path()));
     }
 
     // ---- sweep_dead_workers ---------------------------------------------

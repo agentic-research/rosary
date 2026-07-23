@@ -7,7 +7,6 @@ use crate::backend::{ComputeProvider, ExecHandle, ExecResult, ProvisionOpts};
 
 use super::sweep::{
     cleanup_git_worktree, cleanup_jj_workspace, create_git_worktree, create_jj_workspace,
-    workspace_dir,
 };
 use super::{VcsKind, Workspace};
 
@@ -43,9 +42,13 @@ impl Workspace {
             VcsKind::None
         };
 
-        // Reuse existing workspace if it exists (resume after agent death)
-        let existing_ws = workspace_dir(repo_path, id);
-        if existing_ws.exists() && vcs != VcsKind::None {
+        // Reuse existing workspace if it exists (resume after agent death).
+        // Legacy-aware: workspaces created before the root re-key (rosary-a63159)
+        // must still be found, or resume cuts a SECOND worktree on a fresh
+        // fix/{id} branch and abandons the first agent's unmerged work.
+        if let Some(existing_ws) = super::existing_workspace_dir(repo_path, id)
+            && vcs != VcsKind::None
+        {
             eprintln!(
                 "[workspace] reusing existing workspace: {}",
                 existing_ws.display()
