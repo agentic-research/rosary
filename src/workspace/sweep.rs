@@ -7,19 +7,70 @@ use std::path::{Path, PathBuf};
 // Directory resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve the workspace directory for a bead, creating the parent if needed.
-/// Uses `~/.rsry/worktrees/{repo}/{id}` — user-scoped, survives repo cleans,
-/// doesn't collide with CC's .claude/worktrees/ or other tools.
+/// Environment override for the workspace root. Lets tests point the root at a
+/// tempdir so the suite never writes into the developer's real `$HOME`
+/// (rosary-a63159 — the suite had leaked >20k directories there since March).
+pub const WORKTREE_ROOT_ENV: &str = "RSRY_WORKTREE_ROOT";
+
+/// Resolve the workspace directory for a bead: `<root>/{repo-identity}/{id}`.
+///
+/// **Pure** — computes a path and touches nothing. It used to `create_dir_all`
+/// the parent as a side effect, so merely *asking where a workspace would go*
+/// created it. Every caller that only wanted the path — including the existence
+/// check in `Workspace::create` — silently made a directory, and because tests
+/// pass `TempDir` paths (random `.tmpXXXX` basenames) the suite leaked one
+/// permanent directory per run into the real `$HOME` (rosary-a63159). Callers
+/// that actually materialize a workspace call [`ensure_workspace_root`].
+///
+/// Keyed on repo **identity**, not basename. The old scheme used only
+/// `file_name()`, so `~/work/api` and `~/other/api` shared
+/// `~/.rsry/worktrees/api/<bead-id>` — and since `Workspace::create` reuses any
+/// directory that merely *exists*, an agent in one repo could be handed the
+/// other's workspace and told it was isolated. The path digest disambiguates
+/// them while keeping the basename readable (rosary-6e5fc1 is the general fix).
 pub fn workspace_dir(repo_path: &Path, id: &str) -> PathBuf {
+    workspace_root(repo_path).join(id)
+}
+
+/// Root directory holding every workspace for `repo_path`.
+pub fn workspace_root(repo_path: &Path) -> PathBuf {
     let repo_name = repo_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let ws_root = home.join(".rsry").join("worktrees").join(&repo_name);
-    // Best-effort mkdir — callers handle the actual VCS error if this fails
-    let _ = std::fs::create_dir_all(&ws_root);
-    ws_root.join(id)
+    // Disambiguate same-named repos by a digest of the full path. Do NOT
+    // canonicalize: that resolves symlinks and would collapse ~/github →
+    // ~/remotes, which this codebase deliberately keeps distinct.
+    let digest = crate::cas::content_hash(repo_path.to_string_lossy().as_bytes());
+    let key = format!("{repo_name}-{}", &digest[..8.min(digest.len())]);
+
+    let base = std::env::var(WORKTREE_ROOT_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| default_worktree_base());
+    base.join(key)
+}
+
+/// Default workspace root. In **test builds** this is a temp directory, not
+/// `$HOME`: tests that genuinely materialize a workspace would otherwise write
+/// into the developer's real home dir, which is exactly how >20k directories
+/// accumulated there (rosary-a63159). Making it structurally impossible beats
+/// asking every test to remember an env var.
+fn default_worktree_base() -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join("rsry-test-worktrees");
+    }
+    dirs_next::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".rsry")
+        .join("worktrees")
+}
+
+/// Create the workspace root for `repo_path`. Call this only where a workspace
+/// is actually materialized — never from a path lookup.
+pub fn ensure_workspace_root(repo_path: &Path) -> PathBuf {
+    let root = workspace_root(repo_path);
+    let _ = std::fs::create_dir_all(&root);
+    root
 }
 
 // ---------------------------------------------------------------------------
@@ -29,6 +80,8 @@ pub fn workspace_dir(repo_path: &Path, id: &str) -> PathBuf {
 /// Create a jj workspace for isolated agent work.
 pub(super) async fn create_jj_workspace(repo_path: &Path, id: &str) -> Result<PathBuf> {
     let workspace_name = format!("fix-{id}");
+    // Materialization site: this is where the root legitimately gets created.
+    ensure_workspace_root(repo_path);
     let workspace_path = workspace_dir(repo_path, id);
 
     let output = tokio::process::Command::new("jj")
@@ -85,6 +138,8 @@ pub fn cleanup_jj_workspace(repo_path: &Path, id: &str) {
 /// `fix/{id}` branch — deletes the stale branch and retries.
 pub(super) async fn create_git_worktree(repo_path: &Path, id: &str) -> Result<PathBuf> {
     let branch_name = format!("fix/{id}");
+    // Materialization site: this is where the root legitimately gets created.
+    ensure_workspace_root(repo_path);
     let worktree_path = workspace_dir(repo_path, id);
 
     // Fetch latest origin/main so the worktree branches from current remote HEAD,

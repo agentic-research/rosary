@@ -22,11 +22,13 @@ use std::path::{Path, PathBuf};
 use crate::backend::ExecHandle;
 
 // Re-export public API from submodules.
-pub(crate) use sweep::{cleanup_git_worktree, cleanup_jj_workspace, workspace_dir};
+#[allow(unused_imports)]
+// API surface (WORKTREE_ROOT_ENV/ensure_workspace_root used by tests + creation sites)
 pub use sweep::{
-    ensure_thread_branch, merge_or_pr_with_base, sweep_agent_branches, sweep_orphaned,
-    thread_branch_name,
+    WORKTREE_ROOT_ENV, ensure_thread_branch, ensure_workspace_root, merge_or_pr_with_base,
+    sweep_agent_branches, sweep_orphaned, thread_branch_name, workspace_root,
 };
+pub(crate) use sweep::{cleanup_git_worktree, cleanup_jj_workspace, workspace_dir};
 
 /// VCS backend for code isolation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

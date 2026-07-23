@@ -324,7 +324,7 @@ impl Reconciler {
             // Workspaces live at ~/.rsry/worktrees/<repo_name>/<bead_id>/
             // (see workspace::workspace_dir). workspace_dir(path, "") returns the
             // per-repo worktrees root — scan that, not the repo root.
-            let ws_root = crate::workspace::workspace_dir(repo_path, "");
+            let ws_root = crate::workspace::workspace_root(repo_path);
             let entries: Vec<PathBuf> = match std::fs::read_dir(&ws_root) {
                 Ok(dir) => dir
                     .filter_map(|e| e.ok())

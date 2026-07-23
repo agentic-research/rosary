@@ -1020,3 +1020,48 @@ async fn isolated_workspace_is_never_the_main_checkout() {
         "isolated work_dir must actually exist on disk"
     );
 }
+
+/// rosary-a63159: `workspace_dir` must be PURE. It used to `create_dir_all` its
+/// parent merely to compute a path, so every caller — including a mere
+/// existence check — created a directory. With tempdir repo paths that leaked
+/// one permanent dir per test run into the developer's real $HOME (>20k of them
+/// had accumulated since March, invisible because they are dot-prefixed).
+#[test]
+fn workspace_dir_is_pure_and_repo_identity_keyed() {
+    let root = tempfile::TempDir::new().unwrap();
+    // SAFETY: single-threaded test scope; set before any workspace_dir call.
+    unsafe { std::env::set_var(crate::workspace::WORKTREE_ROOT_ENV, root.path()) };
+
+    let repo = tempfile::TempDir::new().unwrap();
+    let p = crate::workspace::workspace_dir(repo.path(), "bead-1");
+
+    // PURE: asking where a workspace WOULD go creates nothing.
+    assert!(
+        !p.exists(),
+        "workspace_dir must not create the workspace dir"
+    );
+    assert!(
+        !p.parent().unwrap().exists(),
+        "workspace_dir must not create the root either — that was the leak"
+    );
+
+    // IDENTITY-KEYED: two repos sharing a basename must NOT share a root.
+    // Previously both mapped to <root>/api/<id>, so Workspace::create's
+    // reuse-if-exists branch could hand repo B's workspace to an agent in A.
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    std::fs::create_dir_all(a.join("api")).unwrap();
+    std::fs::create_dir_all(b.join("api")).unwrap();
+    let pa = crate::workspace::workspace_dir(&a.join("api"), "same-bead");
+    let pb = crate::workspace::workspace_dir(&b.join("api"), "same-bead");
+    assert_ne!(
+        pa, pb,
+        "same-basename repos must not collide onto one workspace path"
+    );
+    assert!(
+        pa.to_string_lossy().contains("api-") && pb.to_string_lossy().contains("api-"),
+        "basename should remain readable in the key: {pa:?} {pb:?}"
+    );
+
+    unsafe { std::env::remove_var(crate::workspace::WORKTREE_ROOT_ENV) };
+}
