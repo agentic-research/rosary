@@ -13,6 +13,8 @@ use serde_json::Value;
 use crate::import::schema_version_warning;
 use crate::store::BeadStore;
 
+pub mod merge;
+
 /// Parse the bead contract as **JSONL** (one JSON object per line) — the format
 /// [`crate::import::export_beads_contract_jsonl`] emits and
 /// [`restore_beads_from_contract`] consumes. Blank lines are tolerated; a

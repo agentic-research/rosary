@@ -1,0 +1,20 @@
+# The git-tracked bead export (rosary-4ebf52) is a DERIVED, STRUCTURED file:
+# one JSON record per line, id-sorted. Git's default text merge auto-merges it
+# most of the time — the id sort keeps unrelated beads on distant lines — but a
+# line-level 3-way merge doesn't know what a line MEANS, and can produce
+# syntactically valid JSONL that is semantically wrong (the same bead id twice,
+# or a stale record winning). Merge it by RECORD instead: a real 3-way decision
+# per bead id, id-sorted output, and a loud conflict — never a silent discard —
+# when both branches drove the same bead to different states.
+#
+# The driver DEFINITION lives in git config, not here — per gitattributes(5),
+# this line only REFERENCES a driver by name. Config is per-clone and can't be
+# committed, so every clone must install it:
+#
+#     rsry hooks install     # sets merge.beads-jsonl.{name,driver}
+#     rsry hooks status      # reports whether it's configured
+#
+# Without that config git silently falls back to the default text merge, which
+# is today's (adequate-but-unsound) behaviour — so an un-installed clone is
+# degraded, not broken.
+.beads/beads.jsonl merge=beads-jsonl
