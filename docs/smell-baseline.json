@@ -353,6 +353,11 @@
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/observation/backfill.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/observation/fold.rs",
       "count": 8
     },

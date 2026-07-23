@@ -471,6 +471,73 @@ pub fn scan_merged_closures(repo_path: &Path, limit: usize) -> Vec<MergedClosure
         .collect()
 }
 
+/// One squash-merge commit on the trunk, with the identity (`sha`) and time
+/// (`committed_at`) git actually witnessed, plus every bead closure its message
+/// carries. Distinct from [`MergedClosure`] (which is id+PR only) because the
+/// observation lattice needs the commit's *identity* as a dedup key and its
+/// *timestamp* as `observed_at` — the two things a closure alone can't provide.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeCommit {
+    /// Full commit sha — stable, unique, and the natural `source_event_id`.
+    pub sha: String,
+    /// Commit timestamp (committer date), the moment git witnessed the merge.
+    pub committed_at: chrono::DateTime<chrono::Utc>,
+    /// Every `[bead-id]`/`(#N)` closure parsed from the commit message.
+    pub closures: Vec<MergedClosure>,
+}
+
+/// Like [`scan_merged_closures`], but keeps each commit's sha + timestamp so the
+/// result can be recorded as observations (`rsry lattice backfill`). Same trunk
+/// ref, same first-parent walk, same message parser — only the projection
+/// differs. Commits with no `(#N)` marker (non-merges) are dropped.
+pub fn scan_merge_commits(repo_path: &Path, limit: usize) -> Vec<MergeCommit> {
+    let output = std::process::Command::new("git")
+        .args([
+            "log",
+            trunk_scan_ref(repo_path),
+            "--first-parent",
+            "-n",
+            &limit.to_string(),
+            // sha \x01 unix-committer-date \x01 full message, NUL-separated.
+            "--format=%H%x01%ct%x01%B%x00",
+        ])
+        .current_dir(repo_path)
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|rec| !rec.trim().is_empty())
+        .filter_map(parse_merge_commit_record)
+        .collect()
+}
+
+/// Parse one `%H\x01%ct\x01%B` record into a [`MergeCommit`]. `None` when the
+/// record is malformed or the commit carries no closures.
+fn parse_merge_commit_record(record: &str) -> Option<MergeCommit> {
+    let record = record.trim_start_matches('\n');
+    let mut parts = record.splitn(3, '\x01');
+    let sha = parts.next()?.trim().to_string();
+    let ts: i64 = parts.next()?.trim().parse().ok()?;
+    let message = parts.next()?;
+    if sha.is_empty() {
+        return None;
+    }
+    let closures = parse_merged_closures(message);
+    if closures.is_empty() {
+        return None;
+    }
+    Some(MergeCommit {
+        sha,
+        committed_at: chrono::DateTime::from_timestamp(ts, 0)?,
+        closures,
+    })
+}
+
 /// Build the canonical PR URL (`https://github.com/<owner>/<repo>/pull/<n>`)
 /// from the repo's `origin` remote, so the local close path can record the same
 /// structured `pr_url` event the gh/webhook path emits — letting a parent and
@@ -582,6 +649,28 @@ mod tests {
         assert!(ids.contains(&"rosary-da720c"));
         assert!(ids.contains(&"rosary-9d181f"));
         assert!(closures.iter().all(|c| c.pr_number == 322));
+    }
+
+    #[test]
+    fn parse_merge_commit_record_carries_sha_and_time() {
+        // The `%H\x01%ct\x01%B` record the lattice backfill consumes.
+        let rec = "abc123def456\x011700000000\x01[rosary-a66b3a] feat(x): thing (#7)\n";
+        let c = parse_merge_commit_record(rec).unwrap();
+        assert_eq!(c.sha, "abc123def456");
+        assert_eq!(c.committed_at.timestamp(), 1_700_000_000);
+        assert_eq!(c.closures.len(), 1);
+        assert_eq!(c.closures[0].bead_id, "rosary-a66b3a");
+        assert_eq!(c.closures[0].pr_number, 7);
+    }
+
+    #[test]
+    fn parse_merge_commit_record_drops_non_merges_and_garbage() {
+        // No (#N) → not a merge.
+        assert!(parse_merge_commit_record("sha\x011700000000\x01wip: nothing").is_none());
+        // Malformed records never panic.
+        assert!(parse_merge_commit_record("no-separators-at-all").is_none());
+        assert!(parse_merge_commit_record("sha\x01notanumber\x01x (#1)").is_none());
+        assert!(parse_merge_commit_record("\x011700000000\x01[a-b1] x (#1)").is_none());
     }
 
     #[test]

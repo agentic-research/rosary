@@ -513,6 +513,25 @@ enum LatticeAction {
         #[arg(short, long, default_value = ".")]
         repo: String,
     },
+    /// Replay the trunk's squash-merge history into the lattice as
+    /// `PipelineVerdict::Done` observations — the corpus `audit` needs.
+    ///
+    /// Behavior-neutral: writes `observation` events ONLY; bead state and
+    /// `persist_status` are untouched. Idempotent on the commit sha, so
+    /// re-running records nothing. Git witnesses the terminal MERGE, not the
+    /// intermediate lifecycle — each backfilled bead gets one Done observation,
+    /// not a reconstructed history.
+    Backfill {
+        /// Repo path containing .beads/ (defaults to current directory).
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+        /// How many first-parent trunk commits to scan.
+        #[arg(long, default_value_t = 400)]
+        limit: usize,
+        /// Report what would be recorded without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1119,6 +1138,20 @@ fn stop_dolt_server(beads_dir: &Path) {
     for f in ["dolt-server.pid", "dolt-server.port"] {
         let _ = std::fs::remove_file(beads_dir.join(f));
     }
+}
+
+/// Resolve a `rsry lattice` `--repo` argument to `(repo_path, repo_name)`.
+///
+/// The name is the lattice's `WorkRef.repo`, so `audit` and `backfill` MUST
+/// derive it identically — a mismatch would make the backfill's observations
+/// invisible to the fold. Sharing one helper is what enforces that.
+fn resolve_lattice_repo(repo: &str) -> (PathBuf, String) {
+    let repo_path = scanner::resolve_repo_path(Path::new(repo));
+    let repo_name = repo_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "repo".to_string());
+    (repo_path, repo_name)
 }
 
 pub fn resolve_beads_dir(repo_root: &Path) -> PathBuf {
@@ -2162,14 +2195,22 @@ async fn main() -> Result<()> {
         }
         Command::Lattice { action } => match action {
             LatticeAction::Audit { repo } => {
-                let repo_path = scanner::resolve_repo_path(std::path::Path::new(&repo));
-                let beads_dir = resolve_beads_dir(&repo_path);
-                let store = bead_sqlite::connect_bead_store(&beads_dir).await?;
-                let repo_name = repo_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "repo".to_string());
+                let (repo_path, repo_name) = resolve_lattice_repo(&repo);
+                let store = bead_sqlite::connect_bead_store(&resolve_beads_dir(&repo_path)).await?;
                 let report = crate::observation::audit::audit_store(&*store, &repo_name).await?;
+                print!("{}", report.render(&repo_name));
+            }
+            LatticeAction::Backfill {
+                repo,
+                limit,
+                dry_run,
+            } => {
+                let (repo_path, repo_name) = resolve_lattice_repo(&repo);
+                let store = bead_sqlite::connect_bead_store(&resolve_beads_dir(&repo_path)).await?;
+                let report = crate::observation::backfill::backfill_repo(
+                    &*store, &repo_path, &repo_name, limit, dry_run,
+                )
+                .await?;
                 print!("{}", report.render(&repo_name));
             }
         },
