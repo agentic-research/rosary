@@ -976,3 +976,47 @@ fn thread_branch_name_custom_prefix() {
         "agent/core-pipeline"
     );
 }
+
+/// rosary-efd300: the isolation contract has NO degradation path. With a real
+/// VCS and `isolate=true`, the agent's work_dir must never be the main checkout
+/// itself — a shared/symlink-aliased tree is one tree, so an agent working
+/// in-place mutates every other agent's view (the LLO data-loss root cause).
+///
+/// Pins the invariant that the removed dead `Err(e) => …falling back to
+/// in-place` arms cannot silently regrow.
+#[tokio::test]
+async fn isolated_workspace_is_never_the_main_checkout() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path();
+    // Minimal real git repo with one commit (worktree add needs a HEAD).
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap()
+    };
+    git(&["init", "-q", "."]);
+    std::fs::write(repo.join("f.txt"), "x").unwrap();
+    git(&["add", "f.txt"]);
+    git(&["commit", "-qm", "seed"]);
+
+    let ws = Workspace::create("iso-1", "repo", repo, true)
+        .await
+        .expect("isolation must succeed on a real git repo");
+
+    assert_ne!(
+        ws.work_dir.canonicalize().unwrap(),
+        repo.canonicalize().unwrap(),
+        "isolated workspace must NOT be the main checkout — that is the \
+         in-place degradation this contract forbids"
+    );
+    assert!(
+        ws.work_dir.exists(),
+        "isolated work_dir must actually exist on disk"
+    );
+}

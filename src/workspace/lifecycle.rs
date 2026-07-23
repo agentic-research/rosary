@@ -14,7 +14,23 @@ use super::{VcsKind, Workspace};
 impl Workspace {
     /// Create a new workspace with code isolation.
     ///
-    /// Tries jj first, falls back to git worktree, then in-place.
+    /// `isolate` is the whole contract, and there is **no degradation path**:
+    ///
+    /// - `isolate: true` — detect the repo's VCS and create an isolated
+    ///   workspace (jj workspace for jj, worktree for git). If that fails, or
+    ///   the repo has no VCS to isolate with, this **fails loudly**. It never
+    ///   silently runs the agent in the main checkout: a shared/symlink-aliased
+    ///   tree (`~/github` → `~/remotes`) is one tree, so an agent branch-switch
+    ///   there mutates every other agent's view — the root cause of a real
+    ///   data-loss incident.
+    /// - `isolate: false` — caller explicitly opted out; run in place.
+    ///
+    /// Note jj and git are alternatives chosen by *detection*, not a fallback
+    /// chain: a jj repo never degrades to a git worktree.
+    ///
+    /// (The previous doc claimed "tries jj first, falls back to git worktree,
+    /// then in-place". All three clauses were false, and it read as though
+    /// rosary silently degrades into the exact data-loss case above.)
     pub async fn create(id: &str, repo: &str, repo_path: &Path, isolate: bool) -> Result<Self> {
         // Expand tilde but do NOT canonicalize — that resolves symlinks
         // and breaks paths like ~/github → ~/remotes.
@@ -45,34 +61,28 @@ impl Workspace {
         }
 
         let (work_dir, actual_vcs) = match vcs {
-            VcsKind::Jj => match create_jj_workspace(repo_path, id).await {
-                Ok(path) => (path, VcsKind::Jj),
-                Err(e) if isolate => {
-                    // Isolation was requested — don't silently run in-place.
-                    // This prevents agents from writing to the main repo.
-                    anyhow::bail!(
+            // `vcs` is only Jj/Git when `isolate` is true (see the binding
+            // above), so isolation was definitionally requested here: a failure
+            // is fatal, never a quiet drop into the main checkout. The former
+            // `Err(e) if isolate` guard plus its in-place arm was DEAD CODE —
+            // the guard always matched, so the fallback below it could not run.
+            // It survived only as something scary to read.
+            VcsKind::Jj => (
+                create_jj_workspace(repo_path, id).await.map_err(|e| {
+                    anyhow::anyhow!(
                         "workspace isolation failed for {id}: jj workspace creation failed: {e}"
-                    );
-                }
-                Err(e) => {
-                    eprintln!("[workspace] jj isolation failed ({e}), falling back to in-place");
-                    (repo_path.to_path_buf(), VcsKind::None)
-                }
-            },
-            VcsKind::Git => match create_git_worktree(repo_path, id).await {
-                Ok(path) => (path, VcsKind::Git),
-                Err(e) if isolate => {
-                    // Isolation was requested — don't silently run in-place.
-                    // This prevents agents from writing to the main repo.
-                    anyhow::bail!(
+                    )
+                })?,
+                VcsKind::Jj,
+            ),
+            VcsKind::Git => (
+                create_git_worktree(repo_path, id).await.map_err(|e| {
+                    anyhow::anyhow!(
                         "workspace isolation failed for {id}: git worktree creation failed: {e}"
-                    );
-                }
-                Err(e) => {
-                    eprintln!("[workspace] git worktree failed ({e}), falling back to in-place");
-                    (repo_path.to_path_buf(), VcsKind::None)
-                }
-            },
+                    )
+                })?,
+                VcsKind::Git,
+            ),
             VcsKind::None if isolate => {
                 anyhow::bail!(
                     "workspace isolation failed for {id}: no VCS found in {} \
