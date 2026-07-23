@@ -2910,6 +2910,58 @@ mod hooks {
         (!v.is_empty()).then_some(v)
     }
 
+    /// The `.gitattributes` line that routes the tracked export to the driver.
+    pub(crate) const MERGE_ATTR_PATH: &str = ".beads/beads.jsonl";
+
+    /// Ensure `.gitattributes` routes `.beads/beads.jsonl` at the merge driver.
+    ///
+    /// OPT-IN BY TRACKING, matching the pre-commit hook: only repos that have
+    /// `git add`ed the export get the line. Installing hooks must never start
+    /// creating a `.gitattributes` in a repo that never opted into JSONL sync.
+    ///
+    /// Non-clobbering: appends one line, never rewrites existing content. Uses
+    /// `git check-attr` rather than grepping, so an existing rule that already
+    /// routes the path — by any pattern, in any `.gitattributes` — counts.
+    fn ensure_jsonl_merge_attribute(repo_root: &Path) -> Result<bool> {
+        let tracked = std::process::Command::new("git")
+            .current_dir(repo_root)
+            .args(["ls-files", "--error-unmatch", MERGE_ATTR_PATH])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !tracked {
+            return Ok(false);
+        }
+
+        // Already routed (possibly via a broader pattern)? Nothing to do.
+        let routed = std::process::Command::new("git")
+            .current_dir(repo_root)
+            .args(["check-attr", "merge", "--", MERGE_ATTR_PATH])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(MERGE_DRIVER))
+            .unwrap_or(false);
+        if routed {
+            return Ok(false);
+        }
+
+        let path = repo_root.join(".gitattributes");
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut next = existing.clone();
+        if !next.is_empty() && !next.ends_with('\n') {
+            next.push('\n');
+        }
+        next.push_str(&format!(
+            "\n# Bead export merges by RECORD, not by line (rosary-f9516f). The driver\n\
+             # itself is defined in git config by `rsry hooks install` — this line only\n\
+             # names it, and without it git would line-merge and shred bead records.\n\
+             {MERGE_ATTR_PATH} merge={MERGE_DRIVER}\n"
+        ));
+        std::fs::write(&path, next).with_context(|| format!("writing {}", path.display()))?;
+        println!("  ✓ routed {MERGE_ATTR_PATH} → {MERGE_DRIVER} in .gitattributes");
+        Ok(true)
+    }
+
     /// Install the `beads-jsonl` merge driver into the repo's git config
     /// (rosary-f9516f).
     ///
@@ -3006,6 +3058,17 @@ mod hooks {
         // line (rosary-f9516f). The driver definition lives in git config, so
         // it must be (re)installed per clone — `.gitattributes` only names it.
         install_merge_driver(repo_root, &rsry_bin)?;
+
+        // ...and the `.gitattributes` line that ROUTES the export to it. The
+        // driver definition alone is INERT: gitattributes(5) only runs a driver
+        // for paths carrying the matching `merge=` attribute, so a repo with the
+        // config but no attribute silently falls back to git's LINE merge — the
+        // exact record-shredding `merge_jsonl` exists to prevent.
+        //
+        // `hooks status` already reported this ("driver is inert"), but install
+        // never wrote what it diagnosed, so every repo that didn't hand-commit a
+        // `.gitattributes` was unprotected. Measured: 5 of 7 tracked repos.
+        ensure_jsonl_merge_attribute(repo_root)?;
 
         // Warn if Dolt remote is not configured — hooks will silently no-op otherwise.
         let repo_name = repo_root
@@ -3206,6 +3269,67 @@ mod hooks {
             std::fs::write(dir.join("seed"), "x").unwrap();
             assert!(git(dir, &["add", "seed"]).status.success());
             assert!(git(dir, &["commit", "-q", "-m", "seed"]).status.success());
+        }
+
+        // --- .gitattributes routing ---------------------------------------
+
+        /// The driver config alone is INERT — git only runs it for paths
+        /// carrying the `merge=` attribute. This asserts the attribute is what
+        /// actually flips, via `git check-attr` (the thing git consults), not
+        /// by grepping the file we just wrote.
+        #[test]
+        fn routes_tracked_export_and_is_idempotent() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(MERGE_ATTR_PATH), "{}\n").unwrap();
+
+            // Untracked export => opt-in not taken => no file written.
+            assert!(!ensure_jsonl_merge_attribute(root).unwrap());
+            assert!(!root.join(".gitattributes").exists());
+
+            assert!(git(root, &["add", MERGE_ATTR_PATH]).status.success());
+            assert!(ensure_jsonl_merge_attribute(root).unwrap());
+
+            let attr = git(root, &["check-attr", "merge", "--", MERGE_ATTR_PATH]);
+            assert!(
+                String::from_utf8_lossy(&attr.stdout).contains(MERGE_DRIVER),
+                "export must route to the driver, else git line-merges it"
+            );
+
+            // Second run is a no-op — no duplicate lines.
+            assert!(!ensure_jsonl_merge_attribute(root).unwrap());
+            let body = std::fs::read_to_string(root.join(".gitattributes")).unwrap();
+            assert_eq!(body.matches(MERGE_DRIVER).count(), 1);
+        }
+
+        /// Pre-existing content is appended to, never clobbered.
+        #[test]
+        fn preserves_existing_gitattributes() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(root.join(".gitattributes"), "*.png binary\n").unwrap();
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(MERGE_ATTR_PATH), "{}\n").unwrap();
+            assert!(git(root, &["add", MERGE_ATTR_PATH]).status.success());
+
+            assert!(ensure_jsonl_merge_attribute(root).unwrap());
+            let body = std::fs::read_to_string(root.join(".gitattributes")).unwrap();
+            assert!(body.contains("*.png binary"), "clobbered user content");
+            assert!(body.contains(MERGE_DRIVER));
+        }
+
+        /// The canonical `.beads/.gitignore` must deny the migration backup —
+        /// `migrate --commit` renames dolt/ to dolt.bak/ and never deletes it,
+        /// and it was staged accidentally once.
+        #[test]
+        fn beads_gitignore_denies_migration_backup() {
+            assert!(crate::init::BEADS_GITIGNORE.contains("dolt.bak/"));
         }
 
         // --- embedded-template invariants ---------------------------------
