@@ -163,24 +163,30 @@ tasks:
       docs/smell-rules/ (loaded via MACHE_SMELL_RULES_DIR) — e.g. long_file_rosary
       is Golden Rule 2 (>500 lines), which retired scripts/check-file-length.sh.
       CI runs the identical gate via the reusable `agentic-research/mache`
-      find-smells action; this target is the local mirror. Requires mache >=
-      v0.13.0 (it auto-provisions the leyline backend so all _ast rules run).
+      find-smells action; this target is the local mirror — keep the invocation
+      (`--rule '*' --tags=gate --limit 100000 --baseline-root`) in sync with
+      .github/workflows/smells.yml's pinned action. Requires mache >= v0.17.0
+      (the `gate` rule tag; below that `--tags=gate` matches nothing).
       Regenerate the baseline after an intentional change with:
       `MACHE_SMELL_RULES_DIR=docs/smell-rules mache find-smells --db <db> --rule '*'
-      --limit 100000 --baseline-root "$PWD" --write-baseline docs/smell-baseline.json`.
+      --tags=gate --limit 100000 --baseline-root "$PWD"
+      --write-baseline docs/smell-baseline.json`.
+      NOTE: the baseline is LINUX-generated (CI downloads mache-linux-amd64); a
+      darwin-generated baseline has been observed to disagree on untouched files,
+      so regenerate via linux (container or CI), not from a macOS run.
     env:
       MACHE_SMELL_RULES_DIR: '{{.TASKFILE_DIR}}/docs/smell-rules'
     cmds:
       - |
         if ! command -v mache >/dev/null 2>&1; then
-          echo "SKIP: mache not on PATH — install mache >= v0.13.0 for the structural"
+          echo "SKIP: mache not on PATH — install mache >= v0.17.0 for the structural"
           echo "      smell gate. CI enforces it via the mache find-smells action."
           exit 0
         fi
         DB="$(mktemp -u).db"
         trap 'rm -f "$DB"' EXIT
         mache build . "$DB"
-        mache find-smells --db "$DB" --rule '*' --limit 100000 \
+        mache find-smells --db "$DB" --rule '*' --tags=gate --limit 100000 \
           --baseline-root "$PWD" --baseline docs/smell-baseline.json
 
   coverage:
