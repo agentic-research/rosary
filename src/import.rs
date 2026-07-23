@@ -99,10 +99,22 @@ pub fn bead_to_contract_value(
 /// fidelity: fetches each bead's dependencies and comments (including
 /// soft-deleted ones, to preserve the audit trail). Fails loud if a
 /// dependency/comment fetch errors rather than silently dropping data.
+/// Emitted **sorted by bead id** — a stable, immutable key — so the JSONL is
+/// diff-stable: adding a bead inserts exactly one line, and editing a bead
+/// rewrites exactly that line in place. The store's read order
+/// (`priority ASC, created_at DESC`) is NOT usable here because `priority` is
+/// mutable: re-prioritizing one bead would move its line and shuffle beads
+/// between priority blocks, so a one-field edit would surface as a
+/// delete+insert pair in two distant places. Diff-stability is what makes a
+/// git-tracked export reviewable ("this commit added exactly one bead") and
+/// auto-mergeable line-wise (rosary-4ebf52).
 pub async fn export_beads_contract_jsonl(
     store: &dyn BeadStore,
     beads: &[crate::bead::Bead],
 ) -> Result<String> {
+    let mut sorted: Vec<&crate::bead::Bead> = beads.iter().collect();
+    sorted.sort_by(|a, b| a.id.cmp(&b.id));
+    let beads = sorted;
     let mut lines = Vec::with_capacity(beads.len());
     for b in beads {
         let deps = store

@@ -16,6 +16,16 @@ fi
 if [ -z "$RSRY" ]; then
     echo "[rsry post-merge] rsry not found (baked path '__RSRY_BIN__' absent, not on PATH); skipping bead auto-close" >&2
 else
+    # SQLite stores have no `dolt pull` (the block above is gated on
+    # .beads/dolt/<repo> and no-ops here), so the git-tracked JSONL export is the
+    # sync channel (rosary-4ebf52). Ingest whatever this merge brought:
+    # id-preserving, last-writer-wins on updated_at (a peer's close actually
+    # lands), and idempotent — a merge that changed no beads restores nothing.
+    # Runs BEFORE close-merged so that sweep sees the synced state.
+    if [ ! -d ".beads/dolt/$REPO" ] && [ -f ".beads/beads.jsonl" ]; then
+        "$RSRY" bead import --jsonl .beads/beads.jsonl >/dev/null 2>&1 || true
+    fi
+
     # Close beads whose PR just merged, rsry-native: read the squash-merge commits
     # `git pull` landed on the trunk (`[bead-id] … (#N)`) — no gh / webhook / tunnel.
     # Best-effort: never block or fail the merge.

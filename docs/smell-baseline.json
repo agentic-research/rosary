@@ -278,8 +278,13 @@
     },
     {
       "rule_id": "duplicate_definitions",
-      "source_id": "src/restore.rs",
-      "count": 2
+      "source_id": "src/restore/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/restore/tests.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",

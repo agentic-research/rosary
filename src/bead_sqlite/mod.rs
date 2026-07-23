@@ -50,13 +50,33 @@ pub fn parse_derived_from_notes(notes: Option<&str>) -> Vec<bdr::provenance::Pro
         .unwrap_or_default()
 }
 
-/// Parse a datetime string from SQLite into a chrono DateTime<Utc>.
-fn parse_datetime(s: &str) -> chrono::DateTime<Utc> {
-    // Try ISO 8601 formats: "2024-01-15 12:34:56" or "2024-01-15T12:34:56"
+/// Parse a stored timestamp. Accepts the store's canonical
+/// `%Y-%m-%d %H:%M:%S`, the `T`-separated variant, and full **RFC3339** (which
+/// carries an offset — the shape `bead export --jsonl` emits, so any external
+/// producer round-tripping the contract parses too).
+///
+/// **Fails loud** on anything else. This previously ended in
+/// `.unwrap_or_else(|_| Utc::now())`, which silently rewrote an unreadable
+/// timestamp to "now": indistinguishable from a real edit, and corrosive to
+/// last-writer-wins sync (rosary-4ebf52), where such a row would win every
+/// comparison forever and keep re-winning on each pass. Matches the fail-loud
+/// posture this reader already takes for malformed rows (rosary-91e712) —
+/// better a visible error than a store that quietly invents history.
+fn parse_datetime(s: &str) -> rusqlite::Result<chrono::DateTime<Utc>> {
     NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S"))
         .map(|ndt| Utc.from_utc_datetime(&ndt))
-        .unwrap_or_else(|_| Utc::now())
+        .or_else(|_| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
+        .map_err(|_| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unparseable timestamp {s:?} in bead store"),
+                )),
+            )
+        })
 }
 
 /// Read a Bead from a rusqlite Row.
@@ -80,8 +100,8 @@ fn bead_from_row(row: &rusqlite::Row<'_>, repo_name: &str) -> rusqlite::Result<B
             .unwrap_or_else(|| "task".into()),
         owner: row.get("assignee")?,
         repo: repo_name.to_string(),
-        created_at: parse_datetime(&created_str),
-        updated_at: parse_datetime(&updated_str),
+        created_at: parse_datetime(&created_str)?,
+        updated_at: parse_datetime(&updated_str)?,
         dependency_count: row.get::<_, i64>("dependency_count").unwrap_or(0) as u32,
         dependent_count: row.get::<_, i64>("dep_count").unwrap_or(0) as u32,
         comment_count: row.get::<_, i64>("comment_count").unwrap_or(0) as u32,
@@ -357,6 +377,42 @@ impl SqliteBeadStore {
             params![next.to_string(), full_id],
         )
         .with_context(|| format!("restoring status for {id}"))?;
+        Ok(())
+    }
+
+    /// Write `created_at` / `updated_at` **verbatim**. For RESTORE contexts
+    /// only. `create_bead_full` and `restore_status` both stamp `now()`, which
+    /// is fine for a one-shot migration but breaks *sync* (rosary-4ebf52) two
+    /// ways: LWW comparison becomes meaningless (every restored bead looks
+    /// locally-newest, so peers flap authority back and forth), and each
+    /// machine's re-export differs from its source, churning the git-tracked
+    /// JSONL instead of leaving it byte-stable. Preserving the source
+    /// timestamps is what makes the export a *convergent* value.
+    /// Takes typed instants and formats them in the store's canonical
+    /// `%Y-%m-%d %H:%M:%S` — the ONLY shape `parse_datetime` accepts. Passing
+    /// an RFC3339 string straight through (with its `+00:00` offset) matches
+    /// neither reader pattern, and `parse_datetime` falls back to `Utc::now()`
+    /// on failure, so the write would look like it worked and read back as
+    /// "now" — silently defeating LWW. Owning the format here keeps that trap
+    /// out of callers.
+    pub(crate) async fn restore_timestamps(
+        &self,
+        id: &str,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        const STORE_FMT: &str = "%Y-%m-%d %H:%M:%S";
+        let conn = self.conn.lock().unwrap();
+        let full_id = Self::resolve_id(&conn, id)?;
+        conn.execute(
+            "UPDATE issues SET created_at = ?1, updated_at = ?2 WHERE id = ?3",
+            params![
+                created_at.format(STORE_FMT).to_string(),
+                updated_at.format(STORE_FMT).to_string(),
+                full_id
+            ],
+        )
+        .with_context(|| format!("restoring timestamps for {id}"))?;
         Ok(())
     }
 
@@ -1225,11 +1281,11 @@ impl BeadStore for SqliteBeadStore {
                     issue_id: row.get("issue_id")?,
                     text: row.get("text")?,
                     author: row.get("author")?,
-                    created_at: parse_datetime(&created_str),
-                    edited_at: edited_str.map(|s| parse_datetime(&s)),
+                    created_at: parse_datetime(&created_str)?,
+                    edited_at: edited_str.map(|s| parse_datetime(&s)).transpose()?,
                     edit_reason: row.get("edit_reason")?,
                     original_text: row.get("original_text")?,
-                    deleted_at: deleted_str.map(|s| parse_datetime(&s)),
+                    deleted_at: deleted_str.map(|s| parse_datetime(&s)).transpose()?,
                     delete_reason: row.get("delete_reason")?,
                 })
             })?
@@ -1288,11 +1344,11 @@ impl BeadStore for SqliteBeadStore {
                 issue_id: row.get("issue_id")?,
                 text: row.get("text")?,
                 author: row.get("author")?,
-                created_at: parse_datetime(&created_str),
-                edited_at: edited_str.map(|s| parse_datetime(&s)),
+                created_at: parse_datetime(&created_str)?,
+                edited_at: edited_str.map(|s| parse_datetime(&s)).transpose()?,
                 edit_reason: row.get("edit_reason")?,
                 original_text: row.get("original_text")?,
-                deleted_at: deleted_str.map(|s| parse_datetime(&s)),
+                deleted_at: deleted_str.map(|s| parse_datetime(&s)).transpose()?,
                 delete_reason: row.get("delete_reason")?,
             })
         })?;

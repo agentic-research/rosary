@@ -1,0 +1,24 @@
+REPO=$(basename "$PWD")
+# Keep the git-tracked bead export current so bead state travels WITH the commit
+# (rosary-4ebf52). SQLite stores have no `dolt push`/`dolt pull` — those blocks in
+# post-push/post-merge are gated on `.beads/dolt/<repo>` and are silent no-ops here
+# — and `.beads/beads.db` is gitignored, so this JSONL export IS the shared record.
+#
+# OPT-IN BY TRACKING: only maintained when `.beads/beads.jsonl` is already tracked
+# by git. Installing hooks must never start committing a brand-new file in a repo
+# that didn't ask for it; `git add`ing the export once turns the sync on.
+#
+# Safe on every commit: the export is id-sorted and convergent, so when no bead
+# changed it is byte-identical and stages nothing — code-only commits see no churn.
+if [ ! -d ".beads/dolt/$REPO" ] && git ls-files --error-unmatch .beads/beads.jsonl >/dev/null 2>&1; then
+    RSRY="__RSRY_BIN__"
+    if [ ! -x "$RSRY" ]; then
+        RSRY=$(command -v rsry 2>/dev/null || true)
+    fi
+    if [ -n "$RSRY" ]; then
+        # Best-effort: never block a commit on bead export.
+        if "$RSRY" bead export --jsonl --status all -o .beads/beads.jsonl >/dev/null 2>&1; then
+            git add .beads/beads.jsonl >/dev/null 2>&1 || true
+        fi
+    fi
+fi

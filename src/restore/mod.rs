@@ -43,9 +43,83 @@ pub fn read_beads_jsonl(file: Option<String>) -> Result<Vec<Value>> {
     Ok(out)
 }
 
+/// Parse a contract timestamp (RFC3339, as `bead_to_contract_value` emits).
+/// Returns `None` for missing/unparseable — treated as "not newer", so a
+/// malformed record can never win a last-writer-wins comparison.
+/// Truncated to whole seconds: the store persists timestamps at 1-second
+/// resolution, so an incoming record carrying sub-seconds would compare as
+/// strictly-newer than its own round-tripped copy and "update" on every sync
+/// forever. Comparing at the store's real resolution is what makes a
+/// steady-state sync a genuine no-op.
+fn parse_ts(s: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::Timelike as _;
+    s.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| t.with_timezone(&chrono::Utc))
+        .and_then(|t| t.with_nanosecond(0))
+}
+
+/// Write the record's `created_at`/`updated_at` verbatim. Must run AFTER any
+/// write that stamps `now()` (create/status/field updates), or it gets clobbered.
+async fn restore_ts(
+    store: &crate::bead_sqlite::SqliteBeadStore,
+    bead: &Value,
+    id: &str,
+) -> Result<()> {
+    if let (Some(c), Some(u)) = (
+        parse_ts(bead["created_at"].as_str()),
+        parse_ts(bead["updated_at"].as_str()),
+    ) {
+        store
+            .restore_timestamps(id, c, u)
+            .await
+            .with_context(|| format!("restoring timestamps for {id}"))?;
+    }
+    Ok(())
+}
+
+/// Apply a strictly-newer incoming record onto an existing bead (LWW winner):
+/// scalar fields, then status verbatim (bypassing the transition guard — a
+/// sync reconstructs a peer's state, it doesn't transition), then the source
+/// timestamps last.
+async fn apply_incoming(
+    store: &crate::bead_sqlite::SqliteBeadStore,
+    bead: &Value,
+    id: &str,
+) -> Result<()> {
+    let update = crate::bead::BeadUpdate {
+        title: bead["title"].as_str().map(str::to_string),
+        description: bead["description"].as_str().map(str::to_string),
+        priority: bead["priority"].as_u64().map(|p| p as u8),
+        issue_type: bead["issue_type"].as_str().map(str::to_string),
+        owner: bead["owner"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        files: None,
+        test_files: None,
+        acceptance_criteria: bead["acceptance_criteria"].as_str().map(str::to_string),
+    };
+    if !update.is_empty() {
+        store
+            .update_bead_fields(id, &update)
+            .await
+            .with_context(|| format!("applying incoming fields to {id}"))?;
+    }
+    if let Some(status) = bead["status"].as_str() {
+        store
+            .restore_status(id, status)
+            .await
+            .with_context(|| format!("applying incoming status to {id}"))?;
+    }
+    restore_ts(store, bead, id).await
+}
+
 /// Result of an id-preserving restore.
 pub struct RestoreResult {
     pub restored: usize,
+    /// Existing beads whose incoming record was NEWER and was applied (LWW).
+    pub updated: usize,
+    /// Existing beads left alone because the local copy was same-or-newer.
     pub skipped_existing: usize,
     pub dependencies: usize,
     pub comments: usize,
@@ -81,11 +155,13 @@ pub async fn restore_beads_from_contract(
 
     let mut result = RestoreResult {
         restored: 0,
+        updated: 0,
         skipped_existing: 0,
         dependencies: 0,
         comments: 0,
     };
-    // Only wire edges/comments (pass 2) for ids we actually restored here.
+    // Wire edges/comments (pass 2) for every bead we created OR updated — not
+    // for ones we left alone, so a no-op sync stays a no-op.
     let mut restored_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let str_array = |bead: &Value, key: &str| -> Vec<String> {
@@ -104,10 +180,26 @@ pub async fn restore_beads_from_contract(
         let id = bead["id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("bead contract record missing `id`"))?;
-        if store.get_bead(id, repo_name).await?.is_some() {
-            result.skipped_existing += 1;
+        let incoming_updated = parse_ts(bead["updated_at"].as_str());
+
+        // ── Already present: last-writer-wins on updated_at ──
+        // A restore must never silently lose a peer's state transition (the
+        // "vigil closed it but no other machine knows" case, rosary-4ebf52),
+        // nor clobber a local edit that is newer than the incoming record.
+        if let Some(local) = store.get_bead(id, repo_name).await? {
+            let local_updated = Some(local.updated_at);
+            // Tie => keep local. Convergent: two machines holding byte-equal
+            // records both no-op, so a steady-state sync writes nothing.
+            if incoming_updated.is_none() || incoming_updated <= local_updated {
+                result.skipped_existing += 1;
+                continue;
+            }
+            apply_incoming(store, bead, id).await?;
+            restored_ids.insert(id.to_string());
+            result.updated += 1;
             continue;
         }
+
         let issue_type = bead["issue_type"].as_str().unwrap_or("task");
         store
             .create_bead_full(crate::store::NewBead {
@@ -149,6 +241,10 @@ pub async fn restore_beads_from_contract(
                 .await
                 .with_context(|| format!("restoring external_ref for {id}"))?;
         }
+        // LAST: create_bead_full and restore_status both stamp now(); rewrite
+        // the source timestamps verbatim so LWW stays meaningful and a
+        // re-export is byte-identical to what we ingested.
+        restore_ts(store, bead, id).await?;
         restored_ids.insert(id.to_string());
         result.restored += 1;
     }
@@ -167,6 +263,17 @@ pub async fn restore_beads_from_contract(
             result.dependencies += 1;
         }
         if let Some(comments) = bead.get("comments").and_then(|v| v.as_array()) {
+            // Comments are append-only and this pass now also runs for beads
+            // updated by LWW, so adding blindly would duplicate every comment
+            // on every sync. Dedup on (author, text) against what's stored —
+            // which keeps the sync idempotent for comments too.
+            let existing: std::collections::HashSet<(String, String)> = store
+                .list_comments(id, true)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|c| (c.author, c.text))
+                .collect();
             for c in comments {
                 let body = c
                     .get("text")
@@ -180,6 +287,9 @@ pub async fn restore_beads_from_contract(
                     .get("author")
                     .and_then(|v| v.as_str())
                     .unwrap_or("restore");
+                if existing.contains(&(author.to_string(), body.to_string())) {
+                    continue;
+                }
                 store
                     .add_comment(id, body, author)
                     .await
@@ -193,103 +303,4 @@ pub async fn restore_beads_from_contract(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::import::bead_to_contract_value;
-    use crate::testutil::make_bead;
-
-    fn sample_comment(id: &str, issue: &str, text: &str, author: &str) -> crate::bead::Comment {
-        crate::bead::Comment {
-            id: id.to_string(),
-            issue_id: issue.to_string(),
-            text: text.to_string(),
-            author: author.to_string(),
-            created_at: chrono::Utc::now(),
-            edited_at: None,
-            edit_reason: None,
-            original_text: None,
-            deleted_at: None,
-            delete_reason: None,
-        }
-    }
-
-    /// rosary-9d4951: the id-PRESERVING restore is the inverse of the contract
-    /// export — unlike `import_bead` (which re-keys), a restored bead keeps its
-    /// ORIGINAL id, status, dependency edge, and comment, and a second restore
-    /// is a no-op (idempotent by id, never clobbers).
-    #[tokio::test]
-    async fn restore_from_contract_preserves_id_status_and_deps() {
-        let store =
-            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
-        let mut b = make_bead("ley-line-open-4aeb4f", "research", "ley-line-open");
-        b.title = "Research: Turso".to_string();
-        b.status = "closed".to_string();
-        b.priority = 1;
-        // A cross-repo / not-yet-restored dep target — restore_dependency must
-        // preserve it verbatim (no existence check), like the migration.
-        let deps = vec!["ley-line-open-71b20c".to_string()];
-        let comments = vec![sample_comment(
-            "c1",
-            "ley-line-open-4aeb4f",
-            "the finding",
-            "bob",
-        )];
-        let v = bead_to_contract_value(&b, &deps, &comments);
-
-        let r = restore_beads_from_contract(&[v.clone()], &store, "ley-line-open")
-            .await
-            .unwrap();
-        assert_eq!(r.restored, 1);
-        assert_eq!(r.dependencies, 1);
-        assert_eq!(r.comments, 1);
-        assert_eq!(r.skipped_existing, 0);
-
-        // Id preserved verbatim (the whole point — import_bead would re-key).
-        let got = store
-            .get_bead("ley-line-open-4aeb4f", "ley-line-open")
-            .await
-            .unwrap()
-            .expect("bead restored under its original id");
-        assert_eq!(got.id, "ley-line-open-4aeb4f");
-        assert_eq!(got.priority, 1);
-        assert_eq!(
-            crate::bead::BeadState::from(got.status.as_str()),
-            crate::bead::BeadState::Done,
-            "status restored verbatim, not reset to open"
-        );
-        assert_eq!(
-            store
-                .get_dependencies("ley-line-open-4aeb4f")
-                .await
-                .unwrap(),
-            vec!["ley-line-open-71b20c".to_string()],
-            "dependency edge preserved verbatim (dangling target ok)"
-        );
-        assert!(
-            store
-                .list_comments("ley-line-open-4aeb4f", false)
-                .await
-                .unwrap()
-                .iter()
-                .any(|c| c.text == "the finding"),
-            "comment preserved"
-        );
-
-        // Idempotent: a second restore skips the now-present id, no clobber, no
-        // duplicate comment.
-        let r2 = restore_beads_from_contract(&[v], &store, "ley-line-open")
-            .await
-            .unwrap();
-        assert_eq!(r2.restored, 0, "already-present id is skipped");
-        assert_eq!(r2.skipped_existing, 1);
-        assert_eq!(
-            store
-                .list_comments("ley-line-open-4aeb4f", false)
-                .await
-                .unwrap()
-                .len(),
-            1,
-            "no duplicate comment on re-restore"
-        );
-    }
-}
+mod tests;
