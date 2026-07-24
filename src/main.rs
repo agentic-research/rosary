@@ -52,6 +52,7 @@ mod github_mirror;
 mod handoff;
 mod import;
 mod init;
+mod jsonl_sync;
 mod linear;
 #[allow(dead_code)]
 mod linear_tracker;
@@ -703,6 +704,10 @@ enum BeadAction {
         /// Without `--jsonl`, the legacy lossy rosary↔rosary JSON array is emitted.
         #[arg(long)]
         jsonl: bool,
+        /// Refresh only ids already present in this public JSONL projection.
+        /// Local-only store records are never added.
+        #[arg(long, requires = "jsonl")]
+        published_from: Option<String>,
         /// Write to this file instead of stdout.
         #[arg(short, long)]
         output: Option<String>,
@@ -1986,6 +1991,17 @@ async fn main() -> Result<()> {
                 }
                 BeadAction::Close { id, force } => {
                     bead_ops::close_bead(client.as_ref(), &id, &repo_name, force).await?;
+                    jsonl_sync::refresh_tracked_beads_jsonl(
+                        client.as_ref(),
+                        &repo_name,
+                        &repo_root,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "bead {id} closed locally, but refreshing tracked .beads/beads.jsonl"
+                        )
+                    })?;
                     cli::bead_closed(&id);
                 }
                 BeadAction::Move { id, dest } => {
@@ -2196,6 +2212,7 @@ async fn main() -> Result<()> {
                 BeadAction::Export {
                     status,
                     jsonl,
+                    published_from,
                     output,
                 } => {
                     // Full enumeration (incl. closed) so export/backup is
@@ -2207,7 +2224,13 @@ async fn main() -> Result<()> {
                         "blocked" => beads.into_iter().filter(|b| b.is_blocked()).collect(),
                         s => beads.into_iter().filter(|b| b.status == s).collect(),
                     };
-                    let out = if jsonl {
+                    let out = if let Some(path) = published_from {
+                        let published = restore::read_beads_jsonl(Some(path))?;
+                        jsonl_sync::export_published_beads_contract_jsonl(
+                            &*client, &published, &repo_name,
+                        )
+                        .await?
+                    } else if jsonl {
                         import::export_beads_contract_jsonl(&*client, &filtered).await?
                     } else {
                         serde_json::to_string_pretty(&import::export_beads_json(&filtered))?

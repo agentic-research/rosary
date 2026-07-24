@@ -1,0 +1,160 @@
+//! Bounded refresh for the git-tracked public bead projection.
+
+use anyhow::{Context, Result};
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+
+use crate::store::BeadStore;
+
+async fn live_contract_value(store: &dyn BeadStore, bead: &crate::bead::Bead) -> Result<Value> {
+    let deps = store
+        .get_dependencies(&bead.id)
+        .await
+        .with_context(|| format!("fetching dependencies for {}", bead.id))?;
+    let comments = store
+        .list_comments(&bead.id, true)
+        .await
+        .with_context(|| format!("fetching comments for {}", bead.id))?;
+    Ok(crate::import::bead_to_contract_value(
+        bead, &deps, &comments,
+    ))
+}
+
+fn serialize_records(records: BTreeMap<String, Value>) -> Result<String> {
+    records
+        .into_values()
+        .map(|record| serde_json::to_string(&record).map_err(Into::into))
+        .collect::<Result<Vec<_>>>()
+        .map(|lines| lines.join("\n"))
+}
+
+/// Render only records already present in a public JSONL projection.
+///
+/// Live records replace published records with the same id. Published records
+/// missing locally are preserved, and local-only records are never added.
+pub async fn export_published_beads_contract_jsonl(
+    store: &dyn BeadStore,
+    published: &[Value],
+    repo_name: &str,
+) -> Result<String> {
+    let live = store.list_all_beads(repo_name).await?;
+    let live_by_id: HashMap<&str, &crate::bead::Bead> =
+        live.iter().map(|bead| (bead.id.as_str(), bead)).collect();
+    let mut records = BTreeMap::new();
+
+    for record in published {
+        let id = record
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("published bead JSONL record is missing string id"))?;
+        let value = match live_by_id.get(id) {
+            Some(bead) => live_contract_value(store, bead).await?,
+            None => record.clone(),
+        };
+        anyhow::ensure!(
+            records.insert(id.to_string(), value).is_none(),
+            "published bead JSONL contains duplicate id {id}"
+        );
+    }
+    serialize_records(records)
+}
+
+fn is_git_tracked(repo_root: &Path) -> bool {
+    std::process::Command::new("git")
+        .args(["ls-files", "--error-unmatch", "--", ".beads/beads.jsonl"])
+        .current_dir(repo_root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn atomic_replace(path: &Path, content: &str) -> Result<()> {
+    let tmp = path.with_file_name(format!(
+        ".beads.jsonl.tmp-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    std::fs::write(&tmp, content).with_context(|| format!("writing {}", tmp.display()))?;
+    if let Err(error) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error).with_context(|| format!("replacing {}", path.display()));
+    }
+    Ok(())
+}
+
+/// Atomically refresh an opted-in, tracked JSONL projection in place.
+pub async fn refresh_tracked_beads_jsonl(
+    store: &dyn BeadStore,
+    repo_name: &str,
+    repo_root: &Path,
+) -> Result<bool> {
+    let beads_dir = crate::resolve_beads_dir(repo_root);
+    let jsonl = repo_root.join(".beads/beads.jsonl");
+    if beads_dir.join("dolt").is_dir() || !jsonl.is_file() || !is_git_tracked(repo_root) {
+        return Ok(false);
+    }
+
+    let published = crate::restore::read_beads_jsonl(Some(jsonl.to_string_lossy().into_owned()))?;
+    let next = export_published_beads_contract_jsonl(store, &published, repo_name).await?;
+    atomic_replace(&jsonl, &next)?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod jsonl_sync_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn preserves_missing_public_records_and_excludes_local_only_records() {
+        let store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+        store
+            .create_bead_full(crate::store::NewBead {
+                id: "rosary-local1".to_string(),
+                title: "must stay private".to_string(),
+                issue_type: "bug".to_string(),
+                files: vec!["src/private.rs".to_string()],
+                test_files: vec!["tests/private.rs".to_string()],
+                acceptance_criteria: "cargo test".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let published = vec![
+            serde_json::json!({"id": "rosary-public2", "status": "open", "marker": "keep-b"}),
+            serde_json::json!({"id": "rosary-public1", "status": "closed", "marker": "keep-a"}),
+        ];
+
+        let output = export_published_beads_contract_jsonl(&store, &published, "rosary")
+            .await
+            .unwrap();
+        let records: Vec<Value> = output
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["id"], "rosary-public1");
+        assert_eq!(records[0]["marker"], "keep-a");
+        assert_eq!(records[1]["id"], "rosary-public2");
+        assert_eq!(records[1]["marker"], "keep-b");
+        assert!(!output.contains("rosary-local1"));
+    }
+
+    #[tokio::test]
+    async fn duplicate_public_ids_fail_without_collapsing_records() {
+        let store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+        let published = vec![
+            serde_json::json!({"id": "rosary-public1", "status": "open"}),
+            serde_json::json!({"id": "rosary-public1", "status": "closed"}),
+        ];
+
+        let error = export_published_beads_contract_jsonl(&store, &published, "rosary")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("duplicate id rosary-public1"));
+    }
+}
