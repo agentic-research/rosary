@@ -10,13 +10,14 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 TASKFILE="$HERE/Taskfile.yml"
 PLIST="$HERE/scripts/com.rosary.serve.plist.template"
+INSTALLER="$HERE/scripts/install-rsry-service.sh"
 fails=0
 
 check() { # desc, test-expr already evaluated to 0/1 via caller
   if [ "$1" -eq 0 ]; then echo "ok   $2"; else echo "FAIL $2"; fails=$((fails+1)); fi
 }
 
-grep -q "launchctl kickstart" "$TASKFILE"; check $? "install-service kickstarts the service"
+grep -q "launchctl kickstart" "$INSTALLER"; check $? "install-service kickstarts the service"
 ! grep -q "touch ~/.local/bin/rsry" "$TASKFILE"; check $? "install no longer relies on unreliable touch"
 ! grep -q "<key>WatchPaths</key>" "$PLIST"; check $? "plist template drops the WatchPaths key"
 

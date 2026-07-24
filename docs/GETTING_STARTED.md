@@ -65,9 +65,15 @@ cd ~/remotes/art/rosary
 task install  # builds release, codesigns, installs to ~/.local/bin, sets up HTTP MCP service
 ```
 
-On macOS this also installs a launchd service (`com.rosary.serve`) that runs the HTTP
-MCP server on port 8383. It auto-restarts when the binary changes (i.e., after each
-`task install`).
+On macOS this also installs the sole supported launchd service
+(`com.rosary.serve`) that runs the HTTP MCP server on port 8383. Installation
+unloads and removes the obsolete `dev.rsry.serve` definition if it is present,
+so two jobs cannot race for the same port. The service auto-restarts when the
+binary changes (i.e., after each `task install`).
+
+The launch agent executes `~/.local/bin/rsry` directly. Its `PATH` includes
+`/opt/homebrew/bin` only so Homebrew-installed runtime dependencies such as
+`dolt` remain discoverable; it does not select a Homebrew rsry binary.
 
 > **Linux users:** `task install` invokes `codesign` (macOS-only) and the launchd
 > setup is gated to Darwin. Use `task release` to produce the binary, then either

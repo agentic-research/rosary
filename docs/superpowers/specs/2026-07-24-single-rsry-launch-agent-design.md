@@ -18,8 +18,9 @@ entire session.
 
 ## Design
 
-`task install-service` will enforce one canonical local service before loading
-or restarting it:
+The launchd transaction will move from the inline Taskfile recipe to
+`scripts/install-rsry-service.sh`, called by `task install-service`. The script
+will enforce one canonical local service before loading or restarting it:
 
 1. Unload the legacy `dev.rsry.serve` job if it is loaded.
 2. Delete `~/Library/LaunchAgents/dev.rsry.serve.plist` if it exists.
@@ -40,23 +41,27 @@ retains `/opt/homebrew/bin` so runtime dependencies installed there, notably
 
 ## Testing
 
-The existing installer contract test will gain assertions that:
+`scripts/install-rsry-service.test.sh` will execute the real installer in a
+temporary `HOME`, with a fake `launchctl` at the external process boundary. It
+will assert observable filesystem effects and the recorded command order:
 
-- the legacy label and plist path are named explicitly;
-- the legacy service is unloaded non-interactively;
-- the obsolete plist is removed with `rm -f`;
-- legacy cleanup occurs before canonical service loading/restarting;
-- the canonical plist still points at `~/.local/bin/rsry`;
-- the documented HTTP transport remains unchanged.
+- the obsolete plist no longer exists;
+- the canonical plist is installed and points at the temporary
+  `~/.local/bin/rsry`;
+- the legacy unload occurs before the canonical load;
+- a second run succeeds with the legacy plist already absent.
 
 The focused installer test must fail before the Taskfile change and pass
-afterward. The full `task check` gate must pass before the branch is pushed.
+afterward. It will be wired into the canonical `task rules`/`task check` gate.
+The full `task check` gate must pass before the branch is pushed.
 
 ## Scope
 
 Files in scope:
 
 - `Taskfile.yml`
+- `scripts/install-rsry-service.sh`
+- `scripts/install-rsry-service.test.sh`
 - `scripts/check-install-restart.sh`
 - `docs/GETTING_STARTED.md`
 

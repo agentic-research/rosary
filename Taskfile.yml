@@ -55,6 +55,12 @@ tasks:
     cmds:
       - bash scripts/check-taskfile-contract.sh
 
+  install-service-contract:
+    desc: Verify the macOS rsry MCP launch-agent migration and restart contract
+    cmds:
+      - bash scripts/check-install-restart.sh
+      - bash scripts/install-rsry-service.test.sh
+
   rules:
     desc: >-
       Rosary-domain mechanical gates that CI and dispatched agents must run.
@@ -67,6 +73,7 @@ tasks:
       find-smells action in CI (.github/workflows/smells.yml) — not reinvented in
       bash. This target holds only the domain rules mache does not own.
     cmds:
+      - task: install-service-contract
       # R4b — imperative persist_status() call sites may only decrease. Kept as a
       # rosary script (not a mache rule) because mache's call-extraction
       # under-counts it (node_refs sees 16 of the 21 real sites), so the bash
@@ -394,38 +401,7 @@ tasks:
     desc: Install/update launchd service for rsry HTTP MCP server (macOS)
     platforms: [darwin]
     cmds:
-      - |
-        PLIST="$HOME/Library/LaunchAgents/com.rosary.serve.plist"
-        LABEL="com.rosary.serve"
-        BIN="$HOME/.local/bin/rsry"
-        LOG="$HOME/.rsry/http.log"
-        STAGED="/tmp/com.rosary.serve.plist.staged"
-        sed -e "s|__RSRY_BIN__|$BIN|g" -e "s|__RSRY_LOG__|$LOG|g" -e "s|__HOME__|$HOME|g" -e "s|__USER__|$USER|g" \
-          scripts/com.rosary.serve.plist.template > "$STAGED"
-        # Only reload launchd if the plist content has actually changed
-        # (or doesn't exist yet). On normal `task install`, the binary
-        # changes but the plist doesn't — a kickstart restarts on the new
-        # binary (WatchPaths was unreliable on atomic rename — rosary-de1237).
-        if [ ! -f "$PLIST" ] || ! diff -q "$STAGED" "$PLIST" >/dev/null 2>&1; then
-          cp "$STAGED" "$PLIST"
-          launchctl unload "$PLIST" 2>/dev/null || true
-          launchctl load "$PLIST"
-          echo "HTTP MCP service (re)loaded (plist changed)"
-        elif ! launchctl list "$LABEL" >/dev/null 2>&1; then
-          # Plist unchanged but the agent is NOT loaded (crashed, manually
-          # unloaded, or never loaded because nothing was listening). Load it so
-          # agents always find the MCP server at session start (rosary-0e1d78).
-          launchctl load "$PLIST"
-          echo "HTTP MCP service plist unchanged but was unloaded — loaded"
-        else
-          # Plist unchanged and loaded: force a restart onto the new binary.
-          # kickstart -k is deterministic — no FSEvents/WatchPaths dependency
-          # (rosary-de1237: the service ran a 5-day-stale binary otherwise).
-          launchctl kickstart -k "gui/$(id -u)/$LABEL"
-          echo "HTTP MCP service kickstarted onto the new binary"
-        fi
-        rm -f "$STAGED"
-        echo "  Port: 8383 | Log: $LOG"
+      - bash scripts/install-rsry-service.sh
 
   overnight:
     desc: Start overnight loop (concurrency=1, bugs first, caffeinate)
