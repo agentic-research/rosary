@@ -95,6 +95,87 @@ fn bead_matches_dispatchable_virtual_status() {
     assert!(bead_matches_status(&ready_only, Some("ready")));
 }
 
+#[tokio::test]
+async fn mcp_close_refreshes_only_the_published_jsonl_record() {
+    use crate::store::NewBead;
+    use std::process::Command;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path().join("project");
+    let beads_dir = repo.join(".beads");
+    std::fs::create_dir_all(&beads_dir).unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test User"]);
+
+    let store = crate::bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db")).unwrap();
+    for (id, title) in [
+        ("project-public1", "published"),
+        ("project-private1", "local only"),
+    ] {
+        store
+            .create_bead_full(NewBead {
+                id: id.to_string(),
+                title: title.to_string(),
+                issue_type: "bug".to_string(),
+                files: vec!["src/lib.rs".to_string()],
+                test_files: vec!["tests/smoke.rs".to_string()],
+                acceptance_criteria: "cargo test".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+    let published = store
+        .get_bead("project-public1", "project")
+        .await
+        .unwrap()
+        .unwrap();
+    let jsonl = crate::import::export_beads_contract_jsonl(&store, &[published])
+        .await
+        .unwrap();
+    std::fs::write(beads_dir.join("beads.jsonl"), jsonl).unwrap();
+    git(&["add", ".beads/beads.jsonl"]);
+    git(&["commit", "-qm", "publish one bead"]);
+
+    let pool = RepoPool::from_client("project", repo, Box::new(store));
+    tool_bead_close(
+        &json!({ "scope": "repo:project", "id": "project-public1" }),
+        &pool,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let records = crate::restore::read_beads_jsonl(Some(
+        beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
+    ))
+    .unwrap();
+    assert_eq!(
+        records.len(),
+        1,
+        "MCP close must not publish local-only beads"
+    );
+    assert_eq!(records[0]["id"], "project-public1");
+    assert_eq!(
+        records[0]["status"], "closed",
+        "MCP close must immediately refresh the published record to the store's terminal status"
+    );
+}
+
 // ---- tool_review (rosary-cd5d2a) --------------------------------------
 
 /// Phase 0 of rosary-ccd5a2. Caller must supply `bead_id`; the error

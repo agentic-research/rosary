@@ -732,7 +732,23 @@ async fn tool_bead_close(
     let repo = scope
         .as_repo_name()
         .expect("Repo-only scope verified by resolve_repo_client");
+    let repo_root = args
+        .get("repo_path")
+        .and_then(Value::as_str)
+        .map(|path| crate::scanner::resolve_repo_path(std::path::Path::new(path)))
+        .or_else(|| pool.path_for(repo).map(std::path::Path::to_path_buf))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "bead {id} closed locally, but repo path for `repo:{repo}` is unavailable; \
+                 pass repo_path or register the repo so tracked JSONL can be refreshed"
+            )
+        })?;
     crate::bead_ops::close_bead(client, id, repo, force).await?;
+    crate::jsonl_sync::refresh_tracked_beads_jsonl(client, repo, &repo_root)
+        .await
+        .with_context(|| {
+            format!("bead {id} closed locally, but refreshing tracked .beads/beads.jsonl")
+        })?;
 
     // Unregister the session so rsry_active stops showing it.
     // Best-effort — session may not exist if bead was closed manually.

@@ -41,7 +41,8 @@ if [ ! -d ".beads/dolt/$REPO" ] && git ls-files --error-unmatch .beads/beads.jso
         # tracked export, so a bad export destroyed the record before anything
         # could inspect it.
         _tmp=".beads/.beads.jsonl.tmp$$"
-        if "$RSRY" bead export --jsonl --status all -o "$_tmp" >/dev/null 2>&1; then
+        if "$RSRY" bead export --jsonl --status all \
+            --published-from .beads/beads.jsonl -o "$_tmp" >/dev/null 2>&1; then
 
             # ---- GUARD 2: magnitude (rosary-599778) ----------------------------
             # Backstop for any context guard 1 misses (e.g. a broken store in the
