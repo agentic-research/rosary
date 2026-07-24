@@ -32,11 +32,20 @@ if [ ! -d ".beads/dolt/$REPO" ] && git ls-files --error-unmatch .beads/beads.jso
         exit 0
     fi
 
-    RSRY="__RSRY_BIN__"
-    if [ ! -x "$RSRY" ]; then
+    RSRY_HOOK_VERSION="__RSRY_VERSION__"
+    RSRY="${RSRY_BIN:-}"
+    if [ -z "$RSRY" ]; then
         RSRY=$(command -v rsry 2>/dev/null || true)
     fi
+    if [ -z "$RSRY" ] && [ -x "$HOME/.local/bin/rsry" ]; then
+        RSRY="$HOME/.local/bin/rsry"
+    fi
     if [ -n "$RSRY" ]; then
+        _rsry_runtime_version=$("$RSRY" --version 2>/dev/null | awk '{print $2}')
+        if [ -n "$_rsry_runtime_version" ] && [ "$_rsry_runtime_version" != "$RSRY_HOOK_VERSION" ]; then
+            printf '⚠ rsry hook drift: hook v%s, runtime v%s — run `rsry hooks install`.\n' "$RSRY_HOOK_VERSION" "$_rsry_runtime_version" >&2
+        fi
+
         # Export to a TEMP file first. The old code wrote straight over the
         # tracked export, so a bad export destroyed the record before anything
         # could inspect it.
