@@ -2839,22 +2839,15 @@ mod hooks {
         })
     }
 
-    /// Substitute the install-time `__RSRY_BIN__` placeholder in a hook `block`
-    /// with the absolute path of the installing binary (rosary-cb9321).
+    /// Render install-time metadata into a hook template.
     ///
-    /// The path is baked inside a double-quoted shell assignment, so a path
-    /// carrying shell metacharacters (`"`, `$`, backtick, backslash, newline) is
-    /// refused — we substitute an empty string, which makes the generated hook
-    /// fall back to its `command -v rsry` PATH lookup rather than emit a broken
-    /// or injectable assignment. An empty `rsry_bin` (e.g. `current_exe` failed)
-    /// takes the same fallback path.
-    pub(crate) fn render_block(block: &str, rsry_bin: &str) -> String {
-        let safe = if rsry_bin.is_empty() || rsry_bin.contains(['"', '$', '`', '\\', '\n']) {
-            ""
-        } else {
-            rsry_bin
-        };
-        block.replace("__RSRY_BIN__", safe)
+    /// Generated hooks deliberately do not contain the path of the installing
+    /// binary: `cargo test`, worktrees, and staged release directories are all
+    /// ephemeral. Templates resolve rsry at execution time. The version is
+    /// still embedded so a hook can warn when its runtime binary differs from
+    /// the binary whose templates installed it.
+    pub(crate) fn render_block(block: &str) -> String {
+        block.replace("__RSRY_VERSION__", env!("CARGO_PKG_VERSION"))
     }
 
     /// Provenance line embedded inside each managed hook block.
@@ -2871,24 +2864,8 @@ mod hooks {
     }
 
     /// Render a template as the complete rsry-managed block written to disk.
-    fn render_managed_block(name: &str, block: &str, rsry_bin: &str) -> String {
-        format!(
-            "{}\n{}",
-            hook_stamp(name, block),
-            render_block(block, rsry_bin)
-        )
-    }
-
-    /// Absolute path of the currently-running rsry binary, for baking into
-    /// generated hooks (rosary-cb9321). Canonicalized so a relative or symlinked
-    /// invocation still yields a stable absolute path. Empty string when
-    /// `current_exe` fails — [`render_block`] then leaves the hook on its
-    /// `command -v rsry` PATH fallback.
-    fn resolve_rsry_bin() -> String {
-        std::env::current_exe()
-            .map(|p| p.canonicalize().unwrap_or(p))
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default()
+    fn render_managed_block(name: &str, block: &str) -> String {
+        format!("{}\n{}", hook_stamp(name, block), render_block(block))
     }
 
     /// Build a fresh hook file from scratch (no existing file at the path).
@@ -3076,20 +3053,17 @@ mod hooks {
     /// Build the `merge.beads-jsonl.driver` command line (rosary-f9516f).
     ///
     /// `%O`/`%A`/`%B` are git's ancestor/ours/theirs temp paths; the driver
-    /// overwrites `%A` with the result. Same `__RSRY_BIN__` reasoning as the
-    /// hooks: git GUIs, CI runners, and `git merge` invoked from a launchd
-    /// context all have restricted PATHs, so bake the absolute path of the
-    /// installing binary. Falls back to a bare `rsry` (PATH lookup) when the
-    /// path is unusable — an empty `current_exe`, or one carrying shell
-    /// metacharacters, which would otherwise produce an injectable command
-    /// (git runs the driver through the shell).
-    pub(crate) fn merge_driver_command(rsry_bin: &str) -> String {
-        let bin = if rsry_bin.is_empty() || rsry_bin.contains(['"', '$', '`', '\\', '\n', '\'']) {
-            "rsry".to_string()
-        } else {
-            format!("\"{rsry_bin}\"")
-        };
-        format!("{bin} bead merge-jsonl \"%O\" \"%A\" \"%B\"")
+    /// overwrites `%A` with the result. Resolution happens when Git invokes the
+    /// driver: an explicit `RSRY_BIN`, then PATH, then the conventional
+    /// per-user install. No checkout/build-specific absolute path is stored in
+    /// repository config.
+    pub(crate) fn merge_driver_command() -> String {
+        "sh -c 'r=\"${RSRY_BIN:-}\"; \
+         if [ -z \"$r\" ]; then r=$(command -v rsry 2>/dev/null || true); fi; \
+         if [ -z \"$r\" ] && [ -x \"$HOME/.local/bin/rsry\" ]; then r=\"$HOME/.local/bin/rsry\"; fi; \
+         if [ -z \"$r\" ]; then echo \"rsry merge driver: rsry not found\" >&2; exit 1; fi; \
+         exec \"$r\" bead merge-jsonl \"$@\"' - \"%O\" \"%A\" \"%B\""
+            .to_string()
     }
 
     /// Read a single git config value from `repo_root`, `None` if unset.
@@ -3174,7 +3148,7 @@ mod hooks {
     ///
     /// Idempotent: `git config <key> <value>` overwrites in place, so a
     /// re-install converges on the same two keys.
-    fn install_merge_driver(repo_root: &Path, rsry_bin: &str) -> Result<()> {
+    fn install_merge_driver(repo_root: &Path) -> Result<()> {
         let entries = [
             (
                 format!("merge.{MERGE_DRIVER}.name"),
@@ -3183,7 +3157,7 @@ mod hooks {
             ),
             (
                 format!("merge.{MERGE_DRIVER}.driver"),
-                merge_driver_command(rsry_bin),
+                merge_driver_command(),
             ),
         ];
         for (key, value) in entries {
@@ -3215,11 +3189,6 @@ mod hooks {
             .with_context(|| format!("creating {}", hooks_dir.display()))?;
         neutralize_inactive_standard_hooks(repo_root, &hooks_dir)?;
 
-        // Absolute path of the binary running this install, baked into the
-        // generated hooks so they resolve rsry without a PATH lookup
-        // (rosary-cb9321).
-        let rsry_bin = resolve_rsry_bin();
-
         for (name, block) in HOOKS {
             let dst = hooks_dir.join(name);
             // Replace a stale symlink (e.g. a hand-made commit-msg →
@@ -3232,7 +3201,7 @@ mod hooks {
             {
                 let _ = std::fs::remove_file(&dst);
             }
-            let block = render_managed_block(name, block, &rsry_bin);
+            let block = render_managed_block(name, block);
             let content = if dst.exists() {
                 let existing = std::fs::read_to_string(&dst)
                     .with_context(|| format!("reading existing hook at {}", dst.display()))?;
@@ -3255,7 +3224,7 @@ mod hooks {
         // The tracked `.beads/beads.jsonl` export is merged by record, not by
         // line (rosary-f9516f). The driver definition lives in git config, so
         // it must be (re)installed per clone — `.gitattributes` only names it.
-        install_merge_driver(repo_root, &rsry_bin)?;
+        install_merge_driver(repo_root)?;
 
         // ...and the `.gitattributes` line that ROUTES the export to it. The
         // driver definition alone is INERT: gitattributes(5) only runs a driver
@@ -3585,48 +3554,36 @@ mod hooks {
         }
 
         #[test]
-        fn post_merge_block_bakes_absolute_rsry_path() {
-            // In PATH-restricted shells (git GUIs, some CI runners) a bare
-            // `command -v rsry` guard finds nothing and the hook silently
-            // no-ops. Install bakes the absolute path of the installing binary
-            // so the hook fires regardless of PATH.
-            let rendered = render_block(post_merge_template(), "/opt/rsry/bin/rsry");
+        fn post_merge_block_is_portable_and_discloses_installer_version() {
+            // The installing binary may live in an ephemeral cargo target or
+            // worktree. Generated hooks must not pin that path: they resolve a
+            // durable install at runtime and carry the installer version so a
+            // mismatch can be diagnosed.
+            let ephemeral = "/private/tmp/rosary-build/target/debug/rsry";
+            let rendered = render_block(post_merge_template());
             assert!(
-                rendered.contains("/opt/rsry/bin/rsry"),
-                "absolute rsry path must be baked into the hook"
+                !rendered.contains(ephemeral),
+                "ephemeral installer path must not be baked into the hook"
             );
             assert!(
-                !rendered.contains("__RSRY_BIN__"),
-                "the install-time placeholder must be fully substituted"
+                !rendered.contains("__RSRY_VERSION__"),
+                "the install-time version placeholder must be fully substituted"
             );
-            // PATH lookup is retained as a fallback for when the baked path
-            // moves (binary reinstalled elsewhere).
             assert!(
                 rendered.contains("command -v rsry"),
-                "PATH-lookup fallback must remain"
+                "runtime PATH lookup must remain"
             );
-        }
-
-        #[test]
-        fn render_block_empty_path_falls_back_to_path_lookup() {
-            // current_exe() can fail; an empty bake must still leave a hook
-            // that resolves rsry via PATH — never a broken assignment.
-            let rendered = render_block(post_merge_template(), "");
-            assert!(!rendered.contains("__RSRY_BIN__"));
-            assert!(rendered.contains("command -v rsry"));
-        }
-
-        #[test]
-        fn render_block_refuses_shell_metacharacters() {
-            // The path is baked inside a double-quoted assignment; a path with
-            // shell metacharacters must be refused (→ empty) rather than emit an
-            // injectable / broken hook.
-            let rendered = render_block(post_merge_template(), "/bad/$(rm -rf ~)/rsry");
             assert!(
-                !rendered.contains("$(rm -rf ~)"),
-                "shell metacharacters must not be baked into the hook"
+                rendered.contains("$HOME/.local/bin/rsry"),
+                "PATH-restricted hooks need a stable per-user fallback"
             );
-            assert!(rendered.contains("command -v rsry"));
+            assert!(
+                rendered.contains(&format!(
+                    "RSRY_HOOK_VERSION=\"{}\"",
+                    env!("CARGO_PKG_VERSION")
+                )),
+                "hook must disclose the installer version to its runtime"
+            );
         }
 
         // --- resolve_hooks_dir --------------------------------------------
@@ -3786,10 +3743,7 @@ mod hooks {
                 assert!(content.starts_with("#!/bin/sh"));
                 assert!(content.contains(MARKER_START));
                 assert!(content.contains(MARKER_END));
-                // Install bakes the absolute rsry path into the block, so the
-                // written content matches the RENDERED template, not the raw
-                // one (rosary-cb9321).
-                let rendered = render_managed_block(name, block, &resolve_rsry_bin());
+                let rendered = render_managed_block(name, block);
                 assert!(
                     content.contains(rendered.trim()),
                     "{name} should contain rendered template content",
@@ -3829,24 +3783,21 @@ mod hooks {
             // read after two installs proves we overwrote rather than appended.
         }
 
-        /// The driver command bakes the absolute binary path (git GUIs / CI
-        /// runners have restricted PATHs) but degrades to a bare `rsry` when
-        /// the path is empty or carries shell metacharacters — git runs the
-        /// driver through a shell, so an unquotable path must never be
-        /// interpolated.
+        /// The driver resolves rsry when Git invokes it, rather than pinning
+        /// whichever ephemeral binary happened to run `hooks install`.
         #[test]
-        fn merge_driver_command_quotes_or_falls_back() {
-            let cmd = merge_driver_command("/opt/bin/rsry");
+        fn merge_driver_command_is_portable() {
+            let ephemeral = "/private/tmp/target/debug/rsry";
+            let cmd = merge_driver_command();
             assert!(
-                cmd.starts_with("\"/opt/bin/rsry\" bead merge-jsonl "),
-                "{cmd}"
+                !cmd.contains(ephemeral),
+                "driver must not pin installer path: {cmd}"
             );
-            for bad in ["", "/tmp/a\"b/rsry", "/tmp/$(id)/rsry", "/tmp/a'b/rsry"] {
-                let cmd = merge_driver_command(bad);
-                assert!(
-                    cmd.starts_with("rsry bead merge-jsonl "),
-                    "{bad:?} should fall back to PATH lookup, got {cmd}"
-                );
+            assert!(cmd.contains("command -v rsry"), "{cmd}");
+            assert!(cmd.contains("$HOME/.local/bin/rsry"), "{cmd}");
+            assert!(cmd.contains("RSRY_BIN"), "{cmd}");
+            for ph in ["%O", "%A", "%B"] {
+                assert!(cmd.contains(ph), "driver must pass {ph}: {cmd}");
             }
         }
 

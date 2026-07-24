@@ -244,7 +244,7 @@
     {
       "rule_id": "dead_code",
       "source_id": "tests/hooks_provenance.rs",
-      "count": 3
+      "count": 4
     },
     {
       "rule_id": "dead_code",
@@ -1229,7 +1229,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "tests/hooks_provenance.rs",
-      "count": 1
+      "count": 2
     },
     {
       "rule_id": "fan_out_skew",

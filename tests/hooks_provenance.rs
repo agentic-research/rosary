@@ -47,6 +47,10 @@ fn hooks_status_distinguishes_current_and_stale_template_provenance() {
 
     for name in ["post-push", "post-merge", "pre-commit", "commit-msg"] {
         let installed = std::fs::read_to_string(repo.join(".git/hooks").join(name)).unwrap();
+        assert!(
+            !installed.contains(provenance_rsry_binary().to_string_lossy().as_ref()),
+            "{name} must not pin the ephemeral test/build binary path:\n{installed}"
+        );
         let prefix = format!("# rsry-hook {name} v{} sha256:", env!("CARGO_PKG_VERSION"));
         let stamp = installed
             .lines()
@@ -89,6 +93,45 @@ fn hooks_status_distinguishes_current_and_stale_template_provenance() {
     assert!(
         stdout.contains(env!("CARGO_PKG_VERSION")),
         "status should disclose the expected installed-binary version:\n{stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn installed_hook_warns_when_runtime_rsry_version_differs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    init_provenance_repo(&repo);
+
+    let install = run_provenance_rsry(&repo, &["hooks", "--repo", ".", "install"]);
+    assert_provenance_success("hooks install", &install);
+
+    let fake_rsry = temp.path().join("rsry");
+    std::fs::write(
+        &fake_rsry,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'rsry 99.0.0'; fi\nexit 0\n",
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_rsry).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_rsry, permissions).unwrap();
+
+    let output = Command::new(repo.join(".git/hooks/post-merge"))
+        .current_dir(&repo)
+        .env("RSRY_BIN", &fake_rsry)
+        .output()
+        .expect("run installed post-merge hook");
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "rsry hook drift: hook v{}, runtime v99.0.0",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "version mismatch must be visible:\n{stderr}"
     );
 }
 

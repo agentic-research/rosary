@@ -35,6 +35,10 @@ The provenance line is generated per hook. Its crate version says which `rsry`
 installed the block; its SHA-256 digest identifies the exact template compiled
 into that binary. `rsry hooks status` compares the installed line with its own
 compiled template and reports `STALE` for old, modified, or unversioned blocks.
+Hooks that invoke `rsry` also compare that embedded installer version with the
+runtime binary and print `rsry hook drift` when they differ. They resolve the
+binary at execution time via `RSRY_BIN`, `PATH`, then `~/.local/bin/rsry`;
+generated hooks and merge-driver config never pin an installer/build path.
 
 On re-install, only the content between the markers is regenerated — any
 user-written hook content outside the markers is preserved. This means

@@ -4,18 +4,26 @@ if [ -d "$BEADS_DIR" ]; then
     (cd "$BEADS_DIR" && dolt pull 2>/dev/null) || true
 fi
 
-# Resolve the rsry binary. `rsry hooks install` bakes the absolute path of the
-# installing binary in below so this hook fires even in PATH-restricted shells
-# (git GUIs, some CI runners) where `command -v rsry` finds nothing. Fall back
-# to a PATH lookup if the baked path is gone (binary moved / reinstalled). If
-# neither resolves, print ONE diagnostic line and skip — never fail the merge.
-RSRY="__RSRY_BIN__"
-if [ ! -x "$RSRY" ]; then
+# Resolve rsry at execution time. Never pin the binary that installed this
+# hook: it may live in an ephemeral build/worktree path. RSRY_BIN is an
+# explicit override; PATH is the portable default; ~/.local/bin covers
+# PATH-restricted Git GUIs and launchd jobs.
+RSRY_HOOK_VERSION="__RSRY_VERSION__"
+RSRY="${RSRY_BIN:-}"
+if [ -z "$RSRY" ]; then
     RSRY=$(command -v rsry 2>/dev/null || true)
 fi
+if [ -z "$RSRY" ] && [ -x "$HOME/.local/bin/rsry" ]; then
+    RSRY="$HOME/.local/bin/rsry"
+fi
 if [ -z "$RSRY" ]; then
-    echo "[rsry post-merge] rsry not found (baked path '__RSRY_BIN__' absent, not on PATH); skipping bead auto-close" >&2
+    echo "[rsry post-merge] rsry not found (RSRY_BIN, PATH, and ~/.local/bin checked); skipping bead auto-close" >&2
 else
+    _rsry_runtime_version=$("$RSRY" --version 2>/dev/null | awk '{print $2}')
+    if [ -n "$_rsry_runtime_version" ] && [ "$_rsry_runtime_version" != "$RSRY_HOOK_VERSION" ]; then
+        printf '⚠ rsry hook drift: hook v%s, runtime v%s — run `rsry hooks install`.\n' "$RSRY_HOOK_VERSION" "$_rsry_runtime_version" >&2
+    fi
+
     # SQLite stores have no `dolt pull` (the block above is gated on
     # .beads/dolt/<repo> and no-ops here), so the git-tracked JSONL export is the
     # sync channel (rosary-4ebf52). Ingest whatever this merge brought:
