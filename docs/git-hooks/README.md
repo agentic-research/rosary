@@ -27,8 +27,14 @@ The install command wraps the body with these exact lines:
 
 ```
 # >>> rsry-managed (do not edit between these markers; `rsry hooks install` regenerates) >>>
+# rsry-hook pre-commit v0.10.0 sha256:<compiled-template-digest>
 # <<< rsry-managed <<<
 ```
+
+The provenance line is generated per hook. Its crate version says which `rsry`
+installed the block; its SHA-256 digest identifies the exact template compiled
+into that binary. `rsry hooks status` compares the installed line with its own
+compiled template and reports `STALE` for old, modified, or unversioned blocks.
 
 On re-install, only the content between the markers is regenerated — any
 user-written hook content outside the markers is preserved. This means
@@ -39,6 +45,9 @@ sync with the constants in `src/main.rs`.
 To customize: edit the installed hook (find the path via `rsry hooks status`) and put your custom logic **outside** the marker block.
 Reinstalling will only touch the marked section.
 
-To inspect: `rsry hooks status` reports whether each hook is installed,
-whether it carries the rsry markers, and where the canonical hooks
-directory lives for this repo.
+To inspect: `rsry hooks status` reports whether each hook is current, stale,
+unmanaged, or missing, and where the canonical hooks directory lives for this
+repo. `task install` refreshes the hooks immediately after installing the new
+binary. When a custom `core.hooksPath` is active, installation also removes
+only the dormant rsry-managed sections from conventional `.git/hooks` copies;
+user content outside the markers remains untouched.
