@@ -24,7 +24,9 @@ will enforce one canonical local service before loading or restarting it:
 
 1. Unload the legacy `dev.rsry.serve` job if it is loaded.
 2. Delete `~/Library/LaunchAgents/dev.rsry.serve.plist` if it exists.
-3. Install or restart `com.rosary.serve` using the existing logic.
+3. Unload and delete the obsolete Homebrew-backed `dev.rsry.tunnel` job if it
+   exists.
+4. Install or restart `com.rosary.serve` using the existing logic.
 
 The operation is idempotent: an absent legacy plist is a no-op, and repeated
 installer runs continue to manage only `com.rosary.serve`.
@@ -36,8 +38,8 @@ change does not introduce a command-backed stdio server.
 
 The canonical plist executes rsry through the absolute path
 `~/.local/bin/rsry`; it does not use a Homebrew rsry installation. Its `PATH`
-retains `/opt/homebrew/bin` so runtime dependencies installed there, notably
-`dolt`, remain discoverable.
+is restricted to `~/.local/bin:/usr/bin:/bin`, so the local service cannot
+resolve tooling from either Apple Silicon or Intel Homebrew prefixes.
 
 ## Testing
 
@@ -46,8 +48,10 @@ temporary `HOME`, with a fake `launchctl` at the external process boundary. It
 will assert observable filesystem effects and the recorded command order:
 
 - the obsolete plist no longer exists;
+- the obsolete Homebrew-backed tunnel plist no longer exists;
 - the canonical plist is installed and points at the temporary
   `~/.local/bin/rsry`;
+- the canonical plist does not expose Homebrew paths to the service;
 - the legacy unload occurs before the canonical load;
 - a second run succeeds with the legacy plist already absent.
 

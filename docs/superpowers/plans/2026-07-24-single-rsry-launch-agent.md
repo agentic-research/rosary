@@ -11,10 +11,11 @@
 ## Global Constraints
 
 - `com.rosary.serve` is the sole canonical launchd label.
-- `dev.rsry.serve.plist` is unloaded and deleted when found.
+- `dev.rsry.serve.plist` and the Homebrew-backed `dev.rsry.tunnel.plist` are
+  unloaded and deleted when found.
 - Cleanup is idempotent and non-interactive.
 - Codex remains URL-backed at `http://localhost:8383/mcp`; no stdio migration.
-- `/opt/homebrew/bin` remains in the service `PATH` for dependencies such as `dolt`, not for rsry itself.
+- The service `PATH` is `~/.local/bin:/usr/bin:/bin`; Homebrew paths are excluded.
 
 ---
 
@@ -43,6 +44,7 @@ test_home="$test_root/home"
 fake_bin="$test_root/bin"
 mkdir -p "$test_home/Library/LaunchAgents" "$fake_bin"
 touch "$test_home/Library/LaunchAgents/dev.rsry.serve.plist"
+touch "$test_home/Library/LaunchAgents/dev.rsry.tunnel.plist"
 ```
 
 Install a fake `launchctl` in `fake_bin` that appends its arguments to
@@ -52,8 +54,11 @@ and `USER=tester`. Assert:
 
 ```bash
 test ! -e "$test_home/Library/LaunchAgents/dev.rsry.serve.plist"
+test ! -e "$test_home/Library/LaunchAgents/dev.rsry.tunnel.plist"
 test -e "$test_home/Library/LaunchAgents/com.rosary.serve.plist"
 grep -q "$test_home/.local/bin/rsry" \
+  "$test_home/Library/LaunchAgents/com.rosary.serve.plist"
+! grep -q "/opt/homebrew/bin" \
   "$test_home/Library/LaunchAgents/com.rosary.serve.plist"
 ```
 
@@ -73,8 +78,8 @@ Expected: FAIL because `scripts/install-rsry-service.sh` does not exist.
 - [x] **Step 3: Implement the minimal installer migration**
 
 Create `scripts/install-rsry-service.sh` by moving the existing inline
-`install-service` transaction out of `Taskfile.yml`. Add this before the
-canonical render/load logic:
+`install-service` transaction out of `Taskfile.yml`. Before the canonical
+render/load logic, unload and remove both obsolete definitions:
 
 ```bash
 LEGACY_PLIST="$HOME/Library/LaunchAgents/dev.rsry.serve.plist"
@@ -82,6 +87,13 @@ if [ -f "$LEGACY_PLIST" ]; then
   launchctl unload "$LEGACY_PLIST" 2>/dev/null || true
   rm -f "$LEGACY_PLIST"
   echo "Removed obsolete dev.rsry.serve launch agent"
+fi
+
+LEGACY_TUNNEL_PLIST="$HOME/Library/LaunchAgents/dev.rsry.tunnel.plist"
+if [ -f "$LEGACY_TUNNEL_PLIST" ]; then
+  launchctl unload "$LEGACY_TUNNEL_PLIST" 2>/dev/null || true
+  rm -f "$LEGACY_TUNNEL_PLIST"
+  echo "Removed obsolete dev.rsry.tunnel launch agent"
 fi
 ```
 
@@ -105,9 +117,9 @@ install-service-contract:
 - [x] **Step 4: Document the canonical service and Homebrew boundary**
 
 Update `docs/GETTING_STARTED.md` to state that installation removes the obsolete
-`dev.rsry.serve` definition, `com.rosary.serve` is the only supported label,
-rsry runs from `~/.local/bin/rsry`, and Homebrew remains on `PATH` only for
-dependencies such as `dolt`.
+`dev.rsry.serve` and `dev.rsry.tunnel` definitions, `com.rosary.serve` is the
+only supported label, rsry runs from `~/.local/bin/rsry`, and the service does
+not inherit Homebrew paths.
 
 - [x] **Step 5: Run focused verification and verify GREEN**
 

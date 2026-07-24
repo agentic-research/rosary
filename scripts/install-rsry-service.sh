@@ -5,6 +5,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 plist="$HOME/Library/LaunchAgents/com.rosary.serve.plist"
 legacy_plist="$HOME/Library/LaunchAgents/dev.rsry.serve.plist"
+legacy_tunnel_plist="$HOME/Library/LaunchAgents/dev.rsry.tunnel.plist"
 label="com.rosary.serve"
 bin="$HOME/.local/bin/rsry"
 log="$HOME/.rsry/http.log"
@@ -18,6 +19,12 @@ if [ -f "$legacy_plist" ]; then
   launchctl unload "$legacy_plist" 2>/dev/null || true
   rm -f "$legacy_plist"
   echo "Removed obsolete dev.rsry.serve launch agent"
+fi
+
+if [ -f "$legacy_tunnel_plist" ]; then
+  launchctl unload "$legacy_tunnel_plist" 2>/dev/null || true
+  rm -f "$legacy_tunnel_plist"
+  echo "Removed obsolete dev.rsry.tunnel launch agent"
 fi
 
 sed \
