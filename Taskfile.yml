@@ -379,6 +379,10 @@ tasks:
       # atomic-rename inode swap, so the service ran stale for days.
       - echo "Installed rsry to ~/.local/bin/rsry (codesigned)"
       - task: install-service
+      # Hook templates are compiled into the binary. Refresh them in the same
+      # install transaction so a newly shipped guard cannot remain dormant
+      # behind an older generated hook (rosary-c9f1ee).
+      - ~/.local/bin/rsry hooks --repo . install
 
   install-service:
     desc: Install/update launchd service for rsry HTTP MCP server (macOS)

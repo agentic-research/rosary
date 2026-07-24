@@ -2779,6 +2779,7 @@ mod hooks {
     //! gitdir, not a directory), and `core.hooksPath` overrides all route to
     //! the right place.
     use anyhow::{Context, Result};
+    use sha2::{Digest, Sha256};
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -2854,6 +2855,28 @@ mod hooks {
             rsry_bin
         };
         block.replace("__RSRY_BIN__", safe)
+    }
+
+    /// Provenance line embedded inside each managed hook block.
+    ///
+    /// The version identifies the binary that installed the hook. The digest
+    /// identifies the exact compiled-in template, so a hook can become stale
+    /// without a crate version bump and still be detected.
+    fn hook_stamp(name: &str, block: &str) -> String {
+        let digest = hex::encode(Sha256::digest(block.as_bytes()));
+        format!(
+            "# rsry-hook {name} v{} sha256:{digest}",
+            env!("CARGO_PKG_VERSION")
+        )
+    }
+
+    /// Render a template as the complete rsry-managed block written to disk.
+    fn render_managed_block(name: &str, block: &str, rsry_bin: &str) -> String {
+        format!(
+            "{}\n{}",
+            hook_stamp(name, block),
+            render_block(block, rsry_bin)
+        )
     }
 
     /// Absolute path of the currently-running rsry binary, for baking into
@@ -2933,6 +2956,86 @@ mod hooks {
             out.push('\n');
             out
         }
+    }
+
+    /// Remove only the rsry-managed section from a hook, preserving user
+    /// content before and after it. Used to neutralize dormant standard hooks
+    /// when `core.hooksPath` points somewhere else.
+    fn strip_managed_block(existing: &str) -> Option<String> {
+        let start = existing.find(MARKER_START)?;
+        let after_start = start + MARKER_START.len();
+        let end = existing[after_start..]
+            .find(MARKER_END)
+            .map(|offset| after_start + offset + MARKER_END.len())
+            .unwrap_or(existing.len());
+        let mut stripped = String::with_capacity(existing.len());
+        stripped.push_str(&existing[..start]);
+        stripped.push_str(&existing[end..]);
+        Some(stripped)
+    }
+
+    /// Resolve the conventional hooks directory independently of an active
+    /// `core.hooksPath` override.
+    fn standard_hooks_dir(repo_root: &Path) -> Result<PathBuf> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["rev-parse", "--git-common-dir"])
+            .output()
+            .with_context(|| format!("invoking `git` in {}", repo_root.display()))?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "{} is not a git repo: {}",
+                repo_root.display(),
+                String::from_utf8_lossy(&out.stderr).trim(),
+            );
+        }
+        let rel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let common = Path::new(&rel);
+        Ok(if common.is_absolute() {
+            common.join("hooks")
+        } else {
+            repo_root.join(common).join("hooks")
+        })
+    }
+
+    /// If hooks execute from a custom `core.hooksPath`, remove stale rsry
+    /// managed blocks from the dormant conventional `.git/hooks` copies.
+    /// User-authored content outside the markers is preserved.
+    fn neutralize_inactive_standard_hooks(repo_root: &Path, active_hooks_dir: &Path) -> Result<()> {
+        let standard = standard_hooks_dir(repo_root)?;
+        let active = active_hooks_dir
+            .canonicalize()
+            .unwrap_or_else(|_| active_hooks_dir.to_path_buf());
+        let standard_cmp = standard.canonicalize().unwrap_or_else(|_| standard.clone());
+        if active == standard_cmp {
+            return Ok(());
+        }
+
+        for (name, _) in HOOKS {
+            let path = standard.join(name);
+            if path
+                .symlink_metadata()
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let Ok(existing) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Some(stripped) = strip_managed_block(&existing) else {
+                continue;
+            };
+            std::fs::write(&path, stripped)
+                .with_context(|| format!("neutralizing dormant hook at {}", path.display()))?;
+            eprintln!(
+                "[hooks] neutralized dormant rsry block in {} (active hooks dir: {})",
+                path.display(),
+                active_hooks_dir.display()
+            );
+        }
+        Ok(())
     }
 
     /// Install rsry hooks into `repo_root`.
@@ -3110,6 +3213,7 @@ mod hooks {
         let hooks_dir = resolve_hooks_dir(repo_root)?;
         std::fs::create_dir_all(&hooks_dir)
             .with_context(|| format!("creating {}", hooks_dir.display()))?;
+        neutralize_inactive_standard_hooks(repo_root, &hooks_dir)?;
 
         // Absolute path of the binary running this install, baked into the
         // generated hooks so they resolve rsry without a PATH lookup
@@ -3128,7 +3232,7 @@ mod hooks {
             {
                 let _ = std::fs::remove_file(&dst);
             }
-            let block = render_block(block, &rsry_bin);
+            let block = render_managed_block(name, block, &rsry_bin);
             let content = if dst.exists() {
                 let existing = std::fs::read_to_string(&dst)
                     .with_context(|| format!("reading existing hook at {}", dst.display()))?;
@@ -3206,19 +3310,41 @@ mod hooks {
         println!("hooks dir: {}", hooks_dir.display());
         println!();
         println!("git hooks:");
-        for (name, _) in HOOKS {
+        for (name, block) in HOOKS {
             let path = hooks_dir.join(name);
-            let state = if !path.exists() {
-                "✗ not installed"
-            } else if std::fs::read_to_string(&path)
-                .map(|c| c.contains(MARKER_START))
-                .unwrap_or(false)
-            {
-                "✓ rsry-managed"
-            } else {
-                "△ exists, no rsry markers (run `rsry hooks install` to merge in)"
+            if !path.exists() {
+                println!("  ✗ not installed  {name}");
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                println!("  ! unreadable  {name}");
+                continue;
             };
-            println!("  {state}  {name}");
+            if !content.contains(MARKER_START) {
+                println!(
+                    "  △ exists, no rsry markers  {name} (run `rsry hooks install` to merge in)"
+                );
+                continue;
+            }
+
+            let expected = hook_stamp(name, block);
+            if content.lines().any(|line| line == expected) {
+                println!(
+                    "  ✓ current  {name} (v{}, sha256:{})",
+                    env!("CARGO_PKG_VERSION"),
+                    &expected[expected.len() - 64..expected.len() - 52]
+                );
+            } else {
+                let installed = content
+                    .lines()
+                    .find(|line| line.starts_with("# rsry-hook "))
+                    .unwrap_or("unversioned managed block");
+                println!(
+                    "  ! STALE  {name} ({installed}; expected v{} sha256:{}) — run `rsry hooks install`",
+                    env!("CARGO_PKG_VERSION"),
+                    &expected[expected.len() - 64..expected.len() - 52]
+                );
+            }
         }
 
         // Merge driver (rosary-f9516f) — config-resident, so it's per-clone
@@ -3663,7 +3789,7 @@ mod hooks {
                 // Install bakes the absolute rsry path into the block, so the
                 // written content matches the RENDERED template, not the raw
                 // one (rosary-cb9321).
-                let rendered = render_block(block, &resolve_rsry_bin());
+                let rendered = render_managed_block(name, block, &resolve_rsry_bin());
                 assert!(
                     content.contains(rendered.trim()),
                     "{name} should contain rendered template content",
