@@ -117,6 +117,10 @@ pub fn build_prompt(
          repo=\"{bead_repo}\", bead_id=\"{bead_id}\", event_type=\"feedback\", and summary= a short account of\n   \
          what you did, what is still unresolved, and whether you expect verification to pass. If you\n   \
          skip this, the reconciler re-dispatches the bead — you are the only one who can leave it.\n\
+         External publication is not part of agent implementation authority. Do not run release\n\
+         uploads, PR merges, deployments, registry publishes, or equivalent external writes.\n\
+         Report the proposed verifier and mutation to the orchestrator, which must execute them\n\
+         through its machine-observed verification commit point.\n\
          Do NOT close the bead yourself — the reconciler verifies and closes it.\n\
          </instructions>",
         bead_id = bead.id,
@@ -153,6 +157,9 @@ You are a rosary-dispatched agent working on a bead (work item).\n\
 - Make minimal, focused changes.\n\
 - Commit format: `[BEAD-ID] type(scope): description` — the [BEAD-ID] prefix is mandatory.\n\
 - Do NOT add co-author lines to commits.\n\
+- Do NOT publish releases, merge PRs, deploy, push registries, or perform equivalent external\n\
+  mutations. Return the proposed verifier + mutation to Rosary; only its verified commit point\n\
+  may authorize the external write.\n\
 \n\
 ## Bead Lifecycle\n\
 Your prompt includes a Bead ID and Repo path. Manage the bead throughout:\n\
@@ -405,6 +412,7 @@ mod tests {
         assert!(prompt.contains(PROMPT_VERSION));
         assert!(prompt.contains("rsry MCP"));
         assert!(prompt.contains("mache MCP"));
+        assert!(prompt.contains("verified commit point"));
     }
 
     #[test]
