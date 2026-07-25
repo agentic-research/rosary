@@ -90,6 +90,26 @@ If any answer is "I don't know" → create a research bead first, not an impleme
 
 **Agent enforcement**: The triage phase rejects implementation beads (bug, feature, task) with empty or trivially short descriptions. A refined bead has answers to these questions in its description. Action type: `docs`.
 
+## 13. Verify Before External Mutation
+
+Release uploads, PR merges, deployments, registry publishes, and equivalent
+external writes must run behind a Rosary-owned verification commit point. A
+verifier and mutation issued as sibling shell commands are not ordered: shell
+continuation can publish after verification fails.
+
+Dispatched implementation agents do not hold publication authority. They return
+the proposed verifier and mutation to the orchestrator. Rosary executes the
+mutation only after it has machine-observed a successful verifier and issued the
+unforgeable receipt consumed by the mutation boundary.
+
+**Escape hatch**: a human operator may perform the external mutation directly,
+but must state that they are assuming publication authority and preserve the
+verification evidence.
+
+**Agent enforcement**: A failed or missing verifier receipt blocks the mutation.
+Prompt prose, `set -e`, and command-name denylists are defense in depth, not the
+commit point.
+
 ______________________________________________________________________
 
 ## How Agents Use These Rules

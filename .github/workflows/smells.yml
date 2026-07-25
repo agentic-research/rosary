@@ -2,9 +2,12 @@ name: smells
 
 # Structural code-smell ratchet, owned by mache's rule registry (ADR-0018) —
 # NOT reinvented in bash. The reusable mache find-smells action downloads the
-# mache binary (>= v0.13.0 auto-provisions the leyline backend so all _ast rules
-# run), builds an index over this checkout, uploads SARIF to code-scanning, and
+# mache binary (>= v0.13.0 auto-provisions the exact leyline release embedded in
+# that Mache binary so all _ast rules run), builds an index over this checkout,
+# uploads SARIF to code-scanning, and
 # fails the job on findings that EXCEED the committed docs/smell-baseline.json.
+# Rosary pins Mache only; it must not separately pin or inject leyline, because
+# the supported Mache↔leyline pairing is owned and verified by Mache.
 #
 # Both the action ref and the mache version are pinned to the SAME release tag
 # (v0.18.0) so the gate is reproducible — a drifting `@main` action SHA silently

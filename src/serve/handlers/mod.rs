@@ -606,6 +606,23 @@ async fn tool_bead_create(
         client.log_event(&id, "created_by", uid).await;
     }
 
+    // Publish only after all create-time metadata is applied so the tracked
+    // projection cannot expose an intermediate record.
+    let repo_root = args
+        .get("repo_path")
+        .and_then(Value::as_str)
+        .map(|path| crate::scanner::resolve_repo_path(std::path::Path::new(path)))
+        .or_else(|| pool.path_for(repo_name).map(std::path::Path::to_path_buf));
+    if let Some(repo_root) = repo_root {
+        crate::jsonl_sync::publish_created_bead_to_tracked_jsonl(
+            client, &id, repo_name, &repo_root,
+        )
+        .await
+        .with_context(|| {
+            format!("bead {id} created locally, but publishing it to tracked .beads/beads.jsonl")
+        })?;
+    }
+
     let owner = create_args.resolved_owner();
     Ok(json!({ "id": id, "title": title, "priority": priority, "owner": owner }))
 }

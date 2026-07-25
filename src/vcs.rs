@@ -215,6 +215,18 @@ pub struct WorkRef {
     pub closes: bool,
 }
 
+fn is_bead_id(id: &str) -> bool {
+    let Some((prefix, suffix)) = id.rsplit_once('-') else {
+        return false;
+    };
+    !prefix.is_empty()
+        && !suffix.is_empty()
+        && prefix
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.')
+        && suffix.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
 /// Extract bead references from a commit message or jj description.
 ///
 /// Recognized patterns:
@@ -237,19 +249,11 @@ pub fn extract_bead_refs(message: &str) -> Vec<WorkRef> {
             && let Some(end) = rest.find(']')
         {
             let id = &rest[..end];
-            if let Some(dash_pos) = id.find('-') {
-                let prefix = &id[..dash_pos];
-                let suffix = &id[dash_pos + 1..];
-                if !prefix.is_empty()
-                    && !suffix.is_empty()
-                    && prefix.chars().all(|c| c.is_ascii_lowercase() || c == '.')
-                    && suffix.chars().all(|c| c.is_ascii_alphanumeric())
-                {
-                    refs.push(WorkRef {
-                        id: id.to_string(),
-                        closes: false,
-                    });
-                }
+            if is_bead_id(id) {
+                refs.push(WorkRef {
+                    id: id.to_string(),
+                    closes: false,
+                });
             }
         }
     }
@@ -268,26 +272,18 @@ pub fn extract_bead_refs(message: &str) -> Vec<WorkRef> {
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
             .collect();
 
-        // Must contain at least one '-' and have content on both sides
-        if let Some(dash_pos) = id.find('-') {
-            let prefix = &id[..dash_pos];
-            let suffix = &id[dash_pos + 1..];
-            if !prefix.is_empty()
-                && !suffix.is_empty()
-                && prefix.chars().all(|c| c.is_ascii_lowercase())
-            {
-                // Check for closing prefix: "closes", "fixes", "close", "fix"
-                let before = &lower[..abs_pos].trim_end();
-                let closes = before.ends_with("closes")
-                    || before.ends_with("fixes")
-                    || before.ends_with("close")
-                    || before.ends_with("fix");
+        if is_bead_id(&id) {
+            // Check for closing prefix: "closes", "fixes", "close", "fix"
+            let before = &lower[..abs_pos].trim_end();
+            let closes = before.ends_with("closes")
+                || before.ends_with("fixes")
+                || before.ends_with("close")
+                || before.ends_with("fix");
 
-                refs.push(WorkRef {
-                    id: id.clone(),
-                    closes,
-                });
-            }
+            refs.push(WorkRef {
+                id: id.clone(),
+                closes,
+            });
         }
 
         search_from = abs_pos + 5 + id.len().max(1);
@@ -919,6 +915,14 @@ mod tests {
         // Temp dir names produce IDs like ".tmpXXXXXX-a1b2c3"
         let refs = extract_bead_refs("[.tmpabcdef-a1b2c3] fix: something");
         assert_eq!(refs.len(), 1);
+    }
+
+    #[test]
+    fn extract_bracket_format_with_hyphenated_repo_prefix() {
+        let refs =
+            extract_bead_refs("[canonical-hours-4f71c9] feat(observer): publish portable core");
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].id, "canonical-hours-4f71c9");
     }
 
     #[test]

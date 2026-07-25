@@ -445,8 +445,11 @@ enum Command {
         #[command(subcommand)]
         action: HooksAction,
         /// Repo path (defaults to current directory)
-        #[arg(short, long, default_value = ".")]
-        repo: String,
+        #[arg(short, long, conflicts_with = "all")]
+        repo: Option<String>,
+        /// Apply the operation to every repo in ~/.rsry/config.toml.
+        #[arg(long)]
+        all: bool,
     },
     /// Report runtime truth: installed binary vs repo version vs the running MCP
     /// service — surfaces the "stale binary / stale service" drift (rosary-d09889).
@@ -490,7 +493,7 @@ enum NotesAction {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone, Copy)]
 enum HooksAction {
     /// Splice post-push / post-merge bead-sync blocks into the repo's hooks
     /// directory. The hooks dir is resolved via `git rev-parse --git-path
@@ -877,6 +880,13 @@ pub fn generate_bead_id(prefix: &str) -> String {
     let pid = std::process::id() as u128;
     let mixed = millis.wrapping_add(n).wrapping_add(pid << 8);
     format!("{}-{:06x}", sanitize_prefix(prefix), mixed & 0xffffff)
+}
+
+fn pr_title_with_head_bead(head_subject: &str, title: &str) -> Option<String> {
+    vcs::extract_bead_ids(head_subject)
+        .into_iter()
+        .next()
+        .map(|id| format!("[{id}] {title}"))
 }
 
 /// Capture git username from `git config user.name` at bead creation time.
@@ -1987,6 +1997,18 @@ async fn main() -> Result<()> {
                     };
                     bead_ops::create_bead(client.as_ref(), &id, &args, created_by.as_deref())
                         .await?;
+                    jsonl_sync::publish_created_bead_to_tracked_jsonl(
+                        client.as_ref(),
+                        &id,
+                        &repo_name,
+                        &repo_root,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "bead {id} created locally, but publishing it to tracked .beads/beads.jsonl"
+                        )
+                    })?;
                     cli::bead_created(&id, &args.title);
                 }
                 BeadAction::Close { id, force } => {
@@ -2344,8 +2366,8 @@ async fn main() -> Result<()> {
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .unwrap_or_default();
-            let full_title = match vcs::extract_bead_ids(&head_subject).into_iter().next() {
-                Some(id) if !title.trim_start().starts_with('[') => format!("[{id}] {title}"),
+            let full_title = match pr_title_with_head_bead(&head_subject, &title) {
+                Some(prefixed) if !title.trim_start().starts_with('[') => prefixed,
                 _ => {
                     if title.trim_start().starts_with('[') {
                         // already carries a bracket — trust the author
@@ -2507,11 +2529,38 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Command::Hooks { action, repo } => {
-            let repo_root = scanner::resolve_repo_path(Path::new(&repo));
-            match action {
-                HooksAction::Install => hooks::install(&repo_root)?,
-                HooksAction::Status => hooks::status(&repo_root)?,
+        Command::Hooks { action, repo, all } => {
+            if all {
+                let config = config::load_global()?;
+                anyhow::ensure!(
+                    !config.repo.is_empty(),
+                    "no repos registered in ~/.rsry/config.toml"
+                );
+                let mut failures = Vec::new();
+                for registered in &config.repo {
+                    let repo_root = scanner::resolve_repo_path(&registered.path);
+                    println!("\n== {} ({}) ==", registered.name, repo_root.display());
+                    let result = match action {
+                        HooksAction::Install => hooks::install(&repo_root),
+                        HooksAction::Status => hooks::status(&repo_root),
+                    };
+                    if let Err(error) = result {
+                        eprintln!("[hooks] {} failed: {error:#}", registered.name);
+                        failures.push(registered.name.clone());
+                    }
+                }
+                anyhow::ensure!(
+                    failures.is_empty(),
+                    "hook operation failed for: {}",
+                    failures.join(", ")
+                );
+            } else {
+                let repo = repo.unwrap_or_else(|| ".".to_string());
+                let repo_root = scanner::resolve_repo_path(Path::new(&repo));
+                match action {
+                    HooksAction::Install => hooks::install(&repo_root)?,
+                    HooksAction::Status => hooks::status(&repo_root)?,
+                }
             }
         }
         Command::Doctor { port } => {
@@ -2935,6 +2984,46 @@ mod hooks {
         }
     }
 
+    /// Pre-commit framework hooks commonly terminate their dispatch branches
+    /// with `exec`. Appending our block makes it unreachable, so install it
+    /// immediately after the shebang. Existing managed blocks are relocated
+    /// on reinstall while all user/framework content is preserved.
+    fn merge_pre_commit_hook(existing: &str, block: &str) -> String {
+        let without_managed = strip_managed_block(existing).unwrap_or_else(|| existing.to_string());
+        let insertion = if without_managed.starts_with("#!") {
+            without_managed
+                .find('\n')
+                .map(|offset| offset + 1)
+                .unwrap_or(without_managed.len())
+        } else {
+            0
+        };
+        let mut out = String::with_capacity(without_managed.len() + block.len() + 4);
+        out.push_str(&without_managed[..insertion]);
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(MARKER_START);
+        out.push('\n');
+        out.push_str(block);
+        if !block.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(MARKER_END);
+        out.push_str("\n\n");
+        out.push_str(without_managed[insertion..].trim_start_matches('\n'));
+        out
+    }
+
+    fn managed_block_is_after_exec(content: &str) -> bool {
+        let Some(marker) = content.find(MARKER_START) else {
+            return false;
+        };
+        content[..marker]
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some("exec"))
+    }
+
     /// Remove only the rsry-managed section from a hook, preserving user
     /// content before and after it. Used to neutralize dormant standard hooks
     /// when `core.hooksPath` points somewhere else.
@@ -3205,7 +3294,11 @@ mod hooks {
             let content = if dst.exists() {
                 let existing = std::fs::read_to_string(&dst)
                     .with_context(|| format!("reading existing hook at {}", dst.display()))?;
-                merge_hook(&existing, &block)
+                if *name == "pre-commit" {
+                    merge_pre_commit_hook(&existing, &block)
+                } else {
+                    merge_hook(&existing, &block)
+                }
             } else {
                 fresh_hook(&block)
             };
@@ -3297,7 +3390,11 @@ mod hooks {
             }
 
             let expected = hook_stamp(name, block);
-            if content.lines().any(|line| line == expected) {
+            if name == &"pre-commit" && managed_block_is_after_exec(&content) {
+                println!(
+                    "  ! UNREACHABLE  {name} (managed block follows `exec`) — run `rsry hooks install`"
+                );
+            } else if content.lines().any(|line| line == expected) {
                 println!(
                     "  ✓ current  {name} (v{}, sha256:{})",
                     env!("CARGO_PKG_VERSION"),
@@ -3727,6 +3824,25 @@ mod hooks {
             assert!(!merged.contains("(no end marker)"));
             assert!(merged.contains("fresh"));
             assert!(merged.contains(MARKER_END));
+        }
+
+        #[test]
+        fn merge_pre_commit_hook_relocates_before_exec_and_is_idempotent() {
+            let existing = "#!/bin/sh\nif command -v pre-commit >/dev/null; then\n  exec pre-commit \"$@\"\nfi\n";
+            let first = merge_pre_commit_hook(existing, "rsry block\n");
+            let second = merge_pre_commit_hook(&first, "rsry block\n");
+
+            assert_eq!(first, second);
+            assert_eq!(first.matches(MARKER_START).count(), 1);
+            assert!(first.find(MARKER_END).unwrap() < first.find("exec pre-commit").unwrap());
+        }
+
+        #[test]
+        fn merge_pre_commit_hook_repairs_shebang_without_newline() {
+            let merged = merge_pre_commit_hook("#!/bin/sh", "rsry block\n");
+
+            assert!(merged.starts_with("#!/bin/sh\n# >>> rsry-managed"));
+            assert_eq!(merged.matches(MARKER_START).count(), 1);
         }
 
         // --- install (full filesystem + git interaction) ------------------
@@ -4756,5 +4872,17 @@ mod tests {
             assert!(!pfx.is_empty(), "empty prefix in {id}");
             assert_eq!(suffix.len(), 6, "suffix should be 6 hex: {id}");
         }
+    }
+
+    #[test]
+    fn pr_title_uses_hyphenated_bead_prefix_from_head() {
+        let title = pr_title_with_head_bead(
+            "[canonical-hours-4f71c9] feat(observer): publish portable observer core",
+            "feat(observer): publish portable observer core",
+        );
+        assert_eq!(
+            title.as_deref(),
+            Some("[canonical-hours-4f71c9] feat(observer): publish portable observer core")
+        );
     }
 }

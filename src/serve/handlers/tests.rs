@@ -176,6 +176,61 @@ async fn mcp_close_refreshes_only_the_published_jsonl_record() {
     );
 }
 
+#[tokio::test]
+async fn mcp_create_publishes_into_an_opted_in_jsonl_projection() {
+    use std::process::Command;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path().join("project");
+    let beads_dir = repo.join(".beads");
+    std::fs::create_dir_all(&beads_dir).unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test User"]);
+    std::fs::write(beads_dir.join("beads.jsonl"), "").unwrap();
+    git(&["add", ".beads/beads.jsonl"]);
+    git(&["commit", "-qm", "opt in"]);
+
+    let store = crate::bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db")).unwrap();
+    let pool = RepoPool::from_client("project", repo.clone(), Box::new(store));
+    let result = tool_bead_create(
+        &json!({
+            "scope": "repo:project",
+            "title": "created through MCP",
+            "description": "A sufficiently refined implementation bead created through MCP.",
+            "issue_type": "bug",
+            "files": ["src/lib.rs"],
+            "test_files": ["tests/smoke.rs"],
+            "acceptance_criteria": "cargo test"
+        }),
+        &pool,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let records = crate::restore::read_beads_jsonl(Some(
+        beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
+    ))
+    .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["id"], result["id"]);
+    assert_eq!(records[0]["title"], "created through MCP");
+}
+
 // ---- tool_review (rosary-cd5d2a) --------------------------------------
 
 /// Phase 0 of rosary-ccd5a2. Caller must supply `bead_id`; the error

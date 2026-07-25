@@ -164,7 +164,7 @@
     {
       "rule_id": "dead_code",
       "source_id": "src/serve/handlers/tests.rs",
-      "count": 20
+      "count": 21
     },
     {
       "rule_id": "dead_code",
@@ -243,8 +243,13 @@
     },
     {
       "rule_id": "dead_code",
+      "source_id": "tests/create_jsonl_sync.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "dead_code",
       "source_id": "tests/hooks_provenance.rs",
-      "count": 4
+      "count": 7
     },
     {
       "rule_id": "dead_code",
@@ -454,6 +459,11 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/codex_transport.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/dispatch/commit_point.rs",
       "count": 1
     },
     {
@@ -759,7 +769,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/serve/github_webhook.rs",
-      "count": 3
+      "count": 4
     },
     {
       "rule_id": "duplicate_definitions",
@@ -864,7 +874,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/vcs.rs",
-      "count": 2
+      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
@@ -894,12 +904,17 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "tests/beads_jsonl_merge_driver.rs",
-      "count": 2
+      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "tests/cli_integration.rs",
       "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "tests/create_jsonl_sync.rs",
+      "count": 3
     },
     {
       "rule_id": "fan_out_skew",
@@ -1014,6 +1029,11 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/import.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/jsonl_sync.rs",
       "count": 1
     },
     {
@@ -1229,7 +1249,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "tests/hooks_provenance.rs",
-      "count": 2
+      "count": 3
     },
     {
       "rule_id": "fan_out_skew",
@@ -1253,12 +1273,22 @@
     },
     {
       "rule_id": "god_file",
+      "source_id": "src/dispatch/providers.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "god_file",
       "source_id": "src/dispatch/tests.rs",
       "count": 1
     },
     {
       "rule_id": "god_file",
       "source_id": "src/main.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/plugin.rs",
       "count": 1
     },
     {

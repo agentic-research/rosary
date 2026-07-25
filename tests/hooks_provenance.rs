@@ -27,6 +27,17 @@ fn run_provenance_rsry(repo: &Path, args: &[&str]) -> Output {
         .expect("run rsry")
 }
 
+fn run_provenance_rsry_with_home(repo: &Path, home: &Path, args: &[&str]) -> Output {
+    Command::new(provenance_rsry_binary())
+        .args(args)
+        .current_dir(repo)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run rsry")
+}
+
 fn assert_provenance_success(context: &str, output: &Output) {
     assert!(
         output.status.success(),
@@ -180,5 +191,200 @@ fn task_install_refreshes_compiled_hook_templates() {
     assert!(
         taskfile.contains("- ~/.local/bin/rsry hooks --repo . install"),
         "`task install` must refresh hooks using the binary it just installed"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn pre_commit_managed_block_runs_before_framework_exec() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    init_provenance_repo(&repo);
+
+    let framework = temp.path().join("framework");
+    let framework_ran = temp.path().join("framework-ran");
+    std::fs::write(
+        &framework,
+        format!("#!/bin/sh\ntouch '{}'\n", framework_ran.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&framework, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let hook = repo.join(".git/hooks/pre-commit");
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nINSTALL_PYTHON='{}'\nif [ -x \"$INSTALL_PYTHON\" ]; then\n\
+             exec \"$INSTALL_PYTHON\" -mpre_commit \"$@\"\nelif command -v pre-commit >/dev/null; then\n\
+             exec pre-commit \"$@\"\nfi\n",
+            framework.display()
+        ),
+    )
+    .unwrap();
+
+    std::fs::create_dir(repo.join(".beads")).unwrap();
+    std::fs::write(repo.join(".beads/beads.jsonl"), "").unwrap();
+    assert!(
+        run_provenance_git(&repo, &["config", "user.email", "test@example.com"])
+            .status
+            .success()
+    );
+    assert!(
+        run_provenance_git(&repo, &["config", "user.name", "Test User"])
+            .status
+            .success()
+    );
+    assert!(
+        run_provenance_git(&repo, &["add", ".beads/beads.jsonl"])
+            .status
+            .success()
+    );
+    assert!(
+        run_provenance_git(
+            &repo,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--no-verify",
+                "-qm",
+                "opt in",
+            ],
+        )
+        .status
+        .success()
+    );
+
+    let install = run_provenance_rsry(&repo, &["hooks", "--repo", ".", "install"]);
+    assert_provenance_success("hooks install", &install);
+
+    let rsry_ran = temp.path().join("rsry-ran");
+    let fake_rsry = temp.path().join("rsry");
+    std::fs::write(
+        &fake_rsry,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'rsry {}'; exit 0; fi\n\
+             touch '{}'\nwhile [ \"$#\" -gt 0 ]; do\n\
+             if [ \"$1\" = \"-o\" ]; then shift; : > \"$1\"; fi\nshift\ndone\n",
+            env!("CARGO_PKG_VERSION"),
+            rsry_ran.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_rsry, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new(&hook)
+        .current_dir(&repo)
+        .env("RSRY_BIN", &fake_rsry)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(rsry_ran.exists(), "rsry export block was unreachable");
+    assert!(framework_ran.exists(), "pre-commit framework did not run");
+
+    std::fs::remove_file(&rsry_ran).unwrap();
+    std::fs::remove_file(&framework_ran).unwrap();
+    let linked = temp.path().join("linked");
+    let linked_output = run_provenance_git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "linked-test",
+            linked.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    assert!(linked_output.status.success(), "{linked_output:?}");
+
+    let linked_hook = Command::new(&hook)
+        .current_dir(&linked)
+        .env("RSRY_BIN", &fake_rsry)
+        .output()
+        .unwrap();
+    assert!(linked_hook.status.success(), "{linked_hook:?}");
+    assert!(
+        !rsry_ran.exists(),
+        "linked worktree must skip the rsry export"
+    );
+    assert!(
+        framework_ran.exists(),
+        "linked-worktree skip must continue into the framework hook"
+    );
+}
+
+#[test]
+fn hooks_status_rejects_pre_commit_block_after_exec() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path();
+    init_provenance_repo(repo);
+
+    let install = run_provenance_rsry(repo, &["hooks", "--repo", ".", "install"]);
+    assert_provenance_success("hooks install", &install);
+
+    let hook = repo.join(".git/hooks/pre-commit");
+    let installed = std::fs::read_to_string(&hook).unwrap();
+    let start = installed.find("# >>> rsry-managed").unwrap();
+    let end = installed.find("# <<< rsry-managed <<<").unwrap() + "# <<< rsry-managed <<<".len();
+    let block = &installed[start..end];
+    std::fs::write(
+        &hook,
+        format!("#!/bin/sh\nexec pre-commit \"$@\"\n\n{block}\n"),
+    )
+    .unwrap();
+
+    let status = run_provenance_rsry(repo, &["hooks", "--repo", ".", "status"]);
+    assert_provenance_success("hooks status", &status);
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        stdout.contains("UNREACHABLE") && stdout.contains("pre-commit"),
+        "unreachable managed block must not report current:\n{stdout}"
+    );
+}
+
+#[test]
+fn hooks_all_installs_every_globally_registered_repo() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo_a = temp.path().join("alpha");
+    let repo_b = temp.path().join("beta");
+    std::fs::create_dir(&repo_a).unwrap();
+    std::fs::create_dir(&repo_b).unwrap();
+    init_provenance_repo(&repo_a);
+    init_provenance_repo(&repo_b);
+
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join(".rsry")).unwrap();
+    std::fs::write(
+        home.join(".rsry/config.toml"),
+        format!(
+            "[[repo]]\nname = \"alpha\"\npath = \"{}\"\n\n\
+             [[repo]]\nname = \"beta\"\npath = \"{}\"\n",
+            repo_a.display(),
+            repo_b.display()
+        ),
+    )
+    .unwrap();
+
+    let install = run_provenance_rsry_with_home(temp.path(), &home, &["hooks", "--all", "install"]);
+    assert_provenance_success("hooks --all install", &install);
+    for repo in [&repo_a, &repo_b] {
+        assert!(
+            repo.join(".git/hooks/pre-commit").exists(),
+            "{} was not refreshed",
+            repo.display()
+        );
+    }
+
+    let status = run_provenance_rsry_with_home(temp.path(), &home, &["hooks", "--all", "status"]);
+    assert_provenance_success("hooks --all status", &status);
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        stdout.contains("alpha") && stdout.contains("beta"),
+        "{stdout}"
     );
 }
