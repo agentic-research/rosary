@@ -228,9 +228,34 @@ fn pre_commit_managed_block_runs_before_framework_exec() {
     std::fs::create_dir(repo.join(".beads")).unwrap();
     std::fs::write(repo.join(".beads/beads.jsonl"), "").unwrap();
     assert!(
+        run_provenance_git(&repo, &["config", "user.email", "test@example.com"])
+            .status
+            .success()
+    );
+    assert!(
+        run_provenance_git(&repo, &["config", "user.name", "Test User"])
+            .status
+            .success()
+    );
+    assert!(
         run_provenance_git(&repo, &["add", ".beads/beads.jsonl"])
             .status
             .success()
+    );
+    assert!(
+        run_provenance_git(
+            &repo,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--no-verify",
+                "-qm",
+                "opt in",
+            ],
+        )
+        .status
+        .success()
     );
 
     let install = run_provenance_rsry(&repo, &["hooks", "--repo", ".", "install"]);
@@ -259,6 +284,38 @@ fn pre_commit_managed_block_runs_before_framework_exec() {
     assert!(output.status.success(), "{output:?}");
     assert!(rsry_ran.exists(), "rsry export block was unreachable");
     assert!(framework_ran.exists(), "pre-commit framework did not run");
+
+    std::fs::remove_file(&rsry_ran).unwrap();
+    std::fs::remove_file(&framework_ran).unwrap();
+    let linked = temp.path().join("linked");
+    let linked_output = run_provenance_git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "linked-test",
+            linked.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    assert!(linked_output.status.success(), "{linked_output:?}");
+
+    let linked_hook = Command::new(&hook)
+        .current_dir(&linked)
+        .env("RSRY_BIN", &fake_rsry)
+        .output()
+        .unwrap();
+    assert!(linked_hook.status.success(), "{linked_hook:?}");
+    assert!(
+        !rsry_ran.exists(),
+        "linked worktree must skip the rsry export"
+    );
+    assert!(
+        framework_ran.exists(),
+        "linked-worktree skip must continue into the framework hook"
+    );
 }
 
 #[test]
