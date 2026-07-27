@@ -46,11 +46,10 @@ pub struct MigrationReport {
 /// [`verify_migration`].
 ///
 /// Fidelity note: bead *content* (status, priority, type, acceptance,
-/// external_ref, scope, files, provenance, owner, deps) is preserved exactly.
-/// Not carried, by trait limitation: the comment **audit trail** (exact
-/// timestamps, edited/deleted state) — `add_comment` can only reproduce
-/// body+author — and bead timestamps, which shift to migration time
-/// (`create_bead_full` stamps `now()`). A raw-row copy for those is a follow-up.
+/// external_ref, scope, files, provenance, owner, timestamps, deps) is
+/// preserved exactly. Not carried, by trait limitation, is the comment **audit
+/// trail** (exact timestamps, edited/deleted state): `add_comment` can only
+/// reproduce body+author. A raw-row copy for comment history is a follow-up.
 pub async fn migrate_store(
     source: &dyn BeadStore,
     target: &SqliteBeadStore,
