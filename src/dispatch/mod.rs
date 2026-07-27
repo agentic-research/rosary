@@ -81,7 +81,12 @@ impl PermissionProfile {
                 "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,mcp__rsry__rsry_active,",
                 // Native feedback substrate — the job contract requires a
                 // `feedback` run-event before finishing (rosary feedback-contract).
-                "mcp__rsry__rsry_agent_run_event_record"
+                "mcp__rsry__rsry_agent_run_event_record,",
+                // Warm-resume: the context envelope demotes older phases to CAS
+                // refs and tells the agent to "fetch with rsry_expand_ref"
+                // (context/envelope.rs). Without this the instruction points at
+                // a denied tool and those refs are unfetchable.
+                "mcp__rsry__rsry_expand_ref"
             ),
             // Review/adversarial modes: read-only code access + bead comments.
             Self::ReadOnly => concat!(
@@ -89,7 +94,8 @@ impl PermissionProfile {
                 "mcp__mache__*,",
                 "mcp__rsry__rsry_bead_comment,mcp__rsry__rsry_bead_search,",
                 "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,",
-                "mcp__rsry__rsry_agent_run_event_record"
+                "mcp__rsry__rsry_agent_run_event_record,",
+                "mcp__rsry__rsry_expand_ref"
             ),
             // Planning/research/design: read code + full bead management.
             // Can create/update beads but still cannot close or merge.
@@ -101,7 +107,8 @@ impl PermissionProfile {
                 "mcp__rsry__rsry_bead_link,",
                 "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,",
                 "mcp__rsry__rsry_decompose,",
-                "mcp__rsry__rsry_agent_run_event_record"
+                "mcp__rsry__rsry_agent_run_event_record,",
+                "mcp__rsry__rsry_expand_ref"
             ),
         }
     }
@@ -970,6 +977,55 @@ pub async fn spawn_detached(
         pid,
         stream_log: log_path,
     })
+}
+
+#[cfg(test)]
+mod permission_rail_tests {
+    use super::*;
+
+    /// Every tool the DISPATCH PROMPT tells an agent to use must be in that
+    /// agent's allowlist. Two hand-maintained lists that must agree — the same
+    /// drift shape as the SELECT/row-mapper rail in `src/column_rail.rs`.
+    ///
+    /// This shipped broken: `src/context/envelope.rs` renders
+    /// "## Earlier context (fetch with rsry_expand_ref)" for every demoted
+    /// phase, while `rsry_expand_ref` appeared in NO profile. Warm-resume
+    /// Phase A was marked done with its refs unfetchable, because the
+    /// instruction and the permission were maintained in different files and
+    /// nothing compared them.
+    #[test]
+    fn tools_named_in_prompts_are_permitted() {
+        const ENVELOPE_RS: &str = include_str!("../context/envelope.rs");
+        const PROMPT_RS: &str = include_str!("prompt.rs");
+
+        // Tools the rendered prompt/envelope text instructs the agent to call.
+        let mut named: Vec<&str> = Vec::new();
+        for src in [ENVELOPE_RS, PROMPT_RS] {
+            for tool in ["rsry_expand_ref", "rsry_agent_run_event_record"] {
+                if src.contains(tool) {
+                    named.push(tool);
+                }
+            }
+        }
+        assert!(
+            named.contains(&"rsry_expand_ref"),
+            "sanity: the envelope should still instruct fetching demoted refs"
+        );
+
+        for profile in [
+            PermissionProfile::Implement,
+            PermissionProfile::ReadOnly,
+            PermissionProfile::Plan,
+        ] {
+            let allowed = profile.claude_allowed_tools();
+            for tool in &named {
+                assert!(
+                    allowed.contains(tool),
+                    "{profile:?} is told to use `{tool}` but is not permitted it —                      the prompt names a denied tool"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
