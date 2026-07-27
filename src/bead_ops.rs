@@ -110,10 +110,7 @@ pub fn parse_role(s: &str) -> anyhow::Result<crate::bead_genesis::Role> {
     match s.trim().to_ascii_lowercase().as_str() {
         "canonical" => Ok(Role::Canonical),
         "coordination" => Ok(Role::Coordination),
-        "personal" => anyhow::bail!(
-            "role `personal` has no home yet — ADR-0012's GitRepoBackend is unbuilt \
-             (rosary-e52b24). Refusing rather than silently filing it as canonical."
-        ),
+        "personal" => Ok(Role::Personal),
         other => anyhow::bail!("unknown role `{other}` (expected canonical|coordination)"),
     }
 }
@@ -154,6 +151,26 @@ pub async fn create_bead<S: BeadStore + ?Sized>(
         return crate::coordination::append(repo_root, id, &record.to_string());
     }
 
+    // ADR-0012 + ADR-0022: personal beads live in `~/.rsry/personal.db`,
+    // outside any project repo — so they never reach a repo store, its tracked
+    // JSONL, or its working tree. Encryption + the signet attestation gate are
+    // the SYNC layer (rosary-e52b24 / rosary-e55ec9), not the store.
+    if args.role == crate::bead_genesis::Role::Personal {
+        let personal = crate::personal::open()?;
+        return write_to_store(&personal, id, args, created_by).await;
+    }
+
+    write_to_store(store, id, args, created_by).await
+}
+
+/// The store write itself, shared by the canonical and personal tiers — they
+/// differ in WHICH store, not in what is written.
+async fn write_to_store<S: BeadStore + ?Sized>(
+    store: &S,
+    id: &str,
+    args: &BeadCreateArgs,
+    created_by: Option<&str>,
+) -> anyhow::Result<()> {
     store
         .create_bead_full(crate::store::NewBead {
             id: id.to_string(),
@@ -281,6 +298,43 @@ mod role_routing_tests {
         );
     }
 
+    /// ADR-0022's goal: canonical storage absorbs NONE of the other roles.
+    /// Personal beads land in ~/.rsry/personal.db, outside any project repo.
+    #[tokio::test]
+    async fn personal_role_never_reaches_the_repo_store() {
+        let _g = crate::personal::tests::HomeGuard::new();
+        let tmp = git_repo();
+        let repo_store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+
+        create_bead(
+            &repo_store,
+            tmp.path(),
+            "x-personal",
+            &args(Role::Personal),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            repo_store.list_beads("r").await.unwrap().is_empty(),
+            "a personal bead must not be written to a project repo's store"
+        );
+        assert!(
+            crate::coordination::read(tmp.path(), "x-personal")
+                .unwrap()
+                .is_none(),
+            "and must not leak into the coordination namespace either"
+        );
+        let personal = crate::personal::open().unwrap();
+        let got = personal
+            .get_bead("x-personal", crate::personal::SCOPE)
+            .await
+            .unwrap();
+        assert!(got.is_some(), "it must land in the personal store");
+    }
+
     /// An unknown or not-yet-buildable role must FAIL, never silently fall back
     /// to canonical — that would file a bead into the git-tracked record that
     /// the caller explicitly asked to keep out of it.
@@ -288,8 +342,7 @@ mod role_routing_tests {
     fn unknown_and_unbuilt_roles_are_refused() {
         assert_eq!(parse_role("canonical").unwrap(), Role::Canonical);
         assert_eq!(parse_role("  Coordination ").unwrap(), Role::Coordination);
-        let personal = parse_role("personal").unwrap_err().to_string();
-        assert!(personal.contains("no home yet"), "got: {personal}");
+        assert_eq!(parse_role("personal").unwrap(), Role::Personal);
         assert!(parse_role("cordination").is_err(), "typo must not pass");
         assert!(parse_role("").is_err());
     }

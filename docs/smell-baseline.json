@@ -433,6 +433,11 @@
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/column_rail.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/config/mod.rs",
       "count": 2
     },
@@ -709,6 +714,11 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/orchestrate/transcript.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/personal.rs",
       "count": 1
     },
     {
