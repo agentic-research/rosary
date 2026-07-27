@@ -3,6 +3,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+/// Serde predicates so a written config carries only what DIFFERS from the
+/// defaults. Without these, every field with `#[serde(default)]` is still
+/// emitted at its default value — 46 of 211 lines in a real 22-repo config
+/// were `self = false`, `approval = "approved"`, `plugins = []` and friends,
+/// which say nothing and bury the two or three settings that matter.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+fn is_default_approval(a: &DispatchApproval) -> bool {
+    *a == DispatchApproval::default()
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     /// Repo entries — accepts `[[repo]]` in TOML (singular).
@@ -41,7 +58,7 @@ pub struct Config {
     /// Maximum number of pipeline stages to execute per bead.
     /// 0 = unlimited (default). 1 = single-agent only.
     /// The hosted service sets this based on the customer's plan.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub max_pipeline_depth: usize,
     /// Orchestration mode and behavior.
     /// Controls whether the reconciler uses flat dispatch or hierarchical
@@ -50,7 +67,7 @@ pub struct Config {
     pub orchestration: Option<OrchestrationConfig>,
     /// Pipeline plugins — external tools that hook into verify/review/triage stages.
     /// Accepts `[[plugins]]` (plural) or `[[plugin]]` (singular) in TOML.
-    #[serde(alias = "plugin", default)]
+    #[serde(alias = "plugin", default, skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<PluginConfig>,
     /// APAS L2 attestation config — Ed25519 signing of handoff envelopes.
     /// When absent, handoffs are written but not signed.
@@ -244,12 +261,12 @@ pub struct RepoConfig {
     /// Language hint (rust, go, python, etc.). Auto-detected if absent.
     pub lang: Option<String>,
     /// Whether this repo IS rosary itself (dogfooding flag).
-    #[serde(default, rename = "self")]
+    #[serde(default, rename = "self", skip_serializing_if = "is_false")]
     pub self_managed: bool,
     /// User approval state for agent dispatch on this repo. Only consulted
     /// when `[dispatch] require_approval = true`. Defaults to `Approved`
     /// so existing configs continue to dispatch without a migration step.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default_approval")]
     pub approval: DispatchApproval,
 }
 
@@ -362,7 +379,7 @@ pub struct DispatchConfig {
     /// Default false: backward-compatible, no gate.
     ///
     /// Toggle with `rsry approve <repo>` / `rsry reject <repo>`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub require_approval: bool,
     /// MCP servers exposed to DISPATCHED agents (rosary-563b3f) so their
     /// granted `mcp__rsry__*` / `mcp__mache__*` tools actually connect during a

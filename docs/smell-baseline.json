@@ -49,12 +49,12 @@
     {
       "rule_id": "dead_code",
       "source_id": "src/config/mod.rs",
-      "count": 9
+      "count": 11
     },
     {
       "rule_id": "dead_code",
       "source_id": "src/config/tests.rs",
-      "count": 52
+      "count": 54
     },
     {
       "rule_id": "dead_code",
