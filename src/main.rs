@@ -48,6 +48,7 @@ mod epic;
 #[allow(dead_code)] // API surface — PR creation from dispatch pipeline
 mod github;
 mod github_mirror;
+mod graph;
 #[allow(dead_code)] // API surface — wired into pipeline phase transitions
 mod handoff;
 mod import;
@@ -342,6 +343,33 @@ enum Command {
     Lattice {
         #[command(subcommand)]
         action: LatticeAction,
+    },
+    /// Emit the bead lattice (decade → thread → bead) as graph text for
+    /// visual inspection. Writes DOT (graphviz) or mermaid to stdout — no new
+    /// dependencies, the renderer lives outside rosary:
+    ///
+    ///   rsry graph | dot -Tpng -o lattice.png
+    ///
+    /// A full bead-level graph of the whole fleet is an unreadable hairball,
+    /// so `--depth` is the primary control: `decade` is the fleet shape,
+    /// `thread` (default) is the readable full export, `bead` should be
+    /// scoped with `--decade` or `--orphans`.
+    Graph {
+        /// How deep to render: decade | thread | bead
+        #[arg(long, default_value = "thread")]
+        depth: String,
+        /// Restrict to a single decade (e.g. agent-work-continuity)
+        #[arg(long)]
+        decade: Option<String>,
+        /// Render only beads with no thread assignment. Implies --depth bead.
+        #[arg(long)]
+        orphans: bool,
+        /// Output format: dot | mermaid
+        #[arg(long, default_value = "dot")]
+        format: String,
+        /// Repo whose beads supply titles/priorities (default: current dir)
+        #[arg(short, long, default_value = ".")]
+        repo: String,
     },
     /// Garbage-collect merged agent branches from origin
     Sweep {
@@ -2302,6 +2330,68 @@ async fn main() -> Result<()> {
                 print!("{}", report.render(&repo_name));
             }
         },
+        Command::Graph {
+            depth,
+            decade,
+            orphans,
+            format,
+            repo,
+        } => {
+            let depth = match depth.as_str() {
+                "decade" => graph::Depth::Decade,
+                "thread" => graph::Depth::Thread,
+                "bead" => graph::Depth::Bead,
+                other => anyhow::bail!("unknown --depth {other} (expected decade|thread|bead)"),
+            };
+            let format = match format.as_str() {
+                "dot" => graph::Format::Dot,
+                "mermaid" => graph::Format::Mermaid,
+                other => anyhow::bail!("unknown --format {other} (expected dot|mermaid)"),
+            };
+            let backend_cfg = config::load_global()
+                .ok()
+                .and_then(|c| c.backend)
+                .ok_or_else(|| anyhow::anyhow!("[backend] section missing from config"))?;
+            let backend = backend_cfg
+                .connect()
+                .await
+                .context("opening orchestrator backend")?;
+
+            // Bead metadata is best-effort: a bead whose store we can't read
+            // still renders, labelled by id. Never fail the graph over it.
+            let mut facts = std::collections::BTreeMap::new();
+            let repo_path = scanner::resolve_repo_path(std::path::Path::new(&repo));
+            if let Ok(store) = bead_sqlite::connect_bead_store(&resolve_beads_dir(&repo_path)).await
+            {
+                let repo_name = repo_path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| repo.clone());
+                if let Ok(beads) = store.list_beads(&repo_name).await {
+                    for b in beads {
+                        facts.insert(
+                            b.id.clone(),
+                            graph::BeadFacts {
+                                title: b.title.clone(),
+                                priority: b.priority,
+                                status: b.status.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+
+            let spec = graph::Spec {
+                depth: if orphans { graph::Depth::Bead } else { depth },
+                decade,
+                orphans,
+            };
+            let model = graph::build(&*backend, &spec, &facts).await?;
+            if model.is_empty() {
+                eprintln!("warning: graph is empty (no matching decades/beads)");
+            }
+            print!("{}", model.render(format));
+        }
         Command::Sweep { repo, dry_run } => {
             let repo_path = scanner::resolve_repo_path(std::path::Path::new(&repo));
             let result = workspace::sweep_agent_branches(&repo_path, dry_run).await;
