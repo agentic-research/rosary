@@ -39,6 +39,7 @@ mod cas;
 mod cli;
 mod config;
 mod context;
+mod coordination;
 mod credential;
 mod decompose;
 mod dispatch;
@@ -346,6 +347,22 @@ enum Command {
         #[command(subcommand)]
         action: LatticeAction,
     },
+    /// Coordination-tier records, stored in `refs/agents/*` instead of the
+    /// working tree (ADR-0022).
+    ///
+    /// This is the home for agent-dispatch notes, run events, and
+    /// feature-local scratch — state that has no business landing in a code
+    /// commit. Writes here never touch `.beads/beads.jsonl`, never appear as a
+    /// branch, and are not fetched by a default `git clone`. That invisibility
+    /// is disqualifying for canonical beads (ADR-0022 Q3) and is exactly the
+    /// point for coordination.
+    Coord {
+        #[command(subcommand)]
+        action: CoordAction,
+        /// Repo path (defaults to the current directory)
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+    },
     /// Emit the bead lattice (decade → thread → bead) as graph text for
     /// visual inspection. Writes DOT (graphviz) or mermaid to stdout — no new
     /// dependencies, the renderer lives outside rosary:
@@ -534,6 +551,29 @@ enum HooksAction {
     /// Show whether each rsry-managed hook is installed (and where) and
     /// whether the Dolt remote is configured for bead sync.
     Status,
+}
+
+#[derive(Subcommand)]
+enum CoordAction {
+    /// Append a single-line record to a namespace (compare-and-swap)
+    Add {
+        /// Namespace, conventionally the dispatch id
+        name: String,
+        /// The record — one line, typically JSON
+        record: String,
+    },
+    /// Print a namespace's records
+    Show {
+        /// Namespace to read
+        name: String,
+    },
+    /// List namespaces that currently exist
+    List,
+    /// Delete a namespace (coordination state is GC-able once folded)
+    Rm {
+        /// Namespace to delete
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2461,6 +2501,41 @@ async fn main() -> Result<()> {
                 eprintln!("warning: graph is empty (no matching decades/beads)");
             }
             print!("{}", model.render(format));
+        }
+        Command::Coord { action, repo } => {
+            let repo_root = scanner::resolve_repo_path(std::path::Path::new(&repo));
+            match action {
+                CoordAction::Add { name, record } => {
+                    coordination::append(&repo_root, &name, &record)?;
+                    println!("appended to {}/{name}", coordination::NAMESPACE);
+                }
+                CoordAction::Show { name } => match coordination::read(&repo_root, &name)? {
+                    Some(text) => print!("{text}"),
+                    None => {
+                        // "never written" is not "written and empty" — the same
+                        // distinction the store/ledger drift kept collapsing.
+                        eprintln!("no such coordination namespace: {name}");
+                        std::process::exit(1);
+                    }
+                },
+                CoordAction::List => {
+                    let names = coordination::list(&repo_root)?;
+                    if names.is_empty() {
+                        eprintln!("no coordination namespaces in {}", repo_root.display());
+                    }
+                    for n in names {
+                        println!("{n}");
+                    }
+                }
+                CoordAction::Rm { name } => {
+                    if coordination::delete(&repo_root, &name)? {
+                        println!("deleted {}/{name}", coordination::NAMESPACE);
+                    } else {
+                        eprintln!("no such coordination namespace: {name}");
+                        std::process::exit(1);
+                    }
+                }
+            }
         }
         Command::Sweep { repo, dry_run } => {
             let repo_path = scanner::resolve_repo_path(std::path::Path::new(&repo));
