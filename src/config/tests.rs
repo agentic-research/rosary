@@ -840,6 +840,34 @@ path = "~/remotes/art/rosary"
 }
 
 #[test]
+fn attestation_config_defaults_unsigned_emission_off() {
+    let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[attestation]
+"#;
+    let config: Config = toml::from_str(toml).unwrap();
+    let att = config.attestation.unwrap();
+    assert!(!att.emit_unsigned);
+}
+
+#[test]
+fn attestation_config_parses_unsigned_emission_opt_in() {
+    let toml = r#"
+[[repo]]
+name = "rosary"
+path = "~/remotes/art/rosary"
+
+[attestation]
+emit_unsigned = true
+"#;
+    let config: Config = toml::from_str(toml).unwrap();
+    assert!(config.attestation.unwrap().emit_unsigned);
+}
+
+#[test]
 fn context_config_defaults_when_absent() {
     let cfg: Config = toml::from_str("").unwrap();
     assert_eq!(cfg.context.policy, "tiers");

@@ -63,17 +63,27 @@ pub struct Config {
 /// ```toml
 /// [attestation]
 /// signing_key_path = "~/.rsry/keys/orchestrator.key"
+/// # Or, for explicitly requested forensic-only evidence:
+/// # emit_unsigned = true
 /// ```
 ///
 /// `signing_key_path` points to a 32-byte raw Ed25519 seed file.
 /// When set, every handoff written by the orchestrator gets a sibling
 /// `.rsry-handoff-N.dsse.json` envelope signed with this key.
+///
+/// Without a signing key, Rosary emits no attestation artifact by default.
+/// `emit_unsigned` opts into an unsigned in-toto Statement written as
+/// `.rsry-handoff-N.intoto.json`; it is forensic evidence only, not a DSSE
+/// envelope or an APAS L2 attestation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationConfig {
     /// Path to a raw 32-byte Ed25519 signing key file.
     /// Tilde (`~`) is expanded each time the key is read for signing,
     /// not at config-load time.
     pub signing_key_path: Option<PathBuf>,
+    /// Emit an unsigned in-toto Statement when no signing key is configured.
+    #[serde(default)]
+    pub emit_unsigned: bool,
 }
 
 /// Role of a plugin in the rosary pipeline.

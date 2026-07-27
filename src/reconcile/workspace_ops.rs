@@ -5,6 +5,24 @@
 use super::Reconciler;
 use crate::store::WorkRef;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandoffAttestationMode {
+    None,
+    Signed,
+    UnsignedForensic,
+}
+
+fn handoff_attestation_mode(
+    attestation: Option<&crate::config::AttestationConfig>,
+) -> HandoffAttestationMode {
+    match attestation {
+        None => HandoffAttestationMode::None,
+        Some(config) if config.signing_key_path.is_some() => HandoffAttestationMode::Signed,
+        Some(config) if config.emit_unsigned => HandoffAttestationMode::UnsignedForensic,
+        Some(_) => HandoffAttestationMode::None,
+    }
+}
+
 impl Reconciler {
     /// Checkpoint workspace (jj commit + bookmark) without cleanup.
     ///
@@ -258,9 +276,7 @@ impl Reconciler {
         }
     }
 
-    /// APAS L2: write a DSSE envelope alongside the just-written handoff file.
-    /// Signs with the configured Ed25519 key when `[attestation]` is set;
-    /// otherwise writes an unsigned envelope (still useful as in-toto Statement).
+    /// Write signed APAS L2 evidence or explicitly requested unsigned forensic evidence.
     ///
     /// The in-toto subject digest is computed from the **on-disk** handoff bytes
     /// so external observers can verify by hashing the file directly.
@@ -282,30 +298,49 @@ impl Reconciler {
             }
         };
 
-        let signing_key = self.load_attestation_key(bead_id);
-
-        let envelope = match crate::dsse::wrap_handoff_from_file(
-            handoff_path,
-            &handoff_predicate,
-            signing_key.as_ref(),
-        ) {
-            Ok(env) => env,
-            Err(e) => {
-                eprintln!("[dsse] {bead_id}: wrap handoff: {e}");
-                return;
-            }
-        };
-
         let work_dir = handoff_path.parent().unwrap_or(handoff_path);
-        if let Err(e) = crate::dsse::write_envelope(work_dir, phase, &envelope) {
-            eprintln!("[dsse] {bead_id}: write envelope: {e}");
-        } else {
-            let signed = if envelope.signatures.is_empty() {
-                "unsigned"
-            } else {
-                "signed"
-            };
-            eprintln!("[dsse] {bead_id}: phase {phase} envelope written ({signed})");
+        match handoff_attestation_mode(self.config.attestation.as_ref()) {
+            HandoffAttestationMode::None => {}
+            HandoffAttestationMode::Signed => {
+                let Some(signing_key) = self.load_attestation_key(bead_id) else {
+                    return;
+                };
+                let envelope = match crate::dsse::wrap_handoff_from_file(
+                    handoff_path,
+                    &handoff_predicate,
+                    &signing_key,
+                ) {
+                    Ok(env) => env,
+                    Err(e) => {
+                        eprintln!("[dsse] {bead_id}: wrap handoff: {e}");
+                        return;
+                    }
+                };
+                if let Err(e) = crate::dsse::write_envelope(work_dir, phase, &envelope) {
+                    eprintln!("[dsse] {bead_id}: write envelope: {e}");
+                } else {
+                    eprintln!("[dsse] {bead_id}: phase {phase} signed envelope written");
+                }
+            }
+            HandoffAttestationMode::UnsignedForensic => {
+                let statement = match crate::dsse::handoff_statement_from_file(
+                    handoff_path,
+                    &handoff_predicate,
+                ) {
+                    Ok(statement) => statement,
+                    Err(e) => {
+                        eprintln!("[dsse] {bead_id}: build unsigned statement: {e}");
+                        return;
+                    }
+                };
+                if let Err(e) = crate::dsse::write_unsigned_statement(work_dir, phase, &statement) {
+                    eprintln!("[dsse] {bead_id}: write unsigned statement: {e}");
+                } else {
+                    eprintln!(
+                        "[dsse] {bead_id}: phase {phase} unsigned forensic statement written"
+                    );
+                }
+            }
         }
     }
 
@@ -326,5 +361,42 @@ impl Reconciler {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attestation_mode_requires_explicit_unsigned_opt_in() {
+        assert_eq!(handoff_attestation_mode(None), HandoffAttestationMode::None);
+
+        let empty = crate::config::AttestationConfig {
+            signing_key_path: None,
+            emit_unsigned: false,
+        };
+        assert_eq!(
+            handoff_attestation_mode(Some(&empty)),
+            HandoffAttestationMode::None
+        );
+
+        let unsigned = crate::config::AttestationConfig {
+            signing_key_path: None,
+            emit_unsigned: true,
+        };
+        assert_eq!(
+            handoff_attestation_mode(Some(&unsigned)),
+            HandoffAttestationMode::UnsignedForensic
+        );
+
+        let signed = crate::config::AttestationConfig {
+            signing_key_path: Some("missing.key".into()),
+            emit_unsigned: true,
+        };
+        assert_eq!(
+            handoff_attestation_mode(Some(&signed)),
+            HandoffAttestationMode::Signed
+        );
     }
 }
