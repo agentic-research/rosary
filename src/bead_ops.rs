@@ -52,6 +52,16 @@ pub struct BeadCreateArgs {
     pub acceptance_criteria: String,
     /// Escape hatch for the close-condition gate (planning/legacy beads).
     pub force: bool,
+    /// Which tier this bead belongs to (ADR-0022: **location derives from
+    /// role**). `Canonical` writes to the repo's bead store and thus into the
+    /// git-tracked record; `Coordination` writes to `refs/agents/*` and never
+    /// touches the working tree.
+    ///
+    /// Defaults to `Canonical`, so every existing caller keeps its behaviour.
+    /// This is deliberately NOT an `Option` — ADR-0022's discipline is that a
+    /// role always exists; a bead with no declared role is just a canonical
+    /// one, not an unknown one.
+    pub role: crate::bead_genesis::Role,
 }
 
 impl BeadCreateArgs {
@@ -90,6 +100,21 @@ impl BeadCreateArgs {
     }
 }
 
+/// Parse a role token from a surface (CLI flag / MCP arg).
+///
+/// Fails loud on an unknown value rather than defaulting: silently treating
+/// `--role coordinaton` as canonical would write a bead into the git-tracked
+/// record that the caller explicitly asked to keep out of it.
+pub fn parse_role(s: &str) -> anyhow::Result<crate::bead_genesis::Role> {
+    use crate::bead_genesis::Role;
+    match s.trim().to_ascii_lowercase().as_str() {
+        "canonical" => Ok(Role::Canonical),
+        "coordination" => Ok(Role::Coordination),
+        "personal" => Ok(Role::Personal),
+        other => anyhow::bail!("unknown role `{other}` (expected canonical|coordination)"),
+    }
+}
+
 /// Create a new bead: validate, resolve owner, persist. The single create
 /// chokepoint for the *authoring* intent (distinct from `bead_move`/`import`,
 /// which relocate/replicate existing beads and must not re-validate "done").
@@ -98,11 +123,54 @@ impl BeadCreateArgs {
 /// `&dyn BeadStore`.
 pub async fn create_bead<S: BeadStore + ?Sized>(
     store: &S,
+    repo_root: &std::path::Path,
     id: &str,
     args: &BeadCreateArgs,
     created_by: Option<&str>,
 ) -> anyhow::Result<()> {
     args.validate()?;
+
+    // ADR-0022: location derives from role. A coordination bead never reaches
+    // the bead store, so it never reaches the git-tracked record and cannot be
+    // swept into a code commit by the pre-commit export. This is the routing
+    // that makes the coordination home real rather than merely available.
+    if args.role == crate::bead_genesis::Role::Coordination {
+        let record = serde_json::json!({
+            "id": id,
+            "role": "coordination",
+            "title": args.title,
+            "description": args.description,
+            "priority": args.priority,
+            "issue_type": args.issue_type,
+            "owner": args.resolved_owner(),
+            "files": args.files,
+            "test_files": args.test_files,
+            "acceptance_criteria": args.resolved_acceptance_criteria(),
+            "created_by": created_by,
+        });
+        return crate::coordination::append(repo_root, id, &record.to_string());
+    }
+
+    // ADR-0012 + ADR-0022: personal beads live in `~/.rsry/personal.db`,
+    // outside any project repo — so they never reach a repo store, its tracked
+    // JSONL, or its working tree. Encryption + the signet attestation gate are
+    // the SYNC layer (rosary-e52b24 / rosary-e55ec9), not the store.
+    if args.role == crate::bead_genesis::Role::Personal {
+        let personal = crate::personal::open()?;
+        return write_to_store(&personal, id, args, created_by).await;
+    }
+
+    write_to_store(store, id, args, created_by).await
+}
+
+/// The store write itself, shared by the canonical and personal tiers — they
+/// differ in WHICH store, not in what is written.
+async fn write_to_store<S: BeadStore + ?Sized>(
+    store: &S,
+    id: &str,
+    args: &BeadCreateArgs,
+    created_by: Option<&str>,
+) -> anyhow::Result<()> {
     store
         .create_bead_full(crate::store::NewBead {
             id: id.to_string(),
@@ -150,6 +218,137 @@ pub async fn close_bead<S: BeadStore + ?Sized>(
 }
 
 #[cfg(test)]
+mod role_routing_tests {
+    use super::*;
+    use crate::bead_genesis::Role;
+
+    fn args(role: Role) -> BeadCreateArgs {
+        BeadCreateArgs {
+            title: "t".into(),
+            description: "d".into(),
+            priority: 2,
+            issue_type: "task".into(),
+            owner: None,
+            files: vec!["src/x.rs".into()],
+            test_files: vec![],
+            depends_on: vec![],
+            acceptance_criteria: "cargo test".into(),
+            force: false,
+            role,
+        }
+    }
+
+    fn git_repo() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(tmp.path())
+            .args(["init", "--quiet"])
+            .output()
+            .unwrap();
+        tmp
+    }
+
+    /// ADR-0022's whole point: a coordination bead must never reach the store,
+    /// because the store is what the pre-commit export sweeps into the
+    /// git-tracked record. Asserted against the store itself, not a file hash,
+    /// so it holds regardless of what the publish step does downstream.
+    #[tokio::test]
+    async fn coordination_role_never_reaches_the_bead_store() {
+        let tmp = git_repo();
+        let store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+
+        create_bead(
+            &store,
+            tmp.path(),
+            "x-coord",
+            &args(Role::Coordination),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            store.list_beads("r").await.unwrap().is_empty(),
+            "a coordination bead must not be written to the canonical store"
+        );
+        let landed = crate::coordination::read(tmp.path(), "x-coord").unwrap();
+        assert!(landed.is_some(), "it must land in refs/agents instead");
+        assert!(landed.unwrap().contains("\"role\":\"coordination\""));
+    }
+
+    /// The default path must be untouched — every existing caller is canonical.
+    #[tokio::test]
+    async fn canonical_role_still_reaches_the_store() {
+        let tmp = git_repo();
+        let store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+
+        create_bead(&store, tmp.path(), "x-canon", &args(Role::Canonical), None)
+            .await
+            .unwrap();
+
+        assert_eq!(store.list_beads("r").await.unwrap().len(), 1);
+        assert!(
+            crate::coordination::read(tmp.path(), "x-canon")
+                .unwrap()
+                .is_none(),
+            "a canonical bead must not leak into the coordination namespace"
+        );
+    }
+
+    /// ADR-0022's goal: canonical storage absorbs NONE of the other roles.
+    /// Personal beads land in ~/.rsry/personal.db, outside any project repo.
+    #[tokio::test]
+    async fn personal_role_never_reaches_the_repo_store() {
+        let _g = crate::personal::tests::HomeGuard::new();
+        let tmp = git_repo();
+        let repo_store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+
+        create_bead(
+            &repo_store,
+            tmp.path(),
+            "x-personal",
+            &args(Role::Personal),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            repo_store.list_beads("r").await.unwrap().is_empty(),
+            "a personal bead must not be written to a project repo's store"
+        );
+        assert!(
+            crate::coordination::read(tmp.path(), "x-personal")
+                .unwrap()
+                .is_none(),
+            "and must not leak into the coordination namespace either"
+        );
+        let personal = crate::personal::open().unwrap();
+        let got = personal
+            .get_bead("x-personal", crate::personal::SCOPE)
+            .await
+            .unwrap();
+        assert!(got.is_some(), "it must land in the personal store");
+    }
+
+    /// An unknown or not-yet-buildable role must FAIL, never silently fall back
+    /// to canonical — that would file a bead into the git-tracked record that
+    /// the caller explicitly asked to keep out of it.
+    #[test]
+    fn unknown_and_unbuilt_roles_are_refused() {
+        assert_eq!(parse_role("canonical").unwrap(), Role::Canonical);
+        assert_eq!(parse_role("  Coordination ").unwrap(), Role::Coordination);
+        assert_eq!(parse_role("personal").unwrap(), Role::Personal);
+        assert!(parse_role("cordination").is_err(), "typo must not pass");
+        assert!(parse_role("").is_err());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -170,6 +369,7 @@ mod tests {
             depends_on: vec![],
             acceptance_criteria: String::new(),
             force: false,
+            role: crate::bead_genesis::Role::Canonical,
         }
     }
 

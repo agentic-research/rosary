@@ -33,6 +33,11 @@
     },
     {
       "rule_id": "dead_code",
+      "source_id": "src/bead_diff.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "dead_code",
       "source_id": "src/bead_sqlite/tests.rs",
       "count": 43
     },
@@ -49,7 +54,12 @@
     {
       "rule_id": "dead_code",
       "source_id": "src/config/tests.rs",
-      "count": 50
+      "count": 52
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/coordination/tests.rs",
+      "count": 8
     },
     {
       "rule_id": "dead_code",
@@ -70,6 +80,11 @@
       "rule_id": "dead_code",
       "source_id": "src/dolt/tests.rs",
       "count": 22
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/graph/tests.rs",
+      "count": 12
     },
     {
       "rule_id": "dead_code",
@@ -373,8 +388,13 @@
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/bead_diff.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/bead_genesis.rs",
-      "count": 2
+      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
@@ -389,7 +409,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead_ops.rs",
-      "count": 2
+      "count": 4
     },
     {
       "rule_id": "duplicate_definitions",
@@ -413,6 +433,11 @@
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/column_rail.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/config/mod.rs",
       "count": 2
     },
@@ -424,7 +449,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/context/envelope.rs",
-      "count": 1
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -440,6 +465,11 @@
       "rule_id": "duplicate_definitions",
       "source_id": "src/context/ref_store.rs",
       "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/coordination/mod.rs",
+      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
@@ -530,6 +560,16 @@
       "rule_id": "duplicate_definitions",
       "source_id": "src/github_mirror.rs",
       "count": 3
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/graph/mod.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/graph/tests.rs",
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -629,7 +669,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/observation/mod.rs",
-      "count": 4
+      "count": 5
     },
     {
       "rule_id": "duplicate_definitions",
@@ -674,6 +714,11 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/orchestrate/transcript.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/personal.rs",
       "count": 1
     },
     {
@@ -724,6 +769,11 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/reconcile/verify.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/reconcile/workspace_ops.rs",
       "count": 1
     },
     {
@@ -873,6 +923,11 @@
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/text.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/vcs.rs",
       "count": 3
     },
@@ -938,6 +993,11 @@
     },
     {
       "rule_id": "fan_out_skew",
+      "source_id": "src/bead_diff.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "fan_out_skew",
       "source_id": "src/bead_migrate.rs",
       "count": 1
     },
@@ -949,7 +1009,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/bead_sqlite/mod.rs",
-      "count": 3
+      "count": 2
     },
     {
       "rule_id": "fan_out_skew",
@@ -959,6 +1019,11 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/context/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/coordination/mod.rs",
       "count": 1
     },
     {
@@ -1014,7 +1079,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/dsse.rs",
-      "count": 2
+      "count": 1
     },
     {
       "rule_id": "fan_out_skew",
@@ -1359,6 +1424,11 @@
     {
       "rule_id": "long_file_rosary",
       "source_id": "src/bead.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/bead_migrate.rs",
       "count": 1
     },
     {

@@ -25,6 +25,7 @@ mod backend;
 mod bdr_enrich;
 mod bead;
 mod bead_backup;
+mod bead_diff;
 mod bead_dolt;
 #[allow(dead_code)]
 // identity primitive — wired into create + resolve() in the P1 follow-on (rosary-160bb2)
@@ -36,8 +37,10 @@ mod bead_sqlite;
 mod capture;
 mod cas;
 mod cli;
+mod column_rail;
 mod config;
 mod context;
+mod coordination;
 mod credential;
 mod decompose;
 mod dispatch;
@@ -67,6 +70,7 @@ mod notes;
 mod observation;
 mod openai_compat;
 mod orchestrate;
+mod personal;
 mod pipeline;
 mod plugin;
 mod pool;
@@ -100,6 +104,7 @@ mod store_sqlite;
 mod sync;
 #[cfg(test)]
 mod testutil;
+mod text;
 mod vcs;
 mod verify;
 #[allow(dead_code)] // API surface — replaces dispatch.rs worktree logic
@@ -344,6 +349,22 @@ enum Command {
         #[command(subcommand)]
         action: LatticeAction,
     },
+    /// Coordination-tier records, stored in `refs/agents/*` instead of the
+    /// working tree (ADR-0022).
+    ///
+    /// This is the home for agent-dispatch notes, run events, and
+    /// feature-local scratch — state that has no business landing in a code
+    /// commit. Writes here never touch `.beads/beads.jsonl`, never appear as a
+    /// branch, and are not fetched by a default `git clone`. That invisibility
+    /// is disqualifying for canonical beads (ADR-0022 Q3) and is exactly the
+    /// point for coordination.
+    Coord {
+        #[command(subcommand)]
+        action: CoordAction,
+        /// Repo path (defaults to the current directory)
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+    },
     /// Emit the bead lattice (decade → thread → bead) as graph text for
     /// visual inspection. Writes DOT (graphviz) or mermaid to stdout — no new
     /// dependencies, the renderer lives outside rosary:
@@ -535,6 +556,29 @@ enum HooksAction {
 }
 
 #[derive(Subcommand)]
+enum CoordAction {
+    /// Append a single-line record to a namespace (compare-and-swap)
+    Add {
+        /// Namespace, conventionally the dispatch id
+        name: String,
+        /// The record — one line, typically JSON
+        record: String,
+    },
+    /// Print a namespace's records
+    Show {
+        /// Namespace to read
+        name: String,
+    },
+    /// List namespaces that currently exist
+    List,
+    /// Delete a namespace (coordination state is GC-able once folded)
+    Rm {
+        /// Namespace to delete
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum LatticeAction {
     /// Fold every bead's persisted observations and diff the lattice-derived
     /// status against `persist_status`. The corpus evidence that gates the R4b
@@ -595,6 +639,12 @@ enum BeadAction {
         /// Skip the close-condition check (for planning/legacy beads)
         #[arg(long)]
         force: bool,
+        /// Tier this bead belongs to (ADR-0022 — location derives from role).
+        /// `canonical` writes to the repo's bead store and thus the git-tracked
+        /// record; `coordination` writes to `refs/agents/*` and never touches
+        /// the working tree.
+        #[arg(long, default_value = "canonical")]
+        role: String,
     },
     /// Close a bead
     Close {
@@ -719,6 +769,31 @@ enum BeadAction {
     Search {
         /// Search query
         query: String,
+    },
+    /// Render a human-readable diff between two bead-record snapshots.
+    ///
+    /// Sources are resolved in this order, so bead state can be read from
+    /// somewhere OTHER than the working tree — which is what makes the
+    /// in-tree-vs-out-of-tree question (rosary-fa7167 Q1) answerable:
+    ///
+    ///   - `-`                    stdin
+    ///   - `<rev>:<path>`         a git blob, e.g. `HEAD~1:.beads/beads.jsonl`
+    ///   - `<ref>`                a git ref holding JSONL, e.g. `refs/beads/main`
+    ///   - anything else          a file path
+    ///
+    /// Emits markdown suitable for a PR comment. A bead REMOVED from the
+    /// record is called out loudly — that is the shape of every data-loss
+    /// incident this repo has had.
+    Diff {
+        /// Snapshot to diff FROM (the "before" side)
+        #[arg(long)]
+        from: String,
+        /// Snapshot to diff TO. Defaults to the repo's tracked export.
+        #[arg(long, default_value = ".beads/beads.jsonl")]
+        to: String,
+        /// Exit non-zero when any bead was removed — for use as a CI gate.
+        #[arg(long)]
+        fail_on_removal: bool,
     },
     /// Export beads as JSON (for import into another rsry instance)
     Export {
@@ -1968,6 +2043,31 @@ async fn main() -> Result<()> {
                     );
                     return Ok(());
                 }
+                // Diff reads snapshots (files / git revs / refs), never the
+                // store — so it must run BEFORE the store gate below. A CI
+                // checkout has no `beads.db`, and requiring one would defeat
+                // the point (rosary-fa7167 Q1).
+                BeadAction::Diff {
+                    from,
+                    to,
+                    fail_on_removal,
+                } => {
+                    let before =
+                        bead_diff::parse_snapshot(&bead_diff::read_snapshot(from, &repo_root)?)
+                            .with_context(|| format!("reading --from {from}"))?;
+                    let after =
+                        bead_diff::parse_snapshot(&bead_diff::read_snapshot(to, &repo_root)?)
+                            .with_context(|| format!("reading --to {to}"))?;
+                    let d = bead_diff::diff(&before, &after);
+                    print!("{}", bead_diff::render_markdown(&d, from, to));
+                    if *fail_on_removal && !d.removed.is_empty() {
+                        anyhow::bail!(
+                            "{} bead(s) removed from the record — refusing to pass",
+                            d.removed.len()
+                        );
+                    }
+                    return Ok(());
+                }
                 _ => {}
             }
 
@@ -2007,6 +2107,7 @@ async fn main() -> Result<()> {
                     test_files,
                     acceptance,
                     force,
+                    role,
                 } => {
                     let id = generate_bead_id(&repo_name);
                     let created_by = git_config_user_name(&repo_root);
@@ -2022,10 +2123,23 @@ async fn main() -> Result<()> {
                         depends_on: vec![], // CLI doesn't support depends_on yet
                         acceptance_criteria: acceptance,
                         force,
+                        role: bead_ops::parse_role(&role)?,
                     };
-                    bead_ops::create_bead(client.as_ref(), &id, &args, created_by.as_deref())
-                        .await?;
-                    jsonl_sync::publish_created_bead_to_tracked_jsonl(
+                    let role = args.role;
+                    bead_ops::create_bead(
+                        client.as_ref(),
+                        &repo_root,
+                        &id,
+                        &args,
+                        created_by.as_deref(),
+                    )
+                    .await?;
+                    // ADR-0022: publishing is a CANONICAL-tier operation. A
+                    // coordination bead lives in refs/agents/* precisely so it
+                    // never enters the git-tracked record; publishing it here
+                    // would undo the routing two lines above.
+                    if role == bead_genesis::Role::Canonical {
+                        jsonl_sync::publish_created_bead_to_tracked_jsonl(
                         client.as_ref(),
                         &id,
                         &repo_name,
@@ -2037,6 +2151,7 @@ async fn main() -> Result<()> {
                             "bead {id} created locally, but publishing it to tracked .beads/beads.jsonl"
                         )
                     })?;
+                    }
                     cli::bead_created(&id, &args.title);
                 }
                 BeadAction::Close { id, force } => {
@@ -2255,6 +2370,10 @@ async fn main() -> Result<()> {
                         }
                     }
                 },
+                // Handled before the store gate above (it reads snapshots,
+                // not the store) — unreachable here, but the match must be
+                // exhaustive.
+                BeadAction::Diff { .. } => unreachable!("Diff is dispatched pre-store"),
                 BeadAction::Search { query } => {
                     let beads = client.search_beads(&query, &repo_name, 50).await?;
                     cli::bead_search_results(&beads, &query);
@@ -2405,6 +2524,41 @@ async fn main() -> Result<()> {
                 eprintln!("warning: graph is empty (no matching decades/beads)");
             }
             print!("{}", model.render(format));
+        }
+        Command::Coord { action, repo } => {
+            let repo_root = scanner::resolve_repo_path(std::path::Path::new(&repo));
+            match action {
+                CoordAction::Add { name, record } => {
+                    coordination::append(&repo_root, &name, &record)?;
+                    println!("appended to {}/{name}", coordination::NAMESPACE);
+                }
+                CoordAction::Show { name } => match coordination::read(&repo_root, &name)? {
+                    Some(text) => print!("{text}"),
+                    None => {
+                        // "never written" is not "written and empty" — the same
+                        // distinction the store/ledger drift kept collapsing.
+                        eprintln!("no such coordination namespace: {name}");
+                        std::process::exit(1);
+                    }
+                },
+                CoordAction::List => {
+                    let names = coordination::list(&repo_root)?;
+                    if names.is_empty() {
+                        eprintln!("no coordination namespaces in {}", repo_root.display());
+                    }
+                    for n in names {
+                        println!("{n}");
+                    }
+                }
+                CoordAction::Rm { name } => {
+                    if coordination::delete(&repo_root, &name)? {
+                        println!("deleted {}/{name}", coordination::NAMESPACE);
+                    } else {
+                        eprintln!("no such coordination namespace: {name}");
+                        std::process::exit(1);
+                    }
+                }
+            }
         }
         Command::Sweep { repo, dry_run } => {
             let repo_path = scanner::resolve_repo_path(std::path::Path::new(&repo));
@@ -4824,6 +4978,7 @@ mod tests {
             test_files: vec![],
             acceptance: String::new(),
             force: false,
+            role: "canonical".to_string(),
         };
         assert!(matches!(create, BeadAction::Create { priority: 1, .. }));
 
