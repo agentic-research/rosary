@@ -74,6 +74,11 @@ pub struct GraphModel {
     pub dep_edges: Vec<(String, String)>,
     /// Human-readable description of what was rendered, for the graph title.
     pub caption: String,
+    /// Degradations that occurred while building — a store that wouldn't open,
+    /// edges that couldn't be drawn. These are rendered INTO the graph, not
+    /// just logged: a PNG handed to someone else carries no stderr, so a
+    /// silently-degraded graph would read as an accurate one.
+    pub warnings: Vec<String>,
 }
 
 impl GraphModel {
@@ -102,12 +107,25 @@ impl GraphModel {
         }
     }
 
+    /// Graph title — the caption plus any degradation, so an incomplete graph
+    /// says so on its face.
+    fn titled_caption(&self) -> String {
+        if self.warnings.is_empty() {
+            return self.caption.clone();
+        }
+        format!(
+            "{}\n⚠ INCOMPLETE: {}",
+            self.caption,
+            self.warnings.join(" · ")
+        )
+    }
+
     fn render_dot(&self) -> String {
         let mut out = String::new();
         out.push_str("digraph rosary {\n");
         out.push_str("  rankdir=LR;\n");
         out.push_str("  graph [fontname=\"Helvetica\", labelloc=\"t\", label=");
-        out.push_str(&dot_quote(&self.caption));
+        out.push_str(&dot_quote(&self.titled_caption()));
         out.push_str("];\n");
         out.push_str("  node [fontname=\"Helvetica\", fontsize=10];\n");
         out.push_str("  edge [color=\"#888888\"];\n\n");
@@ -155,8 +173,9 @@ impl GraphModel {
     fn render_mermaid(&self) -> String {
         let mut out = String::new();
         out.push_str("graph LR\n");
-        if !self.caption.is_empty() {
-            out.push_str(&format!("  %% {}\n", self.caption.replace('\n', " ")));
+        let caption = self.titled_caption();
+        if !caption.is_empty() {
+            out.push_str(&format!("  %% {}\n", caption.replace('\n', " ")));
         }
 
         // Mermaid node ids can't contain most punctuation, so index-alias them
@@ -197,15 +216,26 @@ impl GraphModel {
             out.push_str(&format!("  class {a} {class};\n"));
         }
 
+        // An edge naming a node we didn't emit can't be drawn — but dropping it
+        // silently would render a sparser graph that looks complete. Count and
+        // declare instead.
+        let mut dropped = 0usize;
         for (from, to) in &self.edges {
-            if let (Some(f), Some(t)) = (alias.get(from.as_str()), alias.get(to.as_str())) {
-                out.push_str(&format!("  {f} --> {t}\n"));
+            match (alias.get(from.as_str()), alias.get(to.as_str())) {
+                (Some(f), Some(t)) => out.push_str(&format!("  {f} --> {t}\n")),
+                _ => dropped += 1,
             }
         }
         for (from, to) in &self.dep_edges {
-            if let (Some(f), Some(t)) = (alias.get(from.as_str()), alias.get(to.as_str())) {
-                out.push_str(&format!("  {f} -.-> {t}\n"));
+            match (alias.get(from.as_str()), alias.get(to.as_str())) {
+                (Some(f), Some(t)) => out.push_str(&format!("  {f} -.-> {t}\n")),
+                _ => dropped += 1,
             }
+        }
+        if dropped > 0 {
+            out.push_str(&format!(
+                "  %% ⚠ {dropped} edge(s) omitted — endpoint not in this view\n"
+            ));
         }
 
         out.push_str("  classDef decade fill:#cfe3ff,stroke:#5588cc;\n");
@@ -219,8 +249,16 @@ impl GraphModel {
 }
 
 /// DOT string literal. Escapes backslashes first, then quotes — order matters.
+/// A literal newline inside a quoted DOT string is treated as whitespace, not
+/// a line break, so newlines become the `\n` escape or multi-line labels
+/// silently collapse onto one line.
 fn dot_quote(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+    )
 }
 
 /// Mermaid labels live inside quotes; the quote itself is the only real
@@ -401,6 +439,7 @@ mod tests {
             ],
             dep_edges: vec![("rosary-aaaaaa".into(), "rosary-bbbbbb".into())],
             caption: "test graph".into(),
+            warnings: Vec::new(),
         }
     }
 
@@ -466,6 +505,25 @@ mod tests {
         assert!(dot.contains("c:\\\\path"), "backslash not escaped: {dot}");
     }
 
+    /// A raw newline inside a quoted DOT string is whitespace, not a line
+    /// break — multi-line labels (which every degraded graph has) would
+    /// silently collapse onto one line.
+    #[test]
+    fn dot_newlines_become_line_break_escapes() {
+        assert_eq!(dot_quote("a\nb"), "\"a\\nb\"");
+        let mut model = sample();
+        model.warnings.push("store unreadable".into());
+        let dot = model.render(Format::Dot);
+        let label_line = dot
+            .lines()
+            .find(|l| l.contains("labelloc"))
+            .expect("graph label present");
+        assert!(
+            label_line.contains("INCOMPLETE"),
+            "the whole label must stay on one physical line: {label_line}"
+        );
+    }
+
     #[test]
     fn mermaid_escapes_hash_and_quote() {
         assert_eq!(mermaid_escape("a#b\"c"), "a&num;b&quot;c");
@@ -476,5 +534,48 @@ mod tests {
         // Byte-slicing here would panic; assert we count chars.
         assert_eq!(truncate("ααααα", 3), "αα…");
         assert_eq!(truncate("abc", 10), "abc");
+    }
+
+    #[test]
+    fn degraded_graph_declares_itself_in_both_formats() {
+        // A silently-degraded graph reads as an accurate one — especially once
+        // it's a PNG someone else opened, where stderr no longer exists.
+        let mut model = sample();
+        model.warnings.push("bead store unreadable: boom".into());
+
+        let dot = model.render(Format::Dot);
+        assert!(
+            dot.contains("INCOMPLETE"),
+            "dot must declare degradation: {dot}"
+        );
+        assert!(dot.contains("boom"), "dot must carry the cause");
+
+        let mm = model.render(Format::Mermaid);
+        assert!(
+            mm.contains("INCOMPLETE"),
+            "mermaid must declare degradation"
+        );
+        assert!(mm.contains("boom"), "mermaid must carry the cause");
+    }
+
+    #[test]
+    fn clean_graph_carries_no_incomplete_marker() {
+        let dot = sample().render(Format::Dot);
+        assert!(!dot.contains("INCOMPLETE"), "must not cry wolf");
+    }
+
+    #[test]
+    fn mermaid_declares_edges_it_could_not_draw() {
+        let model = GraphModel {
+            nodes: vec![bead("rosary-aaaaaa", 1, "open")],
+            // Endpoint that was never emitted as a node.
+            edges: vec![("rosary-aaaaaa".into(), "rosary-missing".into())],
+            ..Default::default()
+        };
+        let mm = model.render(Format::Mermaid);
+        assert!(
+            mm.contains("1 edge(s) omitted"),
+            "dropped edges must be declared, not silently skipped: {mm}"
+        );
     }
 }

@@ -2357,28 +2357,41 @@ async fn main() -> Result<()> {
                 .await
                 .context("opening orchestrator backend")?;
 
-            // Bead metadata is best-effort: a bead whose store we can't read
-            // still renders, labelled by id. Never fail the graph over it.
+            // Bead metadata is best-effort — a bead whose store we can't read
+            // still renders, labelled by id, rather than failing the whole
+            // graph. But a degraded graph must SAY it is degraded: silently
+            // swallowing the store error here would mute even the ambiguous-
+            // store failure from rosary-9103f7, and the resulting id-only
+            // graph would look like an accurate one.
             let mut facts = std::collections::BTreeMap::new();
+            let mut warnings: Vec<String> = Vec::new();
             let repo_path = scanner::resolve_repo_path(std::path::Path::new(&repo));
-            if let Ok(store) = bead_sqlite::connect_bead_store(&resolve_beads_dir(&repo_path)).await
-            {
-                let repo_name = repo_path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| repo.clone());
-                if let Ok(beads) = store.list_beads(&repo_name).await {
-                    for b in beads {
-                        facts.insert(
-                            b.id.clone(),
-                            graph::BeadFacts {
-                                title: b.title.clone(),
-                                priority: b.priority,
-                                status: b.status.clone(),
-                            },
-                        );
+            match bead_sqlite::connect_bead_store(&resolve_beads_dir(&repo_path)).await {
+                Ok(store) => {
+                    let repo_name = repo_path
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| repo.clone());
+                    match store.list_beads(&repo_name).await {
+                        Ok(beads) => {
+                            for b in beads {
+                                facts.insert(
+                                    b.id.clone(),
+                                    graph::BeadFacts {
+                                        title: b.title.clone(),
+                                        priority: b.priority,
+                                        status: b.status.clone(),
+                                    },
+                                );
+                            }
+                        }
+                        Err(e) => warnings.push(format!("bead titles unavailable: {e}")),
                     }
                 }
+                Err(e) => warnings.push(format!("bead store unreadable: {e}")),
+            }
+            for w in &warnings {
+                eprintln!("warning: {w}");
             }
 
             let spec = graph::Spec {
@@ -2386,7 +2399,8 @@ async fn main() -> Result<()> {
                 decade,
                 orphans,
             };
-            let model = graph::build(&*backend, &spec, &facts).await?;
+            let mut model = graph::build(&*backend, &spec, &facts).await?;
+            model.warnings.extend(warnings);
             if model.is_empty() {
                 eprintln!("warning: graph is empty (no matching decades/beads)");
             }
