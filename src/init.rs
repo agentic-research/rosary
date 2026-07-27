@@ -305,6 +305,11 @@ mod tests {
         assert_eq!(outcome, AgentsOutcome::Created);
         assert!(out.contains(MARKER_START) && out.contains(MARKER_END));
         assert!(out.contains("tracked as beads") || out.contains("beads"));
+        assert!(out.contains("rsry bead list --dispatchable"));
+        assert!(
+            !out.contains("bd"),
+            "fresh rsry guidance should not mention a legacy CLI: {out}"
+        );
     }
 
     #[test]

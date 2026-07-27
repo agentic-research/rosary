@@ -1,17 +1,9 @@
 # Agent Instructions
 
-<!--
-  Canonical rsry-native AGENTS.md. `rsry init` writes this into a repo (the
-  rsry-native replacement for `bd setup <tool>`). Learns from bd's AGENTS.md
-  concepts (ready-work detection, dependency types, discovered-from) but routes
-  through `rsry` — never `bd`. See rosary ADR-0014.
--->
-
 This project tracks all work as **beads**, stored in `.beads/` (a Dolt database,
 or a SQLite `beads.db` for single-user repos) and accessed **through `rsry`** —
 the CLI or the `rsry_*` MCP tools. Rosary owns the store and reads/writes it
-in-process over the Dolt/SQLite wire; it **never invokes the `bd` CLI**
-(ADR-0014). Do not run `bd`.
+in-process over the Dolt/SQLite wire.
 
 ## Quick Reference
 
@@ -42,7 +34,7 @@ cp -f source dest    mv -f source dest    rm -f file    rm -rf dir    cp -rf src
 ## Issue Tracking with beads (via `rsry`)
 
 All issue tracking goes through beads. Do NOT use markdown TODOs, task lists, or
-external trackers. Do NOT use the `bd` CLI — use `rsry`.
+external trackers.
 
 ### Why beads
 
@@ -111,8 +103,8 @@ before asking "what should I work on?"** — prefer it over `--ready`.
 
 ### State sync (automatic, rsry-native)
 
-There is **no** `bd dolt push` / `issues.jsonl` step you run by hand. When a PR
-merges, the git `post-merge` hook (installed by `rsry hooks install`) runs
+State sync is automatic. When a PR merges, the git `post-merge` hook (installed
+by `rsry hooks install`) runs
 `rsry close-merged --local` — reading the squash-merge commit
 (`[bead-id] … (#N)`) from local `git log` and closing the bead — plus a
 `dolt pull` for Dolt-backed repos. No webhook, no `gh`, no manual export.
