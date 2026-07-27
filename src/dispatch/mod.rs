@@ -78,18 +78,26 @@ impl PermissionProfile {
                 "Read,Edit,Write,Bash(cargo *),Bash(go *),Bash(git *),Bash(task *),Glob,Grep,",
                 "mcp__mache__*,",
                 "mcp__rsry__rsry_bead_comment,mcp__rsry__rsry_bead_search,",
+                "mcp__rsry__rsry_bead_link,",
                 "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,mcp__rsry__rsry_active,",
                 // Native feedback substrate — the job contract requires a
                 // `feedback` run-event before finishing (rosary feedback-contract).
-                "mcp__rsry__rsry_agent_run_event_record"
+                "mcp__rsry__rsry_agent_run_event_record,",
+                // Warm-resume: the context envelope demotes older phases to CAS
+                // refs and tells the agent to "fetch with rsry_expand_ref"
+                // (context/envelope.rs). Without this the instruction points at
+                // a denied tool and those refs are unfetchable.
+                "mcp__rsry__rsry_expand_ref"
             ),
             // Review/adversarial modes: read-only code access + bead comments.
             Self::ReadOnly => concat!(
                 "Read,Glob,Grep,",
                 "mcp__mache__*,",
                 "mcp__rsry__rsry_bead_comment,mcp__rsry__rsry_bead_search,",
+                "mcp__rsry__rsry_bead_link,",
                 "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,",
-                "mcp__rsry__rsry_agent_run_event_record"
+                "mcp__rsry__rsry_agent_run_event_record,",
+                "mcp__rsry__rsry_expand_ref"
             ),
             // Planning/research/design: read code + full bead management.
             // Can create/update beads but still cannot close or merge.
@@ -101,7 +109,8 @@ impl PermissionProfile {
                 "mcp__rsry__rsry_bead_link,",
                 "mcp__rsry__rsry_status,mcp__rsry__rsry_list_beads,",
                 "mcp__rsry__rsry_decompose,",
-                "mcp__rsry__rsry_agent_run_event_record"
+                "mcp__rsry__rsry_agent_run_event_record,",
+                "mcp__rsry__rsry_expand_ref"
             ),
         }
     }
@@ -361,9 +370,8 @@ pub async fn spawn(
         bead.owner.as_deref(),
     );
 
-    // Build agent-aware system prompt from bead.owner
-    let system_prompt = build_system_prompt(bead.owner.as_deref(), agents_dir);
-
+    // Resolve permissions BEFORE the prompt: the prompt's tool list is
+    // generated from this profile's allowlist, so the two cannot drift.
     // Agent-specific permission override: scoping-agent is always ReadOnly
     let permissions = match bead.owner.as_deref() {
         Some("scoping-agent") => PermissionProfile::ReadOnly,
@@ -372,6 +380,10 @@ pub async fn spawn(
         Some("architect-agent") => PermissionProfile::Plan,
         _ => permission_profile(&bead.issue_type),
     };
+
+    // Build agent-aware system prompt from bead.owner; its rsry tool list is
+    // rendered from `permissions` above.
+    let system_prompt = build_system_prompt(bead.owner.as_deref(), agents_dir, permissions);
 
     // Apply per-phase model override if provided. The Box must outlive
     // the borrow we hand to `effective_provider`, so it lives at the
@@ -970,6 +982,198 @@ pub async fn spawn_detached(
         pid,
         stream_log: log_path,
     })
+}
+
+#[cfg(test)]
+mod permission_rail_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    const ENVELOPE_RS: &str = include_str!("../context/envelope.rs");
+    const PROMPT_RS: &str = include_str!("prompt.rs");
+
+    /// The real MCP tool names, read from the tool registry itself
+    /// (`"name": "rsry_x"` in serve/tools.rs).
+    ///
+    /// Grounding the extractor in the ACTUAL tool set — rather than in a
+    /// naming convention — is what makes it catch prose. Prompts name tools
+    /// bare (`bead_link`) as often as qualified (`mcp__rsry__rsry_bead_link`),
+    /// and an earlier version of this rail missed every bare mention.
+    fn known_tools() -> BTreeSet<String> {
+        const TOOLS_RS: &str = include_str!("../serve/tools.rs");
+        let mut out = BTreeSet::new();
+        for (i, _) in TOOLS_RS.match_indices("\"name\": \"rsry_") {
+            let rest = &TOOLS_RS[i + "\"name\": \"".len()..];
+            if let Some(end) = rest.find('"') {
+                out.insert(rest[..end].to_string());
+            }
+        }
+        out
+    }
+
+    /// Every known tool a prompt string NAMES to an agent, matching both the
+    /// qualified form and the bare `bead_link` form prose actually uses.
+    fn tools_named_in(src: &str) -> BTreeSet<String> {
+        known_tools()
+            .into_iter()
+            .filter(|t| {
+                if src.contains(t.as_str()) {
+                    return true;
+                }
+                // The BARE form is only unambiguous when it is multi-word:
+                // `bead_link` reads as a tool, but `dispatch` / `review` /
+                // `decompose` are ordinary English and match prose like
+                // "dispatched agents" or "decompose into beads". Requiring an
+                // underscore keeps the signal and drops that noise — an
+                // over-firing rail is the 0.9%-precision failure this repo is
+                // already paying for elsewhere.
+                let bare = t.strip_prefix("rsry_").unwrap_or(t);
+                bare.contains('_') && src.contains(bare)
+            })
+            .collect()
+    }
+
+    /// Exact membership in a comma-separated allowlist, honouring `pkg__*`
+    /// wildcards. Substring matching would let `rsry_bead_comment_list` satisfy
+    /// a check for `rsry_bead_comment`.
+    fn permits(allowlist: &str, tool: &str) -> bool {
+        let qualified = format!("mcp__rsry__{tool}");
+        allowlist.split(',').map(str::trim).any(|entry| {
+            entry == qualified
+                || entry == tool
+                || entry
+                    .strip_suffix('*')
+                    .is_some_and(|prefix| qualified.starts_with(prefix))
+        })
+    }
+
+    #[test]
+    fn permits_matches_exactly_not_by_substring() {
+        let list = "mcp__rsry__rsry_bead_comment_list,mcp__mache__*";
+        assert!(permits(list, "rsry_bead_comment_list"));
+        assert!(
+            !permits(list, "rsry_bead_comment"),
+            "substring matching would wrongly accept a shorter name"
+        );
+        assert!(
+            permits("mcp__rsry__*", "rsry_anything"),
+            "wildcard honoured"
+        );
+    }
+
+    /// The rail must catch a tool named in a prompt that NO profile permits —
+    /// the defect class it claims to guard, not just the one instance already
+    /// fixed. Adversarial review (2026-07-27) showed the first version of this
+    /// test stayed green while a prompt instructed every agent to call
+    /// `rsry_bead_close`, because it checked two hardcoded names that were
+    /// already permitted everywhere. A gate whose only reachable failure is the
+    /// bug you just fixed is a regression test, not a rail.
+    #[test]
+    fn rail_detects_an_unpermitted_tool_named_in_a_prompt() {
+        assert!(
+            !known_tools().is_empty(),
+            "the registry must yield tool names, else this rail is vacuous"
+        );
+        let named = tools_named_in("Close it with mcp__rsry__rsry_bead_close when done.");
+        assert!(
+            named.contains("rsry_bead_close"),
+            "qualified form: {named:?}"
+        );
+        let bare = tools_named_in("You may use bead_close at the end.");
+        assert!(
+            bare.contains("rsry_bead_close"),
+            "BARE form must also match: {bare:?}"
+        );
+        assert!(
+            !permits(
+                PermissionProfile::ReadOnly.claude_allowed_tools(),
+                "rsry_bead_close"
+            ),
+            "and no profile permits it — so the rail below must fail on it"
+        );
+    }
+
+    /// The prompt's rsry tool list is GENERATED from the profile's allowlist,
+    /// so the two cannot disagree. Previously it was prose listing
+    /// "bead_comment, bead_search, bead_link" by hand — and it drifted:
+    /// `bead_link` was advertised to every agent while only `Plan` permitted it.
+    ///
+    /// Detecting drift is second best. This asserts it is unrepresentable.
+    #[test]
+    fn prompt_tool_list_is_generated_from_the_allowlist() {
+        for profile in [
+            PermissionProfile::Implement,
+            PermissionProfile::ReadOnly,
+            PermissionProfile::Plan,
+        ] {
+            let prompt = crate::dispatch::build_system_prompt(None, None, profile);
+            let permitted: BTreeSet<&str> = profile
+                .claude_allowed_tools()
+                .split(',')
+                .map(str::trim)
+                .filter_map(|t| t.strip_prefix("mcp__rsry__rsry_"))
+                .collect();
+
+            for tool in &permitted {
+                assert!(
+                    prompt.contains(tool),
+                    "{profile:?} permits `{tool}` but the prompt never names it"
+                );
+            }
+            // And the converse: nothing named that isn't permitted.
+            for tool in known_tools() {
+                let bare = tool.strip_prefix("rsry_").unwrap_or(&tool);
+                if bare.contains('_') && prompt.contains(bare) && !permitted.contains(bare) {
+                    panic!("{profile:?} prompt names `{bare}` but does not permit it");
+                }
+            }
+        }
+    }
+
+    /// Every `rsry_*` tool named in the dispatch prompt or context envelope must
+    /// be permitted by every profile that receives it.
+    ///
+    /// Known exceptions are listed explicitly, so an exemption is a deliberate
+    /// line of code rather than a silent omission.
+    #[test]
+    fn tools_named_in_prompts_are_permitted() {
+        // Named in prose describing what OTHER actors do, not what this agent
+        // may call. Each needs a stated reason.
+        const EXEMPT: &[(&str, &str)] = &[
+            // prompt.rs states this as a prohibition: "NOT close beads".
+            ("rsry_bead_close", "named only to forbid it"),
+        ];
+
+        let mut named: BTreeSet<String> = BTreeSet::new();
+        named.extend(tools_named_in(ENVELOPE_RS));
+        named.extend(tools_named_in(PROMPT_RS));
+        named.retain(|t| !EXEMPT.iter().any(|(e, _)| e == t));
+        assert!(
+            named.contains("rsry_expand_ref"),
+            "sanity: the envelope still instructs fetching demoted refs"
+        );
+
+        let mut failures = Vec::new();
+        for profile in [
+            PermissionProfile::Implement,
+            PermissionProfile::ReadOnly,
+            PermissionProfile::Plan,
+        ] {
+            let allowed = profile.claude_allowed_tools();
+            for tool in &named {
+                if !permits(allowed, tool) {
+                    failures.push(format!(
+                        "{profile:?} is told to use `{tool}` but is not permitted it"
+                    ));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "prompt names a tool the profile does not permit:\n  {}",
+            failures.join("\n  ")
+        );
+    }
 }
 
 #[cfg(test)]

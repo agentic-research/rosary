@@ -73,6 +73,11 @@
     },
     {
       "rule_id": "dead_code",
+      "source_id": "src/dispatch/prompt.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
       "source_id": "src/dispatch/tests.rs",
       "count": 76
     },
