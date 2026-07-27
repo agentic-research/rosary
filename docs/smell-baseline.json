@@ -34,7 +34,7 @@
     {
       "rule_id": "dead_code",
       "source_id": "src/bead_sqlite/tests.rs",
-      "count": 41
+      "count": 43
     },
     {
       "rule_id": "dead_code",

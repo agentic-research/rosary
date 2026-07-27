@@ -171,30 +171,35 @@ pub(crate) fn unreadable_backend_warning(beads_dir: &Path) -> Option<String> {
 pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> {
     let dolt_dir = beads_dir.join("dolt");
     if dolt_dir.exists() {
+        // Two store shapes in one `.beads/` is AMBIGUOUS, and a read path must
+        // not resolve it by guessing (rosary-9103f7). This branch used to
+        // silently drain beads.db into Dolt and rename it away — a lossy
+        // write triggered by a mere connect: it dropped `notes` (the
+        // files/test_files/derived_from container, so file-overlap protection
+        // died with it), `external_ref`, `design`, `user_id`, and both
+        // timestamps, and never carried comments or dependencies at all.
+        //
+        // Fail closed and name both paths. The sanctioned conversion is
+        // `rsry bead migrate`, which verifies field-level fidelity and keeps a
+        // backup — this is the same "materialization must be explicit"
+        // principle as rosary-554a74, applied to the open path.
+        let sqlite_path = beads_dir.join("beads.db");
+        if sqlite_path.exists() {
+            anyhow::bail!(
+                "ambiguous bead store in {}: both a Dolt store ({}) and a SQLite store ({}) exist, \
+                 so rsry cannot tell which is authoritative. Nothing was changed. Resolve it \
+                 explicitly: run `rsry bead migrate --to sqlite` (field-level verified, keeps a \
+                 backup), or move aside whichever store is stale.",
+                beads_dir.display(),
+                dolt_dir.display(),
+                sqlite_path.display()
+            );
+        }
+
         let config = crate::dolt::DoltConfig::from_beads_dir(beads_dir)?;
         let client = crate::dolt::DoltClient::connect(&config).await?;
         if let Err(e) = client.migrate().await {
             eprintln!("[bead] migration warning for {}: {e}", beads_dir.display());
-        }
-
-        // One-shot migration: if a stale beads.db exists and hasn't been migrated yet,
-        // drain it into Dolt and rename it so we don't run again.
-        let sqlite_path = beads_dir.join("beads.db");
-        let migrated_path = beads_dir.join("beads.db.migrated");
-        if sqlite_path.exists() && !migrated_path.exists() {
-            match migrate_sqlite_to_dolt(&sqlite_path, &client).await {
-                Ok(n) if n > 0 => {
-                    eprintln!("[bead] migrated {n} beads from beads.db → Dolt");
-                    if let Err(e) = std::fs::rename(&sqlite_path, &migrated_path) {
-                        eprintln!("[bead] could not rename beads.db after migration: {e}");
-                    }
-                }
-                Ok(_) => {
-                    // Nothing to migrate — still rename to avoid re-checking every time.
-                    let _ = std::fs::rename(&sqlite_path, &migrated_path);
-                }
-                Err(e) => eprintln!("[bead] SQLite→Dolt migration failed: {e}"),
-            }
         }
 
         return Ok(Box::new(crate::bead_dolt::DoltBeadStore::new(client)));
@@ -209,97 +214,6 @@ pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> 
     let sqlite_path = beads_dir.join("beads.db");
     let store = SqliteBeadStore::connect(&sqlite_path)?;
     Ok(Box::new(store))
-}
-
-/// Drain all beads from a stale SQLite file into the connected Dolt client.
-/// Skips beads whose ID already exists in Dolt (idempotent).
-/// Returns the number of beads actually migrated.
-async fn migrate_sqlite_to_dolt(
-    sqlite_path: &Path,
-    client: &crate::dolt::DoltClient,
-) -> Result<usize> {
-    // rusqlite::Connection is !Send — read all rows synchronously into a Vec
-    // before the first .await, then drop the connection.
-    struct Row {
-        id: String,
-        title: String,
-        description: String,
-        priority: u8,
-        issue_type: String,
-        owner: String,
-        status: String,
-        created_by: Option<String>,
-        scope: String,
-        acceptance_criteria: String,
-    }
-
-    let rows: Vec<Row> = {
-        let conn = Connection::open(sqlite_path)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, title, description, priority, issue_type, assignee, notes, status, created_by, scope, acceptance_criteria FROM issues",
-        )?;
-        stmt.query_map([], |r| {
-            Ok(Row {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                description: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                priority: r.get::<_, i64>(3).unwrap_or(2) as u8,
-                issue_type: r
-                    .get::<_, Option<String>>(4)?
-                    .unwrap_or_else(|| "task".to_string()),
-                owner: r
-                    .get::<_, Option<String>>(5)?
-                    .unwrap_or_else(|| "dev-agent".to_string()),
-                status: r
-                    .get::<_, Option<String>>(7)?
-                    .unwrap_or_else(|| "open".to_string()),
-                created_by: r.get(8)?,
-                scope: r.get::<_, Option<String>>(9)?.unwrap_or_default(),
-                // Preserve the structured close condition through migration (#278).
-                acceptance_criteria: r.get::<_, Option<String>>(10)?.unwrap_or_default(),
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .collect()
-        // conn dropped here — no non-Send value crosses any .await below
-    };
-
-    let mut migrated = 0usize;
-    for row in rows {
-        // Skip if already in Dolt (re-run safety).
-        if client.get_bead(&row.id, "").await.unwrap_or(None).is_some() {
-            continue;
-        }
-
-        // Scrub before writing into version-controlled history.
-        let title = crate::secrets::scrub_and_warn(&row.title, &format!("migrating {}", row.id));
-        let description =
-            crate::secrets::scrub_and_warn(&row.description, &format!("migrating {}", row.id));
-
-        client
-            .create_bead_full(NewBead {
-                id: row.id.clone(),
-                title,
-                description,
-                priority: row.priority,
-                issue_type: row.issue_type.clone(),
-                owner: row.owner.clone(),
-                created_by: row.created_by.clone(),
-                scope: row.scope.clone(),
-                acceptance_criteria: row.acceptance_criteria.clone(),
-                ..Default::default()
-            })
-            .await?;
-
-        // Preserve status if not open.
-        if row.status != "open" {
-            let _ = client.update_status(&row.id, &row.status).await;
-        }
-
-        migrated += 1;
-    }
-
-    Ok(migrated)
 }
 
 pub struct SqliteBeadStore {

@@ -1189,3 +1189,61 @@ fn parse_datetime_accepts_contract_shapes_and_fails_loud() {
         "error should name the offending value"
     );
 }
+
+/// rosary-9103f7: two store shapes in one `.beads/` is ambiguous. A read path
+/// must refuse rather than guess — and must not mutate the filesystem while
+/// refusing. The old behaviour silently drained SQLite into Dolt (dropping
+/// `notes`/`external_ref`/timestamps, and all comments + dependencies) and
+/// renamed `beads.db` away, all triggered by a mere connect.
+#[tokio::test]
+async fn ambiguous_store_fails_closed_without_touching_either_side() {
+    let tmp = tempfile::tempdir().unwrap();
+    let beads = tmp.path().join(".beads");
+    std::fs::create_dir_all(beads.join("dolt")).unwrap();
+    let sqlite_path = beads.join("beads.db");
+    std::fs::write(&sqlite_path, b"not-a-real-db").unwrap();
+
+    // `Box<dyn BeadStore>` isn't Debug, so match rather than expect_err.
+    let msg = match connect_bead_store(&beads).await {
+        Ok(_) => panic!("ambiguous store must not resolve silently"),
+        Err(e) => e.to_string(),
+    };
+
+    // The operator has to be able to act on this: name both candidates.
+    assert!(
+        msg.contains("ambiguous"),
+        "error should say ambiguous: {msg}"
+    );
+    assert!(
+        msg.contains("beads.db"),
+        "error should name the SQLite store: {msg}"
+    );
+    assert!(
+        msg.contains("dolt"),
+        "error should name the Dolt store: {msg}"
+    );
+
+    // Failing closed means changing nothing.
+    assert!(sqlite_path.exists(), "beads.db must not be renamed away");
+    assert_eq!(
+        std::fs::read(&sqlite_path).unwrap(),
+        b"not-a-real-db",
+        "beads.db contents must be untouched"
+    );
+    assert!(
+        !beads.join("beads.db.migrated").exists(),
+        "no .migrated artifact may be created on the failure path"
+    );
+}
+
+/// The unambiguous SQLite case still connects — the guard must not over-fire.
+#[tokio::test]
+async fn sqlite_only_store_still_connects() {
+    let tmp = tempfile::tempdir().unwrap();
+    let beads = tmp.path().join(".beads");
+    std::fs::create_dir_all(&beads).unwrap();
+    connect_bead_store(&beads)
+        .await
+        .expect("a bare .beads/ must still open a SQLite store");
+    assert!(beads.join("beads.db").exists());
+}
