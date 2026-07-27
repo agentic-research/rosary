@@ -897,3 +897,81 @@ fn context_cache_mode_defaults_off_and_parses() {
     let c: crate::config::ContextConfig = toml::from_str("cache = \"on\"").unwrap();
     assert_eq!(c.cache, crate::config::CacheMode::On);
 }
+
+/// A written config must carry only what DIFFERS from the defaults, and must
+/// still round-trip to an identical value.
+///
+/// Measured on a real 22-repo config before this: 46 of 211 lines were
+/// default-valued noise (`self = false` x21, `approval = "approved"` x22,
+/// `plugins = []`, `max_pipeline_depth = 0`, `require_approval = false`).
+/// Every one says nothing, and together they bury the two or three settings
+/// that actually differ.
+///
+/// Omitting a field is only safe if it reads back the same, so this asserts
+/// BOTH halves — absent from the text, and equal after a round trip.
+#[test]
+fn default_valued_fields_are_not_written_but_still_round_trip() {
+    let cfg = Config {
+        repo: vec![RepoConfig {
+            name: "r".into(),
+            path: "/tmp/r".into(),
+            lang: Some("rust".into()),
+            self_managed: false,
+            approval: DispatchApproval::default(),
+        }],
+        ..Default::default()
+    };
+
+    let toml_text = toml::to_string(&cfg).expect("serialises");
+
+    for noise in [
+        "self = false",
+        "approval = \"approved\"",
+        "max_pipeline_depth = 0",
+        "plugins = []",
+        "require_approval = false",
+    ] {
+        assert!(
+            !toml_text.contains(noise),
+            "default-valued `{noise}` must not be written:\n{toml_text}"
+        );
+    }
+
+    let back: Config = toml::from_str(&toml_text).expect("round-trips");
+    assert_eq!(back.repo.len(), 1);
+    assert_eq!(back.repo[0].name, "r");
+    assert!(!back.repo[0].self_managed, "default restored");
+    assert_eq!(
+        back.repo[0].approval,
+        DispatchApproval::Approved,
+        "omitted approval must read back as the default, not as None"
+    );
+    assert_eq!(back.max_pipeline_depth, 0);
+    assert!(back.plugins.is_empty());
+}
+
+/// The inverse: a NON-default value must still be written, or omitting
+/// defaults would silently drop real settings.
+#[test]
+fn non_default_values_are_still_written() {
+    let cfg = Config {
+        repo: vec![RepoConfig {
+            name: "r".into(),
+            path: "/tmp/r".into(),
+            lang: None,
+            self_managed: true,
+            approval: DispatchApproval::Rejected,
+        }],
+        max_pipeline_depth: 3,
+        ..Default::default()
+    };
+    let toml_text = toml::to_string(&cfg).expect("serialises");
+    assert!(toml_text.contains("self = true"), "{toml_text}");
+    assert!(toml_text.contains("rejected"), "{toml_text}");
+    assert!(toml_text.contains("max_pipeline_depth = 3"), "{toml_text}");
+
+    let back: Config = toml::from_str(&toml_text).unwrap();
+    assert!(back.repo[0].self_managed);
+    assert_eq!(back.repo[0].approval, DispatchApproval::Rejected);
+    assert_eq!(back.max_pipeline_depth, 3);
+}
