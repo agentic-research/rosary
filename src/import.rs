@@ -117,10 +117,11 @@ pub async fn export_beads_contract_jsonl(
     let beads = sorted;
     let mut lines = Vec::with_capacity(beads.len());
     for b in beads {
-        let deps = store
+        let mut deps = store
             .get_dependencies(&b.id)
             .await
             .with_context(|| format!("fetching dependencies for {}", b.id))?;
+        deps.sort();
         let comments = store
             .list_comments(&b.id, true)
             .await
@@ -360,6 +361,28 @@ mod tests {
         assert_eq!(v["repo"], "rosary");
         // ADR-0014 D2: the contract is versioned with an integer schema_version.
         assert_eq!(v["schema_version"], BEAD_CONTRACT_SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn contract_jsonl_sorts_dependency_arrays() {
+        let store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+        for id in ["dep-a", "dep-z", "parent"] {
+            store.create_bead(id, id, "", 2, "task").await.unwrap();
+        }
+        store.restore_dependency("parent", "dep-z").await.unwrap();
+        store.restore_dependency("parent", "dep-a").await.unwrap();
+
+        let parent = store.get_bead("parent", "rosary").await.unwrap().unwrap();
+        let exported = export_beads_contract_jsonl(&store, &[parent])
+            .await
+            .unwrap();
+        let record: Value = serde_json::from_str(&exported).unwrap();
+
+        assert_eq!(
+            record["dependencies"],
+            serde_json::json!(["dep-a", "dep-z"])
+        );
     }
 
     /// rosary-c67538: rosary re-import preserves owner, created_by, comment

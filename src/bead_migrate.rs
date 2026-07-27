@@ -46,11 +46,10 @@ pub struct MigrationReport {
 /// [`verify_migration`].
 ///
 /// Fidelity note: bead *content* (status, priority, type, acceptance,
-/// external_ref, scope, files, provenance, owner, deps) is preserved exactly.
-/// Not carried, by trait limitation: the comment **audit trail** (exact
-/// timestamps, edited/deleted state) — `add_comment` can only reproduce
-/// body+author — and bead timestamps, which shift to migration time
-/// (`create_bead_full` stamps `now()`). A raw-row copy for those is a follow-up.
+/// external_ref, scope, files, provenance, owner, timestamps, deps) is
+/// preserved exactly. Not carried, by trait limitation, is the comment **audit
+/// trail** (exact timestamps, edited/deleted state): `add_comment` can only
+/// reproduce body+author. A raw-row copy for comment history is a follow-up.
 pub async fn migrate_store(
     source: &dyn BeadStore,
     target: &SqliteBeadStore,
@@ -93,6 +92,10 @@ pub async fn migrate_store(
                 .await
                 .with_context(|| format!("restoring external_ref for {}", b.id))?;
         }
+        target
+            .restore_timestamps(&b.id, b.created_at, b.updated_at)
+            .await
+            .with_context(|| format!("restoring timestamps for {}", b.id))?;
         report.beads += 1;
     }
 
@@ -199,6 +202,8 @@ pub async fn verify_migration(
         same!(files);
         same!(test_files);
         same!(created_by);
+        same!(created_at);
+        same!(updated_at);
 
         // Dependency edges must match exactly (set equality).
         let mut s_deps = source.get_dependencies(&b.id).await.unwrap_or_default();
@@ -437,6 +442,60 @@ mod tests {
             tgt.get_dependencies("x").await.unwrap(),
             vec!["mache-cbf644".to_string()],
             "cross-repo edge preserved verbatim"
+        );
+    }
+
+    #[tokio::test]
+    async fn migrate_preserves_created_and_updated_timestamps() {
+        let src = store();
+        src.create_bead("timestamped", "title", "", 2, "task")
+            .await
+            .unwrap();
+        src.restore_timestamps(
+            "timestamped",
+            "2024-01-02T03:04:05Z".parse().unwrap(),
+            "2025-06-07T08:09:10Z".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let tgt = store();
+        migrate_store(&src, &tgt, "repo").await.unwrap();
+
+        let migrated = tgt.get_bead("timestamped", "repo").await.unwrap().unwrap();
+        assert_eq!(
+            migrated.created_at.to_rfc3339(),
+            "2024-01-02T03:04:05+00:00"
+        );
+        assert_eq!(
+            migrated.updated_at.to_rfc3339(),
+            "2025-06-07T08:09:10+00:00"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_timestamp_drift() {
+        let src = store();
+        src.create_bead("timestamped", "title", "", 2, "task")
+            .await
+            .unwrap();
+        src.restore_timestamps(
+            "timestamped",
+            "2024-01-02T03:04:05Z".parse().unwrap(),
+            "2025-06-07T08:09:10Z".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let tgt = store();
+        tgt.create_bead("timestamped", "title", "", 2, "task")
+            .await
+            .unwrap();
+
+        let err = verify_migration(&src, &tgt, "repo").await.unwrap_err();
+        assert!(
+            err.to_string().contains("timestamp"),
+            "unexpected error: {err}"
         );
     }
 
