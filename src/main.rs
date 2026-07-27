@@ -25,6 +25,7 @@ mod backend;
 mod bdr_enrich;
 mod bead;
 mod bead_backup;
+mod bead_diff;
 mod bead_dolt;
 #[allow(dead_code)]
 // identity primitive — wired into create + resolve() in the P1 follow-on (rosary-160bb2)
@@ -100,6 +101,7 @@ mod store_sqlite;
 mod sync;
 #[cfg(test)]
 mod testutil;
+mod text;
 mod vcs;
 mod verify;
 #[allow(dead_code)] // API surface — replaces dispatch.rs worktree logic
@@ -719,6 +721,31 @@ enum BeadAction {
     Search {
         /// Search query
         query: String,
+    },
+    /// Render a human-readable diff between two bead-record snapshots.
+    ///
+    /// Sources are resolved in this order, so bead state can be read from
+    /// somewhere OTHER than the working tree — which is what makes the
+    /// in-tree-vs-out-of-tree question (rosary-fa7167 Q1) answerable:
+    ///
+    ///   - `-`                    stdin
+    ///   - `<rev>:<path>`         a git blob, e.g. `HEAD~1:.beads/beads.jsonl`
+    ///   - `<ref>`                a git ref holding JSONL, e.g. `refs/beads/main`
+    ///   - anything else          a file path
+    ///
+    /// Emits markdown suitable for a PR comment. A bead REMOVED from the
+    /// record is called out loudly — that is the shape of every data-loss
+    /// incident this repo has had.
+    Diff {
+        /// Snapshot to diff FROM (the "before" side)
+        #[arg(long)]
+        from: String,
+        /// Snapshot to diff TO. Defaults to the repo's tracked export.
+        #[arg(long, default_value = ".beads/beads.jsonl")]
+        to: String,
+        /// Exit non-zero when any bead was removed — for use as a CI gate.
+        #[arg(long)]
+        fail_on_removal: bool,
     },
     /// Export beads as JSON (for import into another rsry instance)
     Export {
@@ -1968,6 +1995,31 @@ async fn main() -> Result<()> {
                     );
                     return Ok(());
                 }
+                // Diff reads snapshots (files / git revs / refs), never the
+                // store — so it must run BEFORE the store gate below. A CI
+                // checkout has no `beads.db`, and requiring one would defeat
+                // the point (rosary-fa7167 Q1).
+                BeadAction::Diff {
+                    from,
+                    to,
+                    fail_on_removal,
+                } => {
+                    let before =
+                        bead_diff::parse_snapshot(&bead_diff::read_snapshot(from, &repo_root)?)
+                            .with_context(|| format!("reading --from {from}"))?;
+                    let after =
+                        bead_diff::parse_snapshot(&bead_diff::read_snapshot(to, &repo_root)?)
+                            .with_context(|| format!("reading --to {to}"))?;
+                    let d = bead_diff::diff(&before, &after);
+                    print!("{}", bead_diff::render_markdown(&d, from, to));
+                    if *fail_on_removal && !d.removed.is_empty() {
+                        anyhow::bail!(
+                            "{} bead(s) removed from the record — refusing to pass",
+                            d.removed.len()
+                        );
+                    }
+                    return Ok(());
+                }
                 _ => {}
             }
 
@@ -2255,6 +2307,10 @@ async fn main() -> Result<()> {
                         }
                     }
                 },
+                // Handled before the store gate above (it reads snapshots,
+                // not the store) — unreachable here, but the match must be
+                // exhaustive.
+                BeadAction::Diff { .. } => unreachable!("Diff is dispatched pre-store"),
                 BeadAction::Search { query } => {
                     let beads = client.search_beads(&query, &repo_name, 50).await?;
                     cli::bead_search_results(&beads, &query);

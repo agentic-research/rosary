@@ -2,271 +2,6 @@
   "version": 1,
   "counts": [
     {
-      "rule_id": "dead_code",
-      "source_id": "crates/bdr/src/thread.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "crates/bdr/tests/channels_test.rs",
-      "count": 8
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "crates/bdr/tests/integration_test.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "crates/bdr/tests/phase1_integration_test.rs",
-      "count": 11
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "crates/crypto/tests/round_trip.rs",
-      "count": 27
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/bead.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/bead_sqlite/tests.rs",
-      "count": 43
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/cli.rs",
-      "count": 5
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/config/mod.rs",
-      "count": 9
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/config/tests.rs",
-      "count": 50
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/decompose.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/dispatch/codex_native.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/dispatch/tests.rs",
-      "count": 76
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/dolt/tests.rs",
-      "count": 22
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/leyline_net_vectors.rs",
-      "count": 5
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/linear.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/linear_tracker.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/main.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/notes.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/observation/integration_tests.rs",
-      "count": 14
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/observation/log_sqlite.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/observation/quarantine.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/orchestrate/fanout.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/orchestrate/plan_gate.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/orchestrate/tests.rs",
-      "count": 8
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/orchestrate/transcript.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/reconcile/tests.rs",
-      "count": 36
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/reconcile/tests_state.rs",
-      "count": 31
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/restore/merge/tests.rs",
-      "count": 16
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/restore/tests.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/serve/github_webhook.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/serve/handlers/input_validation_tests.rs",
-      "count": 67
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/serve/handlers/tests.rs",
-      "count": 21
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/serve/ipc.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/serve/landing.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/serve/mod.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/serve/webhook.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/session.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/store.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/store_dolt.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/store_sqlite.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/sync.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/vcs.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/workspace/tests.rs",
-      "count": 36
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/beads_jsonl_merge_driver.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/cli_integration.rs",
-      "count": 21
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/cli_phantom_store.rs",
-      "count": 8
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/close_jsonl_sync.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/create_jsonl_sync.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/hooks_provenance.rs",
-      "count": 7
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/init_jsonl_reconciliation.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/ipc_docker_e2e.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/note_skill_routing.rs",
-      "count": 4
-    },
-    {
       "rule_id": "duplicate_definitions",
       "source_id": "crates/bdr/src/accrete.rs",
       "count": 2
@@ -287,6 +22,11 @@
       "count": 3
     },
     {
+      "rule_id": "long_file_rosary",
+      "source_id": "crates/bdr/src/decompose.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "crates/bdr/src/harmony.rs",
       "count": 1
@@ -302,14 +42,44 @@
       "count": 1
     },
     {
+      "rule_id": "long_file_rosary",
+      "source_id": "crates/bdr/src/parse.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "crates/bdr/src/provenance.rs",
       "count": 2
     },
     {
+      "rule_id": "dead_code",
+      "source_id": "crates/bdr/src/thread.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "crates/bdr/src/thread.rs",
       "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "crates/bdr/src/thread.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "crates/bdr/tests/channels_test.rs",
+      "count": 8
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "crates/bdr/tests/integration_test.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "crates/bdr/tests/phase1_integration_test.rs",
+      "count": 11
     },
     {
       "rule_id": "duplicate_definitions",
@@ -320,6 +90,11 @@
       "rule_id": "duplicate_definitions",
       "source_id": "crates/crypto/src/lib.rs",
       "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "crates/crypto/tests/round_trip.rs",
+      "count": 27
     },
     {
       "rule_id": "duplicate_definitions",
@@ -352,13 +127,38 @@
       "count": 1
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/acp.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/acp.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/backend.rs",
       "count": 4
     },
     {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/backend.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bdr_enrich.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/bdr_enrich.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/bead.rs",
       "count": 1
     },
     {
@@ -367,8 +167,38 @@
       "count": 5
     },
     {
+      "rule_id": "god_file",
+      "source_id": "src/bead.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/bead.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead_backup.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/bead_backup.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/bead_diff.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/bead_diff.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/bead_diff.rs",
       "count": 2
     },
     {
@@ -382,9 +212,19 @@
       "count": 3
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/bead_migrate.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead_move.rs",
       "count": 2
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/bead_move.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -397,6 +237,31 @@
       "count": 3
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/bead_sqlite/mod.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/bead_sqlite/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/bead_sqlite/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/bead_sqlite/tests.rs",
+      "count": 43
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/bead_sqlite/tests.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/capture.rs",
       "count": 1
@@ -407,14 +272,44 @@
       "count": 1
     },
     {
+      "rule_id": "dead_code",
+      "source_id": "src/cli.rs",
+      "count": 5
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/cli.rs",
       "count": 1
     },
     {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/cli.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/config/mod.rs",
+      "count": 9
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/config/mod.rs",
       "count": 2
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/config/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/config/tests.rs",
+      "count": 50
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/config/tests.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -427,7 +322,17 @@
       "count": 1
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/context/envelope.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/context/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
       "source_id": "src/context/mod.rs",
       "count": 1
     },
@@ -447,6 +352,16 @@
       "count": 2
     },
     {
+      "rule_id": "dead_code",
+      "source_id": "src/decompose.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/dispatch/codex_native.rs",
+      "count": 3
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/codex_native.rs",
       "count": 1
@@ -457,9 +372,19 @@
       "count": 1
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/dispatch/codex_runtime.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/codex_transport.rs",
       "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/dispatch/codex_transport.rs",
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -472,7 +397,22 @@
       "count": 7
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/dispatch/mod.rs",
+      "count": 4
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dispatch/mod.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/dispatch/prompt.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
       "source_id": "src/dispatch/prompt.rs",
       "count": 1
     },
@@ -487,6 +427,21 @@
       "count": 1
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/dispatch/providers.rs",
+      "count": 6
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/dispatch/providers.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dispatch/providers.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/session.rs",
       "count": 1
@@ -497,12 +452,57 @@
       "count": 2
     },
     {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dispatch/sweep.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/dispatch/tests.rs",
+      "count": 76
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/tests.rs",
       "count": 3
     },
     {
+      "rule_id": "god_file",
+      "source_id": "src/dispatch/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file",
+      "source_id": "src/dispatch/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dispatch/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/dolt/bead_crud.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dolt/bead_crud.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/dolt/deps.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/dolt/mod.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "fan_out_skew",
       "source_id": "src/dolt/mod.rs",
       "count": 2
     },
@@ -512,9 +512,39 @@
       "count": 3
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/dolt/query.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/dolt/tests.rs",
+      "count": 22
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/dolt/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dolt/tests.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dsse.rs",
       "count": 2
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/dsse.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/dsse.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -522,9 +552,24 @@
       "count": 2
     },
     {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/epic.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/github.rs",
       "count": 3
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/github.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/github.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -532,9 +577,34 @@
       "count": 3
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/github_mirror.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/graph/mod.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/graph/tests.rs",
+      "count": 12
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/graph/tests.rs",
+      "count": 2
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/handoff.rs",
       "count": 2
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/handoff.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -542,9 +612,34 @@
       "count": 2
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/import.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/init.rs",
       "count": 4
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/jsonl_sync.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/leyline_net_vectors.rs",
+      "count": 5
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/leyline_net_vectors.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/linear.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -552,9 +647,34 @@
       "count": 5
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/linear.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/linear.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/linear_tracker.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/linear_tracker.rs",
       "count": 4
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/linear_tracker.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/main.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -562,7 +682,32 @@
       "count": 16
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/main.rs",
+      "count": 9
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/main.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file",
+      "source_id": "src/main.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/main.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/manifest.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
       "source_id": "src/manifest.rs",
       "count": 1
     },
@@ -572,8 +717,28 @@
       "count": 4
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/migrate.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/migrate.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/model_provider.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/notes.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/notes.rs",
       "count": 2
     },
     {
@@ -602,7 +767,17 @@
       "count": 1
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/observation/audit.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/observation/backfill.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
       "source_id": "src/observation/backfill.rs",
       "count": 1
     },
@@ -612,9 +787,29 @@
       "count": 8
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/observation/fold.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/observation/integration_tests.rs",
+      "count": 14
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/observation/integration_tests.rs",
       "count": 15
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/observation/integration_tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/observation/integration_tests.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -622,14 +817,39 @@
       "count": 4
     },
     {
+      "rule_id": "dead_code",
+      "source_id": "src/observation/log_sqlite.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/observation/log_sqlite.rs",
       "count": 5
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/observation/log_sqlite.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/observation/log_sqlite.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/observation/mod.rs",
       "count": 4
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/observation/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/observation/quarantine.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -647,6 +867,11 @@
       "count": 2
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/observation/resolve.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/observation/shadow.rs",
       "count": 1
@@ -662,13 +887,38 @@
       "count": 1
     },
     {
+      "rule_id": "dead_code",
+      "source_id": "src/orchestrate/fanout.rs",
+      "count": 3
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/orchestrate/mod.rs",
       "count": 1
     },
     {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/orchestrate/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/orchestrate/plan_gate.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/orchestrate/tests.rs",
+      "count": 8
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/orchestrate/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/orchestrate/transcript.rs",
       "count": 1
     },
     {
@@ -682,9 +932,34 @@
       "count": 1
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/pipeline.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/pipeline.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/plugin.rs",
       "count": 2
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/plugin.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/plugin.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/plugin.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -692,9 +967,24 @@
       "count": 2
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/pool.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/queue.rs",
       "count": 2
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/queue.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/reconcile/completion.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -707,9 +997,44 @@
       "count": 4
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/reconcile/mod.rs",
+      "count": 4
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/reconcile/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/reconcile/orchestration.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/reconcile/persistence.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/reconcile/tests.rs",
+      "count": 36
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/reconcile/tests.rs",
       "count": 3
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/reconcile/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/reconcile/tests_state.rs",
+      "count": 31
     },
     {
       "rule_id": "duplicate_definitions",
@@ -717,7 +1042,27 @@
       "count": 1
     },
     {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/reconcile/tests_state.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/reconcile/threading.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/reconcile/triage.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/reconcile/vcs.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
       "source_id": "src/reconcile/vcs.rs",
       "count": 1
     },
@@ -727,7 +1072,27 @@
       "count": 1
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/reconcile/verify.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/reconcile/verify.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/reconcile/workspace_ops.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/repo_cache.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
       "source_id": "src/repo_cache.rs",
       "count": 1
     },
@@ -735,6 +1100,11 @@
       "rule_id": "duplicate_definitions",
       "source_id": "src/restore/merge.rs",
       "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/restore/merge/tests.rs",
+      "count": 16
     },
     {
       "rule_id": "duplicate_definitions",
@@ -747,9 +1117,24 @@
       "count": 1
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/restore/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/restore/tests.rs",
+      "count": 3
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/restore/tests.rs",
       "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/scan_assay.rs",
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -762,8 +1147,18 @@
       "count": 3
     },
     {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/scope.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/secrets.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/serve/github_webhook.rs",
       "count": 1
     },
     {
@@ -772,7 +1167,37 @@
       "count": 4
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/serve/github_webhook.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/serve/github_webhook.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/serve/handlers/input_validation_tests.rs",
+      "count": 67
+    },
+    {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/serve/handlers/input_validation_tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/serve/handlers/input_validation_tests.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "long_file",
+      "source_id": "src/serve/handlers/input_validation_tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
       "source_id": "src/serve/handlers/input_validation_tests.rs",
       "count": 1
     },
@@ -782,8 +1207,33 @@
       "count": 2
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/serve/handlers/mod.rs",
+      "count": 19
+    },
+    {
+      "rule_id": "long_file",
+      "source_id": "src/serve/handlers/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/serve/handlers/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/serve/handlers/tests.rs",
+      "count": 21
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/serve/handlers/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/serve/ipc.rs",
       "count": 1
     },
     {
@@ -792,12 +1242,47 @@
       "count": 2
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/serve/ipc.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/serve/landing.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/serve/mod.rs",
+      "count": 3
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/serve/mod.rs",
       "count": 2
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/serve/mod.rs",
+      "count": 6
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/serve/mod.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/serve/review.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/serve/review.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
       "source_id": "src/serve/review.rs",
       "count": 1
     },
@@ -817,9 +1302,29 @@
       "count": 1
     },
     {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/serve/tools.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/serve/webhook.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/serve/webhook.rs",
       "count": 2
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/serve/webhook.rs",
+      "count": 4
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/session.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -837,6 +1342,11 @@
       "count": 2
     },
     {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/sprites.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/sprites_provider.rs",
       "count": 3
@@ -847,9 +1357,29 @@
       "count": 3
     },
     {
+      "rule_id": "dead_code",
+      "source_id": "src/store.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/store.rs",
       "count": 4
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/store.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/store.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/store_dolt.rs",
+      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
@@ -857,12 +1387,57 @@
       "count": 4
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/store_dolt.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/store_dolt.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/store_dolt.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/store_sqlite.rs",
+      "count": 3
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/store_sqlite.rs",
       "count": 6
     },
     {
+      "rule_id": "god_file",
+      "source_id": "src/store_sqlite.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file",
+      "source_id": "src/store_sqlite.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/store_sqlite.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/sync.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/sync.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
       "source_id": "src/sync.rs",
       "count": 1
     },
@@ -873,8 +1448,28 @@
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/text.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/vcs.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/vcs.rs",
       "count": 3
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/vcs.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/vcs.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -882,7 +1477,27 @@
       "count": 3
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/verify.rs",
+      "count": 6
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/verify.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/verify.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/verify/close_condition.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
       "source_id": "src/verify/close_condition.rs",
       "count": 1
     },
@@ -897,9 +1512,34 @@
       "count": 1
     },
     {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/workspace/sweep.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/workspace/sweep.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/workspace/tests.rs",
+      "count": 36
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/workspace/tests.rs",
+      "count": 1
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "src/xref.rs",
       "count": 2
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "tests/beads_jsonl_merge_driver.rs",
+      "count": 4
     },
     {
       "rule_id": "duplicate_definitions",
@@ -907,338 +1547,33 @@
       "count": 3
     },
     {
+      "rule_id": "dead_code",
+      "source_id": "tests/cli_integration.rs",
+      "count": 21
+    },
+    {
       "rule_id": "duplicate_definitions",
       "source_id": "tests/cli_integration.rs",
       "count": 1
     },
     {
-      "rule_id": "duplicate_definitions",
-      "source_id": "tests/create_jsonl_sync.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "crates/bdr/src/thread.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/acp.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/bdr_enrich.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/bead_backup.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/bead_migrate.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/bead_move.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/bead_sqlite/mod.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/context/envelope.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/context/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/dispatch/codex_runtime.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/dispatch/codex_transport.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/dispatch/mod.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/dispatch/prompt.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/dispatch/providers.rs",
-      "count": 6
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/dolt/bead_crud.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/dolt/deps.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/dolt/mod.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/dolt/query.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/dolt/tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/dsse.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/github.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/github_mirror.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/import.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/jsonl_sync.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/leyline_net_vectors.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/linear.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/main.rs",
-      "count": 9
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/manifest.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/migrate.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/notes.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/observation/audit.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/observation/backfill.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/observation/fold.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/observation/integration_tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/observation/log_sqlite.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/observation/resolve.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/pipeline.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/plugin.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/pool.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/reconcile/completion.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/reconcile/mod.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/reconcile/orchestration.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/reconcile/persistence.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/reconcile/threading.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/reconcile/triage.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/reconcile/vcs.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/reconcile/verify.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/reconcile/workspace_ops.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/repo_cache.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/restore/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/scan_assay.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/serve/github_webhook.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/serve/handlers/input_validation_tests.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/serve/handlers/mod.rs",
-      "count": 19
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/serve/ipc.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/serve/mod.rs",
-      "count": 6
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/serve/review.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/serve/webhook.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/store_dolt.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/sync.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/vcs.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/verify.rs",
-      "count": 6
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/verify/close_condition.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/workspace/sweep.rs",
-      "count": 3
-    },
-    {
       "rule_id": "fan_out_skew",
       "source_id": "tests/cli_integration.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "tests/cli_integration.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "tests/cli_phantom_store.rs",
+      "count": 8
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "tests/close_jsonl_sync.rs",
       "count": 1
     },
     {
@@ -1247,13 +1582,38 @@
       "count": 1
     },
     {
+      "rule_id": "dead_code",
+      "source_id": "tests/create_jsonl_sync.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "tests/create_jsonl_sync.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "tests/hooks_provenance.rs",
+      "count": 7
+    },
+    {
       "rule_id": "fan_out_skew",
       "source_id": "tests/hooks_provenance.rs",
       "count": 3
     },
     {
+      "rule_id": "dead_code",
+      "source_id": "tests/init_jsonl_reconciliation.rs",
+      "count": 1
+    },
+    {
       "rule_id": "fan_out_skew",
       "source_id": "tests/init_jsonl_reconciliation.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "tests/ipc_docker_e2e.rs",
       "count": 1
     },
     {
@@ -1262,334 +1622,9 @@
       "count": 1
     },
     {
-      "rule_id": "god_file",
-      "source_id": "src/bead.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "god_file",
-      "source_id": "src/bead_sqlite/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "god_file",
-      "source_id": "src/dispatch/providers.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "god_file",
-      "source_id": "src/dispatch/tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "god_file",
-      "source_id": "src/main.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "god_file",
-      "source_id": "src/plugin.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "god_file",
-      "source_id": "src/store.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "god_file",
-      "source_id": "src/store_dolt.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "god_file",
-      "source_id": "src/store_sqlite.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "god_file",
-      "source_id": "src/verify.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file",
-      "source_id": "src/dispatch/tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file",
-      "source_id": "src/main.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file",
-      "source_id": "src/serve/handlers/input_validation_tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file",
-      "source_id": "src/serve/handlers/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file",
-      "source_id": "src/store_sqlite.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "crates/bdr/src/decompose.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "crates/bdr/src/parse.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/acp.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/backend.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/bead.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/bead_sqlite/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/bead_sqlite/tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/cli.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/config/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/config/tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/dispatch/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/dispatch/providers.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/dispatch/sweep.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/dispatch/tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/dolt/bead_crud.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/dolt/tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/dsse.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/epic.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/github.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/handoff.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/linear.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/linear_tracker.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/main.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/migrate.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/observation/integration_tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/observation/log_sqlite.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/observation/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/orchestrate/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/pipeline.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/plugin.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/queue.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/reconcile/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/reconcile/tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/reconcile/tests_state.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/reconcile/verify.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/scope.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/serve/github_webhook.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/serve/handlers/input_validation_tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/serve/handlers/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/serve/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/serve/review.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/serve/tools.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/sprites.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/store.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/store_dolt.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/store_sqlite.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/vcs.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/verify.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/workspace/sweep.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "src/workspace/tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
-      "source_id": "tests/cli_integration.rs",
-      "count": 1
+      "rule_id": "dead_code",
+      "source_id": "tests/note_skill_routing.rs",
+      "count": 4
     }
   ]
 }
