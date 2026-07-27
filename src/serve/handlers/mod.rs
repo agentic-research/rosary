@@ -1280,8 +1280,11 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         workspace.as_ref().map(|ws| ws.work_dir.as_path()),
         bead.owner.as_deref(),
     );
-    let system_prompt =
-        crate::dispatch::build_system_prompt(bead.owner.as_deref(), agents_dir.as_deref());
+    let system_prompt = crate::dispatch::build_system_prompt(
+        bead.owner.as_deref(),
+        agents_dir.as_deref(),
+        crate::dispatch::permission_profile(&bead.issue_type),
+    );
 
     // Agent-specific permission override (mirrors the orchestrator path).
     let perms = match bead.owner.as_deref() {

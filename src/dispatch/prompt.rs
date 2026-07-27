@@ -146,8 +146,6 @@ You are a rosary-dispatched agent working on a bead (work item).\n\
 - **mache MCP** (`mcp__mache__*`): Structural code navigation — \
   find_definition, find_callers, find_callees, search, get_overview. \
   Prefer mache over grep for understanding code structure.\n\
-- **rsry MCP** (`mcp__rsry__*`): Bead management — \
-  bead_comment, bead_search, bead_link. You can comment and search but NOT close beads.\n\
 \n\
 ## Workflow\n\
 - Use `task build` / `task test` — never raw `cargo` or `go` commands. \
@@ -213,9 +211,40 @@ fn load_golden_rules(agents_dir: &Path) -> Option<String> {
 /// 3. Agent-specific definition (if agent_name set and file exists)
 ///
 /// Falls back gracefully — missing files produce warnings, not errors.
-pub fn build_system_prompt(agent_name: Option<&str>, agents_dir: Option<&Path>) -> String {
+/// Render the rsry tool line FROM the profile's own allowlist.
+///
+/// Previously this was prose in `AGENT_SYSTEM_PROMPT` listing
+/// "bead_comment, bead_search, bead_link" by hand. That is two lists — what
+/// the prompt SAYS an agent may use and what the profile PERMITS — maintained
+/// in different files, and they drifted: `bead_link` was advertised to every
+/// agent while only `Plan` permitted it.
+///
+/// Generating from `claude_allowed_tools()` makes the drift unrepresentable
+/// rather than merely detectable. The rail in `dispatch::permission_rail_tests`
+/// still guards the classes this cannot cover (envelope text, agent files).
+fn rsry_tool_line(profile: crate::dispatch::PermissionProfile) -> String {
+    let mut names: Vec<&str> = profile
+        .claude_allowed_tools()
+        .split(',')
+        .map(str::trim)
+        .filter_map(|t| t.strip_prefix("mcp__rsry__rsry_"))
+        .collect();
+    names.sort_unstable();
+    format!(
+        "- **rsry MCP** (`mcp__rsry__*`): Bead management — {}. \
+         These are the ONLY rsry tools available to you; anything else is denied.\n",
+        names.join(", ")
+    )
+}
+
+pub fn build_system_prompt(
+    agent_name: Option<&str>,
+    agents_dir: Option<&Path>,
+    profile: crate::dispatch::PermissionProfile,
+) -> String {
     let mut parts = vec![format!(
-        "Prompt version: {PROMPT_VERSION}\n\n{AGENT_SYSTEM_PROMPT}"
+        "Prompt version: {PROMPT_VERSION}\n\n{AGENT_SYSTEM_PROMPT}{}",
+        rsry_tool_line(profile)
     )];
 
     if let Some(dir) = agents_dir {
@@ -245,6 +274,7 @@ pub fn build_system_prompt(agent_name: Option<&str>, agents_dir: Option<&Path>) 
 mod tests {
     use super::*;
     use crate::bead::Bead;
+    use crate::dispatch::PermissionProfile;
 
     fn stub_bead(id: &str, title: &str) -> Bead {
         Bead {
@@ -408,7 +438,7 @@ mod tests {
 
     #[test]
     fn build_system_prompt_includes_base_without_agents_dir() {
-        let prompt = build_system_prompt(None, None);
+        let prompt = build_system_prompt(None, None, PermissionProfile::default());
         assert!(prompt.contains(PROMPT_VERSION));
         assert!(prompt.contains("rsry MCP"));
         assert!(prompt.contains("mache MCP"));
@@ -418,7 +448,8 @@ mod tests {
     #[test]
     fn build_system_prompt_with_missing_agents_dir_still_returns_base() {
         let dir = std::path::Path::new("/nonexistent/agents");
-        let prompt = build_system_prompt(Some("dev-agent"), Some(dir));
+        let prompt =
+            build_system_prompt(Some("dev-agent"), Some(dir), PermissionProfile::default());
         assert!(prompt.contains(PROMPT_VERSION));
     }
 

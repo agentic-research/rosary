@@ -991,7 +991,7 @@ fn prompt_version_is_set() {
         PROMPT_VERSION.starts_with('v'),
         "PROMPT_VERSION should start with 'v'"
     );
-    let assembled = build_system_prompt(None, None);
+    let assembled = build_system_prompt(None, None, PermissionProfile::default());
     assert!(
         assembled.contains(PROMPT_VERSION),
         "assembled system prompt should contain version"
@@ -1140,7 +1140,7 @@ fn load_agent_prompt_with_md_extension() {
 
 #[test]
 fn build_system_prompt_no_agent() {
-    let prompt = build_system_prompt(None, None);
+    let prompt = build_system_prompt(None, None, PermissionProfile::default());
     assert!(prompt.contains("rosary-dispatched agent"));
     assert!(!prompt.contains("Agent Perspective"));
     assert!(!prompt.contains("Golden Rules"));
@@ -1162,7 +1162,11 @@ fn build_system_prompt_with_agent() {
     )
     .unwrap();
 
-    let prompt = build_system_prompt(Some("dev-agent"), Some(dir.path()));
+    let prompt = build_system_prompt(
+        Some("dev-agent"),
+        Some(dir.path()),
+        PermissionProfile::default(),
+    );
     assert!(prompt.contains("rosary-dispatched agent"));
     assert!(prompt.contains("Golden Rules"));
     assert!(prompt.contains("Be minimal"));
@@ -1177,7 +1181,11 @@ fn build_system_prompt_missing_agent_falls_back() {
     std::fs::create_dir(&rules_dir).unwrap();
     std::fs::write(rules_dir.join("GOLDEN_RULES.md"), "# Rules").unwrap();
 
-    let prompt = build_system_prompt(Some("nonexistent-agent"), Some(dir.path()));
+    let prompt = build_system_prompt(
+        Some("nonexistent-agent"),
+        Some(dir.path()),
+        PermissionProfile::default(),
+    );
     // Should still have base prompt + golden rules, just no agent section
     assert!(prompt.contains("rosary-dispatched agent"));
     assert!(prompt.contains("Golden Rules"));
