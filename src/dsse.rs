@@ -26,9 +26,9 @@
 //!
 //! `PAE(type, body) = "DSSEv1" SP LEN(type) SP type SP LEN(body) SP body`
 //!
-//! Signing is optional — if no key is configured the envelope is written with
-//! an empty `signatures` array. Verification rejects envelopes with signatures
-//! that don't match; unsigned envelopes pass with a `NotSigned` result.
+//! DSSE envelopes are written only when a signing key is configured. An
+//! explicitly requested unsigned forensic record is written as a raw in-toto
+//! Statement with an `.intoto.json` suffix, never as an unsigned DSSE envelope.
 
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
@@ -138,8 +138,18 @@ pub fn wrap_handoff(
     handoff_predicate: &serde_json::Value,
     handoff_filename: &str,
     handoff_disk_bytes: &[u8],
-    signing_key: Option<&ed25519_dalek::SigningKey>,
+    signing_key: &ed25519_dalek::SigningKey,
 ) -> Result<DsseEnvelope> {
+    let statement = handoff_statement(handoff_predicate, handoff_filename, handoff_disk_bytes);
+    wrap_statement(&statement, signing_key)
+}
+
+/// Build the in-toto Statement for a handoff without signing it.
+pub fn handoff_statement(
+    handoff_predicate: &serde_json::Value,
+    handoff_filename: &str,
+    handoff_disk_bytes: &[u8],
+) -> InTotoStatement {
     // Subject digest = sha256 of the bytes that live on disk for the handoff.
     let mut hasher = Sha256::new();
     hasher.update(handoff_disk_bytes);
@@ -148,7 +158,7 @@ pub fn wrap_handoff(
     let mut subject_digest = std::collections::HashMap::new();
     subject_digest.insert("sha256".to_string(), digest);
 
-    let statement = InTotoStatement {
+    InTotoStatement {
         statement_type: STATEMENT_TYPE.to_string(),
         subject: vec![InTotoSubject {
             name: handoff_filename.to_string(),
@@ -156,29 +166,30 @@ pub fn wrap_handoff(
         }],
         predicate_type: PREDICATE_TYPE.to_string(),
         predicate: handoff_predicate.clone(),
-    };
+    }
+}
 
+/// Wrap an in-toto Statement in a DSSE envelope.
+pub fn wrap_statement(
+    statement: &InTotoStatement,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<DsseEnvelope> {
     let statement_bytes = serde_json::to_vec(&statement).context("serialize in-toto statement")?;
     let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&statement_bytes);
 
-    let signatures = if let Some(key) = signing_key {
-        // DSSE spec: PAE is over the raw payload bytes (the statement), not base64.
-        let pae_bytes = pae(PAYLOAD_TYPE, &statement_bytes);
-        use ed25519_dalek::Signer as _;
-        let sig = key.sign(&pae_bytes);
-        let keyid = pubkey_id(&key.verifying_key());
-        vec![DsseSignature {
-            keyid,
-            sig: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes()),
-        }]
-    } else {
-        vec![]
-    };
+    // DSSE spec: PAE is over the raw payload bytes (the statement), not base64.
+    let pae_bytes = pae(PAYLOAD_TYPE, &statement_bytes);
+    use ed25519_dalek::Signer as _;
+    let sig = signing_key.sign(&pae_bytes);
+    let keyid = pubkey_id(&signing_key.verifying_key());
 
     Ok(DsseEnvelope {
         payload_type: PAYLOAD_TYPE.to_string(),
         payload: payload_b64,
-        signatures,
+        signatures: vec![DsseSignature {
+            keyid,
+            sig: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes()),
+        }],
     })
 }
 
@@ -187,7 +198,7 @@ pub fn wrap_handoff(
 pub fn wrap_handoff_from_file(
     handoff_path: &Path,
     handoff_predicate: &serde_json::Value,
-    signing_key: Option<&ed25519_dalek::SigningKey>,
+    signing_key: &ed25519_dalek::SigningKey,
 ) -> Result<DsseEnvelope> {
     let bytes = std::fs::read(handoff_path)
         .with_context(|| format!("read handoff: {}", handoff_path.display()))?;
@@ -197,6 +208,21 @@ pub fn wrap_handoff_from_file(
         .unwrap_or("handoff.json")
         .to_string();
     wrap_handoff(handoff_predicate, &filename, &bytes, signing_key)
+}
+
+/// Read a handoff file from disk and produce its unsigned in-toto Statement.
+pub fn handoff_statement_from_file(
+    handoff_path: &Path,
+    handoff_predicate: &serde_json::Value,
+) -> Result<InTotoStatement> {
+    let bytes = std::fs::read(handoff_path)
+        .with_context(|| format!("read handoff: {}", handoff_path.display()))?;
+    let filename = handoff_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("handoff.json")
+        .to_string();
+    Ok(handoff_statement(handoff_predicate, &filename, &bytes))
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +312,9 @@ fn pubkey_id(vk: &ed25519_dalek::VerifyingKey) -> String {
 /// Write a DSSE envelope alongside a handoff file.
 /// Envelope path: `{work_dir}/.rsry-handoff-{phase}.dsse.json`
 pub fn write_envelope(work_dir: &Path, phase: u32, envelope: &DsseEnvelope) -> Result<()> {
+    if envelope.signatures.is_empty() {
+        bail!("refusing to write unsigned DSSE envelope; write an in-toto Statement instead");
+    }
     let path = work_dir.join(format!(".rsry-handoff-{phase}.dsse.json"));
     let json = serde_json::to_string_pretty(envelope).context("serialize envelope")?;
     std::fs::write(&path, json).with_context(|| format!("write envelope: {}", path.display()))
@@ -298,6 +327,18 @@ pub fn read_envelope(work_dir: &Path, phase: u32) -> Result<DsseEnvelope> {
     let json = std::fs::read_to_string(&path)
         .with_context(|| format!("read envelope: {}", path.display()))?;
     serde_json::from_str(&json).context("parse envelope")
+}
+
+/// Write an explicitly unsigned forensic in-toto Statement alongside a handoff.
+/// Statement path: `{work_dir}/.rsry-handoff-{phase}.intoto.json`
+pub fn write_unsigned_statement(
+    work_dir: &Path,
+    phase: u32,
+    statement: &InTotoStatement,
+) -> Result<()> {
+    let path = work_dir.join(format!(".rsry-handoff-{phase}.intoto.json"));
+    let json = serde_json::to_string_pretty(statement).context("serialize in-toto statement")?;
+    std::fs::write(&path, json).with_context(|| format!("write statement: {}", path.display()))
 }
 
 // ---------------------------------------------------------------------------
@@ -351,24 +392,10 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    // --- wrap_handoff (unsigned) ---
-
     #[test]
-    fn wrap_unsigned_has_empty_signatures() {
+    fn handoff_statement_is_valid_in_toto() {
         let json = sample_handoff_json();
-        let env = wrap_handoff(&json, ".rsry-handoff-0.json", &disk_bytes(&json), None).unwrap();
-        assert!(env.signatures.is_empty());
-        assert_eq!(env.payload_type, PAYLOAD_TYPE);
-    }
-
-    #[test]
-    fn wrap_payload_decodes_to_valid_statement() {
-        let json = sample_handoff_json();
-        let env = wrap_handoff(&json, ".rsry-handoff-0.json", &disk_bytes(&json), None).unwrap();
-        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(&env.payload)
-            .unwrap();
-        let stmt: InTotoStatement = serde_json::from_slice(&decoded).unwrap();
+        let stmt = handoff_statement(&json, ".rsry-handoff-0.json", &disk_bytes(&json));
         assert_eq!(stmt.statement_type, STATEMENT_TYPE);
         assert_eq!(stmt.predicate_type, PREDICATE_TYPE);
         assert_eq!(stmt.subject[0].name, ".rsry-handoff-0.json");
@@ -381,13 +408,7 @@ mod tests {
     fn wrap_signed_has_one_signature() {
         let key = gen_key();
         let json = sample_handoff_json();
-        let env = wrap_handoff(
-            &json,
-            ".rsry-handoff-0.json",
-            &disk_bytes(&json),
-            Some(&key),
-        )
-        .unwrap();
+        let env = wrap_handoff(&json, ".rsry-handoff-0.json", &disk_bytes(&json), &key).unwrap();
         assert_eq!(env.signatures.len(), 1);
         assert!(!env.signatures[0].sig.is_empty());
         assert!(!env.signatures[0].keyid.is_empty());
@@ -397,13 +418,7 @@ mod tests {
     fn keyid_is_sha256_of_pubkey() {
         let key = gen_key();
         let json = sample_handoff_json();
-        let env = wrap_handoff(
-            &json,
-            ".rsry-handoff-0.json",
-            &disk_bytes(&json),
-            Some(&key),
-        )
-        .unwrap();
+        let env = wrap_handoff(&json, ".rsry-handoff-0.json", &disk_bytes(&json), &key).unwrap();
         let expected = pubkey_id(&key.verifying_key());
         assert_eq!(env.signatures[0].keyid, expected);
     }
@@ -413,7 +428,13 @@ mod tests {
     #[test]
     fn unsigned_envelope_returns_not_signed() {
         let json = sample_handoff_json();
-        let env = wrap_handoff(&json, ".rsry-handoff-0.json", &disk_bytes(&json), None).unwrap();
+        let statement = handoff_statement(&json, ".rsry-handoff-0.json", &disk_bytes(&json));
+        let env = DsseEnvelope {
+            payload_type: PAYLOAD_TYPE.to_string(),
+            payload: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(&statement).unwrap()),
+            signatures: vec![],
+        };
         let (result, _stmt) = verify_envelope(&env, None).unwrap();
         assert_eq!(result, VerifyResult::NotSigned);
     }
@@ -422,13 +443,7 @@ mod tests {
     fn signed_envelope_verifies_with_correct_key() {
         let key = gen_key();
         let json = sample_handoff_json();
-        let env = wrap_handoff(
-            &json,
-            ".rsry-handoff-0.json",
-            &disk_bytes(&json),
-            Some(&key),
-        )
-        .unwrap();
+        let env = wrap_handoff(&json, ".rsry-handoff-0.json", &disk_bytes(&json), &key).unwrap();
         let (result, stmt) = verify_envelope(&env, Some(&key.verifying_key())).unwrap();
         assert_eq!(result, VerifyResult::Valid);
         assert_eq!(stmt.predicate["bead_id"], "rosary-test");
@@ -439,13 +454,7 @@ mod tests {
         let signer = gen_key();
         let wrong = gen_key();
         let json = sample_handoff_json();
-        let env = wrap_handoff(
-            &json,
-            ".rsry-handoff-0.json",
-            &disk_bytes(&json),
-            Some(&signer),
-        )
-        .unwrap();
+        let env = wrap_handoff(&json, ".rsry-handoff-0.json", &disk_bytes(&json), &signer).unwrap();
         let (result, _) = verify_envelope(&env, Some(&wrong.verifying_key())).unwrap();
         assert!(matches!(result, VerifyResult::Invalid(_)));
     }
@@ -454,13 +463,7 @@ mod tests {
     fn signed_envelope_no_verifying_key_returns_invalid() {
         let key = gen_key();
         let json = sample_handoff_json();
-        let env = wrap_handoff(
-            &json,
-            ".rsry-handoff-0.json",
-            &disk_bytes(&json),
-            Some(&key),
-        )
-        .unwrap();
+        let env = wrap_handoff(&json, ".rsry-handoff-0.json", &disk_bytes(&json), &key).unwrap();
         let (result, _) = verify_envelope(&env, None).unwrap();
         assert!(matches!(result, VerifyResult::Invalid(_)));
     }
@@ -469,13 +472,8 @@ mod tests {
     fn tampered_payload_fails_verification() {
         let key = gen_key();
         let json = sample_handoff_json();
-        let mut env = wrap_handoff(
-            &json,
-            ".rsry-handoff-0.json",
-            &disk_bytes(&json),
-            Some(&key),
-        )
-        .unwrap();
+        let mut env =
+            wrap_handoff(&json, ".rsry-handoff-0.json", &disk_bytes(&json), &key).unwrap();
         // Corrupt the payload after signing
         env.payload.push_str("TAMPERED");
         let result = verify_envelope(&env, Some(&key.verifying_key()));
@@ -495,12 +493,7 @@ mod tests {
         // so external observers can verify by hashing the file directly.
         let json = sample_handoff_json();
         let disk = disk_bytes(&json);
-        let env = wrap_handoff(&json, ".rsry-handoff-0.json", &disk, None).unwrap();
-
-        let stmt_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(&env.payload)
-            .unwrap();
-        let stmt: InTotoStatement = serde_json::from_slice(&stmt_bytes).unwrap();
+        let stmt = handoff_statement(&json, ".rsry-handoff-0.json", &disk);
 
         let mut hasher = Sha256::new();
         hasher.update(&disk);
@@ -515,13 +508,7 @@ mod tests {
         // reconstructing PAE from decoded payload bytes would reject the sig.
         let key = gen_key();
         let json = sample_handoff_json();
-        let env = wrap_handoff(
-            &json,
-            ".rsry-handoff-0.json",
-            &disk_bytes(&json),
-            Some(&key),
-        )
-        .unwrap();
+        let env = wrap_handoff(&json, ".rsry-handoff-0.json", &disk_bytes(&json), &key).unwrap();
 
         // Reconstruct PAE the same way an external verifier would: decode the
         // payload, then PAE over those bytes.
@@ -569,13 +556,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let key = gen_key();
         let json = sample_handoff_json();
-        let env = wrap_handoff(
-            &json,
-            ".rsry-handoff-0.json",
-            &disk_bytes(&json),
-            Some(&key),
-        )
-        .unwrap();
+        let env = wrap_handoff(&json, ".rsry-handoff-0.json", &disk_bytes(&json), &key).unwrap();
         write_envelope(tmp.path(), 0, &env).unwrap();
         let loaded = read_envelope(tmp.path(), 0).unwrap();
         assert_eq!(loaded.payload, env.payload);
@@ -584,6 +565,21 @@ mod tests {
         // Verify the loaded envelope
         let (result, _) = verify_envelope(&loaded, Some(&key.verifying_key())).unwrap();
         assert_eq!(result, VerifyResult::Valid);
+    }
+
+    #[test]
+    fn write_unsigned_statement_uses_distinct_in_toto_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let json = sample_handoff_json();
+        let statement = handoff_statement(&json, ".rsry-handoff-0.json", &disk_bytes(&json));
+
+        write_unsigned_statement(tmp.path(), 0, &statement).unwrap();
+
+        let statement_path = tmp.path().join(".rsry-handoff-0.intoto.json");
+        let written: InTotoStatement =
+            serde_json::from_slice(&std::fs::read(&statement_path).unwrap()).unwrap();
+        assert_eq!(written.statement_type, STATEMENT_TYPE);
+        assert!(!tmp.path().join(".rsry-handoff-0.dsse.json").exists());
     }
 
     #[test]
@@ -598,7 +594,7 @@ mod tests {
         let handoff_path = tmp.path().join(".rsry-handoff-0.json");
         std::fs::write(&handoff_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
 
-        let env = wrap_handoff_from_file(&handoff_path, &json, Some(&key)).unwrap();
+        let env = wrap_handoff_from_file(&handoff_path, &json, &key).unwrap();
 
         // Verify signature is valid
         let (result, stmt) = verify_envelope(&env, Some(&key.verifying_key())).unwrap();
