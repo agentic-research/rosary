@@ -25,9 +25,10 @@ use std::collections::BTreeMap;
 /// A bead's role, fixed at genesis (ADR-0020 §3). Sharing, git-visibility, and
 /// coordination namespace all *derive* from this — not from whichever store the
 /// bead happens to sit in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Role {
     /// Canonical work-record — the shared, authoritative bead.
+    #[default]
     Canonical,
     /// Local coordination record (e.g. a feature-branch / agent-dispatch note).
     Coordination,

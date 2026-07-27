@@ -637,6 +637,12 @@ enum BeadAction {
         /// Skip the close-condition check (for planning/legacy beads)
         #[arg(long)]
         force: bool,
+        /// Tier this bead belongs to (ADR-0022 — location derives from role).
+        /// `canonical` writes to the repo's bead store and thus the git-tracked
+        /// record; `coordination` writes to `refs/agents/*` and never touches
+        /// the working tree.
+        #[arg(long, default_value = "canonical")]
+        role: String,
     },
     /// Close a bead
     Close {
@@ -2099,6 +2105,7 @@ async fn main() -> Result<()> {
                     test_files,
                     acceptance,
                     force,
+                    role,
                 } => {
                     let id = generate_bead_id(&repo_name);
                     let created_by = git_config_user_name(&repo_root);
@@ -2114,10 +2121,23 @@ async fn main() -> Result<()> {
                         depends_on: vec![], // CLI doesn't support depends_on yet
                         acceptance_criteria: acceptance,
                         force,
+                        role: bead_ops::parse_role(&role)?,
                     };
-                    bead_ops::create_bead(client.as_ref(), &id, &args, created_by.as_deref())
-                        .await?;
-                    jsonl_sync::publish_created_bead_to_tracked_jsonl(
+                    let role = args.role;
+                    bead_ops::create_bead(
+                        client.as_ref(),
+                        &repo_root,
+                        &id,
+                        &args,
+                        created_by.as_deref(),
+                    )
+                    .await?;
+                    // ADR-0022: publishing is a CANONICAL-tier operation. A
+                    // coordination bead lives in refs/agents/* precisely so it
+                    // never enters the git-tracked record; publishing it here
+                    // would undo the routing two lines above.
+                    if role == bead_genesis::Role::Canonical {
+                        jsonl_sync::publish_created_bead_to_tracked_jsonl(
                         client.as_ref(),
                         &id,
                         &repo_name,
@@ -2129,6 +2149,7 @@ async fn main() -> Result<()> {
                             "bead {id} created locally, but publishing it to tracked .beads/beads.jsonl"
                         )
                     })?;
+                    }
                     cli::bead_created(&id, &args.title);
                 }
                 BeadAction::Close { id, force } => {
@@ -4955,6 +4976,7 @@ mod tests {
             test_files: vec![],
             acceptance: String::new(),
             force: false,
+            role: "canonical".to_string(),
         };
         assert!(matches!(create, BeadAction::Create { priority: 1, .. }));
 

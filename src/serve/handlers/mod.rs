@@ -567,6 +567,11 @@ async fn tool_bead_create(
         depends_on: str_array("depends_on"),
         acceptance_criteria,
         force,
+        role: crate::bead_ops::parse_role(
+            args.get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("canonical"),
+        )?,
     };
     // Validate BEFORE resolve_repo_client so arg errors surface as arg errors
     // (not an FS/scope error) regardless of repo validity — the error-class
@@ -596,7 +601,30 @@ async fn tool_bead_create(
         .and_then(|v| v.as_str())
         .and_then(|p| crate::git_config_user_name(std::path::Path::new(p)));
 
-    crate::bead_ops::create_bead(client, &id, &create_args, created_by.as_deref()).await?;
+    // ADR-0022 routing needs a filesystem root for the coordination tier
+    // (refs live in a repo, not in a store). Scope-only callers have no path
+    // yet, so a coordination create is refused rather than silently filed as
+    // canonical — the whole point of the role is that it must not land in the
+    // git-tracked record.
+    let repo_root = args
+        .get("repo_path")
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from);
+    if create_args.role == crate::bead_genesis::Role::Coordination && repo_root.is_none() {
+        anyhow::bail!(
+            "role `coordination` needs `repo_path` — coordination beads live in \
+             that repo's refs/agents/*, and a scope-only call has no path to write to. \
+             Refusing rather than filing it as canonical."
+        );
+    }
+    crate::bead_ops::create_bead(
+        client,
+        repo_root.as_deref().unwrap_or(std::path::Path::new(".")),
+        &id,
+        &create_args,
+        created_by.as_deref(),
+    )
+    .await?;
 
     // Set user_id for multi-tenant scoping
     if let Some(uid) = user_scope {
