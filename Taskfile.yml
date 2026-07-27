@@ -180,9 +180,17 @@ tasks:
       `MACHE_SMELL_RULES_DIR=docs/smell-rules mache find-smells --db <db> --rule '*'
       --tags=gate --limit 100000 --baseline-root "$PWD"
       --write-baseline docs/smell-baseline.json`.
-      NOTE: the baseline is LINUX-generated (CI downloads mache-linux-amd64); a
-      darwin-generated baseline has been observed to disagree on untouched files,
-      so regenerate via linux (container or CI), not from a macOS run.
+      NOTE (corrected 2026-07-27, rosary-e87edb): the "darwin disagrees with
+      linux" warning that used to live here is FOLKLORE and was deleted. Three
+      controlled builds from clean `git archive` exports showed ZERO disagreeing
+      (rule,file) pairs: darwin+mache-v0.18.0 vs the linux-generated baseline,
+      and darwin+mache-v0.19.0-10 vs the same. The rule JSON is byte-identical
+      between v0.18.0 and mache HEAD. Regenerate from wherever you like.
+      The real cause of "phantom" disagreements is that `duplicate_definitions`
+      groups by token NAME globally with no file/module in the key, so ADDING
+      `fn build` in a NEW file creates a finding in an UNRELATED file that the
+      PR never opened. Hand-patching single entries therefore drifts; regenerate
+      fully instead.
     env:
       MACHE_SMELL_RULES_DIR: '{{.TASKFILE_DIR}}/docs/smell-rules'
     cmds:
