@@ -278,6 +278,29 @@ everything downstream is confidently wrong. Revisit after Tier 1.
 
 ---
 
+## Rank by measured strength, not by test kind
+
+**Added 2026-07-28 after doing 1.3.** This map ranked the merge driver #2 on the
+reasoning that "14 examples and no laws" meant weak coverage. Mutation testing
+said otherwise: four mutations injected into `merge_contract` (silent winner,
+dropped additions, false conflict on identical adds, asymmetric resurrection) —
+every real one was caught by the *existing examples*, and no mutation was found
+that the new properties catch and the examples miss. One mutation turned out to
+be inert (an earlier match arm short-circuited it), which is itself a reminder
+that an uncaught mutation is not automatically a coverage gap.
+
+So the properties there were worth landing — they quantify over shapes nobody
+enumerated, and the symmetry law has no example equivalent — but they did not
+find a defect, and **zero examples were substituted**, because mutation testing
+showed all 14 pull their weight.
+
+The correction: **test kind is not a proxy for test strength.** Ranking a module
+as under-tested because its tests are example-based sends effort at whatever is
+merely old-fashioned rather than whatever is actually weak. Mutation testing is
+the cheap discriminator and should run *before* a module is ranked, not after.
+Contrast the algebras (1.1), where the properties found a real gap on the first
+run, and the round-trip (#434), which found a second bug immediately.
+
 ## Sequencing
 
 1. **1.1 algebra laws** — highest value, smallest surface, and the lattice is on

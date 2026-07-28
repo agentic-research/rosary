@@ -183,6 +183,11 @@
     },
     {
       "rule_id": "dead_code",
+      "source_id": "src/restore/merge/laws.rs",
+      "count": 6
+    },
+    {
+      "rule_id": "dead_code",
       "source_id": "src/restore/merge/tests.rs",
       "count": 16
     },
@@ -699,7 +704,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/observation/mod.rs",
-      "count": 5
+      "count": 6
     },
     {
       "rule_id": "duplicate_definitions",
@@ -829,6 +834,11 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/restore/merge.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/restore/merge/laws.rs",
       "count": 1
     },
     {
