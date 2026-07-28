@@ -58,6 +58,11 @@
     },
     {
       "rule_id": "dead_code",
+      "source_id": "src/contract_roundtrip.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "dead_code",
       "source_id": "src/coordination/tests.rs",
       "count": 8
     },

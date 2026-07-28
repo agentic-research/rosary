@@ -133,6 +133,11 @@ openssl = { version = "0.10", features = ["vendored"] }
 capnpc = "0.21"
 
 [dev-dependencies]
+# Property testing (rosary-c45a35). Every field-loss bug in this repo was
+# written by someone who had example-based tests; examples only cover the
+# fields the author remembered, which is the enumeration that went wrong.
+proptest = "1"
+futures = "0.3"
 # TEST FIXTURE ONLY. `leyline_vcs::JjIntegration::init` builds a SimpleBackend
 # repo (`Workspace::init_simple`) — a shape that exists only in tests, and the
 # exact shape that made the first version of the jj workspace test pass while
