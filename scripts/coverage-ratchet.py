@@ -63,6 +63,36 @@ def write_baseline(cov_json_path):
     print(f"wrote {BASELINE}: {len(files)} files, total {total}% lines (env={env})")
 
 
+def set_floor(path, pct):
+    """Lower ONE file's floor, preserving every other entry and the `env` marker.
+
+    Why this exists: a full `--write` from a dev machine stamps `env=local`,
+    which makes CI skip enforcement entirely — the exact way this gate sat
+    disarmed for its whole life (rosary-f78208). And a local full rewrite would
+    replace CI-native floors with local numbers, which are HIGHER for the
+    dolt/jj-dependent files (those tests skip in CI), making the CI floors
+    unreachable and CI red forever.
+
+    So an intentional decrease edits exactly one floor and touches nothing else.
+    The resulting one-line diff is the reviewable artifact — the same control the
+    committed smell baseline relies on. Use the percentage CI REPORTED, not a
+    local measurement, whenever the file's coverage depends on dolt/jj.
+    """
+    base = json.load(open(BASELINE))
+    if path not in base["files"]:
+        raise SystemExit(f"{path} is not in the baseline; nothing to lower")
+    old = base["files"][path]
+    if pct > old:
+        raise SystemExit(
+            f"{path}: {pct} is ABOVE the current floor {old} — floors rise by "
+            "regeneration on main, not by hand"
+        )
+    base["files"][path] = pct
+    json.dump(base, open(BASELINE, "w"), indent=1)
+    open(BASELINE, "a").write("\n")
+    print(f"lowered {path}: {old}% -> {pct}% (env={base.get('env')!r} preserved)")
+
+
 def check(cov_json_path):
     import os
     base = json.load(open(BASELINE))
@@ -112,4 +142,10 @@ def main():
 
 
 if __name__ == "__main__":
+    import sys
+    if "--set-floor" in sys.argv:
+        i = sys.argv.index("--set-floor")
+        set_floor(sys.argv[i + 1], float(sys.argv[i + 2]))
+        raise SystemExit(0)
+
     sys.exit(main())

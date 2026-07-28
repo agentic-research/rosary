@@ -186,31 +186,33 @@ fn assert_preserved(before: &Bead, after: &Bead) {
     assert_eq!(before.derived_from, after.derived_from, "derived_from");
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
-
-    /// THE PROPERTY. Currently RED on `derived_from` — see
-    /// `derived_from_is_lost_on_round_trip` below, which pins the loss until
-    /// rosary-c47ca6 (the extension registry) makes this pass.
-    ///
-    /// Do NOT narrow this to the fields that already work. A round-trip test
-    /// restricted to the passing subset is the same defect in test form.
-    #[test]
-    #[ignore = "RED on derived_from — rosary-79393f; un-ignore when rosary-c47ca6 lands"]
-    fn every_field_survives_the_round_trip(bead in arb_bead()) {
+/// THE PROPERTY. Currently RED on `derived_from` — see
+/// `derived_from_is_lost_on_round_trip` below, which pins the loss until
+/// rosary-c47ca6 (the extension registry) makes this pass.
+///
+/// Do NOT narrow this to the fields that already work. A round-trip test
+/// restricted to the passing subset is the same defect in test form.
+#[test]
+#[ignore = "RED on derived_from — rosary-79393f; un-ignore when rosary-c47ca6 lands"]
+fn every_field_survives_the_round_trip() {
+    crate::proptest_support::check(48, arb_bead(), |bead| {
         let (stored, after) = futures::executor::block_on(round_trip(&bead));
         assert_preserved(&stored, &after);
-    }
+        Ok(())
+    });
+}
 
-    /// The same property minus the one known loss, so the OTHER 16 fields are
-    /// genuinely guarded today rather than waiting on the registry work.
-    #[test]
-    fn every_field_except_provenance_survives(bead in arb_bead()) {
+/// The same property minus the one known loss, so the OTHER 16 fields are
+/// genuinely guarded today rather than waiting on the registry work.
+#[test]
+fn every_field_except_provenance_survives() {
+    crate::proptest_support::check(48, arb_bead(), |bead| {
         let (stored, after) = futures::executor::block_on(round_trip(&bead));
         let mut expected = stored.clone();
         expected.derived_from = after.derived_from.clone();
         assert_preserved(&expected, &after);
-    }
+        Ok(())
+    });
 }
 
 /// Characterisation of rosary-79393f, deliberately asserting the CURRENT broken

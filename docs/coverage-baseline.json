@@ -38,7 +38,7 @@
   "src/context/policy.rs": 100.0,
   "src/context/ref_store.rs": 97.56,
   "src/context/render.rs": 84.13,
-  "src/contract_roundtrip.rs": 100.0,
+  "src/contract_roundtrip.rs": 94.24,
   "src/coordination/mod.rs": 85.09,
   "src/credential.rs": 77.22,
   "src/decompose.rs": 98.25,

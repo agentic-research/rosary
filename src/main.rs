@@ -78,10 +78,13 @@ mod orchestrate;
 // design — it describes the surface, it does not serve it.
 #[cfg(test)]
 mod parity;
+// Test-only: the shared deterministic proptest harness.
 mod personal;
 mod pipeline;
 mod plugin;
 mod pool;
+#[cfg(test)]
+mod proptest_support;
 mod publish;
 mod queue;
 mod reconcile;

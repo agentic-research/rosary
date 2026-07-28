@@ -67,3 +67,9 @@
 !/.rsry-stream.jsonl
 .rsry-bead-id
 dist/
+
+# proptest failure-persistence artifacts. Only written in PROPTEST_EXPLORE=1
+# mode (see src/proptest_support.rs); the deterministic default writes none, so
+# a file appearing here means someone ran an exploratory hunt. Commit it
+# deliberately if it pins a real counterexample — do not let it drift in.
+proptest-regressions/
