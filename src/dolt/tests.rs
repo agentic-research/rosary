@@ -160,13 +160,14 @@ async fn create_bead_visible_to_new_connection() {
     // Session A: create a bead
     let client_a = sandbox.fresh_client().await;
     client_a
-        .create_bead(
-            "vis-1",
-            "Cross-session visibility",
-            "Should survive reconnect",
-            1,
-            "bug",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "vis-1".to_string(),
+            title: "Cross-session visibility".to_string(),
+            description: "Should survive reconnect".to_string(),
+            priority: 1,
+            issue_type: "bug".to_string(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     drop(client_a);
@@ -243,7 +244,14 @@ async fn all_write_paths_visible_across_connections() {
     // Setup: create bead
     let setup = sandbox.fresh_client().await;
     setup
-        .create_bead("wp-1", "Write paths test", "desc", 2, "task")
+        .create_bead_full(crate::store::NewBead {
+            id: "wp-1".to_string(),
+            title: "Write paths test".to_string(),
+            description: "desc".to_string(),
+            priority: 2,
+            issue_type: "task".to_string(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     drop(setup);
@@ -315,7 +323,14 @@ async fn reconnect_uses_existing_server_not_fresh() {
     // Create a bead on the original server
     let client = sandbox.fresh_client().await;
     client
-        .create_bead("reconnect-1", "Reconnect test", "must survive", 1, "bug")
+        .create_bead_full(crate::store::NewBead {
+            id: "reconnect-1".to_string(),
+            title: "Reconnect test".to_string(),
+            description: "must survive".to_string(),
+            priority: 1,
+            issue_type: "bug".to_string(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     drop(client);
@@ -600,13 +615,14 @@ async fn crud_lifecycle_live_dolt() {
 
     // Create
     client
-        .create_bead(
-            &test_id,
-            "Test CRUD bead",
-            "Integration test description",
-            2,
-            "task",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: test_id.to_string(),
+            title: "Test CRUD bead".to_string(),
+            description: "Integration test description".to_string(),
+            priority: 2,
+            issue_type: "task".to_string(),
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -652,33 +668,36 @@ async fn search_multi_word_non_contiguous() {
 
     // Create beads with different title patterns
     client
-        .create_bead(
-            "mw-1",
-            "Human vs agent task delineation",
-            "How humans and agents split work",
-            2,
-            "task",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "mw-1".to_string(),
+            title: "Human vs agent task delineation".to_string(),
+            description: "How humans and agents split work".to_string(),
+            priority: 2,
+            issue_type: "task".to_string(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     client
-        .create_bead(
-            "mw-2",
-            "Pure automation pipeline",
-            "No involvement at all",
-            2,
-            "task",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "mw-2".to_string(),
+            title: "Pure automation pipeline".to_string(),
+            description: "No involvement at all".to_string(),
+            priority: 2,
+            issue_type: "task".to_string(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     client
-        .create_bead(
-            "mw-3",
-            "Agent routing logic",
-            "Human review step included",
-            2,
-            "task",
-        )
+        .create_bead_full(crate::store::NewBead {
+            id: "mw-3".to_string(),
+            title: "Agent routing logic".to_string(),
+            description: "Human review step included".to_string(),
+            priority: 2,
+            issue_type: "task".to_string(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     drop(client);
@@ -734,7 +753,14 @@ async fn add_comment_supplies_uuid_id() {
 
     let writer = sandbox.fresh_client().await;
     writer
-        .create_bead("uuid-1", "test for uuid id", "", 2, "task")
+        .create_bead_full(crate::store::NewBead {
+            id: "uuid-1".to_string(),
+            title: "test for uuid id".to_string(),
+            description: "".to_string(),
+            priority: 2,
+            issue_type: "task".to_string(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     writer
@@ -934,11 +960,25 @@ async fn typed_dep_works_on_bd_richer_schema() {
         .expect("create bd-shaped dependencies table");
 
     client
-        .create_bead("parent", "Parent", "", 1, "task")
+        .create_bead_full(crate::store::NewBead {
+            id: "parent".to_string(),
+            title: "Parent".to_string(),
+            description: "".to_string(),
+            priority: 1,
+            issue_type: "task".to_string(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     client
-        .create_bead("child", "Child", "", 1, "task")
+        .create_bead_full(crate::store::NewBead {
+            id: "child".to_string(),
+            title: "Child".to_string(),
+            description: "".to_string(),
+            priority: 1,
+            issue_type: "task".to_string(),
+            ..Default::default()
+        })
         .await
         .unwrap();
 

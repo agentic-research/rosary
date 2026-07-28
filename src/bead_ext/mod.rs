@@ -157,5 +157,22 @@ pub fn project(bead_json: &Value, exts: &[Extension]) -> Map<String, Value> {
     out
 }
 
+/// Copy every registered extension field present in `source` onto `target`.
+///
+/// The inverse of [`project`], and the reason a new registry entry needs no
+/// import-side edit either. It was deliberately withheld in rosary-c47ca6
+/// because nothing could call it — `NewBead` was not deserializable, so the
+/// import side had nowhere to put the values. Slice 2 (`rosary-c7126b`) made
+/// `NewBead` serde-able, so it now has exactly one caller: `restore`.
+pub fn absorb(target: &mut Map<String, Value>, source: &Value, exts: &[Extension]) {
+    for name in field_names(exts) {
+        if let Some(v) = source.get(name)
+            && !v.is_null()
+        {
+            target.insert(name.to_string(), v.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

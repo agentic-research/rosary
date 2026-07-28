@@ -305,37 +305,6 @@ impl DoltClient {
         Ok(())
     }
 
-    /// Create a new bead (issue) in the database.
-    pub async fn create_bead(
-        &self,
-        id: &str,
-        title: &str,
-        description: &str,
-        priority: u8,
-        issue_type: &str,
-    ) -> Result<()> {
-        // ADR-0021 slice 2: one writer per backend. The basic create projects
-        // onto create_bead_full (empty owner/files/deps/acceptance) — a single
-        // INSERT the column set can't drift across, and the basic path now also
-        // gains create_bead_full's secret-scrubbing.
-        self.create_bead_full(crate::store::NewBead {
-            id: id.to_string(),
-            title: title.to_string(),
-            description: description.to_string(),
-            priority,
-            issue_type: issue_type.to_string(),
-            owner: String::new(),
-            files: Vec::new(),
-            test_files: Vec::new(),
-            depends_on: Vec::new(),
-            created_by: None,
-            scope: String::new(),
-            derived_from: Vec::new(),
-            acceptance_criteria: String::new(),
-        })
-        .await
-    }
-
     /// Create a bead with all metadata in a single transaction (one dolt commit).
     ///
     /// Without this, create_bead + set_assignee + set_files + add_dependency

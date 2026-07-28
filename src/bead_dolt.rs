@@ -38,19 +38,6 @@ impl BeadStore for DoltBeadStore {
         self.client.get_bead(id, repo_name).await
     }
 
-    async fn create_bead(
-        &self,
-        id: &str,
-        title: &str,
-        description: &str,
-        priority: u8,
-        issue_type: &str,
-    ) -> Result<()> {
-        self.client
-            .create_bead(id, title, description, priority, issue_type)
-            .await
-    }
-
     async fn create_bead_full(&self, bead: crate::store::NewBead) -> Result<()> {
         self.client.create_bead_full(bead).await
     }

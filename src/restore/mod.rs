@@ -202,36 +202,38 @@ pub async fn restore_beads_from_contract(
             continue;
         }
 
-        let issue_type = bead["issue_type"].as_str().unwrap_or("task");
+        // Build the bead from the contract record itself, then splice in every
+        // REGISTERED extension field (bead_ext). Nothing here enumerates
+        // extension fields: adding one to the registry makes it restore with no
+        // edit to this function. `derived_from` used to be hardcoded to
+        // `Vec::new()` here, which is what made every fresh clone drop
+        // provenance (rosary-79393f).
+        let mut fields = serde_json::Map::new();
+        for key in [
+            "id",
+            "title",
+            "description",
+            "priority",
+            "issue_type",
+            "owner",
+            "created_by",
+            "scope",
+            "acceptance_criteria",
+        ] {
+            if let Some(v) = bead.get(key)
+                && !v.is_null()
+            {
+                fields.insert(key.to_string(), v.clone());
+            }
+        }
+        fields.insert("id".to_string(), Value::String(id.to_string()));
+        crate::bead_ext::absorb(&mut fields, bead, crate::bead_ext::EXTENSIONS);
+        // Edges are wired in pass 2, after their targets exist.
+        fields.remove("depends_on");
+        let new_bead: crate::store::NewBead = serde_json::from_value(Value::Object(fields))
+            .with_context(|| format!("building bead {id} from its contract record"))?;
         store
-            .create_bead_full(crate::store::NewBead {
-                id: id.to_string(),
-                title: bead["title"].as_str().unwrap_or("").to_string(),
-                description: bead["description"].as_str().unwrap_or("").to_string(),
-                priority: bead["priority"].as_u64().unwrap_or(2) as u8,
-                issue_type: issue_type.to_string(),
-                owner: bead["owner"].as_str().unwrap_or("").to_string(),
-                files: str_array(bead, "files"),
-                test_files: str_array(bead, "test_files"),
-                depends_on: Vec::new(), // edges added in pass 2, after targets exist
-                created_by: bead["created_by"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string),
-                scope: bead["scope"].as_str().unwrap_or("").to_string(),
-                // Read what the contract carries. This used to be
-                // `Vec::new()` — a hardcoded empty that made every fresh clone
-                // silently drop provenance (rosary-79393f). `bead_ext` is the
-                // one declaration; nothing here enumerates extension fields.
-                derived_from: serde_json::from_value(
-                    bead.get("derived_from").cloned().unwrap_or(Value::Null),
-                )
-                .unwrap_or_default(),
-                acceptance_criteria: bead["acceptance_criteria"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string(),
-            })
+            .create_bead_full(new_bead)
             .await
             .with_context(|| format!("restoring bead {id}"))?;
 

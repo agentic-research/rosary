@@ -304,7 +304,14 @@ pub trait UserRepoStore: Send + Sync {
 /// `Default` for the rest (e.g. `scope`, `depends_on`, `derived_from`), so no
 /// more `""` / `&[]` positional sentinels, and adding a field is one struct
 /// member instead of ~25 call-site edits.
-#[derive(Debug, Clone)]
+/// `Deserialize` with `#[serde(default)]` on every field so a partial contract
+/// record builds a valid bead: a producer that omits a field gets the same
+/// value as a caller who omits it in Rust, and the hand-written `Default`
+/// (P2, `"task"`) applies in both. Without this, the import side could not be
+/// built from JSON at all, which is why `restore` hand-named `derived_from`
+/// until now (rosary-c47ca6 named this as the blocking boundary).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct NewBead {
     pub id: String,
     pub title: String,
@@ -370,6 +377,13 @@ pub trait BeadStore: Send + Sync {
         user_id: Option<&str>,
     ) -> Result<Vec<crate::bead::Bead>>;
     async fn get_bead(&self, id: &str, repo_name: &str) -> Result<Option<crate::bead::Bead>>;
+    /// Convenience create — ADR-0021 slice 2's "one writer", made structural.
+    ///
+    /// Formerly required, so each backend wrote its own INSERT (Dolt's called a
+    /// separate five-field path). Two statements over one table is how a column
+    /// set drifts; `rosary-4887d0` is what that costs. As a default projecting
+    /// onto `create_bead_full`, a convenience form has no fields of its own and
+    /// cannot omit any.
     async fn create_bead(
         &self,
         id: &str,
@@ -377,7 +391,17 @@ pub trait BeadStore: Send + Sync {
         description: &str,
         priority: u8,
         issue_type: &str,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        self.create_bead_full(NewBead {
+            id: id.to_string(),
+            title: title.to_string(),
+            description: description.to_string(),
+            priority,
+            issue_type: issue_type.to_string(),
+            ..Default::default()
+        })
+        .await
+    }
     async fn create_bead_full(&self, bead: NewBead) -> Result<()>;
 
     // ── Field updates ──
@@ -560,7 +584,7 @@ pub trait BackendExport: BackendStore {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::*;
     use std::sync::Mutex;
 
