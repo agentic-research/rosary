@@ -444,15 +444,39 @@ impl Client for RosaryClient {
 /// Bash commands are restricted to safe prefixes (task, git, cargo, go) to
 /// prevent arbitrary command execution via ACP agents.
 pub fn should_approve(tool_name: &str, permissions: &PermissionProfile) -> bool {
-    let is_mcp = tool_name.starts_with("mcp__mache__") || tool_name.starts_with("mcp__rsry__");
+    // `mcp__rsry__*` is NOT a blanket approval. It used to be, and that let a
+    // ReadOnly agent auto-approve `rsry_bead_create`, `rsry_bead_close`,
+    // `rsry_dispatch` (which spawns another agent), `rsry_workspace_cleanup`,
+    // and `rsry_bead_correct` (which overrides the bead state machine) — every
+    // write tool rosary exposes. The old test asserted that as intended, so the
+    // suite encoded the hole rather than catching it.
+    //
+    // The profile's own allowlist (`claude_allowed_tools`) is the authority for
+    // what a profile may touch, and it names SEVEN rsry tools for ReadOnly, not
+    // the whole prefix. Consult it instead of pattern-matching, so ACP and the
+    // claude provider cannot disagree about what a profile means.
+    //
+    // mache stays a prefix match: it is a read-only code-intelligence server,
+    // and `claude_allowed_tools` grants it as `mcp__mache__*` on every profile.
     let is_read = matches!(tool_name, "Read" | "Glob" | "Grep");
+    let is_mache = tool_name.starts_with("mcp__mache__");
+    let is_permitted_rsry = tool_name.starts_with("mcp__rsry__")
+        && permissions
+            .claude_allowed_tools()
+            .split(',')
+            .any(|t| t.trim() == tool_name);
 
     match permissions {
-        PermissionProfile::ReadOnly => is_read || is_mcp,
-        PermissionProfile::Implement => {
-            is_read || is_mcp || matches!(tool_name, "Edit" | "Write") || is_safe_bash(tool_name)
+        PermissionProfile::ReadOnly | PermissionProfile::Plan => {
+            is_read || is_mache || is_permitted_rsry
         }
-        PermissionProfile::Plan => is_read || is_mcp,
+        PermissionProfile::Implement => {
+            is_read
+                || is_mache
+                || is_permitted_rsry
+                || matches!(tool_name, "Edit" | "Write")
+                || is_safe_bash(tool_name)
+        }
     }
 }
 
@@ -504,7 +528,54 @@ mod tests {
     fn read_only_approves_mcp_tools() {
         let p = PermissionProfile::ReadOnly;
         assert!(should_approve("mcp__mache__get_overview", &p));
-        assert!(should_approve("mcp__rsry__bead_list", &p));
+        // Real tool name. The old assertion used `mcp__rsry__bead_list`, which
+        // is not a tool rosary exposes — the prefix is doubled
+        // (`mcp__rsry__` + `rsry_list_beads`), so it passed only because the
+        // rule was a blanket prefix match.
+        assert!(should_approve("mcp__rsry__rsry_list_beads", &p));
+    }
+
+    /// ReadOnly must DENY every rsry write tool. This is the hole the blanket
+    /// `mcp__rsry__` prefix left open: a review agent could create, close and
+    /// correct beads, clean up workspaces, and dispatch further agents.
+    #[test]
+    fn read_only_denies_rsry_write_tools() {
+        let p = PermissionProfile::ReadOnly;
+        for denied in [
+            "mcp__rsry__rsry_bead_create",
+            "mcp__rsry__rsry_bead_close",
+            "mcp__rsry__rsry_bead_correct",
+            "mcp__rsry__rsry_dispatch",
+            "mcp__rsry__rsry_workspace_cleanup",
+            "mcp__rsry__rsry_bead_update",
+        ] {
+            assert!(
+                !should_approve(denied, &p),
+                "ReadOnly must not auto-approve {denied}"
+            );
+        }
+    }
+
+    /// The ACP path and the claude path must agree about what a profile means.
+    /// They disagreed before: `claude_allowed_tools` named seven rsry tools for
+    /// ReadOnly while ACP approved the entire prefix.
+    #[test]
+    fn acp_agrees_with_the_profile_allowlist() {
+        for p in [
+            PermissionProfile::ReadOnly,
+            PermissionProfile::Plan,
+            PermissionProfile::Implement,
+        ] {
+            for tool in p.claude_allowed_tools().split(',') {
+                let tool = tool.trim();
+                if tool.starts_with("mcp__rsry__") {
+                    assert!(
+                        should_approve(tool, &p),
+                        "{p:?} allows {tool} for claude but ACP would deny it"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -536,7 +607,11 @@ mod tests {
     fn implement_approves_mcp_tools() {
         let p = PermissionProfile::Implement;
         assert!(should_approve("mcp__mache__search", &p));
-        assert!(should_approve("mcp__rsry__bead_create", &p));
+        assert!(should_approve("mcp__rsry__rsry_bead_comment", &p));
+        // Implement deliberately CANNOT close beads or dispatch agents — see
+        // the comment on `claude_allowed_tools`.
+        assert!(!should_approve("mcp__rsry__rsry_bead_close", &p));
+        assert!(!should_approve("mcp__rsry__rsry_dispatch", &p));
     }
 
     #[test]
@@ -551,8 +626,14 @@ mod tests {
     fn plan_approves_read_and_mcp() {
         let p = PermissionProfile::Plan;
         assert!(should_approve("Read", &p));
-        assert!(should_approve("mcp__rsry__bead_create", &p));
         assert!(should_approve("mcp__mache__find_definition", &p));
+        assert!(should_approve("mcp__rsry__rsry_bead_search", &p));
+        // Plan DOES author beads — decomposing work into them is the job
+        // (`claude_allowed_tools` grants create/update/decompose). But it
+        // still cannot close them or dispatch agents.
+        assert!(should_approve("mcp__rsry__rsry_bead_create", &p));
+        assert!(!should_approve("mcp__rsry__rsry_bead_close", &p));
+        assert!(!should_approve("mcp__rsry__rsry_dispatch", &p));
     }
 
     #[test]
@@ -625,7 +706,7 @@ mod tests {
             log_path: PathBuf::from("/dev/null"),
             tool_log: Arc::new(Mutex::new(Vec::new())),
         };
-        let (req, allow_id, _) = make_permission_request("mcp__rsry__bead_create");
+        let (req, allow_id, _) = make_permission_request("mcp__rsry__rsry_bead_search");
         let resp = client.request_permission(req).await.unwrap();
         match resp.outcome {
             RequestPermissionOutcome::Selected(sel) => {
