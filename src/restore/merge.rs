@@ -249,4 +249,6 @@ pub fn merge_jsonl_files(
 }
 
 #[cfg(test)]
+mod laws;
+#[cfg(test)]
 mod tests;
