@@ -156,3 +156,59 @@ fn every_registered_field_exists_on_bead() {
         );
     }
 }
+
+/// Slice 2's payoff, asserted end-to-end: a field the RESTORE path never
+/// mentions still arrives, because `absorb` + serde carry it.
+///
+/// `rosary-c47ca6` could only prove this for the export half — `NewBead` was not
+/// deserializable, so the import side had nowhere to put the values and
+/// `derived_from` stayed hand-named in `restore`. This is the half that was
+/// blocked.
+#[tokio::test]
+async fn a_registered_field_restores_without_any_import_side_edit() {
+    use crate::store::BeadStore;
+
+    let store =
+        crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+
+    // A contract record carrying provenance — the field `restore` no longer
+    // names anywhere.
+    let record = json!({
+        "id": "rosary-ext001",
+        "title": "carries provenance",
+        "description": "",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "bug",
+        "acceptance_criteria": "cargo test",
+        "files": ["src/a.rs"],
+        "test_files": ["tests/a.rs"],
+        // `ProvenanceRef` is `#[serde(tag = "kind", rename_all = "snake_case")]`.
+        "derived_from": [{"kind": "adr", "id": "0021"}],
+    });
+
+    crate::restore::restore_beads_from_contract(&[record], &store, "rosary")
+        .await
+        .expect("restore succeeds");
+
+    let got = store
+        .get_bead("rosary-ext001", "rosary")
+        .await
+        .unwrap()
+        .expect("bead restored");
+    assert_eq!(got.files, vec!["src/a.rs".to_string()], "files restored");
+    assert_eq!(
+        got.derived_from.len(),
+        1,
+        "provenance must survive restore — this is the half rosary-c47ca6 could \
+         not fix, and the reason every fresh clone used to drop it"
+    );
+    assert!(
+        matches!(
+            &got.derived_from[0],
+            bdr::provenance::ProvenanceRef::Adr { id } if id == "0021"
+        ),
+        "provenance restored with the wrong shape: {:?}",
+        got.derived_from
+    );
+}

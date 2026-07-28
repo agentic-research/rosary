@@ -614,37 +614,6 @@ impl BeadStore for SqliteBeadStore {
         Ok(bead)
     }
 
-    async fn create_bead(
-        &self,
-        id: &str,
-        title: &str,
-        description: &str,
-        priority: u8,
-        issue_type: &str,
-    ) -> Result<()> {
-        // ADR-0021 slice 2: one writer. The basic create is a thin projection of
-        // the canonical NewBead onto `create_bead_full` (empty owner/files/deps/
-        // acceptance), so there is a single INSERT the column set can't drift
-        // across — not a second, divergent statement.
-        self.create_bead_full(NewBead {
-            id: id.to_string(),
-            title: title.to_string(),
-            description: description.to_string(),
-            priority,
-            issue_type: issue_type.to_string(),
-            owner: String::new(),
-            files: Vec::new(),
-            test_files: Vec::new(),
-            depends_on: Vec::new(),
-            created_by: None,
-            scope: String::new(),
-            derived_from: Vec::new(),
-            acceptance_criteria: String::new(),
-        })
-        .await
-        .with_context(|| format!("creating bead {id}"))
-    }
-
     async fn create_bead_full(&self, bead: NewBead) -> Result<()> {
         let NewBead {
             id,

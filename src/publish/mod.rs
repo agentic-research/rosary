@@ -28,8 +28,15 @@
 //! `BeadStore` has 33 methods and this type implements every one *by hand*.
 //! There is deliberately no blanket forwarding impl and no `Deref`, because both
 //! would let a 34th method appear and silently forward without anyone deciding
-//! whether it mutates the projection. As written, adding a method to the trait
-//! fails to compile until it is classified here.
+//! whether it mutates the projection. As written, adding a REQUIRED method to
+//! the trait fails to compile until it is classified here.
+//!
+//! Caveat added by ADR-0021 slice 2 (`rosary-c7126b`): `create_bead` became a
+//! *provided* method, and a provided method does not break this impl when added.
+//! So the compile-time half of the guarantee covers required methods only. The
+//! test half — `tests::every_trait_method_is_classified`, which reads the trait
+//! body out of `store.rs` — covers both, and is what actually holds the line
+//! now. Worth knowing before relying on "it won't compile" alone.
 //!
 //! That is the same property `src/parity` has, obtained more cheaply: a
 //! mechanical check nobody has to remember to run, whose failure is a build

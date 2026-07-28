@@ -304,7 +304,14 @@ pub trait UserRepoStore: Send + Sync {
 /// `Default` for the rest (e.g. `scope`, `depends_on`, `derived_from`), so no
 /// more `""` / `&[]` positional sentinels, and adding a field is one struct
 /// member instead of ~25 call-site edits.
-#[derive(Debug, Clone)]
+/// `Deserialize` with `#[serde(default)]` on every field so a partial contract
+/// record builds a valid bead: a producer that omits a field gets the same
+/// value as a caller who omits it in Rust, and the hand-written `Default`
+/// (P2, `"task"`) applies in both. Without this, the import side could not be
+/// built from JSON at all, which is why `restore` hand-named `derived_from`
+/// until now (rosary-c47ca6 named this as the blocking boundary).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct NewBead {
     pub id: String,
     pub title: String,
@@ -370,6 +377,19 @@ pub trait BeadStore: Send + Sync {
         user_id: Option<&str>,
     ) -> Result<Vec<crate::bead::Bead>>;
     async fn get_bead(&self, id: &str, repo_name: &str) -> Result<Option<crate::bead::Bead>>;
+    /// Convenience create. **Provided, not overridable in practice** — this is
+    /// ADR-0021 slice 2's "one writer" made structural.
+    ///
+    /// It used to be a required method, so every backend wrote its own INSERT:
+    /// SQLite's delegated to `create_bead_full`, Dolt's called a separate
+    /// five-field path in the Dolt client. Two statements over one table is
+    /// exactly how a column set drifts, and `rosary-4887d0` (acceptance_criteria
+    /// silently dropped on one create surface) is what that costs.
+    ///
+    /// As a default method projecting onto `create_bead_full`, a convenience
+    /// form has no fields of its own and therefore cannot omit any. A backend
+    /// that wants different behaviour has to override it deliberately and
+    /// visibly, rather than by being written separately in the first place.
     async fn create_bead(
         &self,
         id: &str,
@@ -377,7 +397,17 @@ pub trait BeadStore: Send + Sync {
         description: &str,
         priority: u8,
         issue_type: &str,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        self.create_bead_full(NewBead {
+            id: id.to_string(),
+            title: title.to_string(),
+            description: description.to_string(),
+            priority,
+            issue_type: issue_type.to_string(),
+            ..Default::default()
+        })
+        .await
+    }
     async fn create_bead_full(&self, bead: NewBead) -> Result<()>;
 
     // ── Field updates ──
