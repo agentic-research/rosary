@@ -121,6 +121,9 @@ mod sync;
 #[cfg(test)]
 mod testutil;
 mod text;
+// Test-only until equivalence is proven per tool (rosary-08a278).
+#[cfg(test)]
+mod toolreg;
 mod vcs;
 mod verify;
 #[allow(dead_code)] // API surface — replaces dispatch.rs worktree logic
