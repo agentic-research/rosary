@@ -186,87 +186,20 @@ fn assert_preserved(before: &Bead, after: &Bead) {
     assert_eq!(before.derived_from, after.derived_from, "derived_from");
 }
 
-/// THE PROPERTY. Currently RED on `derived_from` — see
-/// `derived_from_is_lost_on_round_trip` below, which pins the loss until
-/// rosary-c47ca6 (the extension registry) makes this pass.
+/// THE PROPERTY, green since rosary-c47ca6 landed the extension registry.
+///
+/// It was `#[ignore]`d and RED on `derived_from` from #434 until then, paired
+/// with a characterisation test that asserted the loss and therefore FAILED the
+/// moment the bug was fixed — which is what forced this file to be revisited
+/// rather than left with the real property switched off.
 ///
 /// Do NOT narrow this to the fields that already work. A round-trip test
 /// restricted to the passing subset is the same defect in test form.
 #[test]
-#[ignore = "RED on derived_from — rosary-79393f; un-ignore when rosary-c47ca6 lands"]
 fn every_field_survives_the_round_trip() {
     crate::proptest_support::check(48, arb_bead(), |bead| {
         let (stored, after) = futures::executor::block_on(round_trip(&bead));
         assert_preserved(&stored, &after);
         Ok(())
     });
-}
-
-/// The same property minus the one known loss, so the OTHER 16 fields are
-/// genuinely guarded today rather than waiting on the registry work.
-#[test]
-fn every_field_except_provenance_survives() {
-    crate::proptest_support::check(48, arb_bead(), |bead| {
-        let (stored, after) = futures::executor::block_on(round_trip(&bead));
-        let mut expected = stored.clone();
-        expected.derived_from = after.derived_from.clone();
-        assert_preserved(&expected, &after);
-        Ok(())
-    });
-}
-
-/// Characterisation of rosary-79393f, deliberately asserting the CURRENT broken
-/// behaviour so the loss is pinned rather than merely described.
-///
-/// This test FAILS when the bug is fixed. That is intended and is the point:
-/// it forces whoever lands rosary-c47ca6 to come here, delete it, and remove
-/// the `#[ignore]` from `every_field_survives_the_round_trip` — so the fix
-/// cannot land while leaving the real property switched off.
-#[test]
-fn derived_from_is_lost_on_round_trip() {
-    let bead = Bead {
-        derived_from: vec![bdr::provenance::ProvenanceRef::Adr {
-            id: "0021".to_string(),
-        }],
-        ..sample_bead()
-    };
-    let (stored, after) = futures::executor::block_on(round_trip(&bead));
-    assert!(
-        !stored.derived_from.is_empty(),
-        "precondition: the source store must actually hold the provenance"
-    );
-    assert!(
-        after.derived_from.is_empty(),
-        "rosary-79393f appears FIXED: provenance now survives the round trip. \
-         Delete this test and remove the #[ignore] from \
-         `every_field_survives_the_round_trip`."
-    );
-}
-
-fn sample_bead() -> Bead {
-    Bead {
-        id: "rosary-aaaaaa".to_string(),
-        title: "t".to_string(),
-        description: String::new(),
-        status: "open".to_string(),
-        priority: 1,
-        issue_type: "bug".to_string(),
-        owner: None,
-        repo: "rosary".to_string(),
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        dependency_count: 0,
-        dependent_count: 0,
-        comment_count: 0,
-        branch: None,
-        pr_url: None,
-        jj_change_id: None,
-        external_ref: None,
-        files: vec![],
-        test_files: vec![],
-        created_by: None,
-        scope: String::new(),
-        derived_from: vec![],
-        acceptance_criteria: "cargo test".to_string(),
-    }
 }

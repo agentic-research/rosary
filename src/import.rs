@@ -61,7 +61,7 @@ pub fn bead_to_contract_value(
     deps: &[String],
     comments: &[crate::bead::Comment],
 ) -> Value {
-    serde_json::json!({
+    let mut contract = serde_json::json!({
         // --- documented bead JSON contract ---
         "schema_version": BEAD_CONTRACT_SCHEMA_VERSION,
         "id": bead.id,
@@ -81,8 +81,6 @@ pub fn bead_to_contract_value(
         "comments": comments,
         // --- rosary-specific extras (lossless rosary round-trip) ---
         "repo": bead.repo,
-        "files": bead.files,
-        "test_files": bead.test_files,
         "scope": bead.scope,
         "external_ref": bead.external_ref,
         "branch": bead.branch,
@@ -91,7 +89,20 @@ pub fn bead_to_contract_value(
         // emit it or the round-trip silently loses every bead's "done" gate
         // (rosary-a18a1f; the ADR-0021 field-set gap on the export surface).
         "acceptance_criteria": bead.acceptance_criteria,
-    })
+    });
+
+    // Extension fields are spliced in by WALKING THE REGISTRY, never listed
+    // here. Hand-listing them is what dropped `derived_from` from every export
+    // while `files`/`test_files` survived (rosary-79393f): two of the three keys
+    // in the `notes` bag were remembered and one was not. Adding a field to
+    // `bead_ext::EXTENSIONS` is now the only edit required.
+    let serialized = serde_json::to_value(bead).unwrap_or(Value::Null);
+    if let Value::Object(map) = &mut contract {
+        for (k, v) in crate::bead_ext::project(&serialized, crate::bead_ext::EXTENSIONS) {
+            map.insert(k, v);
+        }
+    }
+    contract
 }
 
 /// Export the given beads to the documented bead JSON contract as **JSONL**
