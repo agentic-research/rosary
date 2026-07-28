@@ -52,11 +52,13 @@ mod dolt;
 mod dsse;
 #[allow(dead_code)] // API surface for PM agent (loom-w8c.4); is_dominated_by used by reconciler
 mod epic;
+#[allow(dead_code)] // API surface — wired into pipeline phase transitions
+#[cfg(test)]
+mod field_drift;
 #[allow(dead_code)] // API surface — PR creation from dispatch pipeline
 mod github;
 mod github_mirror;
 mod graph;
-#[allow(dead_code)] // API surface — wired into pipeline phase transitions
 mod handoff;
 mod import;
 mod init;
