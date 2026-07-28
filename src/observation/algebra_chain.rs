@@ -143,31 +143,6 @@ mod tests {
     }
 
     #[test]
-    fn chain_max_associative_under_reorder() {
-        let cases: Vec<Vec<PipelineVerdictValue>> = vec![
-            vec![
-                PipelineVerdictValue::Pass,
-                PipelineVerdictValue::Dispatched,
-                PipelineVerdictValue::Verifying,
-            ],
-            vec![
-                PipelineVerdictValue::Verifying,
-                PipelineVerdictValue::Pass,
-                PipelineVerdictValue::Dispatched,
-            ],
-            vec![
-                PipelineVerdictValue::Dispatched,
-                PipelineVerdictValue::Verifying,
-                PipelineVerdictValue::Pass,
-            ],
-        ];
-        let golden = fold_verdicts(&cases[0]);
-        for c in &cases[1..] {
-            assert_eq!(fold_verdicts(c), golden);
-        }
-    }
-
-    #[test]
     fn chain_max_empty_returns_dispatched() {
         assert_eq!(fold_verdicts(&[]), PipelineVerdictValue::Dispatched);
     }

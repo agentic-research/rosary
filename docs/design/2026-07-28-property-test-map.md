@@ -61,29 +61,39 @@ Four cases, and they are not rare:
 
 ### Worked classification: the four algebras
 
-Of 27 existing algebra tests, **13 are law-sampling** and collapse into roughly
-four property blocks; the other 14 stay.
+**Corrected 2026-07-28 after doing it.** The first version of this table claimed
+13 law-sampling tests (the table actually listed 12 — an off-by-one) and was
+wrong in a way that matters: it lumped *semantic* assertions in with *laws*.
 
-| substitute | keep |
+Only **6** are genuinely subsumed, all of them order-invariance:
+
+| substituted | subsumed by |
 |---|---|
-| `chain_max_idempotent` | `chain_max_type_mismatch_errors` (error path) |
-| `chain_max_associative_under_reorder` | `chain_max_field_name` (registry wiring) |
-| `chain_max_monotone` | `chain_max_empty_returns_dispatched` (spec decision) |
-| `idempotent_under_dedup` | `chain_max_all_unranked_returns_dispatched` (spec) |
-| `reorder_invariant` | `chain_max_unranked_ignored` (semantics) |
-| `top_absorbs_under_more_distinct_values` | `empty_input_is_empty_lattice` (spec) |
-| `lww_reorder_invariant` | `all_agree_single` (spec) |
-| `lww_picks_latest` | `distinct_values_become_top_with_witnesses` (spec) |
-| `lww_tiebreak_total` | `lww_unset_explicit` (semantics) |
-| `lww_tiebreak_same_source_same_ts_is_total` | `lww_type_mismatch_errors`, `lww_field_name` |
-| `or_set_add_order_invariance` | `or_set_empty_is_empty_array` (spec) |
-| `or_set_unique_tags` | `or_set_preserves_provenance` (semantics) |
-| | `or_set_type_mismatch_errors`, `or_set_field_name` |
+| `chain_max_associative_under_reorder` | `fold_is_invariant_under_permutation` |
+| `reorder_invariant` (flat) | ″ |
+| `lww_reorder_invariant` | ″ |
+| `lww_tiebreak_total` | ″ (the generator collapses timestamps onto shared instants, so ties are exercised — which *is* the totality claim) |
+| `lww_tiebreak_same_source_same_ts_is_total` | ″ |
+| `or_set_add_order_invariance` | ″ |
 
-Note the two LWW tie-break tests: they are the *strongest* substitution case on
-the list. A total tie-break is exactly the kind of claim where the two orderings
-someone wrote pass and a third fails — which is how a non-commutative LWW would
-survive review.
+Everything else stays, for two reasons the first pass missed:
+
+- **Semantics are not laws.** `chain_max_monotone`, `lww_picks_latest`,
+  `top_absorbs_under_more_distinct_values` and `or_set_unique_tags` assert
+  *which value wins*. The properties assert only that order and repetition do
+  not matter — a fold that always returned the same wrong answer would satisfy
+  every property and fail every one of these. `or_set_unique_tags` in particular
+  encodes ADR-0010 invariant 7 (identity is `(source, event_id)`, not value
+  text); deleting it would have silently dropped an ADR invariant.
+- **Algebra-level idempotence moved layers.** `chain_max_idempotent` and
+  `idempotent_under_dedup` are not covered by the new properties, because
+  duplicate-suppression turned out to be `ObservationLog`'s contract
+  (invariant 8), not the algebra's — see `src/observation/laws.rs`. They stay.
+
+The lesson generalises, and is the reason the "keep" list above exists: it is
+much easier to over-apply substitution than to under-apply it, because a
+property *looks* like it covers a test whose name sounds similar. Read what the
+example asserts, not what it is called.
 
 ### The guard
 

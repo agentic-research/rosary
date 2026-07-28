@@ -161,39 +161,6 @@ mod tests {
         }
     }
 
-    /// ADR-0010 invariant 4: lww_tiebreak_total. Equal `observed_at` →
-    /// resolved by `source.as_str()` lex.
-    #[test]
-    fn lww_tiebreak_total() {
-        let alg = LwwRegisterAlgebra::new(FieldName::Assignee);
-        let same_ts = at(1000);
-        // "github" > "bead" lex; same timestamp → github wins.
-        let a = obs_assignee("alice", "bead", same_ts);
-        let b = obs_assignee("bob", "github", same_ts);
-        let r1 = alg.fold(&[&a, &b]).unwrap();
-        let r2 = alg.fold(&[&b, &a]).unwrap();
-        assert_eq!(r1, r2, "tiebreak must be order-independent");
-        assert_eq!(r1, FieldValue::OptString(Some("bob".to_string())));
-    }
-
-    /// rosary-a38fca: two DISTINCT values from the SAME source at the SAME
-    /// observed_at. `(observed_at, source)` is then equal, so it is NOT a
-    /// total order over the elements — resolution must fall through to
-    /// payload_hash, not to slice order.
-    #[test]
-    fn lww_tiebreak_same_source_same_ts_is_total() {
-        let alg = LwwRegisterAlgebra::new(FieldName::Assignee);
-        let t = at(1000);
-        let a = obs_assignee("alice", "github", t); // payload_hash "github-alice"
-        let b = obs_assignee("bob", "github", t); // payload_hash "github-bob"
-        let r1 = alg.fold(&[&a, &b]).unwrap();
-        let r2 = alg.fold(&[&b, &a]).unwrap();
-        assert_eq!(
-            r1, r2,
-            "same (observed_at, source), distinct values → must be order-independent via payload_hash"
-        );
-    }
-
     /// ADR-0010 invariant 5: lww_unset_explicit. `pr_url=None` requires
     /// an explicit observation; never inferred from absence.
     #[test]
@@ -250,19 +217,6 @@ mod tests {
         let c = obs_assignee("carol", "src1", at(1500));
         let r = alg.fold(&[&a, &b, &c]).unwrap();
         assert_eq!(r, FieldValue::OptString(Some("bob".to_string())));
-    }
-
-    #[test]
-    fn lww_reorder_invariant() {
-        let alg = LwwRegisterAlgebra::new(FieldName::Assignee);
-        let a = obs_assignee("alice", "src1", at(1000));
-        let b = obs_assignee("bob", "src2", at(2000));
-        let c = obs_assignee("carol", "src3", at(1500));
-        let r1 = alg.fold(&[&a, &b, &c]).unwrap();
-        let r2 = alg.fold(&[&c, &a, &b]).unwrap();
-        let r3 = alg.fold(&[&b, &c, &a]).unwrap();
-        assert_eq!(r1, r2);
-        assert_eq!(r2, r3);
     }
 
     #[test]

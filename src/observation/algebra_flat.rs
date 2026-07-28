@@ -144,20 +144,6 @@ mod tests {
     }
 
     #[test]
-    fn reorder_invariant() {
-        let inputs = vec![
-            ("Done".to_string(), s("linear")),
-            ("Closed-Unmerged".to_string(), s("github")),
-            ("Pending".to_string(), s("git")),
-        ];
-        let r1 = join_per_source(&inputs).unwrap();
-        let mut reversed = inputs.clone();
-        reversed.reverse();
-        let r2 = join_per_source(&reversed).unwrap();
-        assert_eq!(r1, r2, "result must be order-independent");
-    }
-
-    #[test]
     fn top_absorbs_under_more_distinct_values() {
         // Already Top with 2 witnesses; adding a 3rd distinct value
         // keeps it Top with 3 witnesses (all preserved).
