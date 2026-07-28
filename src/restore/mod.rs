@@ -219,7 +219,14 @@ pub async fn restore_beads_from_contract(
                     .filter(|s| !s.is_empty())
                     .map(str::to_string),
                 scope: bead["scope"].as_str().unwrap_or("").to_string(),
-                derived_from: Vec::new(),
+                // Read what the contract carries. This used to be
+                // `Vec::new()` — a hardcoded empty that made every fresh clone
+                // silently drop provenance (rosary-79393f). `bead_ext` is the
+                // one declaration; nothing here enumerates extension fields.
+                derived_from: serde_json::from_value(
+                    bead.get("derived_from").cloned().unwrap_or(Value::Null),
+                )
+                .unwrap_or_default(),
                 acceptance_criteria: bead["acceptance_criteria"]
                     .as_str()
                     .unwrap_or("")

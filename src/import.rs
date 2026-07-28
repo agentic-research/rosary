@@ -61,7 +61,7 @@ pub fn bead_to_contract_value(
     deps: &[String],
     comments: &[crate::bead::Comment],
 ) -> Value {
-    serde_json::json!({
+    let mut contract = serde_json::json!({
         // --- documented bead JSON contract ---
         "schema_version": BEAD_CONTRACT_SCHEMA_VERSION,
         "id": bead.id,
@@ -81,8 +81,6 @@ pub fn bead_to_contract_value(
         "comments": comments,
         // --- rosary-specific extras (lossless rosary round-trip) ---
         "repo": bead.repo,
-        "files": bead.files,
-        "test_files": bead.test_files,
         "scope": bead.scope,
         "external_ref": bead.external_ref,
         "branch": bead.branch,
@@ -91,7 +89,14 @@ pub fn bead_to_contract_value(
         // emit it or the round-trip silently loses every bead's "done" gate
         // (rosary-a18a1f; the ADR-0021 field-set gap on the export surface).
         "acceptance_criteria": bead.acceptance_criteria,
-    })
+    });
+
+    // Extensions come from the REGISTRY, never a list here (rosary-79393f).
+    let full = serde_json::to_value(bead).unwrap_or(Value::Null);
+    if let Value::Object(m) = &mut contract {
+        m.extend(crate::bead_ext::project(&full, crate::bead_ext::EXTENSIONS));
+    }
+    contract
 }
 
 /// Export the given beads to the documented bead JSON contract as **JSONL**
