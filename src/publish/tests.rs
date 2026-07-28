@@ -386,3 +386,44 @@ fn every_trait_method_is_classified() {
         "trait size changed; re-read the classes"
     );
 }
+
+/// A status CORRECTION must reach the tracked projection too.
+///
+/// `bead correct` (rosary-e0e19f) writes through `set_status_verbatim`, a path
+/// that did not exist when this decorator was written. If it did not publish,
+/// the store and the tracked export would disagree about a bead whose status was
+/// just declared wrong — the exact drift #431 exists to prevent, reintroduced by
+/// the fix for a different bug.
+#[tokio::test]
+async fn a_status_correction_reaches_the_tracked_projection() {
+    let repo = Repo::new(&[]);
+    let store = repo.store();
+    store
+        .create_bead_full(new_bead("r-1", "wrongly closed"))
+        .await
+        .unwrap();
+    store.set_status_verbatim("r-1", "done").await.unwrap();
+    assert_eq!(repo.record("r-1").unwrap()["status"], "done");
+
+    crate::bead_correct::correct_status(
+        &store,
+        "r-1",
+        "open",
+        "auto-closed with acceptance criteria unmet",
+    )
+    .await
+    .unwrap();
+
+    let rec = repo.record("r-1").expect("still published");
+    assert_eq!(
+        rec["status"], "open",
+        "the correction must reach the tracked export, not just the store"
+    );
+    let comments = rec["comments"].as_array().expect("comments array");
+    assert!(
+        comments.iter().any(|c| c["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("Status corrected"))),
+        "the audit comment must publish with it: {rec}"
+    );
+}
