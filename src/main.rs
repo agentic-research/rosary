@@ -39,7 +39,10 @@ mod cas;
 mod cli;
 mod column_rail;
 mod config;
+// Test-only: the export/import round-trip property (rosary-c45a35).
 mod context;
+#[cfg(test)]
+mod contract_roundtrip;
 mod coordination;
 mod credential;
 mod decompose;
