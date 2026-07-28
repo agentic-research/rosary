@@ -796,6 +796,13 @@ impl BeadStore for SqliteBeadStore {
         Ok(updated_fields)
     }
 
+    async fn set_status_verbatim(&self, id: &str, status: &str) -> Result<()> {
+        // The transition table is deliberately not consulted: a correction
+        // asserts the recorded state was never true (rosary-e0e19f).
+        let canonical = crate::bead::BeadState::from(status).to_string();
+        self.restore_status(id, &canonical).await
+    }
+
     async fn update_status(&self, id: &str, status: &str) -> Result<()> {
         use crate::bead::BeadState;
         let next = BeadState::from(status);

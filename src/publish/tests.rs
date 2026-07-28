@@ -341,6 +341,7 @@ fn every_trait_method_is_classified() {
         ("create_bead_full", Writes(Projected::Create)),
         ("update_bead_fields", Writes(Projected::Update)),
         ("update_status", Writes(Projected::Update)),
+        ("set_status_verbatim", Writes(Projected::Update)),
         ("close_bead", Writes(Projected::Update)),
         ("set_assignee", Writes(Projected::Update)),
         ("set_user_id", Writes(Projected::Update)),
@@ -381,7 +382,7 @@ fn every_trait_method_is_classified() {
     );
     assert_eq!(
         declared.len(),
-        33,
+        34,
         "trait size changed; re-read the classes"
     );
 }

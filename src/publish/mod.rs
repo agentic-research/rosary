@@ -255,6 +255,12 @@ impl BeadStore for PublishingBeadStore {
         self.inner.update_status(id, status).await?;
         self.publish(Projected::Update, Some(id)).await
     }
+    /// A correction changes the record, so it publishes like any other update —
+    /// the tracked export must not keep asserting the status that was wrong.
+    async fn set_status_verbatim(&self, id: &str, status: &str) -> Result<()> {
+        self.inner.set_status_verbatim(id, status).await?;
+        self.publish(Projected::Update, Some(id)).await
+    }
     async fn close_bead(&self, id: &str) -> Result<()> {
         self.inner.close_bead(id).await?;
         self.publish(Projected::Update, Some(id)).await

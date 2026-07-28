@@ -255,14 +255,13 @@ pub const EXEMPT: &[Exemption] = &[
          repo_path (handlers/mod.rs), so a caller-supplied value would compete \
          with attribution the server can establish itself",
     ),
-    // --- REAL GAP, recorded rather than hidden ---
     ex(
         "status",
         Surface::McpUpdate,
-        "GAP: this is the rosary-e0e19f recovery wall. With no status field on \
-         MCP update, `reopen` CLI-only, and BeadState::Done terminal, an agent \
-         that NOTICES a wrongly-closed bead cannot correct it from any surface — \
-         recovery required a raw UPDATE on beads.db",
+        "corrections go through `rsry_bead_correct`, which demands a reason and \
+         records it; a bare status field on update would let an agent rewrite \
+         state with no audit trail. This was a GAP (the rosary-e0e19f recovery \
+         wall) until that tool landed",
     ),
 ];
 

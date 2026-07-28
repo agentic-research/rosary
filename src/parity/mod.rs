@@ -171,10 +171,13 @@ pub const OPS: &[Op] = &[
             "agents cannot relocate a misfiled bead — the operation that fixes what agents get wrong (blocked 15 stranded cloister beads)",
         ),
     ),
+    both("bead correct", "rsry_bead_correct"),
     cli_only(
         "bead reopen",
-        Gap(
-            "with MCP `update` having no status field, a wrongly-`done` bead is unrecoverable on ANY surface — rosary-ee49bf",
+        ByDesign(
+            "the state-machine-obeying reopen. It refuses `done` on purpose; \
+             correcting a wrongly-recorded status is `bead correct`, which is on \
+             BOTH surfaces and demands a reason (rosary-e0e19f)",
         ),
     ),
     cli_only(
