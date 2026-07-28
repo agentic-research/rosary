@@ -26,7 +26,7 @@ pub(crate) mod review;
 // RED phase landed under rosary-5dc9b0 — stubbed helpers + 5 failing tests
 // pin the shape; GREEN phase wires Linear/GH/bead fetches through them.
 pub(crate) mod ticket_load;
-mod tools;
+pub(crate) mod tools;
 mod webhook;
 
 use anyhow::{Context, Result};
