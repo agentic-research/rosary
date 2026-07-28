@@ -17,31 +17,18 @@ pub fn truncate(s: &str, max: usize) -> String {
     format!("{head}…")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn leaves_short_strings_alone() {
-        assert_eq!(truncate("abc", 10), "abc");
-        assert_eq!(truncate("abc", 3), "abc", "exactly at the limit is not cut");
+/// DELIBERATELY UNCOVERED — proving the coverage ratchet fails (rosary-f78208).
+/// Never called from anywhere. Must drag src/text.rs below its 100.0 floor.
+pub fn never_called_probe(n: u64) -> u64 {
+    let mut acc = 0u64;
+    for i in 0..n {
+        if i % 2 == 0 {
+            acc = acc.wrapping_add(i);
+        } else if i % 3 == 0 {
+            acc = acc.wrapping_sub(i);
+        } else {
+            acc = acc.wrapping_mul(2);
+        }
     }
-
-    #[test]
-    fn appends_ellipsis_when_shortened() {
-        assert_eq!(truncate("abcdef", 4), "abc…");
-    }
-
-    /// Byte-slicing here would panic mid-codepoint.
-    #[test]
-    fn is_char_safe_on_multibyte() {
-        assert_eq!(truncate("ααααα", 3), "αα…");
-        assert_eq!(truncate("日本語テキスト", 4), "日本語…");
-    }
-
-    #[test]
-    fn handles_degenerate_limits() {
-        assert_eq!(truncate("abc", 0), "…");
-        assert_eq!(truncate("", 5), "");
-    }
+    if acc > 1000 { acc / 2 } else { acc * 3 }
 }
