@@ -158,6 +158,11 @@
     },
     {
       "rule_id": "dead_code",
+      "source_id": "src/publish/tests.rs",
+      "count": 10
+    },
+    {
+      "rule_id": "dead_code",
       "source_id": "src/reconcile/tests.rs",
       "count": 36
     },
@@ -758,6 +763,11 @@
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/publish/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/queue.rs",
       "count": 2
     },
@@ -1129,7 +1139,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/jsonl_sync.rs",
-      "count": 1
+      "count": 2
     },
     {
       "rule_id": "fan_out_skew",
@@ -1204,6 +1214,11 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/pool.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/publish/tests.rs",
       "count": 1
     },
     {

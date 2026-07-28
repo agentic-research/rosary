@@ -148,6 +148,75 @@ pub async fn publish_created_bead_to_tracked_jsonl(
     Ok(true)
 }
 
+/// Re-render exactly ONE bead's record in the tracked projection.
+///
+/// The bounded whole-file paths above re-read every bead plus its dependencies
+/// and comments — for rosary that is ~2400 queries. That cost is fine once per
+/// command, but [`crate::publish`] calls this after *every* projected store
+/// write, so the per-write cost has to be O(1) in the bead count. Here it is
+/// three queries and one file rewrite.
+///
+/// `allow_insert` is the publication boundary, and it is the caller's decision,
+/// not a guess: a CREATE deliberately broadens the public id set by exactly
+/// this bead, while an UPDATE must never add an id the owner has not published
+/// (the rosary-a7ee3a semantics). With `allow_insert = false` an absent id is a
+/// no-op, not an error.
+///
+/// Returns whether the file changed.
+pub async fn upsert_tracked_bead(
+    store: &dyn BeadStore,
+    bead_id: &str,
+    repo_name: &str,
+    repo_root: &Path,
+    allow_insert: bool,
+) -> Result<bool> {
+    let beads_dir = crate::resolve_beads_dir(repo_root);
+    let jsonl = repo_root.join(".beads/beads.jsonl");
+    if beads_dir.join("dolt").is_dir() || !jsonl.is_file() || !is_git_tracked(repo_root) {
+        return Ok(false);
+    }
+
+    let published = crate::restore::read_beads_jsonl(Some(jsonl.to_string_lossy().into_owned()))?;
+    let already_published = published
+        .iter()
+        .any(|record| record.get("id").and_then(Value::as_str) == Some(bead_id));
+    if !already_published && !allow_insert {
+        return Ok(false);
+    }
+
+    // Render this bead from the store. `get_bead` and `list_all_beads` share
+    // `bead_read_sql` and `bead_from_row`, so the single-record render is
+    // field-identical to the whole-file render — pinned by
+    // `upsert_matches_full_refresh_field_for_field` rather than assumed.
+    let Some(bead) = store.get_bead(bead_id, repo_name).await? else {
+        // Nothing to project. A write that leaves no readable bead is not this
+        // function's problem to diagnose, but it must not blank the record.
+        return Ok(false);
+    };
+    let rendered = live_contract_value(store, &bead).await?;
+
+    let mut records = BTreeMap::new();
+    for record in published {
+        let id = record
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("published bead JSONL record is missing string id"))?;
+        anyhow::ensure!(
+            records.insert(id.to_string(), record.clone()).is_none(),
+            "published bead JSONL contains duplicate id {id}"
+        );
+    }
+    records.insert(bead_id.to_string(), rendered);
+    let next = serialize_records(records)?;
+
+    let existing = std::fs::read_to_string(&jsonl).unwrap_or_default();
+    if existing == next {
+        return Ok(false);
+    }
+    atomic_replace(&jsonl, &next)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod jsonl_sync_tests {
     use super::*;

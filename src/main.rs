@@ -79,6 +79,7 @@ mod personal;
 mod pipeline;
 mod plugin;
 mod pool;
+mod publish;
 mod queue;
 mod reconcile;
 mod repo_cache;
@@ -1296,7 +1297,16 @@ async fn bootstrap_git_tracked_beads(
         repo: vec![repo_entry.clone()],
         ..Default::default()
     };
-    let closed = run_close_merged_local_with_config(&cfg, Some(&repo_entry.name), false).await?;
+    // Suppress: these closures are re-derived from trunk history the projection
+    // already reflects; republishing them would rewrite the shared file in every
+    // consumer's tree on first init (tests/init_jsonl_reconciliation.rs).
+    let closed = run_close_merged_local_with_config(
+        &cfg,
+        Some(&repo_entry.name),
+        false,
+        Publication::Suppress,
+    )
+    .await?;
 
     Ok(InitSyncSummary {
         restored: restored.restored,
@@ -4584,15 +4594,34 @@ pub async fn run_close_merged_local(
     dry_run: bool,
 ) -> Result<CloseMergedSummary> {
     let cfg = config::load_merged(&config::resolve_config_path())?;
-    run_close_merged_local_with_config(&cfg, repo_filter, dry_run).await
+    run_close_merged_local_with_config(&cfg, repo_filter, dry_run, Publication::Publish).await
 }
 
 /// Inner form taking an explicit Config (mirrors [`run_close_merged_with_config`]
 /// so tests can pass a hand-built Config).
+/// Whether a merge sweep may write its closures back to the git-tracked
+/// projection.
+///
+/// A bare `bool` here would read as `(&cfg, name, false, false)` at the call
+/// site — two unrelated switches, indistinguishable. This one is load-bearing
+/// enough to name: getting it wrong makes every fresh clone rewrite the shared
+/// `beads.jsonl` on first `init`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Publication {
+    /// Normal operation, including the post-merge hook: a closure derived from
+    /// a merge that just landed SHOULD reach the tracked file.
+    Publish,
+    /// Bootstrap replay. The closures are re-derived from history the
+    /// projection already reflects, so publishing them would echo local
+    /// inference back into a shared file.
+    Suppress,
+}
+
 pub async fn run_close_merged_local_with_config(
     cfg: &config::Config,
     repo_filter: Option<&str>,
     dry_run: bool,
+    publication: Publication,
 ) -> Result<CloseMergedSummary> {
     let mut summary = CloseMergedSummary::default();
     let repos: Vec<&config::RepoConfig> = cfg
@@ -4625,7 +4654,11 @@ pub async fn run_close_merged_local_with_config(
             continue;
         }
 
-        let store = match bead_sqlite::connect_bead_store(&beads_dir).await {
+        let opened = match publication {
+            Publication::Publish => bead_sqlite::connect_bead_store(&beads_dir).await,
+            Publication::Suppress => bead_sqlite::connect_bead_store_unpublished(&beads_dir).await,
+        };
+        let store = match opened {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("close-merged --local: skipping {}: {e}", repo.name);
@@ -4848,7 +4881,7 @@ mod tests {
             ..Default::default()
         };
 
-        let summary = run_close_merged_local_with_config(&cfg, None, false)
+        let summary = run_close_merged_local_with_config(&cfg, None, false, Publication::Publish)
             .await
             .unwrap();
 
@@ -4879,7 +4912,7 @@ mod tests {
         // Now close the child and re-run: the parent is eligible and closes.
         store.close_bead("testrepo-child").await.unwrap();
         drop(store);
-        let summary2 = run_close_merged_local_with_config(&cfg, None, false)
+        let summary2 = run_close_merged_local_with_config(&cfg, None, false, Publication::Publish)
             .await
             .unwrap();
         assert_eq!(
@@ -4946,7 +4979,7 @@ mod tests {
             ..Default::default()
         };
 
-        let summary = run_close_merged_local_with_config(&cfg, None, false)
+        let summary = run_close_merged_local_with_config(&cfg, None, false, Publication::Publish)
             .await
             .unwrap();
 
