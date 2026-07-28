@@ -70,6 +70,11 @@ mod notes;
 mod observation;
 mod openai_compat;
 mod orchestrate;
+// Test-only: a declared map of the CLI/MCP surfaces plus the ratchet that
+// checks it against what the binary actually exposes. No runtime callers by
+// design — it describes the surface, it does not serve it.
+#[cfg(test)]
+mod parity;
 mod personal;
 mod pipeline;
 mod plugin;

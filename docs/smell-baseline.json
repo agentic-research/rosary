@@ -94,7 +94,7 @@
     {
       "rule_id": "dead_code",
       "source_id": "src/leyline_net_vectors.rs",
-      "count": 5
+      "count": 4
     },
     {
       "rule_id": "dead_code",
@@ -150,6 +150,11 @@
       "rule_id": "dead_code",
       "source_id": "src/orchestrate/transcript.rs",
       "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/parity/tests.rs",
+      "count": 8
     },
     {
       "rule_id": "dead_code",
@@ -593,6 +598,11 @@
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/leyline_net_vectors.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/linear.rs",
       "count": 5
     },
@@ -720,6 +730,11 @@
       "rule_id": "duplicate_definitions",
       "source_id": "src/orchestrate/transcript.rs",
       "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/parity/mod.rs",
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -978,13 +993,23 @@
     },
     {
       "rule_id": "fan_out_skew",
+      "source_id": "build.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "crates/bdr/src/parse.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
       "source_id": "crates/bdr/src/thread.rs",
       "count": 1
     },
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/acp.rs",
-      "count": 3
+      "count": 4
     },
     {
       "rule_id": "fan_out_skew",
@@ -1039,12 +1064,12 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/dispatch/codex_transport.rs",
-      "count": 2
+      "count": 3
     },
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/dispatch/mod.rs",
-      "count": 4
+      "count": 5
     },
     {
       "rule_id": "fan_out_skew",
@@ -1214,7 +1239,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/reconcile/vcs.rs",
-      "count": 1
+      "count": 2
     },
     {
       "rule_id": "fan_out_skew",
@@ -1229,6 +1254,11 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/repo_cache.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/restore/merge.rs",
       "count": 1
     },
     {
@@ -1249,12 +1279,12 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/serve/handlers/input_validation_tests.rs",
-      "count": 3
+      "count": 4
     },
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/serve/handlers/mod.rs",
-      "count": 19
+      "count": 20
     },
     {
       "rule_id": "fan_out_skew",
@@ -1269,12 +1299,17 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/serve/review.rs",
-      "count": 1
+      "count": 2
     },
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/serve/webhook.rs",
       "count": 4
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/sprites.rs",
+      "count": 1
     },
     {
       "rule_id": "fan_out_skew",
@@ -1304,7 +1339,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/workspace/sweep.rs",
-      "count": 3
+      "count": 4
     },
     {
       "rule_id": "fan_out_skew",
@@ -1315,6 +1350,11 @@
       "rule_id": "fan_out_skew",
       "source_id": "tests/close_jsonl_sync.rs",
       "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "tests/create_jsonl_sync.rs",
+      "count": 2
     },
     {
       "rule_id": "fan_out_skew",
