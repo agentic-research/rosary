@@ -92,14 +92,32 @@ in the commit message. It ratchets per-file line coverage against
 `docs/coverage-baseline.json`, and the Taskfile describes it as *"Local-first:
 run before/after a decomposition to prove no regression"* — this is that.
 
-Caveat, stated because it changes how much the guard is worth: `task coverage`
-is **not** part of `task check` and is **not** CI-enforced (`rosary-ae05a5`), and
-it exits 0 when `cargo-llvm-cov` is absent. It is a discipline, not a gate. If a
-substitution drops coverage and nobody ran it, nothing will say so.
+**Correction (2026-07-28), because the first version of this section was wrong
+in a way that mattered.** It said coverage was "not CI-enforced". It *is* wired
+into CI on every PR — and it has been **green while enforcing nothing** since the
+day it was built.
 
-Line coverage is also a floor, not a proof: a property can execute the same
-lines while asserting strictly more. It catches the accident (a deleted example
-whose branch nothing else reaches), not the subtlety.
+The mechanism, verified against the workflow logs: `coverage.yml` regenerates a
+CI-native baseline on push-to-main and `git push`es it at main; the `main` branch
+ruleset blocks that push; the failure was swallowed by `git push || echo
+"::warning::…"` so the job reported success; the committed baseline therefore
+remains the dev-machine one from #345, with no `env` key; and
+`scripts/coverage-ratchet.py` skips enforcement whenever `CI` is set and the
+baseline is not `env: ci`. Every "coverage ratchet ✓" on #430–#435 was that skip.
+
+This is the same shape as the permission rail mutation testing exposed earlier:
+a gate whose only reachable outcome is "pass". A green tick that means nothing is
+worse than no tick, because it is trusted.
+
+**Substitution work must not start until this is armed** (`rosary-f78208`) —
+deleting example tests is safe only if something actually proves coverage did not
+drop. `task coverage` also still exits 0 when `cargo-llvm-cov` is absent locally.
+
+Even armed, line coverage is a floor, not a proof.
+
+A property can execute the same lines while asserting strictly more, so coverage
+catches the accident — a deleted example whose branch nothing else reaches — not
+the subtlety.
 
 ## Current coverage, measured
 
