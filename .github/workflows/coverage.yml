@@ -14,7 +14,15 @@ on:
   pull_request:
 
 permissions:
-  contents: write # the main-push step commits the regenerated baseline
+  contents: write # push the baseline branch
+  # Open the baseline PR. Without this the job pushes the branch fine and then
+  # dies on `gh pr create` with "Resource not accessible by integration" — which
+  # is what happened on the first run after #436.
+  #
+  # If it STILL fails after this, the remaining blocker is the org/repo setting
+  # "Allow GitHub Actions to create and approve pull requests", which no
+  # workflow permission can substitute for and which needs an admin.
+  pull-requests: write
 
 jobs:
   coverage:
