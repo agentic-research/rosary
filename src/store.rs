@@ -377,19 +377,13 @@ pub trait BeadStore: Send + Sync {
         user_id: Option<&str>,
     ) -> Result<Vec<crate::bead::Bead>>;
     async fn get_bead(&self, id: &str, repo_name: &str) -> Result<Option<crate::bead::Bead>>;
-    /// Convenience create. **Provided, not overridable in practice** — this is
-    /// ADR-0021 slice 2's "one writer" made structural.
+    /// Convenience create — ADR-0021 slice 2's "one writer", made structural.
     ///
-    /// It used to be a required method, so every backend wrote its own INSERT:
-    /// SQLite's delegated to `create_bead_full`, Dolt's called a separate
-    /// five-field path in the Dolt client. Two statements over one table is
-    /// exactly how a column set drifts, and `rosary-4887d0` (acceptance_criteria
-    /// silently dropped on one create surface) is what that costs.
-    ///
-    /// As a default method projecting onto `create_bead_full`, a convenience
-    /// form has no fields of its own and therefore cannot omit any. A backend
-    /// that wants different behaviour has to override it deliberately and
-    /// visibly, rather than by being written separately in the first place.
+    /// Formerly required, so each backend wrote its own INSERT (Dolt's called a
+    /// separate five-field path). Two statements over one table is how a column
+    /// set drifts; `rosary-4887d0` is what that costs. As a default projecting
+    /// onto `create_bead_full`, a convenience form has no fields of its own and
+    /// cannot omit any.
     async fn create_bead(
         &self,
         id: &str,
@@ -590,7 +584,7 @@ pub trait BackendExport: BackendStore {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::*;
     use std::sync::Mutex;
 
