@@ -1,0 +1,262 @@
+# Property-test map
+
+**Status:** working checklist. Measured 2026-07-28.
+**Epic:** `rosary-c1f669` (close the re-declaration class) — this map is its sibling: that epic removes duplicate *declarations*, this one removes untested *invariants*.
+
+## Why this exists
+
+`#434` added one property test (`import(export(b)) == b`) and it found a second
+bug on its first run. That is not luck: every field-loss defect in this repo was
+written by someone who had example-based tests, because an example only covers
+the cases its author thought of — the same enumeration that went wrong.
+
+This map lists where that technique pays next, ordered by **value to core bead
+and task management first**, with integrations deliberately last.
+
+## What makes a good target
+
+A property is worth writing when the module claims a *law* rather than a
+behaviour. Five shapes cover almost everything here:
+
+| shape | law | where |
+|---|---|---|
+| round-trip | `decode(encode(x)) == x` | export/import, migrate, backup, diff |
+| idempotence | `f(f(x)) == f(x)` | import, close-merged, init, publish, backfill |
+| order-independence | `fold(shuffle(xs)) == fold(xs)` | the observation lattice |
+| algebraic laws | associativity, commutativity, idempotence | the four CRDT algebras |
+| invariant preservation | no operation sequence reaches a bad state | state machine, dependency graph |
+
+**The rule that generalises** (from `src/parity`): derive the check from the
+*authority*, never from a copy. A property that enumerates its own cases is an
+example test wearing a costume.
+
+## Substitute, don't accumulate
+
+The default is **replacement**, not addition. Where a property subsumes a set of
+examples, the examples go — keeping both is duplication, and duplicated
+assertions rot in the usual way: one gets updated, the other quietly stops
+meaning anything.
+
+### Substitute when the example samples a law
+
+If a test name generalises — `idempotent`, `reorder_invariant`, `associative`,
+`add_order_invariance` — it is one sampled point of a universally-quantified
+claim. One property covers every point, including the ones nobody wrote.
+
+### Keep when it is not a law
+
+Four cases, and they are not rare:
+
+1. **It pins an incident.** A test naming a bead preserves *why we care*, which
+   a property cannot express. `derived_from_is_lost_on_round_trip` (#434) is the
+   pattern: the property proves the law, the example carries the history.
+2. **It specifies a chosen answer at a boundary.** `chain_max_empty_returns_dispatched`
+   asserts a *decision* — that empty means `Dispatched` — not a law. A property
+   would have to encode the same constant, so the example IS the specification.
+3. **It is an error or negative path.** `*_type_mismatch_errors` checks that
+   invalid input is rejected. Generating "arbitrary invalid" is awkward and
+   usually degenerate; the example is clearer and stronger.
+4. **The generator will not reliably reach it.** Rare shapes deserve a named
+   example even when a property nominally covers them.
+
+### Worked classification: the four algebras
+
+Of 27 existing algebra tests, **13 are law-sampling** and collapse into roughly
+four property blocks; the other 14 stay.
+
+| substitute | keep |
+|---|---|
+| `chain_max_idempotent` | `chain_max_type_mismatch_errors` (error path) |
+| `chain_max_associative_under_reorder` | `chain_max_field_name` (registry wiring) |
+| `chain_max_monotone` | `chain_max_empty_returns_dispatched` (spec decision) |
+| `idempotent_under_dedup` | `chain_max_all_unranked_returns_dispatched` (spec) |
+| `reorder_invariant` | `chain_max_unranked_ignored` (semantics) |
+| `top_absorbs_under_more_distinct_values` | `empty_input_is_empty_lattice` (spec) |
+| `lww_reorder_invariant` | `all_agree_single` (spec) |
+| `lww_picks_latest` | `distinct_values_become_top_with_witnesses` (spec) |
+| `lww_tiebreak_total` | `lww_unset_explicit` (semantics) |
+| `lww_tiebreak_same_source_same_ts_is_total` | `lww_type_mismatch_errors`, `lww_field_name` |
+| `or_set_add_order_invariance` | `or_set_empty_is_empty_array` (spec) |
+| `or_set_unique_tags` | `or_set_preserves_provenance` (semantics) |
+| | `or_set_type_mismatch_errors`, `or_set_field_name` |
+
+Note the two LWW tie-break tests: they are the *strongest* substitution case on
+the list. A total tie-break is exactly the kind of claim where the two orderings
+someone wrote pass and a third fails — which is how a non-commutative LWW would
+survive review.
+
+### The guard
+
+Run `task coverage` **before and after** each substitution and put both numbers
+in the commit message. It ratchets per-file line coverage against
+`docs/coverage-baseline.json`, and the Taskfile describes it as *"Local-first:
+run before/after a decomposition to prove no regression"* — this is that.
+
+Caveat, stated because it changes how much the guard is worth: `task coverage`
+is **not** part of `task check` and is **not** CI-enforced (`rosary-ae05a5`), and
+it exits 0 when `cargo-llvm-cov` is absent. It is a discipline, not a gate. If a
+substitution drops coverage and nobody ran it, nothing will say so.
+
+Line coverage is also a floor, not a proof: a property can execute the same
+lines while asserting strictly more. It catches the accident (a deleted example
+whose branch nothing else reaches), not the subtlety.
+
+## Current coverage, measured
+
+```
+src/bead.rs              1492 loc   43 tests
+src/epic.rs              1063 loc   36 tests
+src/pipeline.rs           568 loc   24 tests
+src/bead_migrate.rs       706 loc   13 tests
+src/bead_ops.rs           434 loc   10 tests
+src/bead_diff.rs          425 loc    9 tests
+src/import.rs             493 loc    6 tests
+src/restore/merge.rs      252 loc   14 tests (in merge/tests.rs)
+src/bead_sqlite/mod.rs   1422 loc    0 tests
+```
+
+Density is not the problem. **Kind** is: all of the above are example-based.
+
+---
+
+## Tier 1 — core bead + task correctness
+
+Do these first. Each guards state that, if wrong, silently corrupts work
+tracking rather than failing loudly.
+
+### 1.1 CRDT algebra laws — the four per-field algebras ⬅ **start here**
+
+`src/observation/algebra_{chain,flat,lww,orset}.rs`
+
+The lattice's convergence guarantee rests on each per-field algebra being
+associative, commutative and idempotent. Measured law coverage today:
+
+| algebra | idempotent | commutative | associative |
+|---|---|---|---|
+| chain-max | 1 | **0** | 1 |
+| flat-lattice | 1 | **0** | 2 |
+| LWW-register | **0** | **0** | 1 |
+| OR-set | **0** | **0** | 1 |
+
+**Zero commutativity tests exist for any algebra.** Yet
+`src/observation/integration_tests.rs:650` justifies convergence-under-partition
+with the comment *"Per-field algebras are commutative + idempotent"* — a claim
+asserted in prose and tested nowhere.
+
+This matters now, not eventually: ADR-0010 R4b (`rosary-a66b3a`) promotes the
+lattice toward being the **source of truth for bead status**. Status is the core
+of task management. A non-commutative merge means two agents observing the same
+bead in different orders disagree about whether it is done — and `rosary-e0e19f`
+already showed what a wrong terminal status costs when it cannot be undone.
+
+Property: for arbitrary observation sets, `merge` is ACI, and the fold is
+invariant under permutation.
+
+### 1.2 Fold order-independence
+
+`src/observation/fold.rs`, `src/observation/tree_fold.rs`
+
+`convergence_under_partition` exists as one example. The property is that ANY
+partition and ANY interleaving of the same observation set folds to the same
+result — including the cross-source flat-lattice step for `Status`, and the
+Decade ⊃ Thread ⊃ Bead rollup, where a child ordering must not change the
+parent's derived state.
+
+### 1.3 3-way JSONL merge driver
+
+`src/restore/merge.rs` (14 example tests)
+
+This is a **git merge driver** (`rosary-f9516f`) — the class of code where a bug
+silently eats committed work rather than erroring. Laws it should satisfy for
+arbitrary bead sets:
+
+- `merge(O, A, A) == A` and `merge(O, O, B) == B`
+- no record present in any of O/A/B is ever absent from the output
+- output is id-sorted (the diff-stability contract in `import.rs`)
+- conflict is raised **iff** both sides changed the same bead id differently
+- never silently picks a winner
+
+### 1.4 Bead state machine
+
+`src/bead.rs` (`BeadState`, `valid_transitions`, `can_transition_to`)
+
+`BeadState::Done => &[]` makes Done absolutely terminal — which is precisely how
+`rosary-e0e19f` became unrecoverable, needing a raw `UPDATE` on `beads.db`.
+
+Property: over arbitrary transition sequences, no state is reachable that has no
+path to a terminal state, and every state a *correction* might need to reach is
+reachable by *some* legitimate operation. This is as much a design audit as a
+test — it converts "Done is a trap" from an incident into a stated, checked fact.
+
+### 1.5 Create-path field fidelity
+
+`src/bead_ops.rs`, `src/bead_sqlite/mod.rs` — tracked as `rosary-c7126b`
+
+`#434` deliberately measures only the export/import boundary, comparing what the
+*source store holds* against what came back. The other half — does
+`create → read` preserve everything handed in? — is untested, and
+`rosary-4887d0` (acceptance_criteria dropped on create) is the proof it can
+fail. Note `src/bead_sqlite/mod.rs` has **0 in-file tests** at 1422 loc.
+
+### 1.6 Migration fidelity
+
+`src/bead_migrate.rs` — relates to `rosary-3a0e19` (closed)
+
+`verify_migration` compares field-by-field via a hand-written `same!` list —
+the sixth copy of the canonical field set. Property: for an arbitrary bead,
+Dolt→SQLite migration preserves every field. Becomes near-free once the
+extension registry (`rosary-c47ca6`) lands, since the comparison derives.
+
+---
+
+## Tier 2 — cross-repo semantics
+
+The second thing that "sucks to deal with normally", per the goal.
+
+### 2.1 Dependency-graph acyclicity
+
+`src/store.rs:804` rejects an edge that would create a **same-repo** cycle;
+`same_repo_cycle_rejected` tests one example. Property: for any sequence of
+`add_dependency` calls, the accepted subset contains no same-repo cycle — and
+ADR-0009's stratified rule for *cross*-repo edges holds too, which no test
+currently exercises at all.
+
+### 2.2 Semantic dedup + file-overlap detection
+
+`src/epic.rs` — `is_dominated_by:370`, `has_file_overlap:419`
+
+These gate dispatch: a false negative on `has_file_overlap` means two agents
+edit the same file concurrently, which is the failure mode behind the
+worktree data-loss incident. Properties: overlap detection is symmetric and
+never misses a genuine shared path; domination is not vacuously true for
+distinct beads.
+
+### 2.3 Diff completeness
+
+`src/bead_diff.rs` — property: `diff(a, a)` is empty, and a change to ANY single
+canonical field is reported. Field-generic already, so this mainly guards
+against the report silently narrowing.
+
+---
+
+## Tier 3 — integrations (deliberately later)
+
+`src/linear.rs`, `src/linear_tracker.rs`, `src/github_mirror.rs`,
+`src/serve/github_webhook.rs`, `src/sync.rs`.
+
+These matter, but they are *mirrors* of the core: if a bead's state is right and
+the sync mapping is wrong, the bead is still right. If the core is wrong,
+everything downstream is confidently wrong. Revisit after Tier 1.
+
+---
+
+## Sequencing
+
+1. **1.1 algebra laws** — highest value, smallest surface, and the lattice is on
+   the path to owning status
+2. **1.3 merge driver** — a git merge driver with no laws tested is the biggest
+   silent-corruption risk on the list
+3. **1.4 state machine** — cheap, and it retires a live incident class
+4. **1.2 fold order-independence** — follows naturally from 1.1
+5. **1.5 / 1.6** — largely fall out of `rosary-c47ca6` (extension registry)
+6. Tier 2, then Tier 3
