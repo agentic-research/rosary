@@ -69,6 +69,16 @@ impl FieldRegistry {
         Self { by_name }
     }
 
+    /// Every field with a registered algebra.
+    ///
+    /// Exists so the law harness (`src/observation/laws.rs`) can enumerate the
+    /// registry instead of hand-listing algebras. A hand-written list would be
+    /// a second copy of this map and would rot the first time an algebra was
+    /// added — registering one here is now enough to have its laws checked.
+    pub fn fields(&self) -> impl Iterator<Item = &FieldName> {
+        self.by_name.keys()
+    }
+
     /// Look up the algebra for a field. Returns `None` for fields
     /// that don't have a registered primitive algebra (e.g.
     /// `FieldName::Status`, which is a derivation, not a primitive).

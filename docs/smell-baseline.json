@@ -128,6 +128,11 @@
     },
     {
       "rule_id": "dead_code",
+      "source_id": "src/observation/laws.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "dead_code",
       "source_id": "src/observation/log_sqlite.rs",
       "count": 1
     },
@@ -654,7 +659,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/observation/algebra_lww.rs",
-      "count": 4
+      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
@@ -679,7 +684,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/observation/integration_tests.rs",
-      "count": 15
+      "count": 14
     },
     {
       "rule_id": "duplicate_definitions",
@@ -1194,6 +1199,11 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/observation/integration_tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/observation/laws.rs",
       "count": 1
     },
     {

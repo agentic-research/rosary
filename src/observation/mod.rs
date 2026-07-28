@@ -47,6 +47,8 @@ pub mod algebra_orset;
 pub mod audit;
 pub mod backfill;
 pub mod fold;
+#[cfg(test)]
+mod laws;
 pub mod log;
 pub mod log_sqlite;
 pub mod quarantine;

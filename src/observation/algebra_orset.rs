@@ -135,19 +135,6 @@ mod tests {
         assert!(sources.contains(&"linear"));
     }
 
-    /// ADR-0010 invariant 6: or_set_add_remove_commute. Phase 1 is
-    /// add-only (no remove API) so this test verifies the relaxation:
-    /// two adds in any order produce the same set.
-    #[test]
-    fn or_set_add_order_invariance() {
-        let alg = OrSetAlgebra::new(FieldName::Comment);
-        let a = comment("first", "src", "evt-1");
-        let b = comment("second", "src", "evt-2");
-        let r1 = alg.fold(&[&a, &b]).unwrap();
-        let r2 = alg.fold(&[&b, &a]).unwrap();
-        assert_eq!(r1, r2, "add order must not affect output");
-    }
-
     #[test]
     fn or_set_empty_is_empty_array() {
         let alg = OrSetAlgebra::new(FieldName::Comment);
