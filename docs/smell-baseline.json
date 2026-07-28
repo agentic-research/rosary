@@ -59,7 +59,7 @@
     {
       "rule_id": "dead_code",
       "source_id": "src/contract_roundtrip.rs",
-      "count": 3
+      "count": 4
     },
     {
       "rule_id": "dead_code",
@@ -129,7 +129,7 @@
     {
       "rule_id": "dead_code",
       "source_id": "src/observation/laws.rs",
-      "count": 3
+      "count": 4
     },
     {
       "rule_id": "dead_code",
@@ -773,6 +773,11 @@
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/proptest_support.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/publish/mod.rs",
       "count": 1
     },
@@ -1204,7 +1209,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/observation/laws.rs",
-      "count": 1
+      "count": 2
     },
     {
       "rule_id": "fan_out_skew",

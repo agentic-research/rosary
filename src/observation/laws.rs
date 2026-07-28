@@ -148,109 +148,133 @@ fn registered_fields() -> Vec<FieldName> {
     super::registry::global().fields().cloned().collect()
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 96, ..ProptestConfig::default() })]
+/// THE law the trait doc states as a MUST, and the one nothing tested.
+#[test]
+fn fold_is_invariant_under_permutation() {
+    crate::proptest_support::check(
+        96,
+        (
+            0usize..32,
+            prop::collection::vec((0u8..9, 0usize..4, 0i64..6), 0..7),
+            0u64..10_000,
+        ),
+        |(idx, specs, seed)| {
+            let fields = registered_fields();
+            let field = fields[idx % fields.len()].clone();
+            let reg = super::registry::global();
+            let alg = reg.get(&field).expect("registered");
+            let batch = batch_from(&field, &specs);
 
-    /// THE law the trait doc states as a MUST, and the one nothing tested.
-    #[test]
-    fn fold_is_invariant_under_permutation(
-        idx in 0usize..32,
-        specs in prop::collection::vec((0u8..9, 0usize..4, 0i64..6), 0..7),
-        seed in 0u64..10_000,
-    ) {
-        let fields = registered_fields();
-        let field = fields[idx % fields.len()].clone();
-        let reg = super::registry::global();
-        let alg = reg.get(&field).expect("registered");
-        let batch = batch_from(&field, &specs);
+            // Deterministic shuffle driven by a proptest-owned seed, so a failure
+            // replays exactly rather than depending on ambient randomness.
+            let mut shuffled = batch.clone();
+            let n = shuffled.len();
+            for i in (1..n).rev() {
+                let j = ((seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(i as u64))
+                    >> 33) as usize
+                    % (i + 1);
+                shuffled.swap(i, j);
+            }
 
-        // Deterministic shuffle driven by a proptest-owned seed, so a failure
-        // replays exactly rather than depending on ambient randomness.
-        let mut shuffled = batch.clone();
-        let n = shuffled.len();
-        for i in (1..n).rev() {
-            let j = ((seed.wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(i as u64)) >> 33) as usize % (i + 1);
-            shuffled.swap(i, j);
-        }
+            match (fold_of(alg, &batch), fold_of(alg, &shuffled)) {
+                (Ok(x), Ok(y)) => prop_assert_eq!(
+                    x,
+                    y,
+                    "field {:?}: fold changed under reordering — the trait doc says MUST NOT",
+                    field
+                ),
+                (Err(_), Err(_)) => {}
+                (x, y) => prop_assert!(
+                    false,
+                    "field {:?}: fold succeeded on one ordering and failed on the other ({} vs {})",
+                    field,
+                    x.is_ok(),
+                    y.is_ok()
+                ),
+            }
+            Ok(())
+        },
+    );
+}
 
-        match (fold_of(alg, &batch), fold_of(alg, &shuffled)) {
-            (Ok(x), Ok(y)) => prop_assert_eq!(
-                x, y,
-                "field {:?}: fold changed under reordering — the trait doc says MUST NOT",
-                field
-            ),
-            (Err(_), Err(_)) => {}
-            (x, y) => prop_assert!(
-                false,
-                "field {:?}: fold succeeded on one ordering and failed on the other ({} vs {})",
-                field, x.is_ok(), y.is_ok()
-            ),
-        }
-    }
+/// Invariant 8 (`dedup_before_fold`) at the boundary that owns it.
+///
+/// Inserting the same observation twice must leave the folded view
+/// unchanged. This is the property webhook redelivery and `lattice
+/// backfill` re-runs actually depend on, and it holds even though the
+/// OR-set algebra underneath is not itself idempotent.
+#[test]
+fn duplicates_do_not_survive_log_then_fold() {
+    crate::proptest_support::check(
+        96,
+        (
+            0usize..32,
+            prop::collection::vec((0u8..9, 0usize..4, 0i64..6), 1..7),
+            0usize..8,
+        ),
+        |(idx, specs, dup)| {
+            let fields = registered_fields();
+            let field = fields[idx % fields.len()].clone();
+            let batch = batch_from(&field, &specs);
+            prop_assume!(!batch.is_empty());
 
-    /// Invariant 8 (`dedup_before_fold`) at the boundary that owns it.
-    ///
-    /// Inserting the same observation twice must leave the folded view
-    /// unchanged. This is the property webhook redelivery and `lattice
-    /// backfill` re-runs actually depend on, and it holds even though the
-    /// OR-set algebra underneath is not itself idempotent.
-    #[test]
-    fn duplicates_do_not_survive_log_then_fold(
-        idx in 0usize..32,
-        specs in prop::collection::vec((0u8..9, 0usize..4, 0i64..6), 1..7),
-        dup in 0usize..8,
-    ) {
-        let fields = registered_fields();
-        let field = fields[idx % fields.len()].clone();
-        let batch = batch_from(&field, &specs);
-        prop_assume!(!batch.is_empty());
-
-        let mut plain = super::log::ObservationLog::new();
-        for o in &batch {
-            plain.insert(o.clone());
-        }
-        let mut with_dup = super::log::ObservationLog::new();
-        for o in &batch {
-            with_dup.insert(o.clone());
-        }
-        // The duplicate is byte-identical, so `insert` must report it as a
-        // no-op and the fold must not move.
-        let accepted = with_dup.insert(batch[dup % batch.len()].clone());
-        prop_assert!(
-            !accepted,
-            "field {:?}: log accepted a byte-identical duplicate — invariant 8 is broken \
+            let mut plain = super::log::ObservationLog::new();
+            for o in &batch {
+                plain.insert(o.clone());
+            }
+            let mut with_dup = super::log::ObservationLog::new();
+            for o in &batch {
+                with_dup.insert(o.clone());
+            }
+            // The duplicate is byte-identical, so `insert` must report it as a
+            // no-op and the fold must not move.
+            let accepted = with_dup.insert(batch[dup % batch.len()].clone());
+            prop_assert!(
+                !accepted,
+                "field {:?}: log accepted a byte-identical duplicate — invariant 8 is broken \
              at its own boundary, and the OR-set will double-count",
-            field
-        );
-
-        let a = super::fold::fold(&plain);
-        let b = super::fold::fold(&with_dup);
-        if let (Ok(x), Ok(y)) = (a, b) {
-            prop_assert_eq!(
-                x, y,
-                "field {:?}: a replayed observation changed the derived view",
                 field
             );
-        }
-    }
 
-    /// Determinism — folding the same slice twice agrees. Catches accidental
-    /// dependence on the iteration order of a hash container.
-    #[test]
-    fn fold_is_deterministic(
-        idx in 0usize..32,
-        specs in prop::collection::vec((0u8..9, 0usize..4, 0i64..6), 0..7),
-    ) {
-        let fields = registered_fields();
-        let field = fields[idx % fields.len()].clone();
-        let reg = super::registry::global();
-        let alg = reg.get(&field).expect("registered");
-        let batch = batch_from(&field, &specs);
-        if let (Ok(x), Ok(y)) = (fold_of(alg, &batch), fold_of(alg, &batch)) {
-            prop_assert_eq!(x, y, "field {:?}: fold is not deterministic", field);
-        }
-    }
+            let a = super::fold::fold(&plain);
+            let b = super::fold::fold(&with_dup);
+            if let (Ok(x), Ok(y)) = (a, b) {
+                prop_assert_eq!(
+                    x,
+                    y,
+                    "field {:?}: a replayed observation changed the derived view",
+                    field
+                );
+            }
+            Ok(())
+        },
+    );
+}
+
+/// Determinism — folding the same slice twice agrees. Catches accidental
+/// dependence on the iteration order of a hash container.
+#[test]
+fn fold_is_deterministic() {
+    crate::proptest_support::check(
+        96,
+        (
+            0usize..32,
+            prop::collection::vec((0u8..9, 0usize..4, 0i64..6), 0..7),
+        ),
+        |(idx, specs)| {
+            let fields = registered_fields();
+            let field = fields[idx % fields.len()].clone();
+            let reg = super::registry::global();
+            let alg = reg.get(&field).expect("registered");
+            let batch = batch_from(&field, &specs);
+            if let (Ok(x), Ok(y)) = (fold_of(alg, &batch), fold_of(alg, &batch)) {
+                prop_assert_eq!(x, y, "field {:?}: fold is not deterministic", field);
+            }
+            Ok(())
+        },
+    );
 }
 
 /// The harness must actually be pointed at something. A registry that returned
