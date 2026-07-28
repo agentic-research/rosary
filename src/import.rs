@@ -91,16 +91,10 @@ pub fn bead_to_contract_value(
         "acceptance_criteria": bead.acceptance_criteria,
     });
 
-    // Extension fields are spliced in by WALKING THE REGISTRY, never listed
-    // here. Hand-listing them is what dropped `derived_from` from every export
-    // while `files`/`test_files` survived (rosary-79393f): two of the three keys
-    // in the `notes` bag were remembered and one was not. Adding a field to
-    // `bead_ext::EXTENSIONS` is now the only edit required.
-    let serialized = serde_json::to_value(bead).unwrap_or(Value::Null);
-    if let Value::Object(map) = &mut contract {
-        for (k, v) in crate::bead_ext::project(&serialized, crate::bead_ext::EXTENSIONS) {
-            map.insert(k, v);
-        }
+    // Extensions come from the REGISTRY, never a list here (rosary-79393f).
+    let full = serde_json::to_value(bead).unwrap_or(Value::Null);
+    if let Value::Object(m) = &mut contract {
+        m.extend(crate::bead_ext::project(&full, crate::bead_ext::EXTENSIONS));
     }
     contract
 }
