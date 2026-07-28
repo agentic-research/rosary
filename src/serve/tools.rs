@@ -110,6 +110,20 @@ fn hand_written_tool_definitions() -> Vec<Value> {
                     "required": ["id"]                }
             },
             {
+                "name": "rsry_bead_correct",
+                "description": "Correct a bead's RECORDED status when it was set wrongly — not a workflow transition. Use this when a bead is marked done/closed but its acceptance criteria were never met (e.g. an auto-close fired on a commit reference). Bypasses the state machine, which is why `reason` is mandatory and recorded as a comment. For normal progress use rsry_bead_update or rsry_bead_close. Pass either `scope` or `repo_path`.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "scope": { "type": "string", "description": "Canonical scope: 'repo:<name>'. Takes priority over repo_path." },
+                        "repo_path": { "type": "string", "description": "Legacy: path to repo with .beads/ directory" },
+                        "id": { "type": "string", "description": "Bead ID" },
+                        "status": { "type": "string", "description": "The status the bead should have had, e.g. 'open'" },
+                        "reason": { "type": "string", "description": "Why the recorded status was wrong. Required, minimum 10 characters — this overrides the state machine, so the audit trail is all that explains it." }
+                    },
+                    "required": ["id", "status", "reason"]                }
+            },
+            {
                 "name": "rsry_bead_comment",
                 "description": "Add a progress comment to a bead. Use throughout your work to log what you've tried, found, and what remains. Other agents in the pipeline and human reviewers read these comments for context. Pass either `scope` or `repo_path`.",
                 "inputSchema": {

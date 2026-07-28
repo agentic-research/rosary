@@ -25,6 +25,7 @@ mod backend;
 mod bdr_enrich;
 mod bead;
 mod bead_backup;
+mod bead_correct;
 mod bead_diff;
 mod bead_dolt;
 mod bead_ext;
@@ -764,6 +765,23 @@ enum BeadAction {
     Reopen {
         /// Bead ID
         id: String,
+    },
+    /// Correct a bead's recorded status — NOT a transition (rosary-e0e19f).
+    ///
+    /// `reopen` obeys the state machine and therefore refuses `done`, which left
+    /// a wrongly-closed bead uncorrectable from any surface. This asserts the
+    /// recorded state was never true, so it bypasses the transition table and
+    /// requires a reason, recorded as a comment.
+    Correct {
+        /// Bead ID
+        id: String,
+        /// Target status (e.g. `open`)
+        #[arg(long)]
+        to: String,
+        /// Why the recorded status was wrong. Required — this overrides the
+        /// state machine, so the audit trail is all that explains it.
+        #[arg(long)]
+        reason: String,
     },
     /// Compose the agent-native review panel for a bead — bead summary +
     /// comments + workspace state + sliced change-set + evidence rollup —
@@ -2450,6 +2468,10 @@ async fn main() -> Result<()> {
                 // Handled pre-connect (it needs no store at all) — see the
                 // early return at the top of this arm.
                 BeadAction::MergeJsonl { .. } => unreachable!("handled pre-connect"),
+                BeadAction::Correct { id, to, reason } => {
+                    bead_correct::correct_status(client.as_ref(), &id, &to, &reason).await?;
+                    println!("corrected {id} → {to}");
+                }
             }
         }
         Command::Lattice { action } => match action {

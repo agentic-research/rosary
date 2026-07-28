@@ -36,6 +36,7 @@
           "advertisedPrefix": "rsry_",
           "upstreamNames": [
             "rsry_bead_create", "rsry_bead_update", "rsry_bead_search", "rsry_bead_close",
+            "rsry_bead_correct",
             "rsry_bead_link", "rsry_bead_import", "rsry_bead_history", "rsry_bead_comment",
             "rsry_bead_comment_list", "rsry_bead_comment_update", "rsry_bead_comment_delete",
             "rsry_status", "rsry_list_beads", "rsry_scan", "rsry_active", "rsry_ticket_load",
@@ -79,6 +80,7 @@
         "rsry_bead_update",
         "rsry_bead_search",
         "rsry_bead_close",
+        "rsry_bead_correct",
         "rsry_bead_link",
         "rsry_bead_import",
         "rsry_bead_history",

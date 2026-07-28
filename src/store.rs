@@ -411,6 +411,9 @@ pub trait BeadStore: Send + Sync {
         update: &crate::bead::BeadUpdate,
     ) -> Result<Vec<String>>;
     async fn update_status(&self, id: &str, status: &str) -> Result<()>;
+    /// Write a status VERBATIM, bypassing the transition table. Required so
+    /// `src/publish` classifies it; sole caller `bead_correct` (rosary-e0e19f).
+    async fn set_status_verbatim(&self, id: &str, status: &str) -> Result<()>;
     async fn get_status(&self, id: &str) -> Result<Option<String>>;
     async fn close_bead(&self, id: &str) -> Result<()>;
     async fn set_assignee(&self, id: &str, assignee: &str) -> Result<()>;

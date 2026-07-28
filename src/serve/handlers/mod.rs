@@ -218,6 +218,7 @@ pub(crate) async fn call_tool(
         "rsry_bead_create" => tool_bead_create(args, pool, user_scope).await,
         "rsry_bead_update" => tool_bead_update(args, pool, user_scope).await,
         "rsry_bead_close" => tool_bead_close(args, pool, user_scope).await,
+        "rsry_bead_correct" => tool_bead_correct(args, pool, user_scope).await,
         "rsry_bead_comment" => tool_bead_comment(args, pool, user_scope).await,
         "rsry_bead_comment_list" => tool_bead_comment_list(args, pool, user_scope).await,
         "rsry_bead_comment_update" => tool_bead_comment_update(args, pool, user_scope).await,
@@ -760,6 +761,36 @@ async fn tool_bead_update(
         .await;
 
     Ok(json!({ "id": id, "updated_fields": updated_fields }))
+}
+
+/// Correct a wrongly-recorded status (rosary-e0e19f). Not a transition.
+///
+/// The MCP half of the recovery path. Before this, an agent that NOTICED a
+/// wrongly-closed bead could not fix it: `reopen` is CLI-only and refuses
+/// `done`, and `rsry_bead_update` carries no status field — a gap `field_drift`
+/// records. Recovery meant a raw UPDATE on beads.db.
+async fn tool_bead_correct(
+    args: &Value,
+    pool: &RepoPool,
+    _user_scope: Option<&str>,
+) -> Result<Value> {
+    let id = args["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("id required"))?;
+    let status = args["status"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("status required — the value the bead should have had"))?;
+    let reason = args["reason"].as_str().unwrap_or_default();
+
+    let (_scope, client_ref) = resolve_repo_client(args, pool).await?;
+    let client = client_ref.as_store();
+    crate::bead_correct::correct_status(client, id, status, reason).await?;
+    Ok(serde_json::json!({
+        "id": id,
+        "status": status,
+        "corrected": true,
+        "note": "recorded status corrected; the reason is on the bead as a comment"
+    }))
 }
 
 async fn tool_bead_close(
