@@ -39,7 +39,7 @@
     {
       "rule_id": "dead_code",
       "source_id": "src/bead_sqlite/tests.rs",
-      "count": 43
+      "count": 46
     },
     {
       "rule_id": "dead_code",
@@ -404,7 +404,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead_migrate.rs",
-      "count": 3
+      "count": 5
     },
     {
       "rule_id": "duplicate_definitions",

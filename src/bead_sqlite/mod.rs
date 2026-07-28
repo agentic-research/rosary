@@ -352,6 +352,35 @@ impl SqliteBeadStore {
     }
 
     pub fn connect(path: &Path) -> Result<Self> {
+        // rosary-554a74: refuse to MANUFACTURE a store next to a Dolt one.
+        //
+        // `connect` creates the db + schema when absent, so any command run in
+        // a Dolt-backed repo from a SQLite-opening path materialises an empty
+        // `beads.db`. That phantom then makes the directory AMBIGUOUS, and
+        // `connect_bead_store` correctly refuses to read it (rosary-9103f7) —
+        // so a harmless stray write bricks bead access for the whole repo.
+        //
+        // Observed twice on 2026-07-27, in cloister and signet: a 0-byte
+        // `beads.db` beside a live multi-megabyte Dolt store, each blocking
+        // reads until moved aside by hand.
+        //
+        // Catching the ambiguity on READ was the symptom fix. This is the
+        // cause: refuse to create the file in the first place. An EXISTING
+        // SQLite store is still opened — this only blocks minting a new one
+        // where Dolt is clearly authoritative.
+        if !path.exists()
+            && let Some(beads_dir) = path.parent()
+            && beads_dir.join("dolt").is_dir()
+        {
+            anyhow::bail!(
+                "refusing to create a SQLite bead store at {} — {} already holds a Dolt store, \
+                 and creating one here would make the directory ambiguous (rosary-554a74). \
+                 If Dolt is stale, move it aside; if you meant to migrate, run \
+                 `rsry bead migrate --to sqlite`.",
+                path.display(),
+                beads_dir.display()
+            );
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }

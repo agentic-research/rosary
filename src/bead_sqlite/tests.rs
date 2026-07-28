@@ -1247,3 +1247,57 @@ async fn sqlite_only_store_still_connects() {
         .expect("a bare .beads/ must still open a SQLite store");
     assert!(beads.join("beads.db").exists());
 }
+
+/// rosary-554a74: refuse to MINT a SQLite store beside a Dolt one.
+///
+/// This is the cause behind the ambiguity `connect_bead_store` refuses to read.
+/// Observed twice on 2026-07-27 (cloister, signet): a 0-byte `beads.db` beside
+/// a live Dolt store, each blocking bead access until moved aside by hand.
+/// Catching it on read was the symptom; this stops it being created.
+#[test]
+fn refuses_to_create_a_sqlite_store_beside_dolt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let beads = tmp.path().join(".beads");
+    std::fs::create_dir_all(beads.join("dolt")).unwrap();
+    let db = beads.join("beads.db");
+
+    let err = match SqliteBeadStore::connect(&db) {
+        Ok(_) => panic!("must not mint a store where Dolt is authoritative"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("refusing to create"), "got: {err}");
+    assert!(err.contains("rosary-554a74"), "cite the cause: {err}");
+    assert!(
+        !db.exists(),
+        "the refusal must leave NO file behind — a 0-byte db is the whole bug"
+    );
+}
+
+/// An EXISTING SQLite store beside Dolt still opens: that directory is already
+/// ambiguous, and `connect_bead_store` is the layer that refuses to read it.
+/// Blocking the open here too would break the migration path.
+#[test]
+fn existing_sqlite_store_beside_dolt_still_opens() {
+    let tmp = tempfile::tempdir().unwrap();
+    let beads = tmp.path().join(".beads");
+    std::fs::create_dir_all(beads.join("dolt")).unwrap();
+    let db = beads.join("beads.db");
+
+    // Create it first without the sibling, then add Dolt alongside.
+    let plain = tmp.path().join("other");
+    std::fs::create_dir_all(&plain).unwrap();
+    let seed = plain.join("beads.db");
+    SqliteBeadStore::connect(&seed).expect("plain create works");
+    std::fs::copy(&seed, &db).unwrap();
+
+    SqliteBeadStore::connect(&db).expect("an existing store must still open");
+}
+
+/// The ordinary case is untouched: no Dolt sibling, create freely.
+#[test]
+fn creates_normally_when_no_dolt_sibling() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join(".beads").join("beads.db");
+    SqliteBeadStore::connect(&db).expect("normal creation");
+    assert!(db.exists());
+}

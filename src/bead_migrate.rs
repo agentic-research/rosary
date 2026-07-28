@@ -195,7 +195,30 @@ pub async fn verify_migration(
             );
         }
         same!(issue_type);
-        same!(owner);
+        // Owner is compared CANONICALLY, for the same reason as status above:
+        // Dolt stores an unset owner as `Some("")` while SQLite normalises it
+        // to `None`. They mean the same thing — "no owner" — so a raw compare
+        // blocks a faithful migration on a representational difference.
+        // Measured on signet 2026-07-27: `owner mismatch (None != Some(""))`.
+        //
+        // This LOOSENS nothing: a real owner still has to match exactly. It
+        // only treats absent and empty as the same absence.
+        {
+            let norm = |o: &Option<String>| -> Option<String> {
+                o.as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
+            if norm(&t.owner) != norm(&b.owner) {
+                anyhow::bail!(
+                    "bead {}: owner mismatch after migration ({:?} != {:?})",
+                    b.id,
+                    t.owner,
+                    b.owner
+                );
+            }
+        }
         same!(scope);
         same!(external_ref);
         same!(acceptance_criteria);
@@ -204,6 +227,12 @@ pub async fn verify_migration(
         same!(created_by);
         same!(created_at);
         same!(updated_at);
+        // Provenance rides the `notes` JSON container alongside files/test_files
+        // — the same field the old implicit migration silently dropped. Empty on
+        // every bead today (0 of 1125), so this catches nothing yet; it catches
+        // everything the moment provenance is populated, which is exactly when
+        // an unverified field becomes a silent loss.
+        same!(derived_from);
 
         // Dependency edges must match exactly (set equality).
         let mut s_deps = source.get_dependencies(&b.id).await.unwrap_or_default();
@@ -520,6 +549,158 @@ mod tests {
         assert!(
             err.to_string().contains("mismatch"),
             "verify must catch the silent reset, got: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod derived_from_verification_tests {
+    use super::*;
+    use crate::bead_sqlite::SqliteBeadStore;
+    use crate::store::NewBead;
+    use std::path::Path;
+
+    fn store() -> SqliteBeadStore {
+        SqliteBeadStore::connect(Path::new(":memory:")).unwrap()
+    }
+
+    fn bead_with_provenance(id: &str) -> NewBead {
+        NewBead {
+            id: id.into(),
+            title: "t".into(),
+            description: "d".into(),
+            priority: 1,
+            issue_type: "task".into(),
+            owner: "dev-agent".into(),
+            files: vec!["src/a.rs".into()],
+            test_files: vec![],
+            depends_on: vec![],
+            created_by: Some("alice".into()),
+            scope: String::new(),
+            derived_from: vec![bdr::provenance::ProvenanceRef::Doc {
+                path: "docs/adr/0022.md".into(),
+            }],
+            acceptance_criteria: "cargo test".into(),
+        }
+    }
+
+    /// A faithful migration passes — provenance survives and verify accepts it.
+    #[tokio::test]
+    async fn provenance_survives_a_faithful_migration() {
+        let src = store();
+        src.create_bead_full(bead_with_provenance("m-1"))
+            .await
+            .unwrap();
+
+        let dst = store();
+        migrate_store(&src, &dst, "r").await.unwrap();
+        verify_migration(&src, &dst, "r")
+            .await
+            .expect("a faithful migration verifies");
+
+        let got = dst.get_bead("m-1", "r").await.unwrap().unwrap();
+        assert_eq!(got.derived_from.len(), 1, "provenance carried");
+    }
+
+    /// THE RAIL: verify must FAIL when provenance is dropped.
+    ///
+    /// Before `same!(derived_from)`, this migration verified clean while losing
+    /// the field — the same shape as the implicit SQLite→Dolt drain deleted in
+    /// rosary-9103f7, which dropped `notes` (the container provenance rides in)
+    /// and reported success. A verifier that cannot fail is not a verifier.
+    #[tokio::test]
+    async fn verify_catches_dropped_provenance() {
+        let src = store();
+        src.create_bead_full(bead_with_provenance("m-1"))
+            .await
+            .unwrap();
+
+        // Target that received everything EXCEPT provenance — what a lossy
+        // writer produces.
+        let dst = store();
+        let mut lossy = bead_with_provenance("m-1");
+        lossy.derived_from = vec![];
+        dst.create_bead_full(lossy).await.unwrap();
+
+        let err = match verify_migration(&src, &dst, "r").await {
+            Ok(()) => panic!("verify must not pass a migration that dropped provenance"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("derived_from"),
+            "the error must name the lost field, got: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod owner_canonical_tests {
+    use super::*;
+    use crate::bead_sqlite::SqliteBeadStore;
+    use crate::store::NewBead;
+    use std::path::Path;
+
+    fn store() -> SqliteBeadStore {
+        SqliteBeadStore::connect(Path::new(":memory:")).unwrap()
+    }
+
+    fn nb(id: &str, owner: &str) -> NewBead {
+        NewBead {
+            id: id.into(),
+            title: "t".into(),
+            description: "d".into(),
+            priority: 2,
+            issue_type: "task".into(),
+            owner: owner.into(),
+            files: vec![],
+            test_files: vec![],
+            depends_on: vec![],
+            created_by: None,
+            scope: String::new(),
+            derived_from: vec![],
+            acceptance_criteria: String::new(),
+        }
+    }
+
+    /// Absent and empty owner mean the same thing. Dolt stores `Some("")`,
+    /// SQLite normalises to `None` — measured blocking signet's migration on
+    /// 2026-07-27 with `owner mismatch (None != Some(""))`.
+    #[tokio::test]
+    async fn empty_and_absent_owner_are_the_same_absence() {
+        let src = store();
+        src.create_bead_full(nb("o-1", "")).await.unwrap();
+        let dst = store();
+        dst.create_bead_full(nb("o-1", "   ")).await.unwrap();
+        verify_migration(&src, &dst, "r")
+            .await
+            .expect("empty vs whitespace vs absent must not block a migration");
+    }
+
+    /// But a REAL owner difference is still caught — the canonical compare
+    /// must not become a blanket exemption.
+    #[tokio::test]
+    async fn a_real_owner_difference_still_fails() {
+        let src = store();
+        src.create_bead_full(nb("o-1", "dev-agent")).await.unwrap();
+        let dst = store();
+        dst.create_bead_full(nb("o-1", "pm-agent")).await.unwrap();
+        let err = match verify_migration(&src, &dst, "r").await {
+            Ok(()) => panic!("a genuine owner change must fail verification"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("owner mismatch"), "got: {err}");
+    }
+
+    /// And absent-vs-real is still a mismatch, not silently forgiven.
+    #[tokio::test]
+    async fn absent_versus_real_owner_still_fails() {
+        let src = store();
+        src.create_bead_full(nb("o-1", "dev-agent")).await.unwrap();
+        let dst = store();
+        dst.create_bead_full(nb("o-1", "")).await.unwrap();
+        assert!(
+            verify_migration(&src, &dst, "r").await.is_err(),
+            "losing an owner entirely must still fail"
         );
     }
 }
