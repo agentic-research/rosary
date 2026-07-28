@@ -70,8 +70,18 @@ def check(cov_json_path):
     # dolt/jj so its numbers differ). A main-push regenerates it env=ci; after
     # that, CI enforces. Locally we always enforce (the decomposition net).
     if os.environ.get("CI") and base.get("env") != "ci":
-        print(f"coverage ratchet: baseline env={base.get('env')!r} not CI-native — "
-              "enforcement skipped until a main-push regenerates it (bootstrap).")
+        # LOUD. This returns 0, so the check goes green while enforcing nothing
+        # — which is exactly how the gate sat disarmed from the day it was built
+        # (the main-push commit-back was blocked by the branch ruleset and the
+        # failure was swallowed into a warning). A `::warning::` annotation
+        # surfaces on the PR itself rather than only in the job log, so a
+        # vacuous pass cannot look like a real one.
+        print(
+            f"::warning::coverage ratchet ENFORCED NOTHING: baseline env="
+            f"{base.get('env')!r} is not CI-native. This check is green but "
+            "vacuous until a main-push regenerates the baseline and that PR is "
+            "merged (rosary-f78208)."
+        )
         return 0
     cur, cur_total = per_file_pct(cov_json_path)
     regressions = []
