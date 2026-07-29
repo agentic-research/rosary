@@ -386,13 +386,20 @@ pub fn parse_merged_closure(subject: &str) -> Option<MergedClosure> {
 fn extract_bracket_ids(text: &str) -> Vec<String> {
     let mut ids = Vec::new();
     let mut rest = text;
-    while let Some(open) = rest.find('[') {
-        let after = &rest[open + 1..];
-        let Some(close) = after.find(']') else { break };
-        if let Some(id) = valid_bead_id(&after[..close]) {
+    // `split_once` structurally rules out the off-by-one class this loop
+    // used to admit (rosary-b2ae79): raw `open + 1` / `close + 1` index
+    // arithmetic left an equivalent mutant (`+` -> `*`) that no test could
+    // distinguish, because the only under-consumed byte was always `]`
+    // itself, which `find('[')` ignores wherever it lands. There is no
+    // arithmetic left here for that mutation class to target.
+    while let Some((_, after_open)) = rest.split_once('[') {
+        let Some((content, after_close)) = after_open.split_once(']') else {
+            break;
+        };
+        if let Some(id) = valid_bead_id(content) {
             ids.push(id);
         }
-        rest = &after[close + 1..];
+        rest = after_close;
     }
     ids
 }
@@ -725,15 +732,14 @@ mod tests {
         assert_eq!(ids, vec!["rosary-aaa111", "rosary-bbb222", "rosary-ccc333"]);
     }
 
-    /// Sharper than the multi-bracket test above: an INVALID bracket whose
-    /// content ends in `[` (rejected by `is_bead_id`, correctly not pushed)
-    /// still advances `rest`. Under-advancing by even 1 char (a `close`->
-    /// `close-1` mutation) re-includes that trailing `[` as the start of
-    /// `rest`, so the next scan finds a SPURIOUS bracket at position 0 with
-    /// an empty/malformed body — panics on subtract-with-overflow once its
-    /// own (empty) close position feeds back into the same arithmetic.
-    /// Hand-verified against a manually planted mutation: the `-` variant
-    /// panics on this input; the original code returns `["rosary-def456"]`.
+    /// An INVALID bracket whose content ends in `[` (rejected by
+    /// `is_bead_id`, correctly not pushed) still must not corrupt the scan
+    /// for the real bracket that follows. This was the input that exposed
+    /// the pre-`split_once` off-by-one bug (rosary-b2ae79): under-advancing
+    /// by even one character re-exposed the trailing `[` as a spurious
+    /// match, panicking on subtract-with-overflow. Kept as a regression
+    /// pin even though `split_once` makes the class structurally
+    /// impossible now.
     #[test]
     fn extract_bracket_ids_survives_invalid_bracket_ending_in_open_bracket() {
         let ids = extract_bracket_ids("[rosary-abc[] [rosary-def456]");
