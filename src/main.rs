@@ -3800,11 +3800,27 @@ mod hooks {
 
         // --- 1. gitignore shadowing ----------------------------------------
         if beads_dir.exists() {
-            let check = Command::new("git")
+            let quiet = Command::new("git")
                 .current_dir(repo_root)
-                .args(["check-ignore", "-v", jsonl_rel])
+                .args(["check-ignore", "-q", jsonl_rel])
                 .output();
-            match classify_gitignore_check(check) {
+            // `-v`'s exit code means "some rule (possibly a negation) decided
+            // the path" — NOT "is ignored" (verified live against notme.bot's
+            // default-deny allowlist: `-v` exits 0 on the deciding `!pattern`
+            // line even though the path is NOT ignored). Only `-q`'s exit code
+            // has gitignore(5)'s real ignored/not-ignored semantics; `-v` is
+            // fetched purely for the human-readable detail, only when needed.
+            let verbose_detail = if matches!(&quiet, Ok(o) if o.status.success()) {
+                Command::new("git")
+                    .current_dir(repo_root)
+                    .args(["check-ignore", "-v", jsonl_rel])
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            };
+            match classify_gitignore_check(quiet, verbose_detail) {
                 GitignoreCheck::Shadowed(detail) => {
                     println!("  ✗ GITIGNORE-SHADOWED: {jsonl_rel} is blocked — {detail}");
                     problems.push(format!("{jsonl_rel} is gitignore-shadowed: {detail}"));
@@ -3884,18 +3900,23 @@ mod hooks {
         Unknown(String),
     }
 
-    /// Classify a `git check-ignore -v <path>` invocation. Exit 0 means a
-    /// rule matched (gitignore(5) semantics: 0 = ignored, 1 = not ignored,
-    /// anything higher is an error) — the same "success is the interesting
-    /// case" shape `classify_dolt_remote` already established for `dolt
-    /// remote -v`.
+    /// Classify a `git check-ignore -q <path>` invocation — `-q`'s exit code
+    /// is the one with real gitignore(5) ignored/not-ignored semantics (0 =
+    /// ignored, 1 = not ignored, anything higher is an error). `-v`'s exit
+    /// code is NOT equivalent: it reports 0 whenever any rule, including a
+    /// `!negation`, decided the path — so a `-v`-only classifier misreports
+    /// an explicitly un-ignored path as shadowed (found live against
+    /// notme.bot's default-deny allowlist, 2026-07-29). `verbose_detail` is
+    /// the caller's separately-fetched `-v` output, attached to `Shadowed`
+    /// purely for the human-readable rule; never used to make the decision.
     pub(crate) fn classify_gitignore_check(
         result: std::io::Result<std::process::Output>,
+        verbose_detail: Option<String>,
     ) -> GitignoreCheck {
         match result {
             Err(e) => GitignoreCheck::Unknown(e.to_string()),
             Ok(out) if out.status.success() => {
-                GitignoreCheck::Shadowed(String::from_utf8_lossy(&out.stdout).trim().to_string())
+                GitignoreCheck::Shadowed(verbose_detail.unwrap_or_default())
             }
             Ok(_) => GitignoreCheck::Reachable,
         }
@@ -4581,25 +4602,50 @@ mod hooks {
         // --- audit: classify_gitignore_check (examples) --------------------
 
         #[test]
-        fn classify_gitignore_check_shadowed_on_success_with_output() {
-            let out = forge_output(true, ".gitignore:12:.beads/\t.beads/beads.jsonl\n", "");
-            match classify_gitignore_check(Ok(out)) {
-                GitignoreCheck::Shadowed(detail) => assert!(detail.contains(".gitignore:12")),
+        fn classify_gitignore_check_shadowed_on_quiet_success() {
+            let quiet = forge_output(true, "", "");
+            let detail = Some(".gitignore:12:.beads/\t.beads/beads.jsonl".to_string());
+            match classify_gitignore_check(Ok(quiet), detail) {
+                GitignoreCheck::Shadowed(d) => assert!(d.contains(".gitignore:12")),
                 other => panic!("expected Shadowed, got {other:?}"),
             }
         }
 
         #[test]
-        fn classify_gitignore_check_reachable_on_failure_exit() {
-            // `check-ignore` exits 1 when nothing matched — gitignore(5).
-            let out = forge_output(false, "", "");
-            assert_eq!(classify_gitignore_check(Ok(out)), GitignoreCheck::Reachable);
+        fn classify_gitignore_check_reachable_on_quiet_failure_exit() {
+            // `-q` exits 1 when the path is NOT ignored — gitignore(5).
+            let quiet = forge_output(false, "", "");
+            assert_eq!(
+                classify_gitignore_check(Ok(quiet), None),
+                GitignoreCheck::Reachable
+            );
+        }
+
+        /// REGRESSION (found live against notme.bot's default-deny allowlist,
+        /// 2026-07-29): `-v` exits 0 whenever ANY rule decided the path,
+        /// including a `!negation` that explicitly un-ignores it — so a
+        /// `-v`-exit-code-only classifier reported an explicitly TRACKABLE
+        /// path as shadowed. `-q`'s exit code is the one with real
+        /// ignored/not-ignored semantics; this pins that distinction so it
+        /// can't silently regress back to a `-v`-only decision.
+        #[test]
+        fn classify_gitignore_check_reachable_when_quiet_disagrees_with_verbose_detail() {
+            // -q correctly reports "not ignored" (exit 1)...
+            let quiet = forge_output(false, "", "");
+            // ...even though a verbose detail naming a NEGATION rule is
+            // available (what -v would have reported as its deciding line).
+            let detail = Some(".gitignore:41:!.beads/beads.jsonl\t.beads/beads.jsonl".to_string());
+            assert_eq!(
+                classify_gitignore_check(Ok(quiet), detail),
+                GitignoreCheck::Reachable,
+                "a negation-decided path must classify Reachable regardless of verbose detail"
+            );
         }
 
         #[test]
         fn classify_gitignore_check_unknown_on_spawn_failure() {
             let err = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
-            match classify_gitignore_check(Err(err)) {
+            match classify_gitignore_check(Err(err), None) {
                 GitignoreCheck::Unknown(msg) => assert!(msg.contains("no such file")),
                 other => panic!("expected Unknown, got {other:?}"),
             }
