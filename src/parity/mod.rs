@@ -134,7 +134,9 @@ pub const OPS: &[Op] = &[
     ),
     cli_only(
         "hooks audit",
-        ByDesign("mechanically audits the operator's checkout config (gitignore/backend/drift), not bead state — rosary-b5c8a1"),
+        ByDesign(
+            "mechanically audits the operator's checkout config (gitignore/backend/drift), not bead state — rosary-b5c8a1",
+        ),
     ),
     cli_only(
         "init",
