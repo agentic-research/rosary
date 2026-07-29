@@ -261,6 +261,7 @@ pub fn extract_bead_refs(message: &str) -> Vec<WorkRef> {
     // Find all occurrences of "bead:" followed by an ID
     let mut search_from = 0;
     while let Some(pos) = lower[search_from..].find("bead:") {
+        let prev_search_from = search_from;
         let abs_pos = search_from + pos;
         let after = &lower[abs_pos + 5..]; // skip "bead:"
 
@@ -286,7 +287,25 @@ pub fn extract_bead_refs(message: &str) -> Vec<WorkRef> {
             });
         }
 
-        search_from = abs_pos + 5 + id.len().max(1);
+        // Termination depends entirely on this strictly exceeding `abs_pos`
+        // every iteration, or `find("bead:")` matches the same occurrence
+        // forever (rosary-b2ae79's mutants rung: a `+`->`-` mutation here
+        // hung real wall-clock time instead of failing fast, since nothing
+        // enforced the invariant). `.max(abs_pos + 6)` makes it true by
+        // construction — past "bead:" (5 bytes) plus at least 1 more byte —
+        // regardless of `id.len()`, so a future refactor of this arithmetic
+        // can't silently reintroduce an infinite loop.
+        search_from = (abs_pos + 5 + id.len()).max(abs_pos + 6);
+
+        // Belt-and-suspenders on the property that actually prevents the
+        // hang: a REAL assert (not debug_assert — this must hold in release
+        // builds too, since a hang in production is worse than a panic).
+        // Catches a broken `abs_pos` computation (e.g. a mutated `+` at
+        // line ~264) even if it slips past the `.max()` guard above.
+        assert!(
+            search_from > prev_search_from,
+            "extract_bead_refs: search position failed to advance ({prev_search_from} -> {search_from}); would loop forever"
+        );
     }
 
     // Dedup by ID, keeping closes=true if any ref closes
@@ -581,6 +600,64 @@ fn github_slug(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_bead_refs_finds_bracket_and_bead_colon_forms() {
+        let refs = extract_bead_refs("[rosary-abc123] fix: thing\n\nbead:rosary-def456");
+        let ids: Vec<&str> = refs.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"rosary-abc123"));
+        assert!(ids.contains(&"rosary-def456"));
+    }
+
+    #[test]
+    fn extract_bead_refs_detects_closing_prefixes() {
+        let refs = extract_bead_refs("closes bead:rosary-abc123");
+        assert_eq!(refs.len(), 1);
+        assert!(refs[0].closes);
+
+        let refs = extract_bead_refs("bead:rosary-abc123 (not closing)");
+        assert_eq!(refs.len(), 1);
+        assert!(!refs[0].closes);
+    }
+
+    /// Loop-iteration coverage (rosary-b2ae79 mutants rung): multiple
+    /// `bead:` occurrences force the `search_from` advancement logic to run
+    /// more than once. A `+`->`-` mutation on that arithmetic hung for 55s+
+    /// instead of failing — this is the shape that exercises it.
+    #[test]
+    fn extract_bead_refs_advances_past_multiple_occurrences() {
+        let msg = "bead:rosary-aaa111 then bead:rosary-bbb222 then bead:rosary-ccc333";
+        let refs = extract_bead_refs(msg);
+        let ids: Vec<&str> = refs.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        assert!(ids.contains(&"rosary-aaa111"));
+        assert!(ids.contains(&"rosary-bbb222"));
+        assert!(ids.contains(&"rosary-ccc333"));
+    }
+
+    /// A `bead:` mention with no valid id after it (fails `is_bead_id`)
+    /// must not stall the scan — the next real occurrence must still be
+    /// found. This is exactly the case where `id.len()` can be small/zero,
+    /// the scenario the `.max(abs_pos + 6)` floor exists for.
+    #[test]
+    fn extract_bead_refs_skips_invalid_id_and_keeps_scanning() {
+        let msg = "bead: (nothing valid here) then bead:rosary-real123";
+        let refs = extract_bead_refs(msg);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert_eq!(refs[0].id, "rosary-real123");
+    }
+
+    /// Directly proves the termination invariant survives adversarial
+    /// repetition: many adjacent zero-content "bead:" mentions, the shape
+    /// most likely to expose a stalled `search_from`. Bounded by the test
+    /// harness's own timeout, but the real proof is the function returning
+    /// at all rather than needing a wall-clock timeout to notice a hang.
+    #[test]
+    fn extract_bead_refs_terminates_on_repeated_empty_mentions() {
+        let msg = "bead:".repeat(50);
+        let refs = extract_bead_refs(&msg);
+        assert!(refs.is_empty());
+    }
 
     #[test]
     fn github_slug_handles_ssh_and_https_forms() {
