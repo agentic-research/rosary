@@ -329,23 +329,26 @@ pub struct MergedClosure {
     pub pr_number: u64,
 }
 
-/// Parse every closure from a squash commit's **full message**. The PR number
-/// comes from the FIRST-line (subject) trailing `(#N)` marker — the squash
-/// signal; bead ids are every `[bead-id]` bracket anywhere in the message.
+/// Parse every closure from a squash commit's **subject line only**. The PR
+/// number comes from the subject's trailing `(#N)` marker — the squash signal;
+/// bead ids are the `[bead-id]` brackets on that same line. Returns empty for
+/// a commit with no `(#N)` marker (a work-in-progress commit, not a merge).
 ///
-/// This reads the body, not just the subject, because GitHub's squash commit
-/// synthesizes the subject from the PR *title* (which may lack a bracket) while
-/// the body carries the squashed commits — each of which Golden Rule 11
-/// guarantees has a `[bead-id]` prefix. So a multi-bead PR whose title omits the
-/// id still resolves via its commit list. Returns empty for a commit with no
-/// `(#N)` marker (a work-in-progress commit, not a merge).
+/// The BODY is deliberately not consulted (rosary-e0e19f). A squash body
+/// contains every commit message the PR absorbed, and Golden Rule 11 prefixes
+/// each with the bead it was *worked under* — so a body bracket is provenance,
+/// not a completion claim. Matching body brackets auto-closed beads that were
+/// merely mentioned (four in cloister, and this defect's own bug report,
+/// twice), and made it impossible to honestly tag a commit that documents a
+/// bead without closing it. The cost is real but smaller: a PR whose title
+/// omits the bracket no longer auto-closes its beads and needs a manual close.
 pub fn parse_merged_closures(message: &str) -> Vec<MergedClosure> {
     let subject = message.lines().next().unwrap_or("");
     let Some(pr_number) = trailing_pr_number(subject) else {
         return Vec::new();
     };
     let mut seen = std::collections::HashSet::new();
-    extract_bracket_ids(message)
+    extract_bracket_ids(subject)
         .into_iter()
         .filter(|id| seen.insert(id.clone()))
         .map(|bead_id| MergedClosure { bead_id, pr_number })
@@ -358,8 +361,9 @@ pub fn parse_merged_closure(subject: &str) -> Option<MergedClosure> {
     parse_merged_closures(subject).into_iter().next()
 }
 
-/// Find every `[<prefix>-<suffix>]` bead-id bracket **anywhere** in `text` — not
-/// just at line start, since squash bodies bullet the commits (`* [id] …`).
+/// Find every `[<prefix>-<suffix>]` bead-id bracket anywhere in `text` (the
+/// caller decides how much of the message qualifies — see
+/// [`parse_merged_closures`] on why that is the subject line only).
 fn extract_bracket_ids(text: &str) -> Vec<String> {
     let mut ids = Vec::new();
     let mut rest = text;
@@ -631,17 +635,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_merged_closures_reads_body_when_subject_lacks_bracket() {
-        // The #322 case: PR title (→ squash subject) has the (#N) but no bracket;
-        // the body carries the squashed commits' [bead-id]s (Golden Rule 11),
-        // bulleted. All should resolve, deduped, with the subject's PR number.
+    fn parse_merged_closures_ignores_body_mentions() {
+        // rosary-e0e19f mutation test: a squash body contains every commit
+        // message the PR absorbed, so a bead id anywhere in the BODY is
+        // provenance, not a verdict — matching it auto-closed beads that were
+        // merely mentioned (four in cloister, plus this defect's own bug
+        // report, twice). Only the subject names what the PR claims to
+        // deliver; a body-only mention must NOT close.
         let msg = "docs: accuracy sweep after v0.4.0 (#322)\n\n\
                    * [rosary-da720c] docs: first pass\n\
                    * [rosary-da720c] docs: second pass\n\
                    * [rosary-9d181f] docs: third pass\n";
+        assert!(parse_merged_closures(msg).is_empty());
+    }
+
+    #[test]
+    fn parse_merged_closures_subject_brackets_close_body_brackets_do_not() {
+        // A multi-bead SUBJECT still resolves (deduped, subject PR number);
+        // a body mention of a third bead does not join the closures.
+        let msg = "[rosary-da720c] [rosary-da720c] [rosary-9d181f] combined (#322)\n\n\
+                   * [rosary-ffffff] absorbed commit touching another bead\n";
         let closures = parse_merged_closures(msg);
         let ids: Vec<&str> = closures.iter().map(|c| c.bead_id.as_str()).collect();
-        assert_eq!(closures.len(), 2, "da720c deduped");
+        assert_eq!(closures.len(), 2, "da720c deduped, ffffff excluded");
         assert!(ids.contains(&"rosary-da720c"));
         assert!(ids.contains(&"rosary-9d181f"));
         assert!(closures.iter().all(|c| c.pr_number == 322));
