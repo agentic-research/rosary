@@ -73,3 +73,6 @@ dist/
 # a file appearing here means someone ran an exploratory hunt. Commit it
 # deliberately if it pins a real counterexample — do not let it drift in.
 proptest-regressions/
+
+# cargo-mutants output dirs
+mutants.out*/
