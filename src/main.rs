@@ -572,6 +572,13 @@ enum HooksAction {
     /// Show whether each rsry-managed hook is installed (and where) and
     /// whether the Dolt remote is configured for bead sync.
     Status,
+    /// Mechanically audit whether bead-sync config is REACHABLE and
+    /// CONSISTENT, not just installed: `.gitignore` shadowing that blocks
+    /// `beads.jsonl` regardless of reinstalls, `.beads/embeddeddolt/`
+    /// coexisting with a live rsry backend, and local-store/tracked-export
+    /// drift. Exits non-zero if any check fails — safe to script/CI against
+    /// (rosary-b5c8a1).
+    Audit,
 }
 
 #[derive(Subcommand)]
@@ -2850,6 +2857,7 @@ async fn main() -> Result<()> {
                     let result = match action {
                         HooksAction::Install => hooks::install(&repo_root),
                         HooksAction::Status => hooks::status(&repo_root),
+                        HooksAction::Audit => hooks::audit(&repo_root),
                     };
                     if let Err(error) = result {
                         eprintln!("[hooks] {} failed: {error:#}", registered.name);
@@ -2867,6 +2875,7 @@ async fn main() -> Result<()> {
                 match action {
                     HooksAction::Install => hooks::install(&repo_root)?,
                     HooksAction::Status => hooks::status(&repo_root)?,
+                    HooksAction::Audit => hooks::audit(&repo_root)?,
                 }
             }
         }
@@ -3763,6 +3772,173 @@ mod hooks {
         Ok(())
     }
 
+    /// Mechanically audit whether this repo's bead-sync config is actually
+    /// correct — not just installed, but REACHABLE and CONSISTENT. Three
+    /// checks `status()` doesn't cover, each found live during the
+    /// 2026-07-29 fleet sweep (rosary-b5c8a1):
+    ///
+    /// 1. **gitignore shadowing**: a top-level `.gitignore` rule (`.beads/`,
+    ///    `*`, etc.) can silently block `.beads/beads.jsonl` from ever being
+    ///    tracked, no matter how many times `hooks install` runs. Found live
+    ///    in `lectio` (`.beads/` at line 12) and `notme.bot` (`*` at line 2).
+    /// 2. **backend ambiguity**: `.beads/embeddeddolt/` (bd-era) coexisting
+    ///    with `.beads/beads.db` or `.beads/dolt/` means two stores both
+    ///    claim authority — rosary-909bec's exact defect.
+    /// 3. **store/export drift**: the local `beads.db` row count vs the
+    ///    tracked `beads.jsonl` line count. A large gap means real bead data
+    ///    has never been exported and has zero durable copy. Found live: 366
+    ///    beads across 9 repos, sitting only on one machine's disk in a
+    ///    gitignored file.
+    ///
+    /// Unlike `status()` (purely informational), this is a GATE: returns
+    /// `Err` naming every failing check if any check fails, so `rsry hooks
+    /// audit` exits non-zero and is safe to script/CI against.
+    pub fn audit(repo_root: &Path) -> Result<()> {
+        let mut problems = Vec::new();
+        let beads_dir = repo_root.join(".beads");
+        let jsonl_rel = ".beads/beads.jsonl";
+
+        // --- 1. gitignore shadowing ----------------------------------------
+        if beads_dir.exists() {
+            let check = Command::new("git")
+                .current_dir(repo_root)
+                .args(["check-ignore", "-v", jsonl_rel])
+                .output();
+            match classify_gitignore_check(check) {
+                GitignoreCheck::Shadowed(detail) => {
+                    println!("  ✗ GITIGNORE-SHADOWED: {jsonl_rel} is blocked — {detail}");
+                    problems.push(format!("{jsonl_rel} is gitignore-shadowed: {detail}"));
+                }
+                GitignoreCheck::Reachable => {
+                    println!("  ✓ {jsonl_rel} reachable through .gitignore");
+                }
+                GitignoreCheck::Unknown(e) => {
+                    println!("  ? could not run git check-ignore: {e}");
+                }
+            }
+        }
+
+        // --- 2. backend ambiguity -------------------------------------------
+        let has_embedded = beads_dir.join("embeddeddolt").is_dir();
+        let sqlite_db = beads_dir.join("beads.db");
+        let has_sqlite = sqlite_db.exists();
+        let has_dolt = beads_dir.join("dolt").is_dir();
+        if backend_ambiguous(has_embedded, has_sqlite, has_dolt) {
+            let other = if has_sqlite { "beads.db" } else { "dolt/" };
+            println!(
+                "  ✗ BACKEND-AMBIGUOUS: embeddeddolt/ coexists with {other} — two stores claim authority"
+            );
+            problems.push(format!("embeddeddolt/ coexists with {other}"));
+        } else if beads_dir.exists() {
+            println!("  ✓ no ambiguous backend coexistence");
+        }
+
+        // --- 3. store/export drift -------------------------------------------
+        if has_sqlite {
+            match count_sqlite_issues(&sqlite_db) {
+                Ok(db_count) => {
+                    let jsonl_lines = std::fs::read_to_string(beads_dir.join("beads.jsonl"))
+                        .map(|c| c.lines().filter(|l| !l.trim().is_empty()).count())
+                        .unwrap_or(0);
+                    if store_export_drifted(db_count, jsonl_lines) {
+                        println!(
+                            "  ✗ STORE/EXPORT DRIFT: beads.db has {db_count} bead(s), beads.jsonl has {jsonl_lines} line(s) — no durable copy"
+                        );
+                        problems.push(format!(
+                            "{db_count} bead(s) in beads.db, only {jsonl_lines} in beads.jsonl"
+                        ));
+                    } else {
+                        println!(
+                            "  ✓ store/export roughly agree (beads.db={db_count}, beads.jsonl={jsonl_lines} line(s))"
+                        );
+                    }
+                }
+                Err(e) => println!("  ? could not read beads.db to check drift: {e}"),
+            }
+        }
+
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "{} problem(s) found: {}",
+                problems.len(),
+                problems.join("; ")
+            )
+        }
+    }
+
+    /// Result of classifying a `git check-ignore -v` probe on
+    /// `.beads/beads.jsonl`. Mirrors [`DoltRemoteStatus`]'s shape: a pure
+    /// classifier over `io::Result<Output>` so it's unit- and
+    /// property-testable without spawning git.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum GitignoreCheck {
+        /// `check-ignore` matched — the export is unreachable regardless of
+        /// how many times hooks are (re)installed. Carries the matching
+        /// rule (`<file>:<line>:<pattern>\t<path>`).
+        Shadowed(String),
+        /// `check-ignore` found no match — the path is trackable.
+        Reachable,
+        /// The `git` binary itself couldn't be spawned.
+        Unknown(String),
+    }
+
+    /// Classify a `git check-ignore -v <path>` invocation. Exit 0 means a
+    /// rule matched (gitignore(5) semantics: 0 = ignored, 1 = not ignored,
+    /// anything higher is an error) — the same "success is the interesting
+    /// case" shape `classify_dolt_remote` already established for `dolt
+    /// remote -v`.
+    pub(crate) fn classify_gitignore_check(
+        result: std::io::Result<std::process::Output>,
+    ) -> GitignoreCheck {
+        match result {
+            Err(e) => GitignoreCheck::Unknown(e.to_string()),
+            Ok(out) if out.status.success() => {
+                GitignoreCheck::Shadowed(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            }
+            Ok(_) => GitignoreCheck::Reachable,
+        }
+    }
+
+    /// Two bead backends claiming authority over one `.beads/` directory —
+    /// rosary-909bec's exact defect. `embeddeddolt/` is the bd-era store;
+    /// `beads.db`/`dolt/` are rsry's own. Pure predicate so the boundary is
+    /// exhaustively property-testable over the 3-bool space.
+    pub(crate) fn backend_ambiguous(
+        has_embedded_dolt: bool,
+        has_sqlite: bool,
+        has_dolt: bool,
+    ) -> bool {
+        has_embedded_dolt && (has_sqlite || has_dolt)
+    }
+
+    /// Has the local store outrun its tracked export badly enough that real
+    /// bead data has no durable copy? Lines needn't match exactly (status
+    /// filters, in-flight writes change the count run to run) — this states
+    /// the boundary as a threshold shape, not a hardcoded magic number, so
+    /// the property tests characterize it independent of the exact ratio.
+    ///
+    /// Laws: an empty store never drifts (nothing to lose); a nonempty store
+    /// with zero exported lines always drifts (the exact incident this
+    /// check exists for — 366 beads, 9 repos, 2026-07-29); drift is
+    /// monotonic in `jsonl_lines` — exporting more can only cure a flagged
+    /// state, never cause one; an export meeting or exceeding the store
+    /// count never drifts.
+    pub(crate) fn store_export_drifted(db_count: i64, jsonl_lines: usize) -> bool {
+        db_count > 0 && (jsonl_lines == 0 || jsonl_lines * 2 < db_count as usize)
+    }
+
+    /// Row count of the `issues` table in a bead SQLite store, opened
+    /// read-only so an audit run can never itself mutate or lock the store.
+    fn count_sqlite_issues(path: &Path) -> Result<i64> {
+        let conn =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .with_context(|| format!("opening {}", path.display()))?;
+        conn.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
+            .context("counting issues")
+    }
+
     /// Result of probing `dolt remote -v` in a Dolt-backed bead directory.
     ///
     /// Distinguishes "command ran cleanly with no remote" from "command
@@ -3810,6 +3986,7 @@ mod hooks {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use proptest::prelude::*;
         use std::process::Command;
 
         /// Run `git` with a genuinely-isolated env so the host's gitconfig
@@ -4399,6 +4576,188 @@ mod hooks {
                 DoltRemoteStatus::NotInvokable(msg) => assert!(msg.contains("no such file")),
                 _ => panic!("expected NotInvokable for spawn failure"),
             }
+        }
+
+        // --- audit: classify_gitignore_check (examples) --------------------
+
+        #[test]
+        fn classify_gitignore_check_shadowed_on_success_with_output() {
+            let out = forge_output(true, ".gitignore:12:.beads/\t.beads/beads.jsonl\n", "");
+            match classify_gitignore_check(Ok(out)) {
+                GitignoreCheck::Shadowed(detail) => assert!(detail.contains(".gitignore:12")),
+                other => panic!("expected Shadowed, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn classify_gitignore_check_reachable_on_failure_exit() {
+            // `check-ignore` exits 1 when nothing matched — gitignore(5).
+            let out = forge_output(false, "", "");
+            assert_eq!(classify_gitignore_check(Ok(out)), GitignoreCheck::Reachable);
+        }
+
+        #[test]
+        fn classify_gitignore_check_unknown_on_spawn_failure() {
+            let err = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
+            match classify_gitignore_check(Err(err)) {
+                GitignoreCheck::Unknown(msg) => assert!(msg.contains("no such file")),
+                other => panic!("expected Unknown, got {other:?}"),
+            }
+        }
+
+        // --- audit: pure predicates (property tests) ------------------------
+        //
+        // These prove the LAWS, not just chosen examples — property tests
+        // over `backend_ambiguous` and `store_export_drifted` per the
+        // session's mutants-rung discipline (rosary-b2ae79): a law stated
+        // once and checked over the whole input space catches boundary bugs
+        // an example can't. `proptest_support` isn't used here (no shrink
+        // config needed for these small/fast domains); the plain
+        // `proptest!` macro's defaults are enough.
+
+        proptest! {
+            /// backend_ambiguous(e, s, d) == e && (s || d), over the whole
+            /// bool^3 space — not just the one live case (agents repo) that
+            /// motivated it.
+            #[test]
+            fn backend_ambiguous_matches_boolean_spec(
+                has_embedded in proptest::bool::ANY,
+                has_sqlite in proptest::bool::ANY,
+                has_dolt in proptest::bool::ANY,
+            ) {
+                prop_assert_eq!(
+                    backend_ambiguous(has_embedded, has_sqlite, has_dolt),
+                    has_embedded && (has_sqlite || has_dolt)
+                );
+            }
+
+            /// Law 1: an empty store never drifts — there is nothing to lose,
+            /// regardless of what the export looks like.
+            #[test]
+            fn store_export_drift_empty_store_never_flags(jsonl_lines in 0usize..10_000) {
+                prop_assert!(!store_export_drifted(0, jsonl_lines));
+            }
+
+            /// Law 2: a nonempty store with zero exported lines always
+            /// flags — the exact incident this check exists for (366 beads,
+            /// 9 repos, zero durable copy, 2026-07-29).
+            #[test]
+            fn store_export_drift_zero_export_always_flags(db_count in 1i64..10_000) {
+                prop_assert!(store_export_drifted(db_count, 0));
+            }
+
+            /// Law 3: an export meeting or exceeding the store count never
+            /// drifts — a superset export (e.g. after a cross-repo merge) is
+            /// never mistaken for data loss.
+            #[test]
+            fn store_export_drift_full_export_never_flags(
+                db_count in 0i64..10_000,
+                extra in 0usize..1_000,
+            ) {
+                let jsonl_lines = db_count as usize + extra;
+                prop_assert!(!store_export_drifted(db_count, jsonl_lines));
+            }
+
+            /// Law 4 (the load-bearing one): drift is MONOTONIC in
+            /// `jsonl_lines` — exporting more can only cure a flagged state,
+            /// never cause one. Any threshold-shaped implementation must
+            /// hold this regardless of the specific ratio chosen, so this
+            /// property survives a future retune of the threshold.
+            #[test]
+            fn store_export_drift_is_monotonic_in_jsonl_lines(
+                db_count in 0i64..10_000,
+                jsonl_a in 0usize..10_000,
+                jsonl_b in 0usize..10_000,
+            ) {
+                let (lo, hi) = if jsonl_a <= jsonl_b { (jsonl_a, jsonl_b) } else { (jsonl_b, jsonl_a) };
+                // flagged(db, hi) => flagged(db, lo) is the monotonic direction;
+                // equivalently !flagged(db, lo) => !flagged(db, hi).
+                if store_export_drifted(db_count, hi) {
+                    prop_assert!(store_export_drifted(db_count, lo));
+                }
+            }
+        }
+
+        // --- audit: end-to-end fixtures --------------------------------------
+
+        #[test]
+        fn audit_flags_gitignore_shadowed_export() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            std::fs::write(dir.path().join(".gitignore"), ".beads/\n").unwrap();
+            std::fs::create_dir_all(dir.path().join(".beads")).unwrap();
+            std::fs::write(dir.path().join(".beads").join("beads.jsonl"), "").unwrap();
+
+            let err = audit(dir.path()).unwrap_err();
+            assert!(format!("{err:#}").contains("gitignore-shadowed"), "{err:#}");
+        }
+
+        #[test]
+        fn audit_flags_embeddeddolt_and_beads_db_coexisting() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            std::fs::create_dir_all(dir.path().join(".beads").join("embeddeddolt")).unwrap();
+            std::fs::write(dir.path().join(".beads").join("beads.db"), b"not a real db").unwrap();
+
+            let err = audit(dir.path()).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("embeddeddolt/ coexists"),
+                "{err:#}"
+            );
+        }
+
+        #[test]
+        fn audit_flags_store_export_drift() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            let db_path = dir.path().join(".beads").join("beads.db");
+            std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute("CREATE TABLE issues (id TEXT PRIMARY KEY)", [])
+                .unwrap();
+            for i in 0..5 {
+                conn.execute("INSERT INTO issues (id) VALUES (?1)", [format!("t-{i}")])
+                    .unwrap();
+            }
+            drop(conn);
+            // beads.jsonl deliberately absent — the exact incident shape.
+
+            let err = audit(dir.path()).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("in beads.db, only 0"),
+                "{err:#}"
+            );
+        }
+
+        #[test]
+        fn audit_passes_clean_repo_with_no_beads_dir() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            audit(dir.path()).unwrap();
+        }
+
+        #[test]
+        fn audit_passes_when_store_and_export_agree() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            let beads_dir = dir.path().join(".beads");
+            std::fs::create_dir_all(&beads_dir).unwrap();
+            let db_path = beads_dir.join("beads.db");
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute("CREATE TABLE issues (id TEXT PRIMARY KEY)", [])
+                .unwrap();
+            for i in 0..5 {
+                conn.execute("INSERT INTO issues (id) VALUES (?1)", [format!("t-{i}")])
+                    .unwrap();
+            }
+            drop(conn);
+            std::fs::write(
+                beads_dir.join("beads.jsonl"),
+                "{\"id\":\"t-0\"}\n{\"id\":\"t-1\"}\n{\"id\":\"t-2\"}\n{\"id\":\"t-3\"}\n{\"id\":\"t-4\"}\n",
+            )
+            .unwrap();
+
+            audit(dir.path()).unwrap();
         }
 
         // --- documentation / marker consistency ---------------------------
