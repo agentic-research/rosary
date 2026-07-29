@@ -190,11 +190,11 @@ async fn write_merge_observation(
 }
 
 /// Does `reference` have the shape `generate_bead_id` produces —
-/// `<prefix>-<exactly 6 hex>`? The squash-body parser (`extract_bracket_ids`)
-/// is deliberately loose, so a commit body mentioning `[--dry-run]` or
-/// `[bead-id]` arrives here looking like a closure. Those are prose, not
-/// missing beads; keeping them out of `dangling` is what makes the dangling
-/// count usable as rosary-225c94 evidence.
+/// `<prefix>-<exactly 6 hex>`? The bracket parser (`extract_bracket_ids`,
+/// subject-only since rosary-e0e19f) is deliberately loose, so a subject
+/// bracket like `[--dry-run]` arrives here looking like a closure. Those are
+/// prose, not missing beads; keeping them out of `dangling` is what makes the
+/// dangling count usable as rosary-225c94 evidence.
 fn is_bead_shaped(reference: &str) -> bool {
     match reference.rsplit_once('-') {
         Some((prefix, suffix)) => {
@@ -394,12 +394,16 @@ mod tests {
     }
 
     /// Dangling `[bead-id]`s are reported, never invented (rosary-225c94) —
-    /// and prose brackets from squash bodies are NOT counted as dangling.
+    /// and only SUBJECT brackets are consulted at all (rosary-e0e19f): a body
+    /// bracket is provenance, not a closure, so even a bead-shaped body ref is
+    /// neither recorded nor dangling. Prose-shaped subject brackets still land
+    /// in `non_bead_brackets` so the dangling number stays honest.
     #[tokio::test]
     async fn unknown_bead_ids_are_reported_as_dangling() {
         let repo = git_repo_with_merges(&[
             "[myrepo-aaa111] feat(x): thing (#1)",
-            "[myrepo-9f0571] feat(x): vanished (#2)\n\ndocs mention [--dry-run] and [bead-id]\n",
+            "[myrepo-9f0571] feat(x): vanished (#2)\n\ndocs mention [--dry-run] and [myrepo-beef01]\n",
+            "[--dry-run] docs: prose-shaped subject bracket (#3)",
         ]);
         let (_t, store) = store_with(&["myrepo-aaa111"]).await;
 
@@ -410,9 +414,12 @@ mod tests {
         assert_eq!(
             r.dangling,
             vec!["myrepo-9f0571".to_string()],
-            "only the bead-SHAPED unknown ref counts"
+            "subject refs only — the body's [myrepo-beef01] must not dangle"
         );
-        assert_eq!(r.non_bead_brackets, 2, "[--dry-run] + [bead-id] are prose");
+        assert_eq!(
+            r.non_bead_brackets, 1,
+            "subject [--dry-run] is prose; body brackets never enter"
+        );
         assert!(r.render("myrepo").contains("DANGLING myrepo-9f0571"));
     }
 
