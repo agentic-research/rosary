@@ -59,6 +59,7 @@ mod field_drift;
 #[allow(dead_code)] // API surface — PR creation from dispatch pipeline
 mod github;
 mod github_mirror;
+mod gitignore;
 mod graph;
 mod handoff;
 mod import;
@@ -3143,6 +3144,10 @@ mod hooks {
     //! so worktrees, submodules (`.git` is a file pointer to the real
     //! gitdir, not a directory), and `core.hooksPath` overrides all route to
     //! the right place.
+    use crate::gitignore::{
+        GitignoreShadowShape, allowlist_fix_suggestion, classify_gitignore_shadow_shape,
+        remove_gitignore_line,
+    };
     use anyhow::{Context, Result};
     use sha2::{Digest, Sha256};
     use std::path::{Path, PathBuf};
@@ -3538,6 +3543,86 @@ mod hooks {
         Ok(true)
     }
 
+    /// Auto-fix the SIMPLE gitignore-shadow shape found by `hooks audit`;
+    /// refuse-and-suggest for the ALLOWLIST shape. No-op if `.beads/`
+    /// doesn't exist or `.beads/beads.jsonl` isn't actually shadowed
+    /// (rosary-e97360). Called from `install()`.
+    ///
+    /// Self-verifying: after a real SIMPLE-shape write, re-checks
+    /// `git check-ignore -q` and hard-errors if the path is STILL shadowed
+    /// (e.g. a second ignore source like `.git/info/exclude` or a global
+    /// gitignore is also matching) — never trusts the edit blindly.
+    fn fix_gitignore_shadow(repo_root: &Path) -> Result<()> {
+        let beads_dir = repo_root.join(".beads");
+        if !beads_dir.exists() {
+            return Ok(());
+        }
+
+        let quiet = Command::new("git")
+            .current_dir(repo_root)
+            .args(["check-ignore", "-q", MERGE_ATTR_PATH])
+            .output();
+        let GitignoreCheck::Shadowed(_) = classify_gitignore_check(quiet, None) else {
+            return Ok(());
+        };
+
+        let gitignore_path = repo_root.join(".gitignore");
+        let Ok(content) = std::fs::read_to_string(&gitignore_path) else {
+            println!(
+                "  ? {MERGE_ATTR_PATH} is gitignore-shadowed, but no readable top-level \
+                 .gitignore was found to fix"
+            );
+            return Ok(());
+        };
+
+        match classify_gitignore_shadow_shape(&content) {
+            GitignoreShadowShape::Simple { pattern } => {
+                let fixed = remove_gitignore_line(&content, pattern);
+                std::fs::write(&gitignore_path, &fixed)
+                    .with_context(|| format!("writing {}", gitignore_path.display()))?;
+
+                let recheck = Command::new("git")
+                    .current_dir(repo_root)
+                    .args(["check-ignore", "-q", MERGE_ATTR_PATH])
+                    .output();
+                match classify_gitignore_check(recheck, None) {
+                    GitignoreCheck::Shadowed(_) => anyhow::bail!(
+                        "removed `{pattern}` from .gitignore but {MERGE_ATTR_PATH} is STILL \
+                         shadowed after the fix (another ignore source, e.g. \
+                         .git/info/exclude or a global gitignore, is also matching) — \
+                         refusing to claim success"
+                    ),
+                    GitignoreCheck::Unknown(e) => anyhow::bail!(
+                        "removed `{pattern}` from .gitignore but could not re-verify with \
+                         `git check-ignore`: {e}"
+                    ),
+                    GitignoreCheck::Reachable => {
+                        println!(
+                            "  ✓ removed shadowing rule `{pattern}` from {}",
+                            gitignore_path.display()
+                        );
+                    }
+                }
+            }
+            GitignoreShadowShape::Allowlist => {
+                println!(
+                    "  ! {MERGE_ATTR_PATH} is gitignore-shadowed by a default-deny allowlist \
+                     (.gitignore has a bare `*` plus `!` exceptions) — refusing to guess \
+                     which negation to add. Append to .gitignore:"
+                );
+                print!("{}", allowlist_fix_suggestion());
+            }
+            GitignoreShadowShape::Unrecognized => {
+                println!(
+                    "  ? {MERGE_ATTR_PATH} is gitignore-shadowed by an unrecognized \
+                     .gitignore shape — not auto-fixed. Run `rsry hooks audit` for detail, \
+                     then fix by hand."
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Install the `beads-jsonl` merge driver into the repo's git config
     /// (rosary-f9516f).
     ///
@@ -3645,6 +3730,12 @@ mod hooks {
         // never wrote what it diagnosed, so every repo that didn't hand-commit a
         // `.gitattributes` was unprotected. Measured: 5 of 7 tracked repos.
         ensure_jsonl_merge_attribute(repo_root)?;
+
+        // `hooks audit` DETECTS gitignore shadowing (rosary-b5c8a1); this
+        // ACTUALLY FIXES the common case, so a human/agent never again
+        // hand-edits another repo's .gitignore under time pressure
+        // (rosary-e97360 — found live in 9 of 22 repos in one sweep).
+        fix_gitignore_shadow(repo_root)?;
 
         // Warn if Dolt remote is not configured — hooks will silently no-op otherwise.
         let repo_name = repo_root
@@ -4121,6 +4212,179 @@ mod hooks {
         #[test]
         fn beads_gitignore_denies_migration_backup() {
             assert!(crate::init::BEADS_GITIGNORE.contains("dolt.bak/"));
+        }
+
+        // --- gitignore-shadow auto-fix (rosary-e97360) ---------------------
+        //
+        // Pure classification/removal logic (classify_gitignore_shadow_shape,
+        // remove_gitignore_line, allowlist_fix_suggestion) lives in
+        // src/gitignore.rs with its own unit tests — kept as a standalone
+        // file specifically so it can be mutation-tested in isolation
+        // (`task mutants:gitignore`) without main.rs's unrelated noise.
+        // What stays here is the I/O-level integration: does
+        // `fix_gitignore_shadow` actually read/write/re-verify correctly.
+
+        /// REAL FIXTURE 1 (lectio, SIMPLE shape) — the actual lines found at
+        /// .gitignore:10-12 before the fix, hand-applied this session.
+        /// Verified live via `git check-ignore -q` at the time; this test
+        /// pins the automated version of that same fix.
+        #[test]
+        fn fix_gitignore_shadow_simple_shape_removes_rule_and_self_verifies() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(
+                root.join(".gitignore"),
+                "/target\n\
+                 **/target/\n\
+                 \n\
+                 # Local rosary bead store (Dolt DB + daemon token) — local only, never publish.\n\
+                 # (Also covered by ~/.gitignore_global; repeated here so the repo is self-contained.)\n\
+                 .beads/\n",
+            )
+            .unwrap();
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(MERGE_ATTR_PATH), "{}\n").unwrap();
+
+            // Precondition: genuinely shadowed before the fix.
+            assert!(
+                Command::new("git")
+                    .current_dir(root)
+                    .args(["check-ignore", "-q", MERGE_ATTR_PATH])
+                    .status()
+                    .unwrap()
+                    .success(),
+                "fixture must start shadowed"
+            );
+
+            fix_gitignore_shadow(root).unwrap();
+
+            let body = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+            assert!(!body.lines().any(|l| l.trim() == ".beads/"), "{body}");
+            // Comments and unrelated rules survive untouched.
+            assert!(body.contains("/target"));
+            assert!(body.contains("Local rosary bead store"));
+
+            // Self-verification means this must ACTUALLY be reachable now,
+            // not just "the line is gone" — proves the fix, not the edit.
+            assert!(
+                !Command::new("git")
+                    .current_dir(root)
+                    .args(["check-ignore", "-q", MERGE_ATTR_PATH])
+                    .status()
+                    .unwrap()
+                    .success(),
+                "must be reachable after the fix"
+            );
+        }
+
+        /// REAL FIXTURE 2 (notme.bot, ALLOWLIST shape) — the actual
+        /// default-deny structure found this session. Must NOT be
+        /// auto-edited; must print the exact two-step suggestion and leave
+        /// the file untouched.
+        #[test]
+        fn fix_gitignore_shadow_allowlist_shape_refuses_and_does_not_write() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            let original = "# Default deny: ignore everything unless explicitly allowlisted below.\n\
+                 *\n\
+                 \n\
+                 # Keep gitignore itself tracked.\n\
+                 !.gitignore\n\
+                 \n\
+                 # Allowlist project source and metadata.\n\
+                 !LICENSE\n\
+                 !README.md\n\
+                 !src/\n\
+                 !src/**\n\
+                 \n\
+                 # Explicitly ignore local/runtime artifacts.\n\
+                 .dolt/\n\
+                 *.db\n\
+                 .DS_Store\n";
+            std::fs::write(root.join(".gitignore"), original).unwrap();
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(MERGE_ATTR_PATH), "{}\n").unwrap();
+
+            fix_gitignore_shadow(root).unwrap();
+
+            let body = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+            assert_eq!(body, original, "allowlist .gitignore must be untouched");
+        }
+
+        /// Self-verification is the point, not decoration: a SIMPLE-shape
+        /// removal that STILL leaves the path shadowed (here, via a second
+        /// ignore source — `.git/info/exclude` — carrying the same rule)
+        /// must hard-error rather than report success.
+        #[test]
+        fn fix_gitignore_shadow_hard_errors_if_still_shadowed_after_fix() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(root.join(".gitignore"), "# comment\n.beads/\n").unwrap();
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(MERGE_ATTR_PATH), "{}\n").unwrap();
+            // A second, independent ignore source the fix cannot touch.
+            std::fs::create_dir_all(root.join(".git/info")).unwrap();
+            std::fs::write(root.join(".git/info/exclude"), ".beads/\n").unwrap();
+
+            let err = fix_gitignore_shadow(root).unwrap_err();
+            assert!(format!("{err:#}").contains("STILL shadowed"), "{err:#}");
+            // The .gitignore edit itself still happened (the fix isn't
+            // rolled back) — the hard error is about not CLAIMING success,
+            // not about leaving the repo in a worse state.
+            let body = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+            assert!(!body.lines().any(|l| l.trim() == ".beads/"));
+        }
+
+        #[test]
+        fn fix_gitignore_shadow_noop_when_not_shadowed() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(MERGE_ATTR_PATH), "{}\n").unwrap();
+
+            fix_gitignore_shadow(root).unwrap();
+            let body = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+            assert_eq!(body, "target/\n");
+        }
+
+        #[test]
+        fn fix_gitignore_shadow_noop_when_no_beads_dir() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(root.join(".gitignore"), ".beads/\n").unwrap();
+            // No .beads/ directory created — nothing to fix, must not panic
+            // or create one as a side effect.
+            fix_gitignore_shadow(root).unwrap();
+            assert!(!root.join(".beads").exists());
+        }
+
+        /// `install()` end-to-end: the fix runs as part of the normal
+        /// install flow, not just when called directly.
+        #[test]
+        fn install_fixes_simple_gitignore_shadow() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(root.join(".gitignore"), ".beads/\n").unwrap();
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(MERGE_ATTR_PATH), "{}\n").unwrap();
+
+            install(root).unwrap();
+
+            let body = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+            assert!(!body.lines().any(|l| l.trim() == ".beads/"), "{body}");
         }
 
         // --- embedded-template invariants ---------------------------------
