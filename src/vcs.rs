@@ -711,6 +711,45 @@ mod tests {
         assert_eq!(c.pr_number, 318);
     }
 
+    /// rosary-b2ae79 mutants rung: `rest = &after[close + 1..]` had zero
+    /// direct coverage — every existing test uses at most one bracket, so a
+    /// `+`->`-`/`*` mutation on the advancement arithmetic still produced
+    /// SOME output (not a hang) that happened to match on single-bracket
+    /// input. Multiple short brackets in sequence is the shape that exposes
+    /// a shifted/wrong advancement: each subsequent id gets parsed from the
+    /// wrong offset once one is off.
+    #[test]
+    fn extract_bracket_ids_advances_correctly_across_multiple_brackets() {
+        let ids =
+            extract_bracket_ids("[rosary-aaa111] middle [rosary-bbb222] end [rosary-ccc333] tail");
+        assert_eq!(ids, vec!["rosary-aaa111", "rosary-bbb222", "rosary-ccc333"]);
+    }
+
+    /// Sharper than the multi-bracket test above: an INVALID bracket whose
+    /// content ends in `[` (rejected by `is_bead_id`, correctly not pushed)
+    /// still advances `rest`. Under-advancing by even 1 char (a `close`->
+    /// `close-1` mutation) re-includes that trailing `[` as the start of
+    /// `rest`, so the next scan finds a SPURIOUS bracket at position 0 with
+    /// an empty/malformed body — panics on subtract-with-overflow once its
+    /// own (empty) close position feeds back into the same arithmetic.
+    /// Hand-verified against a manually planted mutation: the `-` variant
+    /// panics on this input; the original code returns `["rosary-def456"]`.
+    #[test]
+    fn extract_bracket_ids_survives_invalid_bracket_ending_in_open_bracket() {
+        let ids = extract_bracket_ids("[rosary-abc[] [rosary-def456]");
+        assert_eq!(ids, vec!["rosary-def456"]);
+    }
+
+    /// rosary-b2ae79 mutants rung: `digits.is_empty() || !after[..].starts_with(')')`
+    /// mutated to `&&` still returned the right answer whenever digits were
+    /// empty (the empty string fails `.parse()` regardless, via a different
+    /// path) — the distinguishing case is digits PRESENT but not properly
+    /// closed, which only the `||` form correctly rejects.
+    #[test]
+    fn trailing_pr_number_rejects_digits_without_closing_paren() {
+        assert_eq!(trailing_pr_number("fix thing (#318 not closed"), None);
+    }
+
     #[test]
     fn parse_merged_closures_ignores_body_mentions() {
         // rosary-e0e19f mutation test: a squash body contains every commit
