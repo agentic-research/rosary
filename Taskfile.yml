@@ -206,6 +206,40 @@ tasks:
         mache find-smells --db "$DB" --rule '*' --tags=gate --limit 100000 \
           --baseline-root "$PWD" --baseline docs/smell-baseline.json
 
+  # --------------------------------------------------------------------------
+  # Mutation testing — the gate that checks the TESTS, not the code.
+  #
+  # Why this exists: a hand-written regression test for auto-close logic
+  # (rosary-e0e19f) revealed what a mutation test catches instantly — the
+  # wrong parsing path was green because the test was hand-rolled instead of
+  # machine-generated. Later, rosary-cb9321 showed the real cost: the
+  # first-dash id parser silently dropped closures when the split logic
+  # subtly mutated. The whole test suite passed; the mutation test failed
+  # immediately.
+  #
+  # Scoped to the pure parsers in src/vcs.rs (parse_merged_closures,
+  # parse_merge_commit_record, extract_bracket_ids, valid_bead_id,
+  # trailing_pr_number, extract_bead_refs, extract_bead_ids, github_slug)
+  # via -F filter — the rest of vcs.rs spawns git and is not falsifiable
+  # at the mutation level.
+  #
+  # NOT in `task ci`: cargo mutants rebuilds per mutant (~2-3 min warm).
+  # Runs on demand (`task mutants:vcs`) and in its own workflow
+  # (.github/workflows/mutants.yml, path-filtered or explicit trigger).
+  # --------------------------------------------------------------------------
+  mutants:
+    desc: "Mutation-test the earned-rung allowlist (vcs.rs closure parsers). Fails if any mutant survives."
+    cmds:
+      - task: mutants:vcs
+
+  mutants:vcs:
+    desc: "Mutation-test src/vcs.rs pure parsers — the rung earned by rosary-e0e19f + rosary-cb9321."
+    cmds:
+      - >-
+        cargo mutants --file src/vcs.rs
+        -F 'parse_merged_closures|parse_merge_commit_record|extract_bracket_ids|valid_bead_id|trailing_pr_number|extract_bead_refs|extract_bead_ids|github_slug'
+        -j 2 -- --bin rsry
+
   coverage:
     desc: >-
       Test-coverage ratchet (rosary-69fdde) — the coverage analog of the mache
