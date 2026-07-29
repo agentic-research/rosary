@@ -92,7 +92,8 @@ fn hand_written_tool_definitions() -> Vec<Value> {
                         "issue_type": { "type": "string", "description": "New issue type" },
                         "owner": { "type": "string", "description": "New owner/assignee" },
                         "files": { "type": "array", "items": { "type": "string" }, "description": "Updated source files list. These scope parallel dispatch — see has_file_overlap() (epic.rs:386-393). Verify against actual code before setting; inaccurate scopes cause agent collisions or missed overlap detection." },
-                        "test_files": { "type": "array", "items": { "type": "string" }, "description": "Updated test files list. Also checked for overlap at dispatch time (reconcile.rs:372-380)." }
+                        "test_files": { "type": "array", "items": { "type": "string" }, "description": "Updated test files list. Also checked for overlap at dispatch time (reconcile.rs:372-380)." },
+                        "acceptance_criteria": { "type": "string", "description": "Close condition: how 'done' is verified (a command, or a resolution statement). Settable AFTER create — the handler has always accepted it; this schema simply never advertised it (0day/rosary-4d5d70)." },
                     },
                     "required": ["id"]                }
             },

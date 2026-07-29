@@ -244,11 +244,6 @@ pub const EXEMPT: &[Exemption] = &[
         "authorship is immutable once set",
     ),
     ex(
-        "acceptance_criteria",
-        Surface::McpUpdate,
-        "close conditions change via the close gate, not a field edit",
-    ),
-    ex(
         "created_by",
         Surface::McpCreate,
         "derived, not accepted: the handler reads the git config user from \
