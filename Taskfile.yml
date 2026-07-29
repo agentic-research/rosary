@@ -223,14 +223,25 @@ tasks:
   # via -F filter — the rest of vcs.rs spawns git and is not falsifiable
   # at the mutation level.
   #
+  # GOTCHA for the next rung (found landing rosary-e97360): `-F` does not
+  # filter out struct-literal-field-deletion mutants scattered through a
+  # LARGE file — confirmed against src/main.rs, where ~20 such mutants in
+  # unrelated functions (main, bootstrap_git_tracked_beads) survive even a
+  # match-nothing -F pattern. vcs.rs never showed this because the whole
+  # file is small enough that scope ≈ target. Prefer giving new pure logic
+  # its own small file (see src/gitignore.rs) over trying to -F-scope it
+  # inside main.rs or another god-file — `--file` alone is then sufficient
+  # and the noise class doesn't exist.
+  #
   # NOT in `task ci`: cargo mutants rebuilds per mutant (~2-3 min warm).
-  # Runs on demand (`task mutants:vcs`) and in its own workflow
+  # Runs on demand (`task mutants:<name>`) and in its own workflow
   # (.github/workflows/mutants.yml, path-filtered or explicit trigger).
   # --------------------------------------------------------------------------
   mutants:
-    desc: "Mutation-test the earned-rung allowlist (vcs.rs closure parsers). Fails if any mutant survives."
+    desc: "Mutation-test every earned rung. Fails if any mutant survives."
     cmds:
       - task: mutants:vcs
+      - task: mutants:gitignore
 
   mutants:vcs:
     desc: "Mutation-test src/vcs.rs pure parsers — the rung earned by rosary-e0e19f + rosary-cb9321."
@@ -239,6 +250,11 @@ tasks:
         cargo mutants --file src/vcs.rs
         -F 'parse_merged_closures|parse_merge_commit_record|extract_bracket_ids|valid_bead_id|trailing_pr_number|extract_bead_refs|extract_bead_ids|github_slug'
         -j 2 -- --bin rsry
+
+  mutants:gitignore:
+    desc: "Mutation-test src/gitignore.rs — the rung earned by rosary-e97360 (9-of-22-repo gitignore-shadow fleet sweep)."
+    cmds:
+      - cargo mutants --file src/gitignore.rs -j 2 -- --bin rsry
 
   coverage:
     desc: >-
