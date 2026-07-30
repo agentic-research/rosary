@@ -97,7 +97,7 @@ fn skill_md_examples_show_target_repo_selection() {
         "cloister",
         "signet",
         "mache",
-        "crumb",
+        "assay",
         "ley-line",
     ]
     .iter()
