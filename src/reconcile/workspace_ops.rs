@@ -407,4 +407,107 @@ mod tests {
             HandoffAttestationMode::Signed
         );
     }
+
+    fn sample_handoff() -> crate::handoff::Handoff {
+        crate::handoff::Handoff::new(
+            0,
+            "dev-agent",
+            None,
+            "test-bead",
+            "claude",
+            &crate::manifest::Work::default(),
+            None,
+        )
+    }
+
+    async fn reconciler_with_attestation(
+        attestation: Option<crate::config::AttestationConfig>,
+    ) -> Reconciler {
+        Reconciler::new(super::super::ReconcilerConfig {
+            once: true,
+            repo: Vec::new(),
+            attestation,
+            ..Default::default()
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn write_handoff_envelope_signed_mode_writes_a_verifiable_dsse_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let key_path = tmp.path().join("signing.key");
+        std::fs::write(&key_path, [4u8; 32]).unwrap();
+
+        let r = reconciler_with_attestation(Some(crate::config::AttestationConfig {
+            signing_key_path: Some(key_path),
+            emit_unsigned: false,
+        }))
+        .await;
+
+        let handoff = sample_handoff();
+        let handoff_path = handoff.write_to(tmp.path()).unwrap();
+        r.write_handoff_envelope("test-bead", &handoff_path, 0, &handoff);
+
+        let envelope_path = tmp.path().join(".rsry-handoff-0.dsse.json");
+        assert!(
+            envelope_path.exists(),
+            "signed mode must write a .dsse.json envelope"
+        );
+        let bytes = std::fs::read(&envelope_path).unwrap();
+        let envelope = leyline_envelope::Envelope::from_json_slice(&bytes).unwrap();
+        let signer = leyline_envelope::Ed25519RootSigner::from_seed(&[4u8; 32]);
+        let stmt = envelope.verify(&signer.verifying_key()).unwrap();
+        assert_eq!(stmt.predicate()["bead_id"], "test-bead");
+        assert!(!tmp.path().join(".rsry-handoff-0.intoto.json").exists());
+    }
+
+    #[tokio::test]
+    async fn write_handoff_envelope_unsigned_forensic_mode_writes_a_statement_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let r = reconciler_with_attestation(Some(crate::config::AttestationConfig {
+            signing_key_path: None,
+            emit_unsigned: true,
+        }))
+        .await;
+
+        let handoff = sample_handoff();
+        let handoff_path = handoff.write_to(tmp.path()).unwrap();
+        r.write_handoff_envelope("test-bead", &handoff_path, 0, &handoff);
+
+        let statement_path = tmp.path().join(".rsry-handoff-0.intoto.json");
+        assert!(
+            statement_path.exists(),
+            "unsigned-forensic mode must write a .intoto.json statement"
+        );
+        assert!(!tmp.path().join(".rsry-handoff-0.dsse.json").exists());
+    }
+
+    #[tokio::test]
+    async fn write_handoff_envelope_none_mode_writes_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let r = reconciler_with_attestation(None).await;
+
+        let handoff = sample_handoff();
+        let handoff_path = handoff.write_to(tmp.path()).unwrap();
+        r.write_handoff_envelope("test-bead", &handoff_path, 0, &handoff);
+
+        assert!(!tmp.path().join(".rsry-handoff-0.dsse.json").exists());
+        assert!(!tmp.path().join(".rsry-handoff-0.intoto.json").exists());
+    }
+
+    #[tokio::test]
+    async fn load_attestation_key_none_when_attestation_unconfigured() {
+        let r = reconciler_with_attestation(None).await;
+        assert!(r.load_attestation_key("test-bead").is_none());
+    }
+
+    #[tokio::test]
+    async fn load_attestation_key_none_when_key_file_missing() {
+        let r = reconciler_with_attestation(Some(crate::config::AttestationConfig {
+            signing_key_path: Some("/nonexistent/signing.key".into()),
+            emit_unsigned: false,
+        }))
+        .await;
+        assert!(r.load_attestation_key("test-bead").is_none());
+    }
 }
