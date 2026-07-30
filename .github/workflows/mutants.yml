@@ -1,0 +1,61 @@
+name: mutants
+
+# Mutation-testing gate (rosary-b2ae79) — runs cargo-mutants against the vcs
+# module via `task mutants` (Taskfile is the source of truth; this workflow
+# invokes the task, it does not reinvent the command — see
+# scripts/check-taskfile-contract.sh for the equivalent rule on ci.yml).
+# Path-filtered to the files that can actually move the mutation score, so
+# this doesn't run on every unrelated PR.
+
+on:
+  pull_request:
+    paths:
+      - 'src/vcs.rs'
+      - 'src/gitignore.rs'
+      - 'src/precommit_yaml.rs'
+      - 'Taskfile.yml'
+      - '.github/workflows/mutants.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  push:
+    branches: [main]
+    paths:
+      - 'src/vcs.rs'
+      - 'src/gitignore.rs'
+      - 'src/precommit_yaml.rs'
+      - 'Taskfile.yml'
+      - '.github/workflows/mutants.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutants-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutants:
+    name: cargo-mutants (earned rungs)
+    runs-on: ubuntu-latest
+    # 45min timed out on PR #454 at -j 2 (two concurrent full dependency
+    # builds contending on the runner, zero mutants completed in 41min).
+    # -j 1 (Taskfile.yml) removes that duplication; 90min is headroom for the
+    # cold dependency build plus three files' worth of mutants run
+    # sequentially, not an expectation that it needs the full budget.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - name: install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev capnproto
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: llvm-tools-preview
+      - uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - run: cargo install cargo-mutants --locked
+      - run: task mutants

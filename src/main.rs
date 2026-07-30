@@ -59,6 +59,7 @@ mod field_drift;
 #[allow(dead_code)] // API surface — PR creation from dispatch pipeline
 mod github;
 mod github_mirror;
+mod gitignore;
 mod graph;
 mod handoff;
 mod import;
@@ -88,6 +89,7 @@ mod personal;
 mod pipeline;
 mod plugin;
 mod pool;
+mod precommit_yaml;
 #[cfg(test)]
 mod proptest_support;
 mod publish;
@@ -562,7 +564,7 @@ enum NotesAction {
     },
 }
 
-#[derive(Subcommand, Clone, Copy)]
+#[derive(Subcommand, Clone)]
 enum HooksAction {
     /// Splice post-push / post-merge bead-sync blocks into the repo's hooks
     /// directory. The hooks dir is resolved via `git rev-parse --git-path
@@ -573,6 +575,23 @@ enum HooksAction {
     /// Show whether each rsry-managed hook is installed (and where) and
     /// whether the Dolt remote is configured for bead sync.
     Status,
+    /// Mechanically audit whether bead-sync config is REACHABLE and
+    /// CONSISTENT, not just installed: `.gitignore` shadowing that blocks
+    /// `beads.jsonl` regardless of reinstalls, `.beads/embeddeddolt/`
+    /// coexisting with a live rsry backend, and local-store/tracked-export
+    /// drift. Exits non-zero if any check fails — safe to script/CI against
+    /// (rosary-b5c8a1).
+    Audit,
+    /// Execute one embedded hook's managed-block logic directly, rather
+    /// than reading it out of a hook file on disk. This is the stable
+    /// `entry:` target `hooks install` writes into `.pre-commit-config.yaml`
+    /// for a pre-commit-framework-owned repo (rosary-00f2b5): the YAML
+    /// names this command, never a version-frozen shell snippet, so an
+    /// `rsry` upgrade updates the check without touching the YAML.
+    Run {
+        /// Hook name, e.g. `pre-commit`.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2853,9 +2872,11 @@ async fn main() -> Result<()> {
                 for registered in &config.repo {
                     let repo_root = scanner::resolve_repo_path(&registered.path);
                     println!("\n== {} ({}) ==", registered.name, repo_root.display());
-                    let result = match action {
+                    let result = match &action {
                         HooksAction::Install => hooks::install(&repo_root),
                         HooksAction::Status => hooks::status(&repo_root),
+                        HooksAction::Audit => hooks::audit(&repo_root),
+                        HooksAction::Run { name } => hooks::run(&repo_root, name),
                     };
                     if let Err(error) = result {
                         eprintln!("[hooks] {} failed: {error:#}", registered.name);
@@ -2870,9 +2891,11 @@ async fn main() -> Result<()> {
             } else {
                 let repo = repo.unwrap_or_else(|| ".".to_string());
                 let repo_root = scanner::resolve_repo_path(Path::new(&repo));
-                match action {
+                match &action {
                     HooksAction::Install => hooks::install(&repo_root)?,
                     HooksAction::Status => hooks::status(&repo_root)?,
+                    HooksAction::Audit => hooks::audit(&repo_root)?,
+                    HooksAction::Run { name } => hooks::run(&repo_root, name)?,
                 }
             }
         }
@@ -3140,6 +3163,11 @@ mod hooks {
     //! so worktrees, submodules (`.git` is a file pointer to the real
     //! gitdir, not a directory), and `core.hooksPath` overrides all route to
     //! the right place.
+    use crate::gitignore::{
+        GitignoreShadowShape, allowlist_fix_suggestion, classify_gitignore_shadow_shape,
+        remove_gitignore_line,
+    };
+    use crate::precommit_yaml::{is_precommit_framework_owned, merge_precommit_yaml};
     use anyhow::{Context, Result};
     use sha2::{Digest, Sha256};
     use std::path::{Path, PathBuf};
@@ -3535,6 +3563,86 @@ mod hooks {
         Ok(true)
     }
 
+    /// Auto-fix the SIMPLE gitignore-shadow shape found by `hooks audit`;
+    /// refuse-and-suggest for the ALLOWLIST shape. No-op if `.beads/`
+    /// doesn't exist or `.beads/beads.jsonl` isn't actually shadowed
+    /// (rosary-e97360). Called from `install()`.
+    ///
+    /// Self-verifying: after a real SIMPLE-shape write, re-checks
+    /// `git check-ignore -q` and hard-errors if the path is STILL shadowed
+    /// (e.g. a second ignore source like `.git/info/exclude` or a global
+    /// gitignore is also matching) — never trusts the edit blindly.
+    fn fix_gitignore_shadow(repo_root: &Path) -> Result<()> {
+        let beads_dir = repo_root.join(".beads");
+        if !beads_dir.exists() {
+            return Ok(());
+        }
+
+        let quiet = Command::new("git")
+            .current_dir(repo_root)
+            .args(["check-ignore", "-q", MERGE_ATTR_PATH])
+            .output();
+        let GitignoreCheck::Shadowed(_) = classify_gitignore_check(quiet, None) else {
+            return Ok(());
+        };
+
+        let gitignore_path = repo_root.join(".gitignore");
+        let Ok(content) = std::fs::read_to_string(&gitignore_path) else {
+            println!(
+                "  ? {MERGE_ATTR_PATH} is gitignore-shadowed, but no readable top-level \
+                 .gitignore was found to fix"
+            );
+            return Ok(());
+        };
+
+        match classify_gitignore_shadow_shape(&content) {
+            GitignoreShadowShape::Simple { pattern } => {
+                let fixed = remove_gitignore_line(&content, pattern);
+                std::fs::write(&gitignore_path, &fixed)
+                    .with_context(|| format!("writing {}", gitignore_path.display()))?;
+
+                let recheck = Command::new("git")
+                    .current_dir(repo_root)
+                    .args(["check-ignore", "-q", MERGE_ATTR_PATH])
+                    .output();
+                match classify_gitignore_check(recheck, None) {
+                    GitignoreCheck::Shadowed(_) => anyhow::bail!(
+                        "removed `{pattern}` from .gitignore but {MERGE_ATTR_PATH} is STILL \
+                         shadowed after the fix (another ignore source, e.g. \
+                         .git/info/exclude or a global gitignore, is also matching) — \
+                         refusing to claim success"
+                    ),
+                    GitignoreCheck::Unknown(e) => anyhow::bail!(
+                        "removed `{pattern}` from .gitignore but could not re-verify with \
+                         `git check-ignore`: {e}"
+                    ),
+                    GitignoreCheck::Reachable => {
+                        println!(
+                            "  ✓ removed shadowing rule `{pattern}` from {}",
+                            gitignore_path.display()
+                        );
+                    }
+                }
+            }
+            GitignoreShadowShape::Allowlist => {
+                println!(
+                    "  ! {MERGE_ATTR_PATH} is gitignore-shadowed by a default-deny allowlist \
+                     (.gitignore has a bare `*` plus `!` exceptions) — refusing to guess \
+                     which negation to add. Append to .gitignore:"
+                );
+                print!("{}", allowlist_fix_suggestion());
+            }
+            GitignoreShadowShape::Unrecognized => {
+                println!(
+                    "  ? {MERGE_ATTR_PATH} is gitignore-shadowed by an unrecognized \
+                     .gitignore shape — not auto-fixed. Run `rsry hooks audit` for detail, \
+                     then fix by hand."
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Install the `beads-jsonl` merge driver into the repo's git config
     /// (rosary-f9516f).
     ///
@@ -3591,7 +3699,31 @@ mod hooks {
             .with_context(|| format!("creating {}", hooks_dir.display()))?;
         neutralize_inactive_standard_hooks(repo_root, &hooks_dir)?;
 
+        // Detected ONCE, before any writes: the Python pre-commit framework
+        // owns and regenerates .git/hooks/pre-commit on every `pre-commit
+        // install`/`autoupdate`, silently dropping rsry's spliced block with
+        // nothing to warn that it happened (rosary-00f2b5, found live in
+        // mache). `.pre-commit-config.yaml` is the durable place a
+        // pre-commit-framework repo expects a check to live instead.
+        let precommit_config_path = repo_root.join(".pre-commit-config.yaml");
+        let precommit_framework_owned = is_precommit_framework_owned(
+            precommit_config_path.is_file(),
+            std::fs::read_to_string(hooks_dir.join("pre-commit"))
+                .ok()
+                .as_deref(),
+        );
+
         for (name, block) in HOOKS {
+            if *name == "pre-commit" && precommit_framework_owned {
+                // Instead of appending to a file the framework will
+                // regenerate out from under us, redirect entirely to
+                // .pre-commit-config.yaml below.
+                println!(
+                    "[hooks] {name} is pre-commit-framework-owned — writing to \
+                     .pre-commit-config.yaml instead of the raw hook file (rosary-00f2b5)"
+                );
+                continue;
+            }
             let dst = hooks_dir.join(name);
             // Replace a stale symlink (e.g. a hand-made commit-msg →
             // ~/.rsry/hooks/commit-msg) with a self-contained managed file —
@@ -3627,6 +3759,18 @@ mod hooks {
             println!("[hooks] installed {} → {}", name, dst.display());
         }
 
+        if precommit_framework_owned {
+            let existing = std::fs::read_to_string(&precommit_config_path).unwrap_or_default();
+            let updated = merge_precommit_yaml(&existing);
+            std::fs::write(&precommit_config_path, &updated)
+                .with_context(|| format!("writing {}", precommit_config_path.display()))?;
+            println!(
+                "[hooks] ✓ added rsry's local hook entry to {} (entry: `rsry hooks run \
+                 pre-commit`)",
+                precommit_config_path.display()
+            );
+        }
+
         // The tracked `.beads/beads.jsonl` export is merged by record, not by
         // line (rosary-f9516f). The driver definition lives in git config, so
         // it must be (re)installed per clone — `.gitattributes` only names it.
@@ -3642,6 +3786,12 @@ mod hooks {
         // never wrote what it diagnosed, so every repo that didn't hand-commit a
         // `.gitattributes` was unprotected. Measured: 5 of 7 tracked repos.
         ensure_jsonl_merge_attribute(repo_root)?;
+
+        // `hooks audit` DETECTS gitignore shadowing (rosary-b5c8a1); this
+        // ACTUALLY FIXES the common case, so a human/agent never again
+        // hand-edits another repo's .gitignore under time pressure
+        // (rosary-e97360 — found live in 9 of 22 repos in one sweep).
+        fix_gitignore_shadow(repo_root)?;
 
         // Warn if Dolt remote is not configured — hooks will silently no-op otherwise.
         let repo_name = repo_root
@@ -3769,6 +3919,232 @@ mod hooks {
         Ok(())
     }
 
+    /// Mechanically audit whether this repo's bead-sync config is actually
+    /// correct — not just installed, but REACHABLE and CONSISTENT. Three
+    /// checks `status()` doesn't cover, each found live during the
+    /// 2026-07-29 fleet sweep (rosary-b5c8a1):
+    ///
+    /// 1. **gitignore shadowing**: a top-level `.gitignore` rule (`.beads/`,
+    ///    `*`, etc.) can silently block `.beads/beads.jsonl` from ever being
+    ///    tracked, no matter how many times `hooks install` runs. Found live
+    ///    in `lectio` (`.beads/` at line 12) and `notme.bot` (`*` at line 2).
+    /// 2. **backend ambiguity**: `.beads/embeddeddolt/` (bd-era) coexisting
+    ///    with `.beads/beads.db` or `.beads/dolt/` means two stores both
+    ///    claim authority — rosary-909bec's exact defect.
+    /// 3. **store/export drift**: the local `beads.db` row count vs the
+    ///    tracked `beads.jsonl` line count. A large gap means real bead data
+    ///    has never been exported and has zero durable copy. Found live: 366
+    ///    beads across 9 repos, sitting only on one machine's disk in a
+    ///    gitignored file.
+    ///
+    /// Execute one embedded hook's managed-block logic directly, by
+    /// rendering the SAME `docs/git-hooks/<name>` template `install`
+    /// splices into a raw hook file and running it via `sh -c` in
+    /// `repo_root` (rosary-00f2b5). Propagates the script's exit status —
+    /// any non-zero code is returned as an error, matching how git itself
+    /// would treat a failing hook.
+    ///
+    /// This is the stable target `hooks install` writes into
+    /// `.pre-commit-config.yaml`'s `entry:` for a pre-commit-framework-owned
+    /// repo: the YAML names this COMMAND, never a version-frozen shell
+    /// snippet, so an `rsry` upgrade updates the check without ever
+    /// touching the YAML again.
+    pub fn run(repo_root: &Path, name: &str) -> Result<()> {
+        let (_, block) = HOOKS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .with_context(|| format!("unknown hook: {name} (known: {:?})", hook_names()))?;
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(render_block(block))
+            .current_dir(repo_root)
+            .status()
+            .with_context(|| format!("running hook `{name}`"))?;
+        if !status.success() {
+            anyhow::bail!(
+                "hook `{name}` exited {}",
+                status
+                    .code()
+                    .map_or("with a signal".to_string(), |c| c.to_string())
+            );
+        }
+        Ok(())
+    }
+
+    fn hook_names() -> Vec<&'static str> {
+        HOOKS.iter().map(|(n, _)| *n).collect()
+    }
+
+    /// Unlike `status()` (purely informational), this is a GATE: returns
+    /// `Err` naming every failing check if any check fails, so `rsry hooks
+    /// audit` exits non-zero and is safe to script/CI against.
+    pub fn audit(repo_root: &Path) -> Result<()> {
+        let mut problems = Vec::new();
+        let beads_dir = repo_root.join(".beads");
+        let jsonl_rel = ".beads/beads.jsonl";
+
+        // --- 1. gitignore shadowing ----------------------------------------
+        if beads_dir.exists() {
+            let quiet = Command::new("git")
+                .current_dir(repo_root)
+                .args(["check-ignore", "-q", jsonl_rel])
+                .output();
+            // `-v`'s exit code means "some rule (possibly a negation) decided
+            // the path" — NOT "is ignored" (verified live against notme.bot's
+            // default-deny allowlist: `-v` exits 0 on the deciding `!pattern`
+            // line even though the path is NOT ignored). Only `-q`'s exit code
+            // has gitignore(5)'s real ignored/not-ignored semantics; `-v` is
+            // fetched purely for the human-readable detail, only when needed.
+            let verbose_detail = if matches!(&quiet, Ok(o) if o.status.success()) {
+                Command::new("git")
+                    .current_dir(repo_root)
+                    .args(["check-ignore", "-v", jsonl_rel])
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            };
+            match classify_gitignore_check(quiet, verbose_detail) {
+                GitignoreCheck::Shadowed(detail) => {
+                    println!("  ✗ GITIGNORE-SHADOWED: {jsonl_rel} is blocked — {detail}");
+                    problems.push(format!("{jsonl_rel} is gitignore-shadowed: {detail}"));
+                }
+                GitignoreCheck::Reachable => {
+                    println!("  ✓ {jsonl_rel} reachable through .gitignore");
+                }
+                GitignoreCheck::Unknown(e) => {
+                    println!("  ? could not run git check-ignore: {e}");
+                }
+            }
+        }
+
+        // --- 2. backend ambiguity -------------------------------------------
+        let has_embedded = beads_dir.join("embeddeddolt").is_dir();
+        let sqlite_db = beads_dir.join("beads.db");
+        let has_sqlite = sqlite_db.exists();
+        let has_dolt = beads_dir.join("dolt").is_dir();
+        if backend_ambiguous(has_embedded, has_sqlite, has_dolt) {
+            let other = if has_sqlite { "beads.db" } else { "dolt/" };
+            println!(
+                "  ✗ BACKEND-AMBIGUOUS: embeddeddolt/ coexists with {other} — two stores claim authority"
+            );
+            problems.push(format!("embeddeddolt/ coexists with {other}"));
+        } else if beads_dir.exists() {
+            println!("  ✓ no ambiguous backend coexistence");
+        }
+
+        // --- 3. store/export drift -------------------------------------------
+        if has_sqlite {
+            match count_sqlite_issues(&sqlite_db) {
+                Ok(db_count) => {
+                    let jsonl_lines = std::fs::read_to_string(beads_dir.join("beads.jsonl"))
+                        .map(|c| c.lines().filter(|l| !l.trim().is_empty()).count())
+                        .unwrap_or(0);
+                    if store_export_drifted(db_count, jsonl_lines) {
+                        println!(
+                            "  ✗ STORE/EXPORT DRIFT: beads.db has {db_count} bead(s), beads.jsonl has {jsonl_lines} line(s) — no durable copy"
+                        );
+                        problems.push(format!(
+                            "{db_count} bead(s) in beads.db, only {jsonl_lines} in beads.jsonl"
+                        ));
+                    } else {
+                        println!(
+                            "  ✓ store/export roughly agree (beads.db={db_count}, beads.jsonl={jsonl_lines} line(s))"
+                        );
+                    }
+                }
+                Err(e) => println!("  ? could not read beads.db to check drift: {e}"),
+            }
+        }
+
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "{} problem(s) found: {}",
+                problems.len(),
+                problems.join("; ")
+            )
+        }
+    }
+
+    /// Result of classifying a `git check-ignore -v` probe on
+    /// `.beads/beads.jsonl`. Mirrors [`DoltRemoteStatus`]'s shape: a pure
+    /// classifier over `io::Result<Output>` so it's unit- and
+    /// property-testable without spawning git.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum GitignoreCheck {
+        /// `check-ignore` matched — the export is unreachable regardless of
+        /// how many times hooks are (re)installed. Carries the matching
+        /// rule (`<file>:<line>:<pattern>\t<path>`).
+        Shadowed(String),
+        /// `check-ignore` found no match — the path is trackable.
+        Reachable,
+        /// The `git` binary itself couldn't be spawned.
+        Unknown(String),
+    }
+
+    /// Classify a `git check-ignore -q <path>` invocation — `-q`'s exit code
+    /// is the one with real gitignore(5) ignored/not-ignored semantics (0 =
+    /// ignored, 1 = not ignored, anything higher is an error). `-v`'s exit
+    /// code is NOT equivalent: it reports 0 whenever any rule, including a
+    /// `!negation`, decided the path — so a `-v`-only classifier misreports
+    /// an explicitly un-ignored path as shadowed (found live against
+    /// notme.bot's default-deny allowlist, 2026-07-29). `verbose_detail` is
+    /// the caller's separately-fetched `-v` output, attached to `Shadowed`
+    /// purely for the human-readable rule; never used to make the decision.
+    pub(crate) fn classify_gitignore_check(
+        result: std::io::Result<std::process::Output>,
+        verbose_detail: Option<String>,
+    ) -> GitignoreCheck {
+        match result {
+            Err(e) => GitignoreCheck::Unknown(e.to_string()),
+            Ok(out) if out.status.success() => {
+                GitignoreCheck::Shadowed(verbose_detail.unwrap_or_default())
+            }
+            Ok(_) => GitignoreCheck::Reachable,
+        }
+    }
+
+    /// Two bead backends claiming authority over one `.beads/` directory —
+    /// rosary-909bec's exact defect. `embeddeddolt/` is the bd-era store;
+    /// `beads.db`/`dolt/` are rsry's own. Pure predicate so the boundary is
+    /// exhaustively property-testable over the 3-bool space.
+    pub(crate) fn backend_ambiguous(
+        has_embedded_dolt: bool,
+        has_sqlite: bool,
+        has_dolt: bool,
+    ) -> bool {
+        has_embedded_dolt && (has_sqlite || has_dolt)
+    }
+
+    /// Has the local store outrun its tracked export badly enough that real
+    /// bead data has no durable copy? Lines needn't match exactly (status
+    /// filters, in-flight writes change the count run to run) — this states
+    /// the boundary as a threshold shape, not a hardcoded magic number, so
+    /// the property tests characterize it independent of the exact ratio.
+    ///
+    /// Laws: an empty store never drifts (nothing to lose); a nonempty store
+    /// with zero exported lines always drifts (the exact incident this
+    /// check exists for — 366 beads, 9 repos, 2026-07-29); drift is
+    /// monotonic in `jsonl_lines` — exporting more can only cure a flagged
+    /// state, never cause one; an export meeting or exceeding the store
+    /// count never drifts.
+    pub(crate) fn store_export_drifted(db_count: i64, jsonl_lines: usize) -> bool {
+        db_count > 0 && (jsonl_lines == 0 || jsonl_lines * 2 < db_count as usize)
+    }
+
+    /// Row count of the `issues` table in a bead SQLite store, opened
+    /// read-only so an audit run can never itself mutate or lock the store.
+    fn count_sqlite_issues(path: &Path) -> Result<i64> {
+        let conn =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .with_context(|| format!("opening {}", path.display()))?;
+        conn.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
+            .context("counting issues")
+    }
+
     /// Result of probing `dolt remote -v` in a Dolt-backed bead directory.
     ///
     /// Distinguishes "command ran cleanly with no remote" from "command
@@ -3816,6 +4192,7 @@ mod hooks {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use proptest::prelude::*;
         use std::process::Command;
 
         /// Run `git` with a genuinely-isolated env so the host's gitconfig
@@ -3929,6 +4306,359 @@ mod hooks {
         #[test]
         fn beads_gitignore_denies_migration_backup() {
             assert!(crate::init::BEADS_GITIGNORE.contains("dolt.bak/"));
+        }
+
+        // --- gitignore-shadow auto-fix (rosary-e97360) ---------------------
+        //
+        // Pure classification/removal logic (classify_gitignore_shadow_shape,
+        // remove_gitignore_line, allowlist_fix_suggestion) lives in
+        // src/gitignore.rs with its own unit tests — kept as a standalone
+        // file specifically so it can be mutation-tested in isolation
+        // (`task mutants:gitignore`) without main.rs's unrelated noise.
+        // What stays here is the I/O-level integration: does
+        // `fix_gitignore_shadow` actually read/write/re-verify correctly.
+
+        /// REAL FIXTURE 1 (lectio, SIMPLE shape) — the actual lines found at
+        /// .gitignore:10-12 before the fix, hand-applied this session.
+        /// Verified live via `git check-ignore -q` at the time; this test
+        /// pins the automated version of that same fix.
+        #[test]
+        fn fix_gitignore_shadow_simple_shape_removes_rule_and_self_verifies() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(
+                root.join(".gitignore"),
+                "/target\n\
+                 **/target/\n\
+                 \n\
+                 # Local rosary bead store (Dolt DB + daemon token) — local only, never publish.\n\
+                 # (Also covered by ~/.gitignore_global; repeated here so the repo is self-contained.)\n\
+                 .beads/\n",
+            )
+            .unwrap();
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(MERGE_ATTR_PATH), "{}\n").unwrap();
+
+            // Precondition: genuinely shadowed before the fix.
+            assert!(
+                Command::new("git")
+                    .current_dir(root)
+                    .args(["check-ignore", "-q", MERGE_ATTR_PATH])
+                    .status()
+                    .unwrap()
+                    .success(),
+                "fixture must start shadowed"
+            );
+
+            fix_gitignore_shadow(root).unwrap();
+
+            let body = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+            assert!(!body.lines().any(|l| l.trim() == ".beads/"), "{body}");
+            // Comments and unrelated rules survive untouched.
+            assert!(body.contains("/target"));
+            assert!(body.contains("Local rosary bead store"));
+
+            // Self-verification means this must ACTUALLY be reachable now,
+            // not just "the line is gone" — proves the fix, not the edit.
+            assert!(
+                !Command::new("git")
+                    .current_dir(root)
+                    .args(["check-ignore", "-q", MERGE_ATTR_PATH])
+                    .status()
+                    .unwrap()
+                    .success(),
+                "must be reachable after the fix"
+            );
+        }
+
+        /// REAL FIXTURE 2 (notme.bot, ALLOWLIST shape) — the actual
+        /// default-deny structure found this session. Must NOT be
+        /// auto-edited; must print the exact two-step suggestion and leave
+        /// the file untouched.
+        #[test]
+        fn fix_gitignore_shadow_allowlist_shape_refuses_and_does_not_write() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            let original = "# Default deny: ignore everything unless explicitly allowlisted below.\n\
+                 *\n\
+                 \n\
+                 # Keep gitignore itself tracked.\n\
+                 !.gitignore\n\
+                 \n\
+                 # Allowlist project source and metadata.\n\
+                 !LICENSE\n\
+                 !README.md\n\
+                 !src/\n\
+                 !src/**\n\
+                 \n\
+                 # Explicitly ignore local/runtime artifacts.\n\
+                 .dolt/\n\
+                 *.db\n\
+                 .DS_Store\n";
+            std::fs::write(root.join(".gitignore"), original).unwrap();
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(MERGE_ATTR_PATH), "{}\n").unwrap();
+
+            fix_gitignore_shadow(root).unwrap();
+
+            let body = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+            assert_eq!(body, original, "allowlist .gitignore must be untouched");
+        }
+
+        /// Self-verification is the point, not decoration: a SIMPLE-shape
+        /// removal that STILL leaves the path shadowed (here, via a second
+        /// ignore source — `.git/info/exclude` — carrying the same rule)
+        /// must hard-error rather than report success.
+        #[test]
+        fn fix_gitignore_shadow_hard_errors_if_still_shadowed_after_fix() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(root.join(".gitignore"), "# comment\n.beads/\n").unwrap();
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(MERGE_ATTR_PATH), "{}\n").unwrap();
+            // A second, independent ignore source the fix cannot touch.
+            std::fs::create_dir_all(root.join(".git/info")).unwrap();
+            std::fs::write(root.join(".git/info/exclude"), ".beads/\n").unwrap();
+
+            let err = fix_gitignore_shadow(root).unwrap_err();
+            assert!(format!("{err:#}").contains("STILL shadowed"), "{err:#}");
+            // The .gitignore edit itself still happened (the fix isn't
+            // rolled back) — the hard error is about not CLAIMING success,
+            // not about leaving the repo in a worse state.
+            let body = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+            assert!(!body.lines().any(|l| l.trim() == ".beads/"));
+        }
+
+        #[test]
+        fn fix_gitignore_shadow_noop_when_not_shadowed() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(MERGE_ATTR_PATH), "{}\n").unwrap();
+
+            fix_gitignore_shadow(root).unwrap();
+            let body = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+            assert_eq!(body, "target/\n");
+        }
+
+        #[test]
+        fn fix_gitignore_shadow_noop_when_no_beads_dir() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(root.join(".gitignore"), ".beads/\n").unwrap();
+            // No .beads/ directory created — nothing to fix, must not panic
+            // or create one as a side effect.
+            fix_gitignore_shadow(root).unwrap();
+            assert!(!root.join(".beads").exists());
+        }
+
+        /// `install()` end-to-end: the fix runs as part of the normal
+        /// install flow, not just when called directly.
+        #[test]
+        fn install_fixes_simple_gitignore_shadow() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(root.join(".gitignore"), ".beads/\n").unwrap();
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(MERGE_ATTR_PATH), "{}\n").unwrap();
+
+            install(root).unwrap();
+
+            let body = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+            assert!(!body.lines().any(|l| l.trim() == ".beads/"), "{body}");
+        }
+
+        // --- pre-commit-framework integration (rosary-00f2b5) --------------
+        //
+        // Pure detection/YAML-editing logic (is_precommit_framework_owned,
+        // merge_precommit_yaml) lives in src/precommit_yaml.rs with its own
+        // unit tests, for the same mutation-testing reason as gitignore.rs.
+        // What stays here is I/O-level: does `install()` actually redirect
+        // correctly, and does `hooks run` actually execute.
+
+        /// The core behavior change: a framework-owned repo (signaled by a
+        /// present `.pre-commit-config.yaml`) gets its `pre-commit` entry
+        /// redirected to the YAML, never spliced into the raw hook file —
+        /// while every OTHER managed hook still installs normally.
+        #[test]
+        fn install_redirects_precommit_to_yaml_when_framework_owned() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(
+                root.join(".pre-commit-config.yaml"),
+                "repos:\n  - repo: https://github.com/psf/black\n    rev: 24.0\n",
+            )
+            .unwrap();
+
+            install(root).unwrap();
+
+            let hooks_dir = root.join(".git").join("hooks");
+            let raw_precommit =
+                std::fs::read_to_string(hooks_dir.join("pre-commit")).unwrap_or_default();
+            assert!(
+                !raw_precommit.contains(MARKER_START),
+                "must NOT splice into the raw file when framework-owned: {raw_precommit}"
+            );
+
+            let yaml = std::fs::read_to_string(root.join(".pre-commit-config.yaml")).unwrap();
+            assert!(yaml.contains("entry: rsry hooks run pre-commit"), "{yaml}");
+            assert!(
+                yaml.contains("psf/black"),
+                "pre-existing entry lost: {yaml}"
+            );
+
+            // Every OTHER hook is unaffected — still gets the normal raw-file
+            // treatment.
+            let post_push = std::fs::read_to_string(hooks_dir.join("post-push")).unwrap();
+            assert!(post_push.contains(MARKER_START));
+        }
+
+        /// Regression pin: an ordinary (non-framework) repo is completely
+        /// unaffected by this bead — ensures the new detection didn't
+        /// change existing behavior for the common case.
+        #[test]
+        fn install_still_uses_raw_file_when_not_framework_owned() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+
+            install(root).unwrap();
+
+            let raw_precommit =
+                std::fs::read_to_string(root.join(".git/hooks/pre-commit")).unwrap();
+            assert!(raw_precommit.contains(MARKER_START));
+            assert!(!root.join(".pre-commit-config.yaml").exists());
+        }
+
+        /// The fallback signal: no `.pre-commit-config.yaml` at all, but the
+        /// EXISTING raw hook already shows the framework's generated shape
+        /// (the exact live signature observed in mache). `install()` must
+        /// still redirect — and since no config file existed, creates a
+        /// minimal one rather than erroring.
+        #[test]
+        fn install_detects_framework_ownership_via_existing_hook_marker() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            let hooks_dir = root.join(".git").join("hooks");
+            std::fs::create_dir_all(&hooks_dir).unwrap();
+            std::fs::write(
+                hooks_dir.join("pre-commit"),
+                "#!/usr/bin/env bash\n\
+                 # File generated by pre-commit: https://pre-commit.com\n\
+                 # ID: 138fd403232d2ddd5efb44317e38bf03\n\
+                 exec pre-commit hook-impl --hook-type=pre-commit \"$@\"\n",
+            )
+            .unwrap();
+
+            install(root).unwrap();
+
+            let yaml = std::fs::read_to_string(root.join(".pre-commit-config.yaml")).unwrap();
+            assert!(yaml.contains("entry: rsry hooks run pre-commit"), "{yaml}");
+            assert!(yaml.starts_with("repos:\n"), "{yaml}");
+        }
+
+        /// The acceptance criterion, directly: simulate a fresh
+        /// `pre-commit install` regenerating `.git/hooks/pre-commit` from
+        /// scratch AFTER rsry's install ran. `.pre-commit-config.yaml` is a
+        /// separate file regeneration never touches — this proves rsry's
+        /// check survives, rather than asserting anything about pre-commit's
+        /// own dispatch (which would require the real `pre-commit` binary).
+        #[test]
+        fn precommit_yaml_survives_a_simulated_framework_regeneration() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(root.join(".pre-commit-config.yaml"), "repos: []\n").unwrap();
+
+            install(root).unwrap();
+            let after_install =
+                std::fs::read_to_string(root.join(".pre-commit-config.yaml")).unwrap();
+            assert!(after_install.contains("entry: rsry hooks run pre-commit"));
+
+            // Simulate `pre-commit install` regenerating the raw hook file —
+            // the exact framework-only shape observed live, zero rsry
+            // markers.
+            let hooks_dir = root.join(".git").join("hooks");
+            std::fs::write(
+                hooks_dir.join("pre-commit"),
+                "#!/usr/bin/env bash\n\
+                 # File generated by pre-commit: https://pre-commit.com\n\
+                 exec pre-commit hook-impl --hook-type=pre-commit \"$@\"\n",
+            )
+            .unwrap();
+            let regenerated = std::fs::read_to_string(hooks_dir.join("pre-commit")).unwrap();
+            assert!(
+                !regenerated.contains(MARKER_START),
+                "sanity: regeneration must genuinely wipe any rsry markers, \
+                 or this test would prove nothing"
+            );
+
+            let after_regeneration =
+                std::fs::read_to_string(root.join(".pre-commit-config.yaml")).unwrap();
+            assert_eq!(
+                after_install, after_regeneration,
+                "the YAML fix must be untouched by raw-hook-file regeneration"
+            );
+        }
+
+        // --- hooks run (rosary-00f2b5) --------------------------------------
+
+        #[test]
+        fn hooks_run_unknown_hook_errors() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            let err = run(root, "not-a-real-hook").unwrap_err();
+            assert!(format!("{err:#}").contains("unknown hook"), "{err:#}");
+        }
+
+        /// Proves `hooks run` genuinely renders and executes the REAL
+        /// embedded template (not a stub) — exercised via the pre-commit
+        /// hook's own opt-in-by-tracking guard, which short-circuits to a
+        /// no-op without needing the `rsry` binary resolvable on PATH (this
+        /// test process's `cargo test` sandbox does not guarantee that).
+        #[test]
+        fn hooks_run_precommit_is_a_noop_when_jsonl_not_tracked() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            // No .beads/beads.jsonl tracked — the embedded script's own
+            // opt-in guard must make this a clean no-op.
+            run(root, "pre-commit").unwrap();
+        }
+
+        /// Exit-code propagation, proven without depending on the `rsry`
+        /// binary: `commit-msg`'s embedded script reads `$1` for the commit
+        /// message file. `hooks run` passes no positional argument, so `$1`
+        /// is empty — the script deterministically falls through to its own
+        /// `exit 1` (no commit-message pattern can match an empty subject).
+        #[test]
+        fn hooks_run_propagates_a_nonzero_exit_as_an_error() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            let err = run(root, "commit-msg").unwrap_err();
+            assert!(format!("{err:#}").contains("exited"), "{err:#}");
         }
 
         // --- embedded-template invariants ---------------------------------
@@ -4405,6 +5135,213 @@ mod hooks {
                 DoltRemoteStatus::NotInvokable(msg) => assert!(msg.contains("no such file")),
                 _ => panic!("expected NotInvokable for spawn failure"),
             }
+        }
+
+        // --- audit: classify_gitignore_check (examples) --------------------
+
+        #[test]
+        fn classify_gitignore_check_shadowed_on_quiet_success() {
+            let quiet = forge_output(true, "", "");
+            let detail = Some(".gitignore:12:.beads/\t.beads/beads.jsonl".to_string());
+            match classify_gitignore_check(Ok(quiet), detail) {
+                GitignoreCheck::Shadowed(d) => assert!(d.contains(".gitignore:12")),
+                other => panic!("expected Shadowed, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn classify_gitignore_check_reachable_on_quiet_failure_exit() {
+            // `-q` exits 1 when the path is NOT ignored — gitignore(5).
+            let quiet = forge_output(false, "", "");
+            assert_eq!(
+                classify_gitignore_check(Ok(quiet), None),
+                GitignoreCheck::Reachable
+            );
+        }
+
+        /// REGRESSION (found live against notme.bot's default-deny allowlist,
+        /// 2026-07-29): `-v` exits 0 whenever ANY rule decided the path,
+        /// including a `!negation` that explicitly un-ignores it — so a
+        /// `-v`-exit-code-only classifier reported an explicitly TRACKABLE
+        /// path as shadowed. `-q`'s exit code is the one with real
+        /// ignored/not-ignored semantics; this pins that distinction so it
+        /// can't silently regress back to a `-v`-only decision.
+        #[test]
+        fn classify_gitignore_check_reachable_when_quiet_disagrees_with_verbose_detail() {
+            // -q correctly reports "not ignored" (exit 1)...
+            let quiet = forge_output(false, "", "");
+            // ...even though a verbose detail naming a NEGATION rule is
+            // available (what -v would have reported as its deciding line).
+            let detail = Some(".gitignore:41:!.beads/beads.jsonl\t.beads/beads.jsonl".to_string());
+            assert_eq!(
+                classify_gitignore_check(Ok(quiet), detail),
+                GitignoreCheck::Reachable,
+                "a negation-decided path must classify Reachable regardless of verbose detail"
+            );
+        }
+
+        #[test]
+        fn classify_gitignore_check_unknown_on_spawn_failure() {
+            let err = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
+            match classify_gitignore_check(Err(err), None) {
+                GitignoreCheck::Unknown(msg) => assert!(msg.contains("no such file")),
+                other => panic!("expected Unknown, got {other:?}"),
+            }
+        }
+
+        // --- audit: pure predicates (property tests) ------------------------
+        //
+        // These prove the LAWS, not just chosen examples — property tests
+        // over `backend_ambiguous` and `store_export_drifted` per the
+        // session's mutants-rung discipline (rosary-b2ae79): a law stated
+        // once and checked over the whole input space catches boundary bugs
+        // an example can't. `proptest_support` isn't used here (no shrink
+        // config needed for these small/fast domains); the plain
+        // `proptest!` macro's defaults are enough.
+
+        proptest! {
+            /// backend_ambiguous(e, s, d) == e && (s || d), over the whole
+            /// bool^3 space — not just the one live case (agents repo) that
+            /// motivated it.
+            #[test]
+            fn backend_ambiguous_matches_boolean_spec(
+                has_embedded in proptest::bool::ANY,
+                has_sqlite in proptest::bool::ANY,
+                has_dolt in proptest::bool::ANY,
+            ) {
+                prop_assert_eq!(
+                    backend_ambiguous(has_embedded, has_sqlite, has_dolt),
+                    has_embedded && (has_sqlite || has_dolt)
+                );
+            }
+
+            /// Law 1: an empty store never drifts — there is nothing to lose,
+            /// regardless of what the export looks like.
+            #[test]
+            fn store_export_drift_empty_store_never_flags(jsonl_lines in 0usize..10_000) {
+                prop_assert!(!store_export_drifted(0, jsonl_lines));
+            }
+
+            /// Law 2: a nonempty store with zero exported lines always
+            /// flags — the exact incident this check exists for (366 beads,
+            /// 9 repos, zero durable copy, 2026-07-29).
+            #[test]
+            fn store_export_drift_zero_export_always_flags(db_count in 1i64..10_000) {
+                prop_assert!(store_export_drifted(db_count, 0));
+            }
+
+            /// Law 3: an export meeting or exceeding the store count never
+            /// drifts — a superset export (e.g. after a cross-repo merge) is
+            /// never mistaken for data loss.
+            #[test]
+            fn store_export_drift_full_export_never_flags(
+                db_count in 0i64..10_000,
+                extra in 0usize..1_000,
+            ) {
+                let jsonl_lines = db_count as usize + extra;
+                prop_assert!(!store_export_drifted(db_count, jsonl_lines));
+            }
+
+            /// Law 4 (the load-bearing one): drift is MONOTONIC in
+            /// `jsonl_lines` — exporting more can only cure a flagged state,
+            /// never cause one. Any threshold-shaped implementation must
+            /// hold this regardless of the specific ratio chosen, so this
+            /// property survives a future retune of the threshold.
+            #[test]
+            fn store_export_drift_is_monotonic_in_jsonl_lines(
+                db_count in 0i64..10_000,
+                jsonl_a in 0usize..10_000,
+                jsonl_b in 0usize..10_000,
+            ) {
+                let (lo, hi) = if jsonl_a <= jsonl_b { (jsonl_a, jsonl_b) } else { (jsonl_b, jsonl_a) };
+                // flagged(db, hi) => flagged(db, lo) is the monotonic direction;
+                // equivalently !flagged(db, lo) => !flagged(db, hi).
+                if store_export_drifted(db_count, hi) {
+                    prop_assert!(store_export_drifted(db_count, lo));
+                }
+            }
+        }
+
+        // --- audit: end-to-end fixtures --------------------------------------
+
+        #[test]
+        fn audit_flags_gitignore_shadowed_export() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            std::fs::write(dir.path().join(".gitignore"), ".beads/\n").unwrap();
+            std::fs::create_dir_all(dir.path().join(".beads")).unwrap();
+            std::fs::write(dir.path().join(".beads").join("beads.jsonl"), "").unwrap();
+
+            let err = audit(dir.path()).unwrap_err();
+            assert!(format!("{err:#}").contains("gitignore-shadowed"), "{err:#}");
+        }
+
+        #[test]
+        fn audit_flags_embeddeddolt_and_beads_db_coexisting() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            std::fs::create_dir_all(dir.path().join(".beads").join("embeddeddolt")).unwrap();
+            std::fs::write(dir.path().join(".beads").join("beads.db"), b"not a real db").unwrap();
+
+            let err = audit(dir.path()).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("embeddeddolt/ coexists"),
+                "{err:#}"
+            );
+        }
+
+        #[test]
+        fn audit_flags_store_export_drift() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            let db_path = dir.path().join(".beads").join("beads.db");
+            std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute("CREATE TABLE issues (id TEXT PRIMARY KEY)", [])
+                .unwrap();
+            for i in 0..5 {
+                conn.execute("INSERT INTO issues (id) VALUES (?1)", [format!("t-{i}")])
+                    .unwrap();
+            }
+            drop(conn);
+            // beads.jsonl deliberately absent — the exact incident shape.
+
+            let err = audit(dir.path()).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("in beads.db, only 0"),
+                "{err:#}"
+            );
+        }
+
+        #[test]
+        fn audit_passes_clean_repo_with_no_beads_dir() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            audit(dir.path()).unwrap();
+        }
+
+        #[test]
+        fn audit_passes_when_store_and_export_agree() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            let beads_dir = dir.path().join(".beads");
+            std::fs::create_dir_all(&beads_dir).unwrap();
+            let db_path = beads_dir.join("beads.db");
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute("CREATE TABLE issues (id TEXT PRIMARY KEY)", [])
+                .unwrap();
+            for i in 0..5 {
+                conn.execute("INSERT INTO issues (id) VALUES (?1)", [format!("t-{i}")])
+                    .unwrap();
+            }
+            drop(conn);
+            std::fs::write(
+                beads_dir.join("beads.jsonl"),
+                "{\"id\":\"t-0\"}\n{\"id\":\"t-1\"}\n{\"id\":\"t-2\"}\n{\"id\":\"t-3\"}\n{\"id\":\"t-4\"}\n",
+            )
+            .unwrap();
+
+            audit(dir.path()).unwrap();
         }
 
         // --- documentation / marker consistency ---------------------------

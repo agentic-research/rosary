@@ -32,7 +32,7 @@ fn detect_vcs_none() {
 #[tokio::test]
 async fn workspace_create_no_isolation() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let ws = Workspace::create("test-1", "repo", tmp.path(), false)
+    let ws = Workspace::create("test-1", "repo", tmp.path(), false, true)
         .await
         .unwrap();
     assert_eq!(ws.vcs, VcsKind::None);
@@ -45,7 +45,7 @@ async fn workspace_create_no_isolation() {
 async fn workspace_create_no_vcs_with_isolate_errors() {
     let tmp = tempfile::TempDir::new().unwrap();
     // No .jj or .git — isolate=true must error, not silently fall back
-    let result = Workspace::create("test-1", "repo", tmp.path(), true).await;
+    let result = Workspace::create("test-1", "repo", tmp.path(), true, true).await;
     assert!(
         result.is_err(),
         "Workspace::create with isolate=true must fail when no VCS is available, \
@@ -57,11 +57,87 @@ async fn workspace_create_no_vcs_with_isolate_errors() {
 async fn workspace_create_no_vcs_without_isolate_falls_through() {
     let tmp = tempfile::TempDir::new().unwrap();
     // No .jj or .git — isolate=false allows in-place execution
-    let ws = Workspace::create("test-1", "repo", tmp.path(), false)
+    let ws = Workspace::create("test-1", "repo", tmp.path(), false, true)
         .await
         .unwrap();
     assert_eq!(ws.vcs, VcsKind::None);
     assert_eq!(ws.work_dir, tmp.path().to_path_buf());
+}
+
+/// rosary-3b8a9b / rosary-d1f5d8: two concurrent `Workspace::create` calls
+/// for the SAME bead used to silently share one `work_dir`, so the losing
+/// dispatch's handoff writes clobbered the winner's with no error on either
+/// side. `reuse: false` on the second call must refuse loudly instead,
+/// naming the workspace already holding it — and must leave the first
+/// workspace completely untouched.
+#[tokio::test]
+async fn workspace_create_refuses_concurrent_reuse_when_disallowed() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    std::fs::write(repo.join("src.rs"), "fn main() {}").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    // First dispatch claims the workspace.
+    let ws1 = Workspace::create("shared-bead", "repo", repo, true, true)
+        .await
+        .expect("first create must succeed");
+    let marker = ws1.work_dir.join("dispatch-a-handoff.json");
+    std::fs::write(&marker, "dispatch A's in-flight state").unwrap();
+
+    // Second, concurrent dispatch for the SAME bead — must refuse, not
+    // silently attach and share the worktree.
+    let result = Workspace::create("shared-bead", "repo", repo, true, false).await;
+    let err = match result {
+        Ok(_) => panic!("second create with reuse=false must refuse, not succeed"),
+        Err(e) => e,
+    };
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains(&ws1.work_dir.display().to_string()),
+        "error must name the existing workspace path: {msg}"
+    );
+
+    // The first dispatch's workspace and in-flight state are untouched — no
+    // interleaving, nothing lost.
+    assert!(ws1.work_dir.exists());
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        "dispatch A's in-flight state",
+        "the losing call must not have clobbered the holder's state"
+    );
+
+    // Sanity: reuse=true against the same existing workspace still works —
+    // the fix only changes behavior when a caller explicitly asks for it.
+    let ws2 = Workspace::create("shared-bead", "repo", repo, true, true)
+        .await
+        .expect("reuse=true must still attach to the existing workspace");
+    assert_eq!(ws1.work_dir, ws2.work_dir);
+
+    sweep::cleanup_git_worktree(repo, "shared-bead");
 }
 
 #[tokio::test]
@@ -71,7 +147,7 @@ async fn workspace_provision_and_exec() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mock = MockProvider::new();
 
-    let mut ws = Workspace::create("test-1", "repo", tmp.path(), false)
+    let mut ws = Workspace::create("test-1", "repo", tmp.path(), false, true)
         .await
         .unwrap();
     ws.provision(&mock).await.unwrap();
@@ -91,7 +167,7 @@ async fn workspace_provision_and_exec() {
 #[tokio::test]
 async fn workspace_cleanup_noop_is_safe() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let ws = Workspace::create("gap2-noop", "repo", tmp.path(), false)
+    let ws = Workspace::create("gap2-noop", "repo", tmp.path(), false, true)
         .await
         .unwrap();
     assert_eq!(ws.vcs, VcsKind::None);
@@ -157,7 +233,7 @@ async fn git_worktree_has_source_code_not_just_beads() {
 #[tokio::test]
 async fn workspace_exec_without_provision_uses_local() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let ws = Workspace::create("test-1", "repo", tmp.path(), false)
+    let ws = Workspace::create("test-1", "repo", tmp.path(), false, true)
         .await
         .unwrap();
 
@@ -176,7 +252,7 @@ async fn workspace_teardown_destroys_compute() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mock = MockProvider::new();
 
-    let mut ws = Workspace::create("test-1", "repo", tmp.path(), false)
+    let mut ws = Workspace::create("test-1", "repo", tmp.path(), false, true)
         .await
         .unwrap();
     ws.provision(&mock).await.unwrap();
@@ -192,7 +268,7 @@ async fn workspace_teardown_without_provision_ok() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mock = crate::backend::tests::MockProvider::new();
 
-    let ws = Workspace::create("test-1", "repo", tmp.path(), false)
+    let ws = Workspace::create("test-1", "repo", tmp.path(), false, true)
         .await
         .unwrap();
     // Should not error even without provisioning
@@ -310,7 +386,7 @@ async fn e2e_colocated_workspace_isolation() {
     );
 
     // ----- Step 2: Workspace::create produces a git worktree ----------
-    let ws = Workspace::create(bead_id, "test-repo", &repo, true)
+    let ws = Workspace::create(bead_id, "test-repo", &repo, true, true)
         .await
         .expect("workspace create must succeed");
 
@@ -540,7 +616,7 @@ async fn e2e_colocated_worktree_beads_accessible() {
         .output()
         .unwrap();
 
-    let ws = Workspace::create("beads-access-test", "test-repo", &repo, true)
+    let ws = Workspace::create("beads-access-test", "test-repo", &repo, true, true)
         .await
         .expect("workspace create must succeed");
 
@@ -573,10 +649,10 @@ async fn concurrent_worktree_isolation() {
     let (_tmp, repo) = setup_colocated_repo().await;
 
     // Create two worktrees concurrently
-    let ws_a = Workspace::create("agent-alpha", "test-repo", &repo, true)
+    let ws_a = Workspace::create("agent-alpha", "test-repo", &repo, true, true)
         .await
         .expect("workspace A must succeed");
-    let ws_b = Workspace::create("agent-beta", "test-repo", &repo, true)
+    let ws_b = Workspace::create("agent-beta", "test-repo", &repo, true, true)
         .await
         .expect("workspace B must succeed");
 
@@ -746,7 +822,7 @@ async fn workspace_create_isolate_true_no_silent_fallback() {
     // so git worktree add will fail
     std::fs::create_dir(repo.join(".git")).unwrap();
 
-    let result = Workspace::create("test-no-fallback", "repo", &repo, true).await;
+    let result = Workspace::create("test-no-fallback", "repo", &repo, true, true).await;
     assert!(
         result.is_err(),
         "Workspace::create with isolate=true must fail when VCS setup fails, \
@@ -775,7 +851,7 @@ async fn e2e_pipeline_two_phase_lifecycle() {
     let bead_id = "pipeline-e2e-test";
 
     // === Phase 1: dev-agent ===
-    let ws = Workspace::create(bead_id, "test-repo", &repo, true)
+    let ws = Workspace::create(bead_id, "test-repo", &repo, true, true)
         .await
         .expect("phase 1 workspace create");
     assert_eq!(ws.vcs, VcsKind::Git);
@@ -830,7 +906,7 @@ async fn e2e_pipeline_two_phase_lifecycle() {
     // === Phase 2: staging-agent (reuse same workspace) ===
     // The reconciler reopens the bead with the new owner and dispatches again.
     // Workspace::create should reuse the existing worktree.
-    let ws2 = Workspace::create(bead_id, "test-repo", &repo, true)
+    let ws2 = Workspace::create(bead_id, "test-repo", &repo, true, true)
         .await
         .expect("phase 2 workspace create (reuse)");
 
@@ -1005,7 +1081,7 @@ async fn isolated_workspace_is_never_the_main_checkout() {
     git(&["add", "f.txt"]);
     git(&["commit", "-qm", "seed"]);
 
-    let ws = Workspace::create("iso-1", "repo", repo, true)
+    let ws = Workspace::create("iso-1", "repo", repo, true, true)
         .await
         .expect("isolation must succeed on a real git repo");
 
@@ -1135,7 +1211,7 @@ async fn workspace_lifecycle_leaves_no_directory_behind() {
     let root = crate::workspace::workspace_root(repo);
     assert!(!root.exists(), "precondition: root must not exist yet");
 
-    let ws = Workspace::create("leak-1", "repo", repo, true)
+    let ws = Workspace::create("leak-1", "repo", repo, true, true)
         .await
         .expect("isolation must succeed");
     assert!(ws.work_dir.starts_with(&root));
@@ -1162,7 +1238,7 @@ async fn failed_isolation_leaves_no_directory_behind() {
 
     let root = crate::workspace::workspace_root(&repo);
     assert!(
-        Workspace::create("leak-2", "repo", &repo, true)
+        Workspace::create("leak-2", "repo", &repo, true, true)
             .await
             .is_err()
     );
@@ -1322,7 +1398,7 @@ async fn jj_lib_creates_a_real_isolated_workspace_without_the_jj_binary() {
     git_backed_jj_repo(&repo);
     assert_eq!(jj_workspace_names(&repo), vec!["default".to_string()]);
 
-    let ws = Workspace::create("spike-1", "repo", &repo, true)
+    let ws = Workspace::create("spike-1", "repo", &repo, true, true)
         .await
         .expect("jj-lib workspace creation must succeed on a GIT-BACKED jj repo");
 
@@ -1364,7 +1440,7 @@ async fn jj_workspace_teardown_never_wedges_the_next_dispatch() {
     let repo = tmp.path().join("repo");
     git_backed_jj_repo(&repo);
 
-    let ws = Workspace::create("spike-2", "repo", &repo, true)
+    let ws = Workspace::create("spike-2", "repo", &repo, true, true)
         .await
         .expect("first create");
     let work_dir = ws.work_dir.clone();
@@ -1379,7 +1455,7 @@ async fn jj_workspace_teardown_never_wedges_the_next_dispatch() {
          that is the state that makes the next dispatch fail permanently"
     );
 
-    let again = Workspace::create("spike-2", "repo", &repo, true)
+    let again = Workspace::create("spike-2", "repo", &repo, true, true)
         .await
         .expect("re-dispatch of the same bead must succeed after teardown");
     assert!(again.work_dir.exists());

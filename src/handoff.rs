@@ -29,6 +29,7 @@
 //!
 //! Backend-agnostic: works with any orchestrator, provider, or execution backend.
 
+use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -244,11 +245,55 @@ impl Handoff {
     }
 
     /// Write the handoff to the workspace directory.
+    ///
+    /// CAS via `create_new` (rosary-3c9a58, the handoff half of
+    /// rosary-d1f5d8): a plain `fs::write` let two concurrent dispatches
+    /// for the same bead silently share one `work_dir`, so the loser's
+    /// handoff overwrote the winner's with no error either side could
+    /// detect — a shorter chain is indistinguishable from a shorter
+    /// history. `create_new` is Rust's portable `O_EXCL` — atomically
+    /// fails if the file already exists, closing the check-then-write race
+    /// a plain write leaves open.
+    ///
+    /// No retry loop, unlike `coordination::append`'s CAS: a phase's
+    /// tracker index only ever increments (verified against
+    /// `reconcile/verify.rs`/`workspace_ops.rs` — no call site re-derives
+    /// the SAME phase number for a second legitimate write), so under
+    /// normal operation this file is written exactly once. A second write
+    /// for the same phase is always either the genuine concurrent conflict
+    /// this exists to catch, or a redundant resume-after-death rewrite of
+    /// an already-valid handoff — and both existing callers already treat
+    /// a write failure as non-fatal (log + keep going), so refusing here
+    /// never fails a dispatch; it just keeps whichever handoff won.
     pub fn write_to(&self, workspace_dir: &Path) -> anyhow::Result<PathBuf> {
+        use std::io::Write as _;
+
         let filename = format!(".rsry-handoff-{}.json", self.phase);
         let path = workspace_dir.join(&filename);
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, &content)?;
+
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        let mut file = match file {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                anyhow::bail!(
+                    "phase {} handoff already exists at {} — refusing to overwrite \
+                     (two writers for the same phase; each phase is written \
+                     exactly once, rosary-3c9a58)",
+                    self.phase,
+                    path.display()
+                );
+            }
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("creating handoff file at {}", path.display()));
+            }
+        };
+        file.write_all(content.as_bytes())
+            .with_context(|| format!("writing handoff content to {}", path.display()))?;
         eprintln!("[handoff] wrote {}", path.display());
         Ok(path)
     }
@@ -389,6 +434,100 @@ mod tests {
         h.write_to(tmp.path()).unwrap();
         let read = Handoff::read_from(tmp.path(), 0).unwrap();
         assert_eq!(read.bead_id, "rosary-test");
+    }
+
+    /// The `create_new` open can fail for a reason OTHER than
+    /// `AlreadyExists` (permission denied, disk full, a bad path) — that
+    /// branch is genuinely distinct from the contention branch the
+    /// concurrent-writer test below exercises, and needs its own coverage.
+    /// A nonexistent parent directory is the portable way to trigger it:
+    /// unlike a chmod-based permission test, it behaves identically
+    /// whether or not the test runs as root (CI containers commonly do,
+    /// where permission bits are advisory).
+    #[test]
+    fn write_to_reports_non_contention_io_errors_distinctly() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let missing_dir = tmp.path().join("does-not-exist");
+        let work = sample_work();
+        let h = Handoff::new(0, "dev-agent", None, "rosary-test", "claude", &work, None);
+
+        let err = h.write_to(&missing_dir).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("creating handoff file at"),
+            "must be the generic-I/O-error branch, not the contention one: {msg}"
+        );
+        assert!(
+            !msg.contains("already exists"),
+            "a missing directory is not a contention error: {msg}"
+        );
+    }
+
+    /// rosary-3c9a58 / rosary-d1f5d8: two dispatches racing to write the
+    /// SAME phase's handoff used to silently share the file — plain
+    /// `fs::write`, last writer wins, no error either side could detect.
+    /// This drives GENUINE simultaneous writes (a `Barrier` releases both
+    /// threads at once, not a sequential call-then-call) and asserts
+    /// exactly one succeeds, the other gets a loud contention error, and
+    /// the surviving record is intact — never interleaved or lost.
+    #[test]
+    fn concurrent_handoff_writes_yield_one_winner_and_one_loud_error() {
+        use std::sync::{Arc, Barrier};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work = sample_work();
+        let dir = tmp.path().to_path_buf();
+        let barrier = Arc::new(Barrier::new(2));
+
+        let mut h_a = Handoff::new(0, "dev-agent-a", None, "rosary-race", "claude", &work, None);
+        h_a.summary = "writer A".to_string();
+        let mut h_b = Handoff::new(0, "dev-agent-b", None, "rosary-race", "claude", &work, None);
+        h_b.summary = "writer B".to_string();
+
+        let (dir_a, dir_b) = (dir.clone(), dir.clone());
+        let (barrier_a, barrier_b) = (Arc::clone(&barrier), Arc::clone(&barrier));
+
+        let thread_a = std::thread::spawn(move || {
+            barrier_a.wait();
+            h_a.write_to(&dir_a)
+        });
+        let thread_b = std::thread::spawn(move || {
+            barrier_b.wait();
+            h_b.write_to(&dir_b)
+        });
+
+        let result_a = thread_a.join().unwrap();
+        let result_b = thread_b.join().unwrap();
+
+        let outcomes = [result_a.is_ok(), result_b.is_ok()];
+        assert_eq!(
+            outcomes.iter().filter(|ok| **ok).count(),
+            1,
+            "exactly one writer must win: a={:?} b={:?}",
+            result_a.as_ref().map(|_| "ok"),
+            result_b.as_ref().map(|_| "ok")
+        );
+
+        let loser = if result_a.is_err() {
+            &result_a
+        } else {
+            &result_b
+        };
+        let msg = format!("{:#}", loser.as_ref().unwrap_err());
+        assert!(
+            msg.contains("already exists") && msg.contains("phase 0"),
+            "loser's error must name the contention: {msg}"
+        );
+
+        // The surviving record is exactly ONE writer's content, intact —
+        // not interleaved, not corrupted, not silently the wrong one.
+        let winner_summary = if result_a.is_ok() {
+            "writer A"
+        } else {
+            "writer B"
+        };
+        let on_disk = Handoff::read_from(&dir, 0).unwrap();
+        assert_eq!(on_disk.summary, winner_summary);
     }
 
     #[test]
@@ -791,10 +930,18 @@ mod tests {
         let clean = Handoff::read_chain(tmp.path());
         assert_eq!(clean.len(), 3, "clean chain should have 3 entries");
 
-        // Tamper with phase 0 (change its summary)
+        // Tamper with phase 0 (change its summary). Deliberately NOT via
+        // write_to — since rosary-3c9a58 that refuses a second write for an
+        // already-written phase (the CAS this test would otherwise defeat),
+        // and a real attacker wouldn't call rosary's own API anyway. Write
+        // the file directly, exactly as tampering actually happens.
         let mut h0_tampered = h0.clone();
         h0_tampered.summary = "TAMPERED".to_string();
-        h0_tampered.write_to(tmp.path()).unwrap();
+        std::fs::write(
+            tmp.path().join(".rsry-handoff-0.json"),
+            serde_json::to_string_pretty(&h0_tampered).unwrap(),
+        )
+        .unwrap();
 
         // read_chain must detect that h1.previous_chain_hash no longer matches h0_tampered
         let tampered = Handoff::read_chain(tmp.path());

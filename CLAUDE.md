@@ -177,6 +177,7 @@ rsry close-merged                            # catch-up sweep (gh): close beads 
 rsry close-merged --local                    # rsry-native: close beads from local `git log` squash commits ([bead-id] … (#N)) — no gh/webhook/tunnel; run by the git post-merge hook
 rsry init [path] [--dolt] [--no-register]    # onboard a repo (bd-init equivalent, ADR-0014): create `.beads/` store (SQLite default, `--dolt` for server mode) + metadata.json + managed AGENTS.md section (replaces a legacy bd block) + `hooks install` + global register. Idempotent.
 rsry hooks install / status                  # install/report the post-merge + post-push bead-sync hooks (post-merge runs `close-merged --local`) + the `beads-jsonl` merge driver config
+rsry hooks audit                             # mechanical gate (exit non-zero on failure): .gitignore shadowing beads.jsonl, .beads/embeddeddolt+beads.db backend ambiguity, store/export drift (rosary-b5c8a1)
 rsry thread-reparent <thread_id> <decade_id> [--name <new>]  # re-parent threads under a different decade
 rsry capture --from-session <path>           # transcript → BeadSpecs via LLM (Session provenance)
 rsry capture --from-code <repo> <path>       # source file → BeadSpecs via LLM (Code provenance)

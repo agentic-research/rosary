@@ -133,6 +133,18 @@ pub const OPS: &[Op] = &[
         ByDesign("reports on the operator's checkout, not on bead state"),
     ),
     cli_only(
+        "hooks audit",
+        ByDesign(
+            "mechanically audits the operator's checkout config (gitignore/backend/drift), not bead state — rosary-b5c8a1",
+        ),
+    ),
+    cli_only(
+        "hooks run",
+        ByDesign(
+            "executes a managed hook's logic in the operator's checkout; the entry `hooks install` writes into .pre-commit-config.yaml, invoked by the pre-commit framework — never an agent — rosary-00f2b5",
+        ),
+    ),
+    cli_only(
         "init",
         ByDesign("onboards a repo; precedes any agent having a bead"),
     ),
