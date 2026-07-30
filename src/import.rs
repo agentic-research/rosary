@@ -135,7 +135,7 @@ pub async fn export_beads_contract_jsonl(
             b, &deps, &comments,
         ))?);
     }
-    Ok(lines.join("\n"))
+    Ok(crate::jsonl::join(lines))
 }
 
 /// Result of importing a batch of beads into a single repo.
