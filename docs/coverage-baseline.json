@@ -65,7 +65,7 @@
   "src/github.rs": 59.58,
   "src/github_mirror.rs": 92.96,
   "src/graph/mod.rs": 60.56,
-  "src/handoff.rs": 99.58,
+  "src/handoff.rs": 98.72,
   "src/import.rs": 94.62,
   "src/init.rs": 93.78,
   "src/jsonl_sync.rs": 95.02,

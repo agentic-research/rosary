@@ -436,6 +436,33 @@ mod tests {
         assert_eq!(read.bead_id, "rosary-test");
     }
 
+    /// The `create_new` open can fail for a reason OTHER than
+    /// `AlreadyExists` (permission denied, disk full, a bad path) — that
+    /// branch is genuinely distinct from the contention branch the
+    /// concurrent-writer test below exercises, and needs its own coverage.
+    /// A nonexistent parent directory is the portable way to trigger it:
+    /// unlike a chmod-based permission test, it behaves identically
+    /// whether or not the test runs as root (CI containers commonly do,
+    /// where permission bits are advisory).
+    #[test]
+    fn write_to_reports_non_contention_io_errors_distinctly() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let missing_dir = tmp.path().join("does-not-exist");
+        let work = sample_work();
+        let h = Handoff::new(0, "dev-agent", None, "rosary-test", "claude", &work, None);
+
+        let err = h.write_to(&missing_dir).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("creating handoff file at"),
+            "must be the generic-I/O-error branch, not the contention one: {msg}"
+        );
+        assert!(
+            !msg.contains("already exists"),
+            "a missing directory is not a contention error: {msg}"
+        );
+    }
+
     /// rosary-3c9a58 / rosary-d1f5d8: two dispatches racing to write the
     /// SAME phase's handoff used to silently share the file — plain
     /// `fs::write`, last writer wins, no error either side could detect.
