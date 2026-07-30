@@ -41,12 +41,12 @@ fn parse_bool_arg(args: &Value, key: &str, default: bool) -> bool {
 // Client helpers
 // ---------------------------------------------------------------------------
 /// Get a BeadStore — try the pool first (by name then path), fall back to fresh connect.
-pub(crate) async fn get_client<'a>(repo_path: &str, pool: &'a RepoPool) -> Result<StoreRef<'a>> {
+pub(crate) async fn get_client(repo_path: &str, pool: &RepoPool) -> Result<StoreRef> {
     let name = repo_name_from_path(repo_path);
-    if let Some(store) = pool.get(&name) {
+    if let Some(store) = pool.get(&name).await {
         return Ok(StoreRef::Pooled(store));
     }
-    if let Some((_name, store)) = pool.get_by_path(repo_path) {
+    if let Some((_name, store)) = pool.get_by_path(repo_path).await {
         return Ok(StoreRef::Pooled(store));
     }
     let root = crate::scanner::resolve_repo_path(std::path::Path::new(repo_path));
@@ -69,15 +69,15 @@ pub(crate) async fn get_client<'a>(repo_path: &str, pool: &'a RepoPool) -> Resul
     Ok(StoreRef::Owned(store))
 }
 
-pub(crate) enum StoreRef<'a> {
-    Pooled(&'a dyn BeadStore),
+pub(crate) enum StoreRef {
+    Pooled(std::sync::Arc<dyn BeadStore>),
     Owned(Box<dyn BeadStore>),
 }
 
-impl StoreRef<'_> {
+impl StoreRef {
     pub(crate) fn as_store(&self) -> &dyn BeadStore {
         match self {
-            StoreRef::Pooled(s) => *s,
+            StoreRef::Pooled(s) => s.as_ref(),
             StoreRef::Owned(s) => s.as_ref(),
         }
     }
@@ -111,10 +111,10 @@ pub(crate) fn repo_name_from_path(repo_path: &str) -> String {
 ///   substrate) gets its own resolver when it lands.
 ///
 /// rosary-b5da2f PR 5/N (the scope-abstraction series).
-pub(crate) async fn resolve_repo_client<'a>(
+pub(crate) async fn resolve_repo_client(
     args: &Value,
-    pool: &'a RepoPool,
-) -> Result<(crate::scope::ScopeId, StoreRef<'a>)> {
+    pool: &RepoPool,
+) -> Result<(crate::scope::ScopeId, StoreRef)> {
     use crate::serve::scope_args::resolve_scope;
     let scope = resolve_scope(args)?;
     let repo_name = scope.as_repo_name().ok_or_else(|| {
@@ -140,7 +140,7 @@ pub(crate) async fn resolve_repo_client<'a>(
         }
     }
     // Try the pool by name first (in case it's already connected).
-    if let Some(store) = pool.get(repo_name) {
+    if let Some(store) = pool.get(repo_name).await {
         return Ok((scope, StoreRef::Pooled(store)));
     }
     // Resolve the repo's path: an explicit `repo_path` arg, else the recorded
@@ -150,6 +150,7 @@ pub(crate) async fn resolve_repo_client<'a>(
         Some(p) => p.to_string(),
         None => pool
             .path_for(repo_name)
+            .await
             .map(|p| p.to_string_lossy().to_string())
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -637,11 +638,12 @@ async fn tool_bead_create(
 
     // Publish only after all create-time metadata is applied so the tracked
     // projection cannot expose an intermediate record.
-    let repo_root = args
-        .get("repo_path")
-        .and_then(Value::as_str)
-        .map(|path| crate::scanner::resolve_repo_path(std::path::Path::new(path)))
-        .or_else(|| pool.path_for(repo_name).map(std::path::Path::to_path_buf));
+    let repo_root = match args.get("repo_path").and_then(Value::as_str) {
+        Some(path) => Some(crate::scanner::resolve_repo_path(std::path::Path::new(
+            path,
+        ))),
+        None => pool.path_for(repo_name).await,
+    };
     if let Some(repo_root) = repo_root {
         crate::jsonl_sync::publish_created_bead_to_tracked_jsonl(
             client, &id, repo_name, &repo_root,
@@ -808,17 +810,18 @@ async fn tool_bead_close(
     let repo = scope
         .as_repo_name()
         .expect("Repo-only scope verified by resolve_repo_client");
-    let repo_root = args
-        .get("repo_path")
-        .and_then(Value::as_str)
-        .map(|path| crate::scanner::resolve_repo_path(std::path::Path::new(path)))
-        .or_else(|| pool.path_for(repo).map(std::path::Path::to_path_buf))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "bead {id} closed locally, but repo path for `repo:{repo}` is unavailable; \
-                 pass repo_path or register the repo so tracked JSONL can be refreshed"
-            )
-        })?;
+    let repo_root = match args.get("repo_path").and_then(Value::as_str) {
+        Some(path) => Some(crate::scanner::resolve_repo_path(std::path::Path::new(
+            path,
+        ))),
+        None => pool.path_for(repo).await,
+    }
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "bead {id} closed locally, but repo path for `repo:{repo}` is unavailable; \
+             pass repo_path or register the repo so tracked JSONL can be refreshed"
+        )
+    })?;
     crate::bead_ops::close_bead(client, id, repo, force).await?;
     crate::jsonl_sync::refresh_tracked_beads_jsonl(client, repo, &repo_root)
         .await

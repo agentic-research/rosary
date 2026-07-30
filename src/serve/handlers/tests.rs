@@ -231,6 +231,85 @@ async fn mcp_create_publishes_into_an_opted_in_jsonl_projection() {
     assert_eq!(records[0]["title"], "created through MCP");
 }
 
+/// get_client's own pool-hit-by-name fast path (rosary-2b8568 pool refactor):
+/// a caller with a repo_path whose basename matches an already-pooled repo
+/// gets the pooled Arc back directly, never touching connect_bead_store.
+#[tokio::test]
+async fn get_client_returns_pooled_store_when_name_matches() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path().join("project");
+    std::fs::create_dir_all(repo.join(".beads")).unwrap();
+    let store =
+        crate::bead_sqlite::SqliteBeadStore::connect(&repo.join(".beads/beads.db")).unwrap();
+    let pool = RepoPool::from_client("project", repo.clone(), Box::new(store));
+
+    let store_ref = get_client(&repo.to_string_lossy(), &pool).await.unwrap();
+    assert!(
+        matches!(store_ref, StoreRef::Pooled(_)),
+        "a repo_path matching a pooled name must return the pooled store, not an ad-hoc connect"
+    );
+}
+
+/// tool_bead_create's repo_root resolution has two paths: an explicit
+/// `repo_path` arg (resolved directly), or falling back to the pool's
+/// recorded path for a scope-only call. The scope-only path is covered by
+/// `mcp_create_publishes_into_an_opted_in_jsonl_projection` above; this
+/// covers the explicit-`repo_path` arm.
+#[tokio::test]
+async fn mcp_create_with_explicit_repo_path_resolves_and_publishes() {
+    use std::process::Command;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path().join("project");
+    let beads_dir = repo.join(".beads");
+    std::fs::create_dir_all(&beads_dir).unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test User"]);
+    std::fs::write(beads_dir.join("beads.jsonl"), "").unwrap();
+    git(&["add", ".beads/beads.jsonl"]);
+    git(&["commit", "-qm", "opt in"]);
+
+    let store = crate::bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db")).unwrap();
+    let pool = RepoPool::from_client("project", repo.clone(), Box::new(store));
+    let result = tool_bead_create(
+        &json!({
+            "scope": "repo:project",
+            "repo_path": repo.to_string_lossy(),
+            "title": "created via explicit repo_path",
+            "description": "A sufficiently refined implementation bead created through MCP.",
+            "issue_type": "bug",
+            "files": ["src/lib.rs"],
+            "test_files": ["tests/smoke.rs"],
+            "acceptance_criteria": "cargo test"
+        }),
+        &pool,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let records = crate::restore::read_beads_jsonl(Some(
+        beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
+    ))
+    .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["id"], result["id"]);
+}
+
 // ---- tool_review (rosary-cd5d2a) --------------------------------------
 
 /// Phase 0 of rosary-ccd5a2. Caller must supply `bead_id`; the error

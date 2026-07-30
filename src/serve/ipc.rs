@@ -116,11 +116,12 @@ pub async fn run(ipc_socket: &Path, config_path: &str) -> Result<()> {
     let repo_cache = Arc::new(crate::repo_cache::RepoCache::new());
     let config_path: Arc<str> = Arc::from(config_path);
 
+    let configured = pool.configured_names().await;
     eprintln!(
         "[rsry-mcp] server started (ipc-socket transport at {}, {} repos lazy: {}, build {})",
         ipc_socket.display(),
-        pool.configured_names().len(),
-        pool.configured_names().join(", "),
+        configured.len(),
+        configured.join(", "),
         env!("RSRY_BUILD_HASH"),
     );
 
