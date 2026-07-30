@@ -139,6 +139,12 @@ pub const OPS: &[Op] = &[
         ),
     ),
     cli_only(
+        "hooks run",
+        ByDesign(
+            "executes a managed hook's logic in the operator's checkout; the entry `hooks install` writes into .pre-commit-config.yaml, invoked by the pre-commit framework — never an agent — rosary-00f2b5",
+        ),
+    ),
+    cli_only(
         "init",
         ByDesign("onboards a repo; precedes any agent having a bead"),
     ),

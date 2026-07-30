@@ -88,6 +88,7 @@ mod personal;
 mod pipeline;
 mod plugin;
 mod pool;
+mod precommit_yaml;
 #[cfg(test)]
 mod proptest_support;
 mod publish;
@@ -562,7 +563,7 @@ enum NotesAction {
     },
 }
 
-#[derive(Subcommand, Clone, Copy)]
+#[derive(Subcommand, Clone)]
 enum HooksAction {
     /// Splice post-push / post-merge bead-sync blocks into the repo's hooks
     /// directory. The hooks dir is resolved via `git rev-parse --git-path
@@ -580,6 +581,16 @@ enum HooksAction {
     /// drift. Exits non-zero if any check fails — safe to script/CI against
     /// (rosary-b5c8a1).
     Audit,
+    /// Execute one embedded hook's managed-block logic directly, rather
+    /// than reading it out of a hook file on disk. This is the stable
+    /// `entry:` target `hooks install` writes into `.pre-commit-config.yaml`
+    /// for a pre-commit-framework-owned repo (rosary-00f2b5): the YAML
+    /// names this command, never a version-frozen shell snippet, so an
+    /// `rsry` upgrade updates the check without touching the YAML.
+    Run {
+        /// Hook name, e.g. `pre-commit`.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2855,10 +2866,11 @@ async fn main() -> Result<()> {
                 for registered in &config.repo {
                     let repo_root = scanner::resolve_repo_path(&registered.path);
                     println!("\n== {} ({}) ==", registered.name, repo_root.display());
-                    let result = match action {
+                    let result = match &action {
                         HooksAction::Install => hooks::install(&repo_root),
                         HooksAction::Status => hooks::status(&repo_root),
                         HooksAction::Audit => hooks::audit(&repo_root),
+                        HooksAction::Run { name } => hooks::run(&repo_root, name),
                     };
                     if let Err(error) = result {
                         eprintln!("[hooks] {} failed: {error:#}", registered.name);
@@ -2873,10 +2885,11 @@ async fn main() -> Result<()> {
             } else {
                 let repo = repo.unwrap_or_else(|| ".".to_string());
                 let repo_root = scanner::resolve_repo_path(Path::new(&repo));
-                match action {
+                match &action {
                     HooksAction::Install => hooks::install(&repo_root)?,
                     HooksAction::Status => hooks::status(&repo_root)?,
                     HooksAction::Audit => hooks::audit(&repo_root)?,
+                    HooksAction::Run { name } => hooks::run(&repo_root, name)?,
                 }
             }
         }
@@ -3148,6 +3161,7 @@ mod hooks {
         GitignoreShadowShape, allowlist_fix_suggestion, classify_gitignore_shadow_shape,
         remove_gitignore_line,
     };
+    use crate::precommit_yaml::{is_precommit_framework_owned, merge_precommit_yaml};
     use anyhow::{Context, Result};
     use sha2::{Digest, Sha256};
     use std::path::{Path, PathBuf};
@@ -3679,7 +3693,31 @@ mod hooks {
             .with_context(|| format!("creating {}", hooks_dir.display()))?;
         neutralize_inactive_standard_hooks(repo_root, &hooks_dir)?;
 
+        // Detected ONCE, before any writes: the Python pre-commit framework
+        // owns and regenerates .git/hooks/pre-commit on every `pre-commit
+        // install`/`autoupdate`, silently dropping rsry's spliced block with
+        // nothing to warn that it happened (rosary-00f2b5, found live in
+        // mache). `.pre-commit-config.yaml` is the durable place a
+        // pre-commit-framework repo expects a check to live instead.
+        let precommit_config_path = repo_root.join(".pre-commit-config.yaml");
+        let precommit_framework_owned = is_precommit_framework_owned(
+            precommit_config_path.is_file(),
+            std::fs::read_to_string(hooks_dir.join("pre-commit"))
+                .ok()
+                .as_deref(),
+        );
+
         for (name, block) in HOOKS {
+            if *name == "pre-commit" && precommit_framework_owned {
+                // Instead of appending to a file the framework will
+                // regenerate out from under us, redirect entirely to
+                // .pre-commit-config.yaml below.
+                println!(
+                    "[hooks] {name} is pre-commit-framework-owned — writing to \
+                     .pre-commit-config.yaml instead of the raw hook file (rosary-00f2b5)"
+                );
+                continue;
+            }
             let dst = hooks_dir.join(name);
             // Replace a stale symlink (e.g. a hand-made commit-msg →
             // ~/.rsry/hooks/commit-msg) with a self-contained managed file —
@@ -3713,6 +3751,18 @@ mod hooks {
                 std::fs::set_permissions(&dst, perms)?;
             }
             println!("[hooks] installed {} → {}", name, dst.display());
+        }
+
+        if precommit_framework_owned {
+            let existing = std::fs::read_to_string(&precommit_config_path).unwrap_or_default();
+            let updated = merge_precommit_yaml(&existing);
+            std::fs::write(&precommit_config_path, &updated)
+                .with_context(|| format!("writing {}", precommit_config_path.display()))?;
+            println!(
+                "[hooks] ✓ added rsry's local hook entry to {} (entry: `rsry hooks run \
+                 pre-commit`)",
+                precommit_config_path.display()
+            );
         }
 
         // The tracked `.beads/beads.jsonl` export is merged by record, not by
@@ -3881,6 +3931,44 @@ mod hooks {
     ///    beads across 9 repos, sitting only on one machine's disk in a
     ///    gitignored file.
     ///
+    /// Execute one embedded hook's managed-block logic directly, by
+    /// rendering the SAME `docs/git-hooks/<name>` template `install`
+    /// splices into a raw hook file and running it via `sh -c` in
+    /// `repo_root` (rosary-00f2b5). Propagates the script's exit status —
+    /// any non-zero code is returned as an error, matching how git itself
+    /// would treat a failing hook.
+    ///
+    /// This is the stable target `hooks install` writes into
+    /// `.pre-commit-config.yaml`'s `entry:` for a pre-commit-framework-owned
+    /// repo: the YAML names this COMMAND, never a version-frozen shell
+    /// snippet, so an `rsry` upgrade updates the check without ever
+    /// touching the YAML again.
+    pub fn run(repo_root: &Path, name: &str) -> Result<()> {
+        let (_, block) = HOOKS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .with_context(|| format!("unknown hook: {name} (known: {:?})", hook_names()))?;
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(render_block(block))
+            .current_dir(repo_root)
+            .status()
+            .with_context(|| format!("running hook `{name}`"))?;
+        if !status.success() {
+            anyhow::bail!(
+                "hook `{name}` exited {}",
+                status
+                    .code()
+                    .map_or("with a signal".to_string(), |c| c.to_string())
+            );
+        }
+        Ok(())
+    }
+
+    fn hook_names() -> Vec<&'static str> {
+        HOOKS.iter().map(|(n, _)| *n).collect()
+    }
+
     /// Unlike `status()` (purely informational), this is a GATE: returns
     /// `Err` naming every failing check if any check fails, so `rsry hooks
     /// audit` exits non-zero and is safe to script/CI against.
@@ -4385,6 +4473,186 @@ mod hooks {
 
             let body = std::fs::read_to_string(root.join(".gitignore")).unwrap();
             assert!(!body.lines().any(|l| l.trim() == ".beads/"), "{body}");
+        }
+
+        // --- pre-commit-framework integration (rosary-00f2b5) --------------
+        //
+        // Pure detection/YAML-editing logic (is_precommit_framework_owned,
+        // merge_precommit_yaml) lives in src/precommit_yaml.rs with its own
+        // unit tests, for the same mutation-testing reason as gitignore.rs.
+        // What stays here is I/O-level: does `install()` actually redirect
+        // correctly, and does `hooks run` actually execute.
+
+        /// The core behavior change: a framework-owned repo (signaled by a
+        /// present `.pre-commit-config.yaml`) gets its `pre-commit` entry
+        /// redirected to the YAML, never spliced into the raw hook file —
+        /// while every OTHER managed hook still installs normally.
+        #[test]
+        fn install_redirects_precommit_to_yaml_when_framework_owned() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(
+                root.join(".pre-commit-config.yaml"),
+                "repos:\n  - repo: https://github.com/psf/black\n    rev: 24.0\n",
+            )
+            .unwrap();
+
+            install(root).unwrap();
+
+            let hooks_dir = root.join(".git").join("hooks");
+            let raw_precommit =
+                std::fs::read_to_string(hooks_dir.join("pre-commit")).unwrap_or_default();
+            assert!(
+                !raw_precommit.contains(MARKER_START),
+                "must NOT splice into the raw file when framework-owned: {raw_precommit}"
+            );
+
+            let yaml = std::fs::read_to_string(root.join(".pre-commit-config.yaml")).unwrap();
+            assert!(yaml.contains("entry: rsry hooks run pre-commit"), "{yaml}");
+            assert!(
+                yaml.contains("psf/black"),
+                "pre-existing entry lost: {yaml}"
+            );
+
+            // Every OTHER hook is unaffected — still gets the normal raw-file
+            // treatment.
+            let post_push = std::fs::read_to_string(hooks_dir.join("post-push")).unwrap();
+            assert!(post_push.contains(MARKER_START));
+        }
+
+        /// Regression pin: an ordinary (non-framework) repo is completely
+        /// unaffected by this bead — ensures the new detection didn't
+        /// change existing behavior for the common case.
+        #[test]
+        fn install_still_uses_raw_file_when_not_framework_owned() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+
+            install(root).unwrap();
+
+            let raw_precommit =
+                std::fs::read_to_string(root.join(".git/hooks/pre-commit")).unwrap();
+            assert!(raw_precommit.contains(MARKER_START));
+            assert!(!root.join(".pre-commit-config.yaml").exists());
+        }
+
+        /// The fallback signal: no `.pre-commit-config.yaml` at all, but the
+        /// EXISTING raw hook already shows the framework's generated shape
+        /// (the exact live signature observed in mache). `install()` must
+        /// still redirect — and since no config file existed, creates a
+        /// minimal one rather than erroring.
+        #[test]
+        fn install_detects_framework_ownership_via_existing_hook_marker() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            let hooks_dir = root.join(".git").join("hooks");
+            std::fs::create_dir_all(&hooks_dir).unwrap();
+            std::fs::write(
+                hooks_dir.join("pre-commit"),
+                "#!/usr/bin/env bash\n\
+                 # File generated by pre-commit: https://pre-commit.com\n\
+                 # ID: 138fd403232d2ddd5efb44317e38bf03\n\
+                 exec pre-commit hook-impl --hook-type=pre-commit \"$@\"\n",
+            )
+            .unwrap();
+
+            install(root).unwrap();
+
+            let yaml = std::fs::read_to_string(root.join(".pre-commit-config.yaml")).unwrap();
+            assert!(yaml.contains("entry: rsry hooks run pre-commit"), "{yaml}");
+            assert!(yaml.starts_with("repos:\n"), "{yaml}");
+        }
+
+        /// The acceptance criterion, directly: simulate a fresh
+        /// `pre-commit install` regenerating `.git/hooks/pre-commit` from
+        /// scratch AFTER rsry's install ran. `.pre-commit-config.yaml` is a
+        /// separate file regeneration never touches — this proves rsry's
+        /// check survives, rather than asserting anything about pre-commit's
+        /// own dispatch (which would require the real `pre-commit` binary).
+        #[test]
+        fn precommit_yaml_survives_a_simulated_framework_regeneration() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            std::fs::write(root.join(".pre-commit-config.yaml"), "repos: []\n").unwrap();
+
+            install(root).unwrap();
+            let after_install =
+                std::fs::read_to_string(root.join(".pre-commit-config.yaml")).unwrap();
+            assert!(after_install.contains("entry: rsry hooks run pre-commit"));
+
+            // Simulate `pre-commit install` regenerating the raw hook file —
+            // the exact framework-only shape observed live, zero rsry
+            // markers.
+            let hooks_dir = root.join(".git").join("hooks");
+            std::fs::write(
+                hooks_dir.join("pre-commit"),
+                "#!/usr/bin/env bash\n\
+                 # File generated by pre-commit: https://pre-commit.com\n\
+                 exec pre-commit hook-impl --hook-type=pre-commit \"$@\"\n",
+            )
+            .unwrap();
+            let regenerated = std::fs::read_to_string(hooks_dir.join("pre-commit")).unwrap();
+            assert!(
+                !regenerated.contains(MARKER_START),
+                "sanity: regeneration must genuinely wipe any rsry markers, \
+                 or this test would prove nothing"
+            );
+
+            let after_regeneration =
+                std::fs::read_to_string(root.join(".pre-commit-config.yaml")).unwrap();
+            assert_eq!(
+                after_install, after_regeneration,
+                "the YAML fix must be untouched by raw-hook-file regeneration"
+            );
+        }
+
+        // --- hooks run (rosary-00f2b5) --------------------------------------
+
+        #[test]
+        fn hooks_run_unknown_hook_errors() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            let err = run(root, "not-a-real-hook").unwrap_err();
+            assert!(format!("{err:#}").contains("unknown hook"), "{err:#}");
+        }
+
+        /// Proves `hooks run` genuinely renders and executes the REAL
+        /// embedded template (not a stub) — exercised via the pre-commit
+        /// hook's own opt-in-by-tracking guard, which short-circuits to a
+        /// no-op without needing the `rsry` binary resolvable on PATH (this
+        /// test process's `cargo test` sandbox does not guarantee that).
+        #[test]
+        fn hooks_run_precommit_is_a_noop_when_jsonl_not_tracked() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            // No .beads/beads.jsonl tracked — the embedded script's own
+            // opt-in guard must make this a clean no-op.
+            run(root, "pre-commit").unwrap();
+        }
+
+        /// Exit-code propagation, proven without depending on the `rsry`
+        /// binary: `commit-msg`'s embedded script reads `$1` for the commit
+        /// message file. `hooks run` passes no positional argument, so `$1`
+        /// is empty — the script deterministically falls through to its own
+        /// `exit 1` (no commit-message pattern can match an empty subject).
+        #[test]
+        fn hooks_run_propagates_a_nonzero_exit_as_an_error() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            let err = run(root, "commit-msg").unwrap_err();
+            assert!(format!("{err:#}").contains("exited"), "{err:#}");
         }
 
         // --- embedded-template invariants ---------------------------------
