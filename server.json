@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.agentic-research/rosary",
   "title": "rosary",
-  "description": "Agent orchestration and bead work-tracking: scan repos for work, dispatch agents (claude/codex/gemini), reconcile pipeline state, and sync to Linear — exposed as MCP over stdio and Streamable HTTP.",
+  "description": "Agent orchestration and bead tracking: dispatch agents, reconcile pipeline state, sync to Linear.",
   "version": "0.10.0",
   "repository": {
     "url": "https://github.com/agentic-research/rosary",
@@ -13,7 +13,11 @@
     {
       "registryType": "oci",
       "identifier": "ghcr.io/agentic-research/rosary",
-      "version": "0.10.0"
+      "version": "0.10.0",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://localhost:8383/mcp"
+      }
     }
   ],
   "remotes": [
