@@ -311,7 +311,11 @@ pub async fn spawn(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let workspace = crate::workspace::Workspace::create(&bead.id, &repo_name, &path, isolate)
+    // reuse=true: the reconciler's own triage phase already enforces a
+    // per-repo busy check upstream, so a repeat dispatch reaching here for
+    // the same bead is a sequential continuation (retry/phase-advance),
+    // never genuine concurrency (rosary-3b8a9b).
+    let workspace = crate::workspace::Workspace::create(&bead.id, &repo_name, &path, isolate, true)
         .await
         .with_context(|| format!("creating workspace for {}", bead.id))?;
 

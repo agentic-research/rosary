@@ -1286,7 +1286,12 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     // Create isolated workspace (worktree/jj workspace) — this is safe to do
     // from the server because it's just git operations, no process spawning.
     let workspace = if isolate {
-        match crate::workspace::Workspace::create(bead_id, &repo_name, &root, true).await {
+        // reuse=true preserves current behavior; whether this MCP-facing
+        // caller should upgrade to strict (reuse=false) is a deliberate
+        // follow-up, not bundled into rosary-3b8a9b — an orphan sweep runs
+        // just above, which already clears the STALE case this call would
+        // otherwise attach to.
+        match crate::workspace::Workspace::create(bead_id, &repo_name, &root, true, true).await {
             Ok(ws) => Some(ws),
             Err(e) => {
                 eprintln!("[dispatch] workspace creation failed: {e}");
@@ -1694,7 +1699,9 @@ async fn tool_workspace_create(
     };
 
     let repo_name = repo_name_from_path(&root.to_string_lossy());
-    let ws = crate::workspace::Workspace::create(bead_id, &repo_name, &root, true).await?;
+    // reuse=true preserves current behavior; see the rsry_dispatch call site
+    // above for why upgrading MCP-facing callers to strict is a follow-up.
+    let ws = crate::workspace::Workspace::create(bead_id, &repo_name, &root, true, true).await?;
 
     Ok(json!({
         "bead_id": bead_id,

@@ -30,7 +30,33 @@ impl Workspace {
     /// (The previous doc claimed "tries jj first, falls back to git worktree,
     /// then in-place". All three clauses were false, and it read as though
     /// rosary silently degrades into the exact data-loss case above.)
-    pub async fn create(id: &str, repo: &str, repo_path: &Path, isolate: bool) -> Result<Self> {
+    ///
+    /// `reuse` governs what happens when a workspace for `id` ALREADY exists
+    /// on disk (rosary-3b8a9b / rosary-d1f5d8): with `reuse: true`, attach to
+    /// it (today's behavior — a legitimate resume after agent death, or a
+    /// reconciler advancing to the next pipeline phase in the SAME
+    /// worktree). With `reuse: false`, refuse loudly instead, naming the
+    /// existing `work_dir` — two concurrent dispatches for one bead used to
+    /// silently share a `work_dir` and one handoff file, clobbering each
+    /// other with no error either side could detect.
+    ///
+    /// Every call site at the time this was added passes `true`, preserving
+    /// current behavior exactly — the reconciler's own internal dispatch is
+    /// upstream-protected by its per-repo busy check, so its reuse is
+    /// genuinely sequential, never concurrent. `reuse: false` exists so a
+    /// caller that is NOT protected by that invariant (an MCP tool an agent
+    /// can call twice, a test simulating real concurrency) can opt into the
+    /// safe behavior; deciding which MCP-facing callers should upgrade to it
+    /// is a deliberate follow-up, not bundled into this change — this repo's
+    /// discipline is not to guess at a production behavior change whose
+    /// caller-usage blast radius can't be verified statically.
+    pub async fn create(
+        id: &str,
+        repo: &str,
+        repo_path: &Path,
+        isolate: bool,
+        reuse: bool,
+    ) -> Result<Self> {
         // Expand tilde but do NOT canonicalize — that resolves symlinks
         // and breaks paths like ~/github → ~/remotes.
         let repo_path = crate::scanner::expand_path(repo_path);
@@ -42,13 +68,20 @@ impl Workspace {
             VcsKind::None
         };
 
-        // Reuse existing workspace if it exists (resume after agent death).
         // Legacy-aware: workspaces created before the root re-key (rosary-a63159)
         // must still be found, or resume cuts a SECOND worktree on a fresh
         // fix/{id} branch and abandons the first agent's unmerged work.
         if let Some(existing_ws) = super::existing_workspace_dir(repo_path, id)
             && vcs != VcsKind::None
         {
+            if !reuse {
+                anyhow::bail!(
+                    "workspace for {id} already exists at {} — refusing to attach \
+                     (reuse=false); pass reuse=true if this caller intends to \
+                     continue in a worktree it already owns",
+                    existing_ws.display()
+                );
+            }
             eprintln!(
                 "[workspace] reusing existing workspace: {}",
                 existing_ws.display()
