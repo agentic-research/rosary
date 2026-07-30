@@ -4058,6 +4058,57 @@ mod hooks {
             }
         }
 
+        // --- 4. cross-repo dependency shape (rosary-d93ab7) -----------------
+        if let Ok(content) = std::fs::read_to_string(beads_dir.join("beads.jsonl")) {
+            let mut foreign = Vec::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                let (Some(repo), Some(id)) = (
+                    v.get("repo").and_then(|r| r.as_str()),
+                    v.get("id").and_then(|r| r.as_str()),
+                ) else {
+                    continue;
+                };
+                for dep in v
+                    .get("dependencies")
+                    .and_then(|d| d.as_array())
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(dep_id) = dep.as_str()
+                        && foreign_repo_dep(repo, dep_id)
+                    {
+                        foreign.push(format!("{id} -> {dep_id}"));
+                    }
+                }
+            }
+            if foreign.is_empty() {
+                if beads_dir.exists() {
+                    println!("  ✓ no foreign-repo-shaped dependencies in beads.jsonl");
+                }
+            } else {
+                println!(
+                    "  ✗ CROSS-REPO DEP SHAPE: {} committed dependenc{} look foreign-repo \
+                     (rosary-d93ab7) — cross-repo edges belong in the global LinkageStore, \
+                     never a same-repo dependencies array: {}",
+                    foreign.len(),
+                    if foreign.len() == 1 { "y" } else { "ies" },
+                    foreign.join(", ")
+                );
+                problems.push(format!(
+                    "{} foreign-repo-shaped committed dependencies: {}",
+                    foreign.len(),
+                    foreign.join(", ")
+                ));
+            }
+        }
+
         if problems.is_empty() {
             Ok(())
         } else {
@@ -4066,6 +4117,32 @@ mod hooks {
                 problems.len(),
                 problems.join("; ")
             )
+        }
+    }
+
+    /// True if `dep_id` looks like a bead id (`<repo>-<hex>`) whose repo
+    /// prefix differs from `bead_repo` — a same-repo `dependencies` entry
+    /// pointing at what is structurally a DIFFERENT repo's bead id.
+    /// Cross-repo edges belong exclusively in the global LinkageStore
+    /// (`~/.rsry/backend.db`'s `dependencies` table), never a per-repo
+    /// `dependencies` array; this shape can only arise from a caller
+    /// bypassing that routing (rosary-d93ab7 found 24 such entries across
+    /// 10 repos, all predating rosary-98ee93's auto-detection fix in
+    /// `rsry_bead_link`).
+    ///
+    /// The hex-suffix check (>=6 lowercase hex chars after the last `-`)
+    /// mirrors the generated-id shape (`generate_bead_id`) so a same-repo id
+    /// that merely contains a hyphen (e.g. a literal "repo-name" prefix
+    /// that happens to differ, on a non-generated legacy id) doesn't
+    /// false-positive.
+    pub(crate) fn foreign_repo_dep(bead_repo: &str, dep_id: &str) -> bool {
+        match dep_id.rsplit_once('-') {
+            Some((prefix, suffix))
+                if suffix.len() >= 6 && suffix.chars().all(|c| c.is_ascii_hexdigit()) =>
+            {
+                prefix != bead_repo
+            }
+            _ => false,
         }
     }
 
@@ -5342,6 +5419,70 @@ mod hooks {
             .unwrap();
 
             audit(dir.path()).unwrap();
+        }
+
+        #[test]
+        fn audit_flags_foreign_repo_dependency_shape() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            let beads_dir = dir.path().join(".beads");
+            std::fs::create_dir_all(&beads_dir).unwrap();
+            std::fs::write(
+                beads_dir.join("beads.jsonl"),
+                r#"{"id":"signet-a34639","repo":"signet","dependencies":["mache-4dbad9"]}
+"#,
+            )
+            .unwrap();
+
+            let err = audit(dir.path()).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("signet-a34639 -> mache-4dbad9"),
+                "{err:#}"
+            );
+        }
+
+        #[test]
+        fn audit_passes_when_dependencies_are_same_repo_or_absent() {
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            let beads_dir = dir.path().join(".beads");
+            std::fs::create_dir_all(&beads_dir).unwrap();
+            std::fs::write(
+                beads_dir.join("beads.jsonl"),
+                "{\"id\":\"t-0\",\"repo\":\"t\",\"dependencies\":[\"t-1a2b3c\"]}\n\
+                 {\"id\":\"t-1\",\"repo\":\"t\"}\n",
+            )
+            .unwrap();
+
+            audit(dir.path()).unwrap();
+        }
+
+        #[test]
+        fn foreign_repo_dep_true_for_different_repo_prefix() {
+            assert!(foreign_repo_dep("signet", "mache-4dbad9"));
+        }
+
+        #[test]
+        fn foreign_repo_dep_false_for_same_repo_prefix() {
+            assert!(!foreign_repo_dep("mache", "mache-4dbad9"));
+        }
+
+        #[test]
+        fn foreign_repo_dep_false_without_hex_suffix() {
+            // No trailing hex-shaped suffix — not a generated bead id at
+            // all, so this isn't a foreign-repo shape, just an unrelated
+            // string (or a hand-authored non-hex id).
+            assert!(!foreign_repo_dep("signet", "not-a-bead-id"));
+        }
+
+        #[test]
+        fn foreign_repo_dep_handles_multi_hyphen_repo_names() {
+            // Repo names themselves contain hyphens (ley-line-open,
+            // canonical-hours) — the check must compare against the WHOLE
+            // prefix before the hex suffix, not just the last segment.
+            assert!(!foreign_repo_dep("ley-line-open", "ley-line-open-3a21ee"));
+            assert!(foreign_repo_dep("ley-line-open", "mache-4dbad9"));
+            assert!(foreign_repo_dep("mache", "ley-line-open-3a21ee"));
         }
 
         // --- documentation / marker consistency ---------------------------
