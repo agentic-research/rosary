@@ -12,6 +12,7 @@ on:
     paths:
       - 'src/vcs.rs'
       - 'src/gitignore.rs'
+      - 'src/precommit_yaml.rs'
       - 'Taskfile.yml'
       - '.github/workflows/mutants.yml'
       - 'Cargo.toml'
@@ -21,6 +22,7 @@ on:
     paths:
       - 'src/vcs.rs'
       - 'src/gitignore.rs'
+      - 'src/precommit_yaml.rs'
       - 'Taskfile.yml'
       - '.github/workflows/mutants.yml'
       - 'Cargo.toml'
