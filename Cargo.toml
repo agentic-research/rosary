@@ -118,17 +118,10 @@ hex = "0.4"
 # rosary-30ae8c: signing IMPLEMENTATION hoisted to LLO (byte-compatible per
 # rosary-33670d's review + golden vector, ley-line-open-319a08). rosary keeps
 # only key CONFIGURATION and policy (src/handoff_attestation.rs); ed25519-dalek
-# itself is no longer a rosary dependency.
-#
-# INTERIM PIN — path, not git+rev: leyline-envelope exists only on LLO's local
-# `integration` branch as of this commit, not yet pushed to origin or
-# published to crates.io (LLO's v0.14.0 10-crate closure). This works on this
-# machine (ley-line-open is a required sibling checkout per
-# docs/GETTING_STARTED.md) but will NOT resolve in CI or any other clone.
-# Swap to `git = "https://github.com/agentic-research/ley-line-open", rev =
-# "<pushed-sha>"` (matching leyline-core/leyline-vcs's pattern above) the
-# moment that rev is public, before this can merge.
-leyline-envelope = { path = "../ley-line-open/rs/ll-open/envelope" }
+# itself is no longer a rosary dependency. git-pin acceptable per
+# rosary-30ae8c's acceptance criteria; move to a crates.io version once LLO's
+# v0.14.0 10-crate closure publishes.
+leyline-envelope = { git = "https://github.com/agentic-research/ley-line-open", rev = "51434261d4d47f6b5d35e18c0d32ec22d3f8ddfa" }
 base64 = "0.22"
 owo-colors = "4.3.0"
 jsonwebtoken = "9"

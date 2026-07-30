@@ -3093,6 +3093,7 @@ dependencies = [
 [[package]]
 name = "leyline-core"
 version = "0.13.0"
+source = "git+https://github.com/agentic-research/ley-line-open?rev=51434261d4d47f6b5d35e18c0d32ec22d3f8ddfa#51434261d4d47f6b5d35e18c0d32ec22d3f8ddfa"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3105,6 +3106,7 @@ dependencies = [
 [[package]]
 name = "leyline-envelope"
 version = "0.13.0"
+source = "git+https://github.com/agentic-research/ley-line-open?rev=51434261d4d47f6b5d35e18c0d32ec22d3f8ddfa#51434261d4d47f6b5d35e18c0d32ec22d3f8ddfa"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -3125,6 +3127,7 @@ source = "git+https://github.com/agentic-research/ley-line-open?rev=1671942#1671
 [[package]]
 name = "leyline-ffi-helpers"
 version = "0.13.0"
+source = "git+https://github.com/agentic-research/ley-line-open?rev=51434261d4d47f6b5d35e18c0d32ec22d3f8ddfa#51434261d4d47f6b5d35e18c0d32ec22d3f8ddfa"
 
 [[package]]
 name = "leyline-fs"
@@ -3169,6 +3172,7 @@ dependencies = [
 [[package]]
 name = "leyline-sign"
 version = "0.13.0"
+source = "git+https://github.com/agentic-research/ley-line-open?rev=51434261d4d47f6b5d35e18c0d32ec22d3f8ddfa#51434261d4d47f6b5d35e18c0d32ec22d3f8ddfa"
 dependencies = [
  "anyhow",
  "cms",
