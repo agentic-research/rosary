@@ -609,3 +609,53 @@ mod tests {
         assert_eq!(stmt.subject[0].name, ".rsry-handoff-0.json");
     }
 }
+
+#[cfg(test)]
+mod golden_vector {
+    //! Deterministic test vector for rosary-33670d (the LLO DSSE/in-toto
+    //! hoist into `leyline-envelope`, ley-line-open-319a08). Ed25519 signing
+    //! is deterministic given a fixed seed (RFC 8032) — this pins the EXACT
+    //! bytes produced for a fixed input, so the hoisted implementation can
+    //! assert byte-for-byte equality rather than just "verifies OK". Seed is
+    //! an obviously-synthetic sequential pattern (1..=32), not a real key.
+    use super::*;
+
+    const SEED: [u8; 32] = [
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+        26, 27, 28, 29, 30, 31, 32,
+    ];
+
+    #[test]
+    fn deterministic_seed_produces_pinned_envelope_bytes() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&SEED);
+        let json = serde_json::json!({
+            "phase": 0,
+            "from_agent": "dev-agent",
+            "bead_id": "rosary-test",
+            "summary": "Fixed the thing."
+        });
+        let disk = serde_json::to_vec_pretty(&json).unwrap();
+        let env = wrap_handoff(&json, ".rsry-handoff-0.json", &disk, &key).unwrap();
+
+        assert_eq!(
+            hex::encode(key.verifying_key().as_bytes()),
+            "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"
+        );
+        assert_eq!(
+            env.payload,
+            "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJuYW1lIjoiLnJzcnktaGFuZG9mZi0wLmpzb24iLCJkaWdlc3QiOnsic2hhMjU2IjoiMjNhZDA4MGY5MzJjZjE0YTUyNDcyY2M2NzcyNTdjMDY0YjFjZTM4YWFjYzZmZTM2ZDk2ZWRiNTQyNjU3YzkxMiJ9fV0sInByZWRpY2F0ZVR5cGUiOiJodHRwczovL3Jvc2FyeS5kZXYvSGFuZG9mZi92MSIsInByZWRpY2F0ZSI6eyJwaGFzZSI6MCwiZnJvbV9hZ2VudCI6ImRldi1hZ2VudCIsImJlYWRfaWQiOiJyb3NhcnktdGVzdCIsInN1bW1hcnkiOiJGaXhlZCB0aGUgdGhpbmcuIn19"
+        );
+        assert_eq!(
+            env.signatures[0].keyid,
+            "65b60673d6ed884bf01c2c222d82ada0740f29ac3355d6a925c81f17f47a27b8"
+        );
+        assert_eq!(
+            env.signatures[0].sig,
+            "CrW_3tZq2bf06flvXYKIO1xx4jCp4nqVf2Mo81E_pf5nhGm13dABaELzrEZqbw0yf6v1D-VZi56V10ga30PPAA"
+        );
+
+        let (result, stmt) = verify_envelope(&env, Some(&key.verifying_key())).unwrap();
+        assert_eq!(result, VerifyResult::Valid);
+        assert_eq!(stmt.predicate["bead_id"], "rosary-test");
+    }
+}
