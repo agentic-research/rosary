@@ -39,7 +39,12 @@ jobs:
   mutants:
     name: cargo-mutants (earned rungs)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 45min timed out on PR #454 at -j 2 (two concurrent full dependency
+    # builds contending on the runner, zero mutants completed in 41min).
+    # -j 1 (Taskfile.yml) removes that duplication; 90min is headroom for the
+    # cold dependency build plus three files' worth of mutants run
+    # sequentially, not an expectation that it needs the full budget.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - name: install system dependencies

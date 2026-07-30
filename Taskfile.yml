@@ -236,6 +236,16 @@ tasks:
   # NOT in `task ci`: cargo mutants rebuilds per mutant (~2-3 min warm).
   # Runs on demand (`task mutants:<name>`) and in its own workflow
   # (.github/workflows/mutants.yml, path-filtered or explicit trigger).
+  # `-j 1`, not 2: cargo-mutants gives each parallel worker its own scratch
+  # build copy, so -j 2 pays for a second full dependency compile rather than
+  # reusing the baseline build's warm target dir. On CI's runner that cost
+  # (contending for CPU/RAM against the first worker) blew the 45-min budget
+  # with zero completed mutants logged (PR #454, rosary-b2ae79 follow-up) even
+  # though the same command finished locally. -j 1 reuses one scratch copy's
+  # incremental build across all mutants in a file — slower in theory, faster
+  # in practice here. Revisit if a file's mutant count grows enough to want
+  # real parallelism; that needs a shared/warm target dir per worker, not just
+  # a higher -j.
   # --------------------------------------------------------------------------
   mutants:
     desc: "Mutation-test every earned rung. Fails if any mutant survives."
@@ -250,17 +260,17 @@ tasks:
       - >-
         cargo mutants --file src/vcs.rs
         -F 'parse_merged_closures|parse_merge_commit_record|extract_bracket_ids|valid_bead_id|trailing_pr_number|extract_bead_refs|extract_bead_ids|github_slug'
-        -j 2 -- --bin rsry
+        -j 1 -- --bin rsry
 
   mutants:gitignore:
     desc: "Mutation-test src/gitignore.rs — the rung earned by rosary-e97360 (9-of-22-repo gitignore-shadow fleet sweep)."
     cmds:
-      - cargo mutants --file src/gitignore.rs -j 2 -- --bin rsry
+      - cargo mutants --file src/gitignore.rs -j 1 -- --bin rsry
 
   mutants:precommit_yaml:
     desc: "Mutation-test src/precommit_yaml.rs — the rung earned by rosary-00f2b5 (pre-commit-framework hook durability, found live in mache)."
     cmds:
-      - cargo mutants --file src/precommit_yaml.rs -j 2 -- --bin rsry
+      - cargo mutants --file src/precommit_yaml.rs -j 1 -- --bin rsry
 
   coverage:
     desc: >-
