@@ -26,7 +26,7 @@ The old "always use rosary as the hub" rule presumed a reconciler hub-to-spoke s
 | User input mentions…                                                                     | Target `repo_path`                                                                            |
 | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | A specific file path (`notme.bot/worker.ts`, `cloister/vault/...`, `signet/pkg/...`)     | That file's repo (`~/remotes/art/notme.bot`, `~/remotes/art/cloister`, `~/github/art/signet`) |
-| A specific repo by name (`crumb is crashing`, `mache LSP is wrong`)                      | That repo's checkout                                                                          |
+| A specific repo by name (`assay is crashing`, `mache LSP is wrong`)                      | That repo's checkout                                                                          |
 | Cross-repo coordination ("we need a way for both `cloister` and `signet` to…")           | The primary repo + cross-link, OR rosary as a meta-bead                                       |
 | Tooling / orchestration / skill itself ("rsry MCP", "the /note skill", "agent dispatch") | `~/remotes/art/rosary` (rosary is the right home for **meta** concerns about the substrate)   |
 
@@ -39,7 +39,7 @@ Known ART repos and their checkouts (use the local clone if it exists; fall back
 - `~/remotes/art/notme.bot` and `~/remotes/art/notme` — auth bridge
 - `~/remotes/art/mache` — code intelligence FUSE filesystem
 - `~/remotes/art/ley-line` and `~/remotes/art/ley-line-open` — content-addressed storage
-- `~/remotes/art/crumb` — semantic knowledge capture
+- `~/remotes/art/assay` — artifact/usage graph + doc gate
 - `~/remotes/art/rig` — infrastructure (terraform / CF)
 - `~/github/art/signet` — identity / key exchange
 
@@ -61,11 +61,11 @@ If the right repo isn't on disk, fall back to filing in rosary as a meta-bead wi
 ## Examples
 
 ```
-/note the CRUMB pydantic bug still crashes on evidence field
-→ target repo: crumb (the user named it explicitly)
-→ repo_path: ~/remotes/art/crumb
-→ searches for "CRUMB pydantic evidence" in crumb
-→ creates: bug "CRUMB crashes on evidence field: expects list, gets string"
+/note assay's doc gate still counts table-cell code spans as undocumented
+→ target repo: assay (the user named it explicitly)
+→ repo_path: ~/remotes/art/assay
+→ searches for "doc gate table code span" in assay
+→ creates: bug "doc gate: pipe-table code spans never extracted"
 
 /note we need to update the beads skill to mention rsry MCP tools
 → target repo: rosary (the /note skill itself is rosary-owned, meta concern)
