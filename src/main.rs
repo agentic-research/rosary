@@ -63,6 +63,7 @@ mod graph;
 mod handoff;
 mod import;
 mod init;
+mod jsonl;
 mod jsonl_sync;
 mod linear;
 #[allow(dead_code)]
@@ -2455,6 +2456,11 @@ async fn main() -> Result<()> {
                                 .with_context(|| format!("writing export to {path}"))?;
                             eprintln!("exported {} beads to {path}", filtered.len());
                         }
+                        // JSONL already terminates its last record; only the
+                        // pretty-JSON branch still needs a newline added, and
+                        // `println!` on the JSONL branch would emit a blank
+                        // line that `wc -l` and `jq -s` both count.
+                        None if out.ends_with('\n') => print!("{out}"),
                         None => println!("{out}"),
                     }
                 }

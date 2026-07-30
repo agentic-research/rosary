@@ -26,7 +26,7 @@ fn serialize_records(records: BTreeMap<String, Value>) -> Result<String> {
         .into_values()
         .map(|record| serde_json::to_string(&record).map_err(Into::into))
         .collect::<Result<Vec<_>>>()
-        .map(|lines| lines.join("\n"))
+        .map(crate::jsonl::join)
 }
 
 /// Render only records already present in a public JSONL projection.
@@ -256,6 +256,59 @@ mod jsonl_sync_tests {
         assert_eq!(records[1]["id"], "rosary-public2");
         assert_eq!(records[1]["marker"], "keep-b");
         assert!(!output.contains("rosary-local1"));
+    }
+
+    /// The final record is **terminated**, not merely separated.
+    ///
+    /// Both failures this guards are silent — the export still parses either
+    /// way. Unterminated, appending a bead also rewrites the previously-last
+    /// line (it gains the `\n`), so the diff-stability the export is sorted to
+    /// achieve stops holding exactly where appends land; and pre-commit's
+    /// `end-of-file-fixer` deadlocks against the rsry hook that stages this
+    /// file, blocking every commit in the repo.
+    #[tokio::test]
+    async fn export_terminates_the_final_record_so_appends_stay_one_line_diffs() {
+        let store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+        let first = serde_json::json!({"id": "rosary-public1", "status": "open"});
+        let second = serde_json::json!({"id": "rosary-public2", "status": "open"});
+
+        let one =
+            export_published_beads_contract_jsonl(&store, std::slice::from_ref(&first), "rosary")
+                .await
+                .unwrap();
+        let two = export_published_beads_contract_jsonl(&store, &[first, second], "rosary")
+            .await
+            .unwrap();
+
+        assert!(
+            one.ends_with('\n'),
+            "final record must be newline-terminated, got: {one:?}"
+        );
+        assert!(
+            !one.ends_with("\n\n"),
+            "exactly one terminator, got: {one:?}"
+        );
+        // Byte-for-byte prefix: appending a bead leaves every earlier line
+        // untouched, which is what makes "this commit added exactly one bead"
+        // a true statement about the git diff rather than an aspiration.
+        assert!(
+            two.starts_with(&one),
+            "appending a record rewrote an existing line"
+        );
+        assert_eq!(two.lines().count(), 2);
+    }
+
+    /// No records is an empty file — not a file containing one blank line,
+    /// which would parse as a record and fail.
+    #[tokio::test]
+    async fn empty_export_is_an_empty_file_not_a_blank_line() {
+        let store =
+            crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+        let output = export_published_beads_contract_jsonl(&store, &[], "rosary")
+            .await
+            .unwrap();
+        assert!(output.is_empty(), "expected empty, got: {output:?}");
     }
 
     #[tokio::test]
