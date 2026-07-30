@@ -302,13 +302,13 @@ impl Reconciler {
         match handoff_attestation_mode(self.config.attestation.as_ref()) {
             HandoffAttestationMode::None => {}
             HandoffAttestationMode::Signed => {
-                let Some(signing_key) = self.load_attestation_key(bead_id) else {
+                let Some(signer) = self.load_attestation_key(bead_id) else {
                     return;
                 };
-                let envelope = match crate::dsse::wrap_handoff_from_file(
+                let envelope = match crate::handoff_attestation::wrap_handoff_from_file(
                     handoff_path,
                     &handoff_predicate,
-                    &signing_key,
+                    &signer,
                 ) {
                     Ok(env) => env,
                     Err(e) => {
@@ -316,24 +316,29 @@ impl Reconciler {
                         return;
                     }
                 };
-                if let Err(e) = crate::dsse::write_envelope(work_dir, phase, &envelope) {
+                if let Err(e) =
+                    crate::handoff_attestation::write_envelope(work_dir, phase, &envelope)
+                {
                     eprintln!("[dsse] {bead_id}: write envelope: {e}");
                 } else {
                     eprintln!("[dsse] {bead_id}: phase {phase} signed envelope written");
                 }
             }
             HandoffAttestationMode::UnsignedForensic => {
-                let statement = match crate::dsse::handoff_statement_from_file(
-                    handoff_path,
-                    &handoff_predicate,
+                let statement =
+                    match crate::handoff_attestation::unsigned_handoff_statement_from_file(
+                        handoff_path,
+                        &handoff_predicate,
+                    ) {
+                        Ok(statement) => statement,
+                        Err(e) => {
+                            eprintln!("[dsse] {bead_id}: build unsigned statement: {e}");
+                            return;
+                        }
+                    };
+                if let Err(e) = crate::handoff_attestation::write_unsigned_statement(
+                    work_dir, phase, &statement,
                 ) {
-                    Ok(statement) => statement,
-                    Err(e) => {
-                        eprintln!("[dsse] {bead_id}: build unsigned statement: {e}");
-                        return;
-                    }
-                };
-                if let Err(e) = crate::dsse::write_unsigned_statement(work_dir, phase, &statement) {
                     eprintln!("[dsse] {bead_id}: write unsigned statement: {e}");
                 } else {
                     eprintln!(
@@ -346,7 +351,10 @@ impl Reconciler {
 
     /// Resolve and load the attestation signing key, expanding `~` in the path.
     /// Returns None if attestation is not configured or the key cannot be loaded.
-    pub(super) fn load_attestation_key(&self, bead_id: &str) -> Option<ed25519_dalek::SigningKey> {
+    pub(super) fn load_attestation_key(
+        &self,
+        bead_id: &str,
+    ) -> Option<leyline_envelope::Ed25519RootSigner> {
         let key_path = self
             .config
             .attestation
@@ -354,7 +362,7 @@ impl Reconciler {
             .signing_key_path
             .as_ref()?;
         let expanded = shellexpand::tilde(&key_path.display().to_string()).into_owned();
-        match crate::dsse::load_signing_key(std::path::Path::new(&expanded)) {
+        match crate::handoff_attestation::load_signing_key(std::path::Path::new(&expanded)) {
             Ok(k) => Some(k),
             Err(e) => {
                 eprintln!("[dsse] {bead_id}: load signing key: {e}");

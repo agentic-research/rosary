@@ -50,7 +50,6 @@ mod credential;
 mod decompose;
 mod dispatch;
 mod dolt;
-mod dsse;
 #[allow(dead_code)] // API surface for PM agent (loom-w8c.4); is_dominated_by used by reconciler
 mod epic;
 #[allow(dead_code)] // API surface — wired into pipeline phase transitions
@@ -62,6 +61,7 @@ mod github_mirror;
 mod gitignore;
 mod graph;
 mod handoff;
+mod handoff_attestation;
 mod import;
 mod init;
 mod jsonl;
