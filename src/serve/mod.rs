@@ -653,10 +653,11 @@ async fn run_http(config_path: &str, port: u16) -> Result<()> {
     socket.bind(&addr.into())?;
     socket.listen(128)?;
     let listener = tokio::net::TcpListener::from_std(socket.into())?;
+    let configured = pool.configured_names().await;
     eprintln!(
         "[rsry-mcp] HTTP server listening on http://{bind}:{port}/mcp ({} repos, lazy: {})",
-        pool.configured_names().len(),
-        pool.configured_names().join(", ")
+        configured.len(),
+        configured.join(", ")
     );
 
     // Graceful shutdown on SIGTERM or SIGINT.
@@ -719,10 +720,11 @@ async fn run_stdio(config_path: &str) -> Result<()> {
     // Create connection pool and repo cache on startup — reused across all tool calls
     let pool = RepoPool::from_config(config_path).await?;
     let repo_cache = crate::repo_cache::RepoCache::new();
+    let configured = pool.configured_names().await;
     eprintln!(
         "[rsry-mcp] server started (stdio transport, {} repos lazy: {}, build {})",
-        pool.configured_names().len(),
-        pool.configured_names().join(", "),
+        configured.len(),
+        configured.join(", "),
         env!("RSRY_BUILD_HASH"),
     );
 
