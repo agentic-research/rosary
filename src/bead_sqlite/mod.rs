@@ -148,71 +148,65 @@ fn bead_from_row(row: &rusqlite::Row<'_>, repo_name: &str) -> rusqlite::Result<B
 /// `dolt/` and no SQLite `beads.db` fallback. If a `beads.db` is present, rsry
 /// reads that (ADR-0014) and stays quiet (rosary-65c2ff).
 pub(crate) fn unreadable_backend_warning(beads_dir: &Path) -> Option<String> {
-    // Server-mode Dolt (`dolt/`) is readable over MySQL — not a concern.
-    if beads_dir.join("dolt").is_dir() {
+    if crate::bead_backend::detect_backend(beads_dir)
+        != crate::bead_backend::BeadBackend::UnreadableEmbeddedOnly
+    {
         return None;
     }
-    // bd embedded Dolt: data rsry can't read. But if a SQLite `beads.db` is
-    // present, THAT is the store rsry actually reads (ADR-0014) — embeddeddolt
-    // is unused, so this is not a "0 beads / cannot read" situation. Only warn
-    // when embeddeddolt is the *only* store and there's no beads.db fallback.
-    if beads_dir.join("embeddeddolt").is_dir() && !beads_dir.join("beads.db").exists() {
-        return Some(format!(
-            "{} has only a bd embedded-Dolt store (.beads/embeddeddolt) that rsry cannot read, \
-             and no `beads.db` to fall back to — this repo will report 0 beads. Export it to a \
-             store rsry reads: a SQLite `.beads/beads.db`, or `bd init --server` for Dolt server \
-             mode (ADR-0014).",
-            beads_dir.display()
-        ));
-    }
-    None
+    Some(format!(
+        "{} has only a bd embedded-Dolt store (.beads/embeddeddolt) that rsry cannot read, \
+         and no `beads.db` to fall back to — this repo will report 0 beads. Export it to a \
+         store rsry reads: a SQLite `.beads/beads.db`, or `bd init --server` for Dolt server \
+         mode (ADR-0014).",
+        beads_dir.display()
+    ))
 }
 
 pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> {
-    let dolt_dir = beads_dir.join("dolt");
-    if dolt_dir.exists() {
-        // Two store shapes in one `.beads/` is AMBIGUOUS, and a read path must
-        // not resolve it by guessing (rosary-9103f7). This branch used to
-        // silently drain beads.db into Dolt and rename it away — a lossy
-        // write triggered by a mere connect: it dropped `notes` (the
-        // files/test_files/derived_from container, so file-overlap protection
-        // died with it), `external_ref`, `design`, `user_id`, and both
-        // timestamps, and never carried comments or dependencies at all.
-        //
-        // Fail closed and name both paths. The sanctioned conversion is
-        // `rsry bead migrate`, which verifies field-level fidelity and keeps a
-        // backup — this is the same "materialization must be explicit"
-        // principle as rosary-554a74, applied to the open path.
-        let sqlite_path = beads_dir.join("beads.db");
-        if sqlite_path.exists() {
+    use crate::bead_backend::{BeadBackend, detect_backend, dolt_dir, sqlite_path};
+
+    match detect_backend(beads_dir) {
+        BeadBackend::Ambiguous => {
+            // Two store shapes in one `.beads/` is AMBIGUOUS, and a read path must
+            // not resolve it by guessing (rosary-9103f7). This branch used to
+            // silently drain beads.db into Dolt and rename it away — a lossy
+            // write triggered by a mere connect: it dropped `notes` (the
+            // files/test_files/derived_from container, so file-overlap protection
+            // died with it), `external_ref`, `design`, `user_id`, and both
+            // timestamps, and never carried comments or dependencies at all.
+            //
+            // Fail closed and name both paths. The sanctioned conversion is
+            // `rsry bead migrate`, which verifies field-level fidelity and keeps a
+            // backup — this is the same "materialization must be explicit"
+            // principle as rosary-554a74, applied to the open path.
             anyhow::bail!(
                 "ambiguous bead store in {}: both a Dolt store ({}) and a SQLite store ({}) exist, \
                  so rsry cannot tell which is authoritative. Nothing was changed. Resolve it \
                  explicitly: run `rsry bead migrate --to sqlite` (field-level verified, keeps a \
                  backup), or move aside whichever store is stale.",
                 beads_dir.display(),
-                dolt_dir.display(),
-                sqlite_path.display()
+                dolt_dir(beads_dir).display(),
+                sqlite_path(beads_dir).display()
             );
         }
-
-        let config = crate::dolt::DoltConfig::from_beads_dir(beads_dir)?;
-        let client = crate::dolt::DoltClient::connect(&config).await?;
-        if let Err(e) = client.migrate().await {
-            eprintln!("[bead] migration warning for {}: {e}", beads_dir.display());
+        BeadBackend::Dolt => {
+            let config = crate::dolt::DoltConfig::from_beads_dir(beads_dir)?;
+            let client = crate::dolt::DoltClient::connect(&config).await?;
+            if let Err(e) = client.migrate().await {
+                eprintln!("[bead] migration warning for {}: {e}", beads_dir.display());
+            }
+            return Ok(Box::new(crate::bead_dolt::DoltBeadStore::new(client)));
         }
-
-        return Ok(Box::new(crate::bead_dolt::DoltBeadStore::new(client)));
+        BeadBackend::Sqlite | BeadBackend::UnreadableEmbeddedOnly | BeadBackend::Uninitialized => {}
     }
 
-    // No dolt/ dir — repo not yet initialized. SQLite for bootstrapping only.
-    // Fail loud if this is actually an unreadable bd store (embedded Dolt),
-    // so we don't silently report 0 beads for a populated repo (rosary-21e2d4).
+    // Not Dolt-backed — SQLite for bootstrapping if uninitialized. Fail loud
+    // if this is actually an unreadable bd store (embedded Dolt), so we
+    // don't silently report 0 beads for a populated repo (rosary-21e2d4).
     if let Some(warning) = unreadable_backend_warning(beads_dir) {
         eprintln!("[bead] WARNING: {warning}");
     }
-    let sqlite_path = beads_dir.join("beads.db");
-    let store = SqliteBeadStore::connect(&sqlite_path)?;
+    let store = SqliteBeadStore::connect(&sqlite_path(beads_dir))?;
     // Every bead write goes through this one seam, so the tracked-JSONL refresh
     // hangs off it rather than off the ~50 call sites (rosary-8ca6e5). Inert
     // when there is no tracked projection to publish to.
@@ -238,11 +232,11 @@ pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> 
 /// of what the projection already told us. Everything else wants
 /// [`connect_bead_store`].
 pub async fn connect_bead_store_unpublished(beads_dir: &Path) -> Result<Box<dyn BeadStore>> {
-    if beads_dir.join("dolt").exists() {
+    if crate::bead_backend::is_dolt_backed(beads_dir) {
         return connect_bead_store(beads_dir).await;
     }
     Ok(Box::new(SqliteBeadStore::connect(
-        &beads_dir.join("beads.db"),
+        &crate::bead_backend::sqlite_path(beads_dir),
     )?))
 }
 
@@ -400,7 +394,7 @@ impl SqliteBeadStore {
         // where Dolt is clearly authoritative.
         if !path.exists()
             && let Some(beads_dir) = path.parent()
-            && beads_dir.join("dolt").is_dir()
+            && crate::bead_backend::is_dolt_backed(beads_dir)
         {
             anyhow::bail!(
                 "refusing to create a SQLite bead store at {} — {} already holds a Dolt store, \

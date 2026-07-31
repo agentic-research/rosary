@@ -103,7 +103,7 @@ impl Projection {
     /// there, so an agent working in a worktree publishes to the one real file
     /// instead of creating a second one nobody reads.
     fn discover(beads_dir: &Path) -> Option<Self> {
-        if beads_dir.join("dolt").is_dir() {
+        if crate::bead_backend::is_dolt_backed(beads_dir) {
             return None;
         }
         let repo_root = beads_dir.parent()?.to_path_buf();

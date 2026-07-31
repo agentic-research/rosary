@@ -41,7 +41,7 @@ use crate::store::BeadStore;
 /// Read the current Dolt server port from a `.beads/` directory.
 /// Returns `None` if the port file is absent or unparseable.
 fn read_dolt_port(beads_dir: &Path) -> Option<u16> {
-    if beads_dir.join("dolt").exists()
+    if crate::bead_backend::is_dolt_backed(beads_dir)
         && let Ok(config) = crate::dolt::DoltConfig::from_beads_dir(beads_dir)
         && config.port != 0
     {
@@ -68,7 +68,7 @@ fn is_dolt_port_stale(
         return false;
     };
     // Only check for Dolt repos (SQLite repos don't have port files).
-    if !beads_dir.join("dolt").exists() {
+    if !crate::bead_backend::is_dolt_backed(beads_dir) {
         return false;
     }
     match read_dolt_port(beads_dir) {

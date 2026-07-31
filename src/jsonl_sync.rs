@@ -92,7 +92,10 @@ pub async fn refresh_tracked_beads_jsonl(
 ) -> Result<bool> {
     let beads_dir = crate::resolve_beads_dir(repo_root);
     let jsonl = repo_root.join(".beads/beads.jsonl");
-    if beads_dir.join("dolt").is_dir() || !jsonl.is_file() || !is_git_tracked(repo_root) {
+    if crate::bead_backend::is_dolt_backed(&beads_dir)
+        || !jsonl.is_file()
+        || !is_git_tracked(repo_root)
+    {
         return Ok(false);
     }
 
@@ -115,7 +118,10 @@ pub async fn publish_created_bead_to_tracked_jsonl(
 ) -> Result<bool> {
     let beads_dir = crate::resolve_beads_dir(repo_root);
     let jsonl = repo_root.join(".beads/beads.jsonl");
-    if beads_dir.join("dolt").is_dir() || !jsonl.is_file() || !is_git_tracked(repo_root) {
+    if crate::bead_backend::is_dolt_backed(&beads_dir)
+        || !jsonl.is_file()
+        || !is_git_tracked(repo_root)
+    {
         return Ok(false);
     }
 
@@ -172,7 +178,10 @@ pub async fn upsert_tracked_bead(
 ) -> Result<bool> {
     let beads_dir = crate::resolve_beads_dir(repo_root);
     let jsonl = repo_root.join(".beads/beads.jsonl");
-    if beads_dir.join("dolt").is_dir() || !jsonl.is_file() || !is_git_tracked(repo_root) {
+    if crate::bead_backend::is_dolt_backed(&beads_dir)
+        || !jsonl.is_file()
+        || !is_git_tracked(repo_root)
+    {
         return Ok(false);
     }
 

@@ -24,6 +24,7 @@ mod acp;
 mod backend;
 mod bdr_enrich;
 mod bead;
+mod bead_backend;
 mod bead_backup;
 mod bead_correct;
 mod bead_diff;
@@ -1184,7 +1185,7 @@ async fn bead_migrate_run(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| repo.to_string());
 
-    if bead_backup::detect_backend(beads_dir) != bead_backup::Backend::Dolt {
+    if bead_backup::classify(beads_dir) != bead_backup::Backend::Dolt {
         if json {
             println!(
                 "{}",
@@ -1245,8 +1246,7 @@ async fn bead_migrate_run(
             anyhow::bail!("✗ migration verify failed — NOT migrated: {e:#}");
         }
     };
-    let stub_present = beads_dir
-        .join("beads.db")
+    let stub_present = crate::bead_backend::sqlite_path(beads_dir)
         .metadata()
         .map(|m| m.len() == 0)
         .unwrap_or(false);
@@ -1336,11 +1336,12 @@ async fn bootstrap_git_tracked_beads(
 ) -> Result<InitSyncSummary> {
     let beads_dir = resolve_beads_dir(repo_root);
     let jsonl = beads_dir.join("beads.jsonl");
-    if beads_dir.join("dolt").is_dir() || !jsonl.is_file() {
+    if crate::bead_backend::is_dolt_backed(&beads_dir) || !jsonl.is_file() {
         return Ok(InitSyncSummary::default());
     }
 
-    let store = bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db"))?;
+    let store =
+        bead_sqlite::SqliteBeadStore::connect(&crate::bead_backend::sqlite_path(&beads_dir))?;
     let records = restore::read_beads_jsonl(Some(jsonl.to_string_lossy().into_owned()))?;
     let restored = restore::restore_beads_from_contract(&records, &store, &repo_entry.name).await?;
     let cfg = config::Config {
@@ -2093,13 +2094,15 @@ async fn main() -> Result<()> {
                 // handled here (like Migrate) because it needs a concrete
                 // SqliteBeadStore, not the `dyn` store the post-connect path uses.
                 BeadAction::Import { file, jsonl: true } => {
-                    if beads_dir.join("dolt").is_dir() {
+                    if crate::bead_backend::is_dolt_backed(&beads_dir) {
                         anyhow::bail!(
                             "import --jsonl (id-preserving restore) is SQLite-only; \
                              Dolt repos recover via `dolt backup` / branches"
                         );
                     }
-                    let store = bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db"))?;
+                    let store = bead_sqlite::SqliteBeadStore::connect(
+                        &crate::bead_backend::sqlite_path(&beads_dir),
+                    )?;
                     let beads = restore::read_beads_jsonl(file.clone())?;
                     let r = restore::restore_beads_from_contract(&beads, &store, &repo).await?;
                     println!(
@@ -2999,12 +3002,22 @@ async fn main() -> Result<()> {
                             );
                             continue;
                         }
-                        let has_dolt = beads_dir.join("dolt").exists();
-                        let has_sqlite = beads_dir.join("beads.db").exists();
-                        let backend = match (has_dolt, has_sqlite) {
-                            (true, _) => "dolt-server",
-                            (false, true) => "sqlite",
-                            (false, false) => {
+                        let detected = crate::bead_backend::detect_backend(&beads_dir);
+                        let has_dolt = matches!(detected, crate::bead_backend::BeadBackend::Dolt);
+                        let backend = match detected {
+                            crate::bead_backend::BeadBackend::Dolt => "dolt-server",
+                            crate::bead_backend::BeadBackend::Sqlite => "sqlite",
+                            crate::bead_backend::BeadBackend::Ambiguous => {
+                                println!(
+                                    "  {:<16} ✗ ambiguous backend: both dolt/ and beads.db exist — \
+                                     rsry cannot tell which is authoritative (this repo will fail \
+                                     every read)",
+                                    r.name
+                                );
+                                continue;
+                            }
+                            crate::bead_backend::BeadBackend::UnreadableEmbeddedOnly
+                            | crate::bead_backend::BeadBackend::Uninitialized => {
                                 println!(
                                     "  {:<16} ✗ .beads exists but holds neither dolt/ nor beads.db",
                                     r.name
@@ -3013,7 +3026,8 @@ async fn main() -> Result<()> {
                             }
                         };
                         let mut warns: Vec<String> = Vec::new();
-                        if beads_dir.join("embeddeddolt").exists() && !has_dolt {
+                        if crate::bead_backend::embedded_dolt_dir(&beads_dir).exists() && !has_dolt
+                        {
                             warns.push(
                                 "bd-era embeddeddolt/ cruft present (store itself is fine)"
                                     .to_string(),
@@ -4020,16 +4034,20 @@ mod hooks {
         }
 
         // --- 2. backend ambiguity -------------------------------------------
-        let has_embedded = beads_dir.join("embeddeddolt").is_dir();
-        let sqlite_db = beads_dir.join("beads.db");
-        let has_sqlite = sqlite_db.exists();
-        let has_dolt = beads_dir.join("dolt").is_dir();
-        if backend_ambiguous(has_embedded, has_sqlite, has_dolt) {
-            let other = if has_sqlite { "beads.db" } else { "dolt/" };
+        let sqlite_db = crate::bead_backend::sqlite_path(&beads_dir);
+        let backend = crate::bead_backend::detect_backend(&beads_dir);
+        let has_sqlite = matches!(backend, crate::bead_backend::BeadBackend::Sqlite);
+        if backend.is_ambiguous() {
             println!(
-                "  ✗ BACKEND-AMBIGUOUS: embeddeddolt/ coexists with {other} — two stores claim authority"
+                "  ✗ BACKEND-AMBIGUOUS: {} and {} both exist — two stores claim authority",
+                crate::bead_backend::dolt_dir(&beads_dir).display(),
+                sqlite_db.display()
             );
-            problems.push(format!("embeddeddolt/ coexists with {other}"));
+            problems.push(format!(
+                "{} and {} both exist — ambiguous backend",
+                crate::bead_backend::dolt_dir(&beads_dir).display(),
+                sqlite_db.display()
+            ));
         } else if beads_dir.exists() {
             println!("  ✓ no ambiguous backend coexistence");
         }
@@ -4105,18 +4123,6 @@ mod hooks {
             }
             Ok(_) => GitignoreCheck::Reachable,
         }
-    }
-
-    /// Two bead backends claiming authority over one `.beads/` directory —
-    /// rosary-909bec's exact defect. `embeddeddolt/` is the bd-era store;
-    /// `beads.db`/`dolt/` are rsry's own. Pure predicate so the boundary is
-    /// exhaustively property-testable over the 3-bool space.
-    pub(crate) fn backend_ambiguous(
-        has_embedded_dolt: bool,
-        has_sqlite: bool,
-        has_dolt: bool,
-    ) -> bool {
-        has_embedded_dolt && (has_sqlite || has_dolt)
     }
 
     /// Has the local store outrun its tracked export badly enough that real
@@ -5200,21 +5206,6 @@ mod hooks {
         // `proptest!` macro's defaults are enough.
 
         proptest! {
-            /// backend_ambiguous(e, s, d) == e && (s || d), over the whole
-            /// bool^3 space — not just the one live case (agents repo) that
-            /// motivated it.
-            #[test]
-            fn backend_ambiguous_matches_boolean_spec(
-                has_embedded in proptest::bool::ANY,
-                has_sqlite in proptest::bool::ANY,
-                has_dolt in proptest::bool::ANY,
-            ) {
-                prop_assert_eq!(
-                    backend_ambiguous(has_embedded, has_sqlite, has_dolt),
-                    has_embedded && (has_sqlite || has_dolt)
-                );
-            }
-
             /// Law 1: an empty store never drifts — there is nothing to lose,
             /// regardless of what the export looks like.
             #[test]
@@ -5277,17 +5268,33 @@ mod hooks {
         }
 
         #[test]
-        fn audit_flags_embeddeddolt_and_beads_db_coexisting() {
+        fn audit_flags_dolt_and_sqlite_coexisting() {
+            // The real bug (rosary-9a5926, cloister): a live Dolt server
+            // store plus a stray beads.db. This is the shape
+            // connect_bead_store's runtime guard has always refused to
+            // guess through — the audit check must agree with it now.
+            let dir = tempfile::tempdir().unwrap();
+            init_repo(dir.path());
+            std::fs::create_dir_all(dir.path().join(".beads").join("dolt")).unwrap();
+            std::fs::write(dir.path().join(".beads").join("beads.db"), b"").unwrap();
+
+            let err = audit(dir.path()).unwrap_err();
+            assert!(format!("{err:#}").contains("ambiguous backend"), "{err:#}");
+        }
+
+        #[test]
+        fn audit_passes_when_embeddeddolt_coexists_with_a_live_store() {
+            // Corrected behavior (was a false positive before
+            // bead_backend::detect_backend): an unused bd-era embeddeddolt/
+            // sitting next to a real beads.db is NOT ambiguous —
+            // connect_bead_store has always read beads.db and ignored
+            // embeddeddolt unconditionally in this shape.
             let dir = tempfile::tempdir().unwrap();
             init_repo(dir.path());
             std::fs::create_dir_all(dir.path().join(".beads").join("embeddeddolt")).unwrap();
-            std::fs::write(dir.path().join(".beads").join("beads.db"), b"not a real db").unwrap();
+            std::fs::write(dir.path().join(".beads").join("beads.db"), b"").unwrap();
 
-            let err = audit(dir.path()).unwrap_err();
-            assert!(
-                format!("{err:#}").contains("embeddeddolt/ coexists"),
-                "{err:#}"
-            );
+            audit(dir.path()).unwrap();
         }
 
         #[test]
