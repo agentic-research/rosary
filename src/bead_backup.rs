@@ -25,11 +25,11 @@ pub enum Backend {
     Dolt,
 }
 
-/// Detect the backend for a `.beads/` directory. Uses the exact same
-/// discriminant as [`crate::bead_sqlite::connect_bead_store`] — `dolt/`
-/// present (via `exists()`) ⇒ Dolt — so the two never disagree.
+/// Detect the backend for a `.beads/` directory, via the single canonical
+/// classifier ([`crate::bead_backend`]) so this can never disagree with
+/// `connect_bead_store` or `hooks::audit` again.
 pub fn detect_backend(beads_dir: &Path) -> Backend {
-    if beads_dir.join("dolt").exists() {
+    if crate::bead_backend::is_dolt_backed(beads_dir) {
         Backend::Dolt
     } else {
         Backend::Sqlite
@@ -86,7 +86,7 @@ pub fn backup(beads_dir: &Path, dest: &Path) -> Result<BackupOutcome> {
              branches/history is Dolt's job, not rsry's. Use Dolt's native backup \
              (e.g. a Dolt remote, or `dolt backup`) against that directory. \
              Wrapping this in rsry is tracked as follow-up.",
-            beads_dir.join("dolt").display()
+            crate::bead_backend::dolt_dir(beads_dir).display()
         ),
     }
 }
@@ -105,7 +105,7 @@ pub fn restore(beads_dir: &Path, src: &Path, force: bool) -> Result<()> {
     if detect_backend(beads_dir) == Backend::Dolt {
         bail!(
             "this repo uses Dolt server mode ({}); restore via Dolt's native tooling, not rsry.",
-            beads_dir.join("dolt").display()
+            crate::bead_backend::dolt_dir(beads_dir).display()
         );
     }
     if !src.exists() {

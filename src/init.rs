@@ -102,7 +102,7 @@ pub async fn run(repo_root: &Path, use_dolt: bool) -> Result<InitOutcome> {
 /// Dolt stores are skipped: they sync over their own remote, so a git-tracked
 /// export would be a second, competing source of truth.
 fn seed_sync_export(beads_dir: &Path, use_dolt: bool) -> Result<SyncOutcome> {
-    if use_dolt || beads_dir.join("dolt").exists() {
+    if use_dolt || crate::bead_backend::is_dolt_backed(beads_dir) {
         return Ok(SyncOutcome::NotApplicableDolt);
     }
     let export = beads_dir.join("beads.jsonl");
@@ -121,7 +121,7 @@ fn seed_sync_export(beads_dir: &Path, use_dolt: bool) -> Result<SyncOutcome> {
 /// the Dolt server path for repos that must share bead state across clones
 /// (Dolt syncs over its own remote, not git). Idempotent.
 async fn init_store(repo_root: &Path, beads_dir: &Path, use_dolt: bool) -> Result<StoreOutcome> {
-    if beads_dir.join("dolt").exists() {
+    if crate::bead_backend::is_dolt_backed(beads_dir) {
         return Ok(StoreOutcome::AlreadyPresent);
     }
     if use_dolt {
@@ -131,9 +131,28 @@ async fn init_store(repo_root: &Path, beads_dir: &Path, use_dolt: bool) -> Resul
         return Ok(StoreOutcome::CreatedDolt);
     }
     // SQLite path.
-    let db_path = beads_dir.join("beads.db");
+    let db_path = crate::bead_backend::sqlite_path(beads_dir);
     if db_path.exists() {
         return Ok(StoreOutcome::AlreadyPresent);
+    }
+    // rosary-909bec: a bd-era embeddeddolt/-only repo has real data rsry
+    // cannot read. Laying an empty beads.db beside it used to make things
+    // WORSE, not better — unreadable_backend_warning only fires when
+    // embeddeddolt is the *only* store, so the fresh empty beads.db
+    // silenced the one signal that would have said "this repo's real data
+    // is unreachable," and rsry would happily report 0 beads from the
+    // empty store it just created. Refuse instead of guessing.
+    if crate::bead_backend::detect_backend(beads_dir)
+        == crate::bead_backend::BeadBackend::UnreadableEmbeddedOnly
+    {
+        anyhow::bail!(
+            "{} has only a bd embedded-Dolt store (.beads/embeddeddolt) that rsry cannot read. \
+             Refusing to create an empty beads.db beside it — that would silently mask the real \
+             data instead of surfacing it. Migrate to a store rsry reads: `bd init --server` for \
+             Dolt server mode, then re-run `rsry init`; or run `rsry init --dolt` directly once \
+             that migration is done.",
+            crate::bead_backend::embedded_dolt_dir(beads_dir).display()
+        );
     }
     // connect() creates `.beads/` + `beads.db` + schema; drop immediately.
     let _store = crate::bead_sqlite::SqliteBeadStore::connect(&db_path)
@@ -345,6 +364,24 @@ mod tests {
         // Human content on both sides survives.
         assert!(out.contains("Intro from a human."));
         assert!(out.contains("## Footer\nkeep"));
+    }
+
+    #[tokio::test]
+    async fn run_refuses_to_create_beads_db_beside_embeddeddolt_only() {
+        // rosary-909bec: a bd-era repo with ONLY embeddeddolt/ (no dolt/, no
+        // beads.db) used to silently get an empty beads.db, which then
+        // silenced the one warning that would have said "this repo's real
+        // data is unreachable." Refuse instead.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".beads/embeddeddolt")).unwrap();
+
+        let err = run(root, false).await.unwrap_err();
+        assert!(format!("{err:#}").contains("embeddeddolt"), "{err:#}");
+        assert!(
+            !root.join(".beads/beads.db").exists(),
+            "must not create an empty store beside unreadable embeddeddolt"
+        );
     }
 
     #[tokio::test]

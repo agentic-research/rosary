@@ -258,9 +258,9 @@ pub async fn verify_migration(
 /// **never deleted** (it is the backup). Pure filesystem — the caller stops the
 /// dolt-server and flips `metadata.json` around this.
 pub fn swap_dolt_to_sqlite(beads_dir: &Path, built_db: &Path) -> Result<()> {
-    let dolt = beads_dir.join("dolt");
+    let dolt = crate::bead_backend::dolt_dir(beads_dir);
     let dolt_bak = beads_dir.join("dolt.bak");
-    let final_db = beads_dir.join("beads.db");
+    let final_db = crate::bead_backend::sqlite_path(beads_dir);
     if !dolt.is_dir() {
         anyhow::bail!(
             "{} is not a Dolt store — refusing to swap",
