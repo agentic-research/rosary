@@ -394,7 +394,7 @@ impl SqliteBeadStore {
         // where Dolt is clearly authoritative.
         if !path.exists()
             && let Some(beads_dir) = path.parent()
-            && beads_dir.join("dolt").is_dir()
+            && crate::bead_backend::is_dolt_backed(beads_dir)
         {
             anyhow::bail!(
                 "refusing to create a SQLite bead store at {} — {} already holds a Dolt store, \

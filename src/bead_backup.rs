@@ -28,7 +28,7 @@ pub enum Backend {
 /// Detect the backend for a `.beads/` directory, via the single canonical
 /// classifier ([`crate::bead_backend`]) so this can never disagree with
 /// `connect_bead_store` or `hooks::audit` again.
-pub fn detect_backend(beads_dir: &Path) -> Backend {
+pub fn classify(beads_dir: &Path) -> Backend {
     if crate::bead_backend::is_dolt_backed(beads_dir) {
         Backend::Dolt
     } else {
@@ -48,9 +48,9 @@ pub struct BackupOutcome {
 /// SQLite: a consistent `VACUUM INTO` snapshot. Dolt: returns a guiding error
 /// (full backup is Dolt's job). Refuses to overwrite an existing `dest`.
 pub fn backup(beads_dir: &Path, dest: &Path) -> Result<BackupOutcome> {
-    match detect_backend(beads_dir) {
+    match classify(beads_dir) {
         Backend::Sqlite => {
-            let db = beads_dir.join("beads.db");
+            let db = crate::bead_backend::sqlite_path(beads_dir);
             if !db.exists() {
                 bail!(
                     "no SQLite bead store at {} — nothing to back up",
@@ -102,7 +102,7 @@ pub fn backup(beads_dir: &Path, dest: &Path) -> Result<BackupOutcome> {
 /// `src` is a readable bead store before clobbering anything, and clears any
 /// stale `-wal`/`-shm` sidecars so the restored file is authoritative.
 pub fn restore(beads_dir: &Path, src: &Path, force: bool) -> Result<()> {
-    if detect_backend(beads_dir) == Backend::Dolt {
+    if classify(beads_dir) == Backend::Dolt {
         bail!(
             "this repo uses Dolt server mode ({}); restore via Dolt's native tooling, not rsry.",
             crate::bead_backend::dolt_dir(beads_dir).display()
@@ -129,7 +129,7 @@ pub fn restore(beads_dir: &Path, src: &Path, force: bool) -> Result<()> {
             );
         }
     }
-    let db = beads_dir.join("beads.db");
+    let db = crate::bead_backend::sqlite_path(beads_dir);
     if db.exists() && !force {
         bail!(
             "refusing to overwrite existing bead store at {} without --force",
@@ -166,13 +166,13 @@ mod tests {
     }
 
     #[test]
-    fn detect_backend_sqlite_vs_dolt() {
+    fn classify_sqlite_vs_dolt() {
         let tmp = tempfile::tempdir().unwrap();
         let beads = tmp.path().join(".beads");
         std::fs::create_dir_all(&beads).unwrap();
-        assert_eq!(detect_backend(&beads), Backend::Sqlite);
+        assert_eq!(classify(&beads), Backend::Sqlite);
         std::fs::create_dir_all(beads.join("dolt")).unwrap();
-        assert_eq!(detect_backend(&beads), Backend::Dolt);
+        assert_eq!(classify(&beads), Backend::Dolt);
     }
 
     #[test]

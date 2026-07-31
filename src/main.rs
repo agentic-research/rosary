@@ -1185,7 +1185,7 @@ async fn bead_migrate_run(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| repo.to_string());
 
-    if bead_backup::detect_backend(beads_dir) != bead_backup::Backend::Dolt {
+    if bead_backup::classify(beads_dir) != bead_backup::Backend::Dolt {
         if json {
             println!(
                 "{}",
@@ -1246,8 +1246,7 @@ async fn bead_migrate_run(
             anyhow::bail!("✗ migration verify failed — NOT migrated: {e:#}");
         }
     };
-    let stub_present = beads_dir
-        .join("beads.db")
+    let stub_present = crate::bead_backend::sqlite_path(beads_dir)
         .metadata()
         .map(|m| m.len() == 0)
         .unwrap_or(false);
