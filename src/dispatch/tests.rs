@@ -1379,6 +1379,43 @@ async fn spawn_with_compute_uses_container() {
 }
 
 #[tokio::test]
+async fn spawn_with_compute_provisions_the_workspace_path() {
+    // CloisterProvider (rosary-56b557) requires ProvisionOpts::workspace_path
+    // -- cloister run --repo confines an EXISTING directory, so the isolated
+    // work_dir spawn() resolves for this bead must reach provision().
+    use crate::backend::tests::MockProvider;
+
+    let repo = crate::testutil::TestRepo::new();
+    let mut bead = crate::testutil::make_bead("rsry-ws1", "task", "test");
+    bead.owner = Some("dev-agent".into());
+
+    let agent = MockAgentProvider::succeeding();
+    let compute = MockProvider::new();
+
+    let _handle = spawn(
+        &bead,
+        repo.path(),
+        false, // no isolation for test -- work_dir == repo.path()
+        0,
+        &agent,
+        None,
+        Some(&compute),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let provisions = compute.provisions.lock().unwrap();
+    assert_eq!(provisions.len(), 1);
+    assert_eq!(
+        provisions[0].workspace_path,
+        Some(repo.path().to_path_buf()),
+        "provision() must receive the agent's work_dir so ComputeProvider impls \
+         that confine an existing directory (e.g. CloisterProvider) can use it"
+    );
+}
+
+#[tokio::test]
 async fn spawn_with_compute_forwards_command() {
     use crate::backend::tests::MockProvider;
 

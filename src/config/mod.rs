@@ -181,11 +181,13 @@ impl PluginConfig {
 /// Compute provider selection + backend-specific settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComputeConfig {
-    /// Provider name: "local" (default), "sprites".
+    /// Provider name: "local" (default), "sprites", "cloister".
     #[serde(default = "default_compute_backend")]
     pub backend: String,
     /// Sprites-specific settings (only read when backend = "sprites").
     pub sprites: Option<SpritesConfig>,
+    /// Cloister-specific settings (only read when backend = "cloister").
+    pub cloister: Option<CloisterConfig>,
 }
 
 fn default_compute_backend() -> String {
@@ -221,6 +223,20 @@ fn default_sprites_token_env() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+/// Configuration for the cloister compute provider (rosary-56b557):
+/// dispatch confines the agent to its own workspace via `cloister run`
+/// instead of running it unconfined on the host.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloisterConfig {
+    /// Path to the `cloister` CLI binary.
+    #[serde(default = "default_cloister_bin")]
+    pub cloister_bin: PathBuf,
+}
+
+fn default_cloister_bin() -> PathBuf {
+    PathBuf::from("cloister")
 }
 
 /// User approval state for agent dispatch on a repo.
@@ -1122,6 +1138,7 @@ fn collect_plugin_dir(dir: &Path, out: &mut Vec<PluginConfig>) {
 ///
 /// Returns `LocalProvider` when no `[compute]` section or `backend = "local"`.
 /// Returns `SpritesProvider` when `backend = "sprites"` and token is available.
+/// Returns `CloisterProvider` when `backend = "cloister"` (rosary-56b557).
 #[allow(dead_code)] // Wired in rsry-e608bb (reconciler integration)
 pub fn compute_provider_from_config(
     config: &Config,
@@ -1157,7 +1174,19 @@ pub fn compute_provider_from_config(
 
             Ok(Box::new(provider))
         }
-        other => anyhow::bail!("unknown compute backend: \"{other}\" (available: local, sprites)"),
+        "cloister" => {
+            let bin = compute
+                .cloister
+                .as_ref()
+                .map(|c| c.cloister_bin.clone())
+                .unwrap_or_else(default_cloister_bin);
+            Ok(Box::new(crate::cloister_provider::CloisterProvider::new(
+                bin,
+            )))
+        }
+        other => anyhow::bail!(
+            "unknown compute backend: \"{other}\" (available: local, sprites, cloister)"
+        ),
     }
 }
 

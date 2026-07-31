@@ -446,7 +446,8 @@ pub async fn spawn(
             effective_provider.name()
         );
 
-        let opts = crate::backend::ProvisionOpts::new(&bead.id, &repo_name);
+        let opts = crate::backend::ProvisionOpts::new(&bead.id, &repo_name)
+            .workspace_path(work_dir.clone());
         let exec_handle = compute
             .provision(&opts)
             .await

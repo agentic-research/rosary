@@ -40,6 +40,7 @@ mod bead_sqlite;
 mod capture;
 mod cas;
 mod cli;
+mod cloister_provider;
 mod column_rail;
 mod config;
 // Test-only: the export/import round-trip property (rosary-c45a35).

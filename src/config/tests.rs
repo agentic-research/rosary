@@ -384,6 +384,7 @@ fn provider_from_config_local_explicit() {
         compute: Some(ComputeConfig {
             backend: "local".into(),
             sprites: None,
+            cloister: None,
         }),
         http: None,
         backend: None,
@@ -401,6 +402,7 @@ fn provider_from_config_sprites_missing_section() {
         compute: Some(ComputeConfig {
             backend: "sprites".into(),
             sprites: None,
+            cloister: None,
         }),
         http: None,
         backend: None,
@@ -427,6 +429,7 @@ fn provider_from_config_sprites_missing_token() {
                 checkpoint_on_complete: false,
                 fallback_to_local: true,
             }),
+            cloister: None,
         }),
         http: None,
         backend: None,
@@ -445,6 +448,7 @@ fn provider_from_config_unknown_backend() {
         compute: Some(ComputeConfig {
             backend: "k8s".into(),
             sprites: None,
+            cloister: None,
         }),
         http: None,
         backend: None,
