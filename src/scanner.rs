@@ -138,11 +138,23 @@ pub fn find_similar_beads(title: &str, existing: &[Bead], threshold: f64) -> Vec
 mod tests {
     use super::*;
 
+    /// The golden oracle every tilde-expansion test below compares against —
+    /// independent of `expand_path`'s own implementation, so a bug in
+    /// `expand_path` can't hide behind a self-referential assertion.
+    fn home() -> std::path::PathBuf {
+        dirs_next::home_dir().expect("test environment must have a resolvable HOME")
+    }
+
     #[test]
-    fn expand_tilde() {
+    fn expand_tilde_is_byte_exact_to_home() {
         let p = expand_path(std::path::Path::new("~/foo/bar"));
-        assert!(!p.to_string_lossy().starts_with('~'));
-        assert!(p.to_string_lossy().ends_with("foo/bar"));
+        assert_eq!(p, home().join("foo/bar"));
+    }
+
+    #[test]
+    fn expand_bare_tilde_is_byte_exact_to_home() {
+        let p = expand_path(std::path::Path::new("~"));
+        assert_eq!(p, home());
     }
 
     #[test]
@@ -152,29 +164,106 @@ mod tests {
     }
 
     #[test]
-    fn resolve_repo_dot_uses_cwd() {
+    fn expand_relative_non_tilde_path_unchanged() {
+        // Only a LEADING `~` is special — a path that merely contains one
+        // elsewhere, or has none, passes through untouched.
+        let p = expand_path(std::path::Path::new("foo/~bar/baz"));
+        assert_eq!(p, std::path::PathBuf::from("foo/~bar/baz"));
+    }
+
+    #[test]
+    fn resolve_repo_dot_is_byte_exact_to_cwd() {
         let resolved = resolve_repo_path(std::path::Path::new("."));
-        // Must not be "." — should be an absolute path
-        assert_ne!(resolved, std::path::PathBuf::from("."));
-        assert!(
-            resolved.is_absolute(),
-            "resolved path should be absolute: {resolved:?}"
+        let cwd = std::env::current_dir().unwrap();
+        // std::env::current_dir() is itself the discovery starting point —
+        // resolve_repo_path then walks UP from it looking for a repo marker,
+        // so the exact expectation is discover_repo_root's own answer for
+        // this process's cwd (this repo, running under `cargo test`, always
+        // has a marker at or above cwd — Cargo.toml at minimum).
+        let expected = crate::config::discover_repo_root(&cwd).unwrap_or(cwd);
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn resolve_repo_empty_matches_dot() {
+        // "" and "." must resolve identically — both mean "start from cwd."
+        assert_eq!(
+            resolve_repo_path(std::path::Path::new("")),
+            resolve_repo_path(std::path::Path::new("."))
         );
     }
 
     #[test]
-    fn resolve_repo_empty_uses_cwd() {
-        let resolved = resolve_repo_path(std::path::Path::new(""));
-        assert!(
-            resolved.is_absolute(),
-            "resolved path should be absolute: {resolved:?}"
+    fn resolve_repo_path_composes_expand_then_discover_byte_exact() {
+        // resolve_repo_path's documented contract is exactly two steps:
+        // expand ~, then walk up for a marker. Assert the composition
+        // directly against each step's own function, independently of
+        // whether this environment's $HOME ancestry happens to contain a
+        // marker (it may — e.g. a sandboxed $HOME nested under a repo
+        // checkout — so this must not assume "no marker found").
+        let tmp = tempfile::TempDir::new_in(home()).unwrap();
+        let leaf = tmp.path().join("plain-subdir");
+        std::fs::create_dir_all(&leaf).unwrap();
+        let tilde_arg = format!("~/{}", leaf.strip_prefix(home()).unwrap().to_string_lossy());
+
+        let resolved = resolve_repo_path(std::path::Path::new(&tilde_arg));
+        let expected = crate::config::discover_repo_root(&leaf).unwrap_or(leaf);
+        assert_eq!(resolved, expected);
+    }
+
+    // --- canonicalize_repo_path (rosary-617010's function, zero coverage
+    // before this — the exact function two real bugs this session traced
+    // back to: the ~/github vs ~/remotes symlink alias, and RepoPool
+    // reconnect matching) --------------------------------------------------
+
+    #[test]
+    fn canonicalize_repo_path_resolves_through_a_real_symlink() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real = tmp.path().join("real-repo");
+        std::fs::create_dir_all(&real).unwrap();
+        let alias = tmp.path().join("alias-repo");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+
+        let via_alias = canonicalize_repo_path(&alias);
+        let via_real = canonicalize_repo_path(&real);
+        // Byte-exact: both aliases of the same physical directory must
+        // canonicalize to the identical PathBuf, not just "point at
+        // something with the same content" — this equality IS the property
+        // RepoPool::get_by_path and the ~/github->~/remotes alias case
+        // depend on.
+        assert_eq!(via_alias, via_real);
+        // And it must actually be the real (non-symlink) path, not the
+        // alias echoed back unresolved.
+        assert_eq!(via_alias, real.canonicalize().unwrap());
+        assert_ne!(via_alias, alias);
+    }
+
+    #[test]
+    fn canonicalize_repo_path_falls_back_to_expanded_when_nonexistent() {
+        // std::fs::canonicalize fails on a path that doesn't exist —
+        // canonicalize_repo_path's documented fallback is the tilde-
+        // expanded (but otherwise untouched) path, byte-exact.
+        let nonexistent =
+            std::path::Path::new("/tmp/definitely-does-not-exist-rosary-scanner-test");
+        assert!(!nonexistent.exists());
+        assert_eq!(
+            canonicalize_repo_path(nonexistent),
+            expand_path(nonexistent)
         );
     }
 
     #[test]
-    fn resolve_repo_tilde_expands() {
-        let resolved = resolve_repo_path(std::path::Path::new("~/foo"));
-        assert!(!resolved.to_string_lossy().starts_with('~'));
+    fn canonicalize_repo_path_expands_tilde_before_canonicalizing() {
+        // A tilde-prefixed path to a REAL directory must both expand AND
+        // canonicalize — exercising both steps in one call, byte-exact
+        // against a HOME-relative expectation computed independently.
+        let tmp = tempfile::TempDir::new_in(home()).unwrap();
+        let leaf = tmp.path().join("canon-check");
+        std::fs::create_dir_all(&leaf).unwrap();
+        let tilde_arg = format!("~/{}", leaf.strip_prefix(home()).unwrap().to_string_lossy());
+
+        let resolved = canonicalize_repo_path(std::path::Path::new(&tilde_arg));
+        assert_eq!(resolved, leaf.canonicalize().unwrap());
     }
 
     #[test]

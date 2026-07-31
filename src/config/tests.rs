@@ -208,17 +208,39 @@ fn discover_repo_root_finds_cargo_toml() {
 }
 
 #[test]
-fn discover_repo_root_none_at_filesystem_root() {
-    // A path with no markers should return None (eventually hits /)
+fn discover_repo_root_prefers_deepest_marker_not_an_outer_one() {
+    // The walk is bottom-up and returns on the FIRST directory (deepest)
+    // that has any marker — an outer ancestor also having one must not win.
+    // Pins the "nested repo checkout" shape (e.g. a submodule, or a repo
+    // cloned inside another repo's scratch directory).
     let tmp = tempfile::TempDir::new().unwrap();
-    let empty = tmp.path().join("empty");
-    std::fs::create_dir_all(&empty).unwrap();
+    let outer = tmp.path().join("outer");
+    let inner = outer.join("nested-repo");
+    let subdir = inner.join("src");
+    std::fs::create_dir_all(&subdir).unwrap();
+    std::fs::create_dir_all(outer.join(".git")).unwrap();
+    std::fs::write(inner.join("Cargo.toml"), "[package]").unwrap();
 
-    let found = discover_repo_root(&empty);
-    // Could find a .git somewhere up the tree on the host, so just
-    // verify it doesn't panic. If tmp is truly isolated, it's None.
-    // Either way, the function terminates.
-    let _ = found;
+    let found = discover_repo_root(&subdir);
+    assert_eq!(
+        found,
+        Some(inner),
+        "must stop at the deepest marker, not walk past it to outer's .git"
+    );
+}
+
+#[test]
+fn discover_repo_root_none_at_filesystem_root() {
+    // A REAL tempdir's ancestry (/tmp/..., /var/..., or a sandboxed $TMPDIR
+    // nested under a repo checkout) is not reliably marker-free on every
+    // host — asserting against one would be exactly the fragile-test trap
+    // this function's own callers hit (rosary session 2026-07-31). Use a
+    // SYNTHETIC nonexistent absolute path instead: none of its ancestors
+    // exist on disk at all, so every `.join(marker).exists()` check is
+    // deterministically false all the way to `/`, independent of whatever
+    // real repos happen to be checked out on the machine running this test.
+    let synthetic = std::path::Path::new("/rosary-test-nonexistent-xyz-9f3c1a/empty/leaf");
+    assert_eq!(discover_repo_root(synthetic), None);
 }
 
 #[test]
