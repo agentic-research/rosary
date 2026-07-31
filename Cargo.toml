@@ -115,7 +115,13 @@ sha2 = "0.10" # interop only: DSSE/in-toto digests + provider webhook HMAC. NOT 
 # cas::content_hash → leyline-core's ContentAddressed::hash, so blake3 arrives
 # transitively via leyline-core and rosary can't drift off the substrate lock.
 hex = "0.4"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+# rosary-30ae8c: signing IMPLEMENTATION hoisted to LLO (byte-compatible per
+# rosary-33670d's review + golden vector, ley-line-open-319a08). rosary keeps
+# only key CONFIGURATION and policy (src/handoff_attestation.rs); ed25519-dalek
+# itself is no longer a rosary dependency. git-pin acceptable per
+# rosary-30ae8c's acceptance criteria; move to a crates.io version once LLO's
+# v0.14.0 10-crate closure publishes.
+leyline-envelope = { git = "https://github.com/agentic-research/ley-line-open", rev = "51434261d4d47f6b5d35e18c0d32ec22d3f8ddfa" }
 base64 = "0.22"
 owo-colors = "4.3.0"
 jsonwebtoken = "9"
