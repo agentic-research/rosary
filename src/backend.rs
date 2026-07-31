@@ -5,10 +5,16 @@
 //! sprites.dev is just the first remote provider.
 //!
 //! - `LocalProvider`: current behavior — tokio subprocess on the host
+//! - `DockerProvider`: local Docker container
 //! - `SpritesProvider`: provision a sprite container, exec inside it
-//! - Future: K8sProvider, DockerProvider, etc.
+//! - `CloisterProvider` (crate::cloister_provider): confine the host
+//!   subprocess to its own workspace via `cloister run`, rather than
+//!   provisioning a separate remote/container environment — see
+//!   rosary-56b557
+//! - Future: K8sProvider, etc.
 
 use anyhow::{Context as _, Result};
+use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -27,6 +33,12 @@ pub struct ProvisionOpts {
     pub memory_mb: Option<u32>,
     /// Network egress allowlist (domains). Empty = provider default.
     pub network_allowlist: Vec<String>,
+    /// Absolute path to the workspace the agent should run against. Ignored
+    /// by providers that give the agent a fresh checkout of its own (Docker,
+    /// Sprites); required by providers that confine access to an EXISTING
+    /// host directory rather than provisioning a new one (`CloisterProvider`
+    /// — `cloister run --repo` binds an existing path, it doesn't clone).
+    pub workspace_path: Option<PathBuf>,
 }
 
 impl ProvisionOpts {
@@ -37,6 +49,7 @@ impl ProvisionOpts {
             cpu: None,
             memory_mb: None,
             network_allowlist: Vec::new(),
+            workspace_path: None,
         }
     }
 
@@ -52,6 +65,11 @@ impl ProvisionOpts {
 
     pub fn network_allowlist(mut self, domains: Vec<String>) -> Self {
         self.network_allowlist = domains;
+        self
+    }
+
+    pub fn workspace_path(mut self, path: PathBuf) -> Self {
+        self.workspace_path = Some(path);
         self
     }
 }

@@ -384,6 +384,7 @@ fn provider_from_config_local_explicit() {
         compute: Some(ComputeConfig {
             backend: "local".into(),
             sprites: None,
+            cloister: None,
         }),
         http: None,
         backend: None,
@@ -401,6 +402,7 @@ fn provider_from_config_sprites_missing_section() {
         compute: Some(ComputeConfig {
             backend: "sprites".into(),
             sprites: None,
+            cloister: None,
         }),
         http: None,
         backend: None,
@@ -427,6 +429,7 @@ fn provider_from_config_sprites_missing_token() {
                 checkpoint_on_complete: false,
                 fallback_to_local: true,
             }),
+            cloister: None,
         }),
         http: None,
         backend: None,
@@ -438,6 +441,77 @@ fn provider_from_config_sprites_missing_token() {
 }
 
 #[test]
+fn provider_from_config_cloister_defaults_the_binary() {
+    let config = Config {
+        repo: vec![],
+        linear: None,
+        compute: Some(ComputeConfig {
+            backend: "cloister".into(),
+            sprites: None,
+            cloister: None,
+        }),
+        http: None,
+        backend: None,
+        ..Default::default()
+    };
+    let provider = compute_provider_from_config(&config).unwrap();
+    assert_eq!(provider.name(), "cloister");
+}
+
+#[test]
+fn provider_from_config_cloister_explicit_binary() {
+    let config = Config {
+        repo: vec![],
+        linear: None,
+        compute: Some(ComputeConfig {
+            backend: "cloister".into(),
+            sprites: None,
+            cloister: Some(CloisterConfig {
+                cloister_bin: PathBuf::from("/opt/cloister/bin/cloister"),
+            }),
+        }),
+        http: None,
+        backend: None,
+        ..Default::default()
+    };
+    let provider = compute_provider_from_config(&config).unwrap();
+    assert_eq!(provider.name(), "cloister");
+}
+
+#[test]
+fn parse_toml_compute_cloister() {
+    let toml = r#"
+[compute]
+backend = "cloister"
+
+[compute.cloister]
+cloister_bin = "/opt/cloister/bin/cloister"
+"#;
+    let config: Config = toml::from_str(toml).unwrap();
+    let compute = config.compute.unwrap();
+    assert_eq!(compute.backend, "cloister");
+    assert_eq!(
+        compute.cloister.unwrap().cloister_bin,
+        PathBuf::from("/opt/cloister/bin/cloister")
+    );
+}
+
+#[test]
+fn parse_toml_compute_cloister_bin_defaults_to_path_lookup() {
+    let toml = r#"
+[compute]
+backend = "cloister"
+
+[compute.cloister]
+"#;
+    let config: Config = toml::from_str(toml).unwrap();
+    assert_eq!(
+        config.compute.unwrap().cloister.unwrap().cloister_bin,
+        PathBuf::from("cloister")
+    );
+}
+
+#[test]
 fn provider_from_config_unknown_backend() {
     let config = Config {
         repo: vec![],
@@ -445,6 +519,7 @@ fn provider_from_config_unknown_backend() {
         compute: Some(ComputeConfig {
             backend: "k8s".into(),
             sprites: None,
+            cloister: None,
         }),
         http: None,
         backend: None,
