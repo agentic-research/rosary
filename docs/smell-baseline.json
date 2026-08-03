@@ -8,38 +8,8 @@
     },
     {
       "rule_id": "dead_code",
-      "source_id": "crates/bdr/tests/channels_test.rs",
-      "count": 8
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "crates/bdr/tests/integration_test.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "crates/bdr/tests/phase1_integration_test.rs",
-      "count": 11
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "crates/crypto/tests/round_trip.rs",
-      "count": 27
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/bead.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
       "source_id": "src/bead_diff.rs",
       "count": 2
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/bead_sqlite/tests.rs",
-      "count": 46
     },
     {
       "rule_id": "dead_code",
@@ -49,22 +19,12 @@
     {
       "rule_id": "dead_code",
       "source_id": "src/config/mod.rs",
-      "count": 11
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/config/tests.rs",
-      "count": 54
+      "count": 12
     },
     {
       "rule_id": "dead_code",
       "source_id": "src/contract_roundtrip.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/coordination/tests.rs",
-      "count": 8
+      "count": 1
     },
     {
       "rule_id": "dead_code",
@@ -83,23 +43,8 @@
     },
     {
       "rule_id": "dead_code",
-      "source_id": "src/dispatch/tests.rs",
-      "count": 76
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/dolt/tests.rs",
-      "count": 22
-    },
-    {
-      "rule_id": "dead_code",
       "source_id": "src/graph/tests.rs",
-      "count": 12
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/leyline_net_vectors.rs",
-      "count": 4
+      "count": 1
     },
     {
       "rule_id": "dead_code",
@@ -123,16 +68,6 @@
     },
     {
       "rule_id": "dead_code",
-      "source_id": "src/observation/integration_tests.rs",
-      "count": 14
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/observation/laws.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "dead_code",
       "source_id": "src/observation/log_sqlite.rs",
       "count": 1
     },
@@ -153,63 +88,33 @@
     },
     {
       "rule_id": "dead_code",
-      "source_id": "src/orchestrate/tests.rs",
-      "count": 8
-    },
-    {
-      "rule_id": "dead_code",
       "source_id": "src/orchestrate/transcript.rs",
       "count": 1
     },
     {
       "rule_id": "dead_code",
-      "source_id": "src/parity/tests.rs",
-      "count": 8
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/publish/tests.rs",
-      "count": 10
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/reconcile/tests.rs",
-      "count": 36
-    },
-    {
-      "rule_id": "dead_code",
       "source_id": "src/reconcile/tests_state.rs",
-      "count": 31
+      "count": 1
     },
     {
       "rule_id": "dead_code",
       "source_id": "src/restore/merge/laws.rs",
-      "count": 6
+      "count": 1
     },
     {
       "rule_id": "dead_code",
       "source_id": "src/restore/merge/tests.rs",
-      "count": 16
+      "count": 2
     },
     {
       "rule_id": "dead_code",
       "source_id": "src/restore/tests.rs",
-      "count": 3
+      "count": 1
     },
     {
       "rule_id": "dead_code",
       "source_id": "src/serve/github_webhook.rs",
       "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/serve/handlers/input_validation_tests.rs",
-      "count": 67
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "src/serve/handlers/tests.rs",
-      "count": 21
     },
     {
       "rule_id": "dead_code",
@@ -258,102 +163,32 @@
     },
     {
       "rule_id": "dead_code",
+      "source_id": "src/toolreg/mod.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "dead_code",
       "source_id": "src/vcs.rs",
       "count": 2
     },
     {
-      "rule_id": "dead_code",
-      "source_id": "src/workspace/tests.rs",
-      "count": 36
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/beads_jsonl_merge_driver.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/cli_integration.rs",
-      "count": 21
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/cli_phantom_store.rs",
-      "count": 8
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/close_jsonl_sync.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/create_jsonl_sync.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/hooks_provenance.rs",
-      "count": 7
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/init_jsonl_reconciliation.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/ipc_docker_e2e.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "dead_code",
-      "source_id": "tests/note_skill_routing.rs",
-      "count": 4
-    },
-    {
       "rule_id": "duplicate_definitions",
       "source_id": "crates/bdr/src/accrete.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "crates/bdr/src/atom.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "crates/bdr/src/channels.rs",
       "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "crates/bdr/src/decompose.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "crates/bdr/src/harmony.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "crates/bdr/src/lib.rs",
-      "count": 5
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "crates/bdr/src/parse.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "crates/bdr/src/provenance.rs",
       "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
-      "source_id": "crates/bdr/src/thread.rs",
+      "source_id": "crates/bdr/src/lib.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "crates/bdr/src/provenance.rs",
       "count": 1
     },
     {
@@ -393,23 +228,13 @@
     },
     {
       "rule_id": "duplicate_definitions",
-      "source_id": "src/acp.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
       "source_id": "src/backend.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/bdr_enrich.rs",
       "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead.rs",
-      "count": 5
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -418,33 +243,23 @@
     },
     {
       "rule_id": "duplicate_definitions",
-      "source_id": "src/bead_diff.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
       "source_id": "src/bead_genesis.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/bead_migrate.rs",
-      "count": 5
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/bead_move.rs",
       "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/bead_migrate.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/bead_ops.rs",
-      "count": 4
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead_sqlite/mod.rs",
-      "count": 3
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -453,148 +268,63 @@
     },
     {
       "rule_id": "duplicate_definitions",
-      "source_id": "src/cas.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/cli.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/column_rail.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
       "source_id": "src/config/mod.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/context/cache.rs",
       "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/context/envelope.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/context/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/context/policy.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/context/ref_store.rs",
       "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/coordination/mod.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/credential.rs",
       "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
-      "source_id": "src/dispatch/codex_native.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/dispatch/codex_runtime.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/dispatch/codex_transport.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/dispatch/commit_point.rs",
+      "source_id": "src/credential.rs",
       "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/mod.rs",
-      "count": 7
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/dispatch/prompt.rs",
-      "count": 1
+      "count": 6
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dispatch/provenance.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/dispatch/providers.rs",
       "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/dispatch/session.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/dispatch/sweep.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/dispatch/tests.rs",
-      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dolt/mod.rs",
-      "count": 2
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/dolt/observations.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/dsse.rs",
       "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
-      "source_id": "src/epic.rs",
-      "count": 2
+      "source_id": "src/field_drift/tests.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/github.rs",
-      "count": 3
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/github_mirror.rs",
-      "count": 3
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/graph/mod.rs",
-      "count": 2
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -604,17 +334,12 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/handoff.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/import.rs",
-      "count": 2
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/init.rs",
-      "count": 4
+      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
@@ -624,122 +349,42 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/linear.rs",
-      "count": 5
+      "count": 4
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/linear_tracker.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/main.rs",
-      "count": 16
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/manifest.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/migrate.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/model_provider.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/algebra_chain.rs",
-      "count": 5
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/algebra_flat.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/algebra_lww.rs",
       "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/algebra_orset.rs",
+      "source_id": "src/main.rs",
+      "count": 15
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/migrate.rs",
       "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/audit.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/backfill.rs",
+      "source_id": "src/model_provider.rs",
       "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/observation/fold.rs",
-      "count": 8
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/integration_tests.rs",
-      "count": 14
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/log.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/log_sqlite.rs",
-      "count": 5
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/observation/mod.rs",
-      "count": 6
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/quarantine.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/registry.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/resolve.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/shadow.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/observation/tree_fold.rs",
       "count": 5
     },
     {
       "rule_id": "duplicate_definitions",
-      "source_id": "src/openai_compat.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/orchestrate/mod.rs",
-      "count": 1
+      "source_id": "src/observation/tree_fold.rs",
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -754,42 +399,12 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/parity/mod.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/personal.rs",
       "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/pipeline.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/plugin.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/pool.rs",
-      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/proptest_support.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/publish/mod.rs",
       "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/queue.rs",
-      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -799,42 +414,12 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/reconcile/mod.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/reconcile/tests.rs",
       "count": 3
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/reconcile/tests_state.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/reconcile/vcs.rs",
-      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/reconcile/verify.rs",
       "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/reconcile/workspace_ops.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/repo_cache.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/restore/merge.rs",
-      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
@@ -848,43 +433,18 @@
     },
     {
       "rule_id": "duplicate_definitions",
-      "source_id": "src/restore/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/restore/tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
       "source_id": "src/scanner.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/scope.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/secrets.rs",
       "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/serve/github_webhook.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/serve/handlers/input_validation_tests.rs",
-      "count": 1
+      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/serve/handlers/mod.rs",
-      "count": 2
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -894,121 +454,61 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/serve/ipc.rs",
-      "count": 2
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/serve/mod.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/serve/review.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/serve/scope_args.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/serve/ticket_load.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/serve/tools.rs",
       "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/serve/webhook.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/session.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/skills.rs",
       "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/sprites.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/sprites_provider.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/status.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/store.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/store_dolt.rs",
-      "count": 4
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/store_sqlite.rs",
-      "count": 6
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/sync.rs",
       "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
-      "source_id": "src/testutil.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/text.rs",
+      "source_id": "src/status.rs",
       "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
+      "source_id": "src/store.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/store_dolt.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/store_sqlite.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/text.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
       "source_id": "src/vcs.rs",
-      "count": 3
+      "count": 2
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/verify.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/verify/close_condition.rs",
       "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/workspace/mod.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/workspace/sweep.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "duplicate_definitions",
-      "source_id": "src/xref.rs",
       "count": 2
     },
     {
@@ -1078,12 +578,12 @@
     },
     {
       "rule_id": "fan_out_skew",
-      "source_id": "src/context/envelope.rs",
+      "source_id": "src/config/mod.rs",
       "count": 1
     },
     {
       "rule_id": "fan_out_skew",
-      "source_id": "src/context/mod.rs",
+      "source_id": "src/context/envelope.rs",
       "count": 1
     },
     {
@@ -1099,12 +599,12 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/dispatch/codex_transport.rs",
-      "count": 3
+      "count": 1
     },
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/dispatch/mod.rs",
-      "count": 5
+      "count": 4
     },
     {
       "rule_id": "fan_out_skew",
@@ -1114,7 +614,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/dispatch/providers.rs",
-      "count": 6
+      "count": 5
     },
     {
       "rule_id": "fan_out_skew",
@@ -1143,18 +643,8 @@
     },
     {
       "rule_id": "fan_out_skew",
-      "source_id": "src/dsse.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
       "source_id": "src/github.rs",
       "count": 3
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/github_mirror.rs",
-      "count": 1
     },
     {
       "rule_id": "fan_out_skew",
@@ -1189,16 +679,11 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/migrate.rs",
-      "count": 3
+      "count": 1
     },
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/notes.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/observation/audit.rs",
       "count": 1
     },
     {
@@ -1213,13 +698,8 @@
     },
     {
       "rule_id": "fan_out_skew",
-      "source_id": "src/observation/integration_tests.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
       "source_id": "src/observation/laws.rs",
-      "count": 2
+      "count": 1
     },
     {
       "rule_id": "fan_out_skew",
@@ -1229,11 +709,6 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/observation/resolve.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/pipeline.rs",
       "count": 1
     },
     {
@@ -1313,18 +788,8 @@
     },
     {
       "rule_id": "fan_out_skew",
-      "source_id": "src/scan_assay.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
       "source_id": "src/serve/github_webhook.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/serve/handlers/input_validation_tests.rs",
-      "count": 4
+      "count": 1
     },
     {
       "rule_id": "fan_out_skew",
@@ -1334,22 +799,22 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/serve/ipc.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/serve/mod.rs",
-      "count": 6
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "src/serve/review.rs",
       "count": 2
     },
     {
       "rule_id": "fan_out_skew",
+      "source_id": "src/serve/mod.rs",
+      "count": 3
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/serve/review.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
       "source_id": "src/serve/webhook.rs",
-      "count": 4
+      "count": 1
     },
     {
       "rule_id": "fan_out_skew",
@@ -1359,7 +824,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/store_dolt.rs",
-      "count": 2
+      "count": 1
     },
     {
       "rule_id": "fan_out_skew",
@@ -1392,48 +857,18 @@
       "count": 1
     },
     {
-      "rule_id": "fan_out_skew",
-      "source_id": "tests/close_jsonl_sync.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "tests/create_jsonl_sync.rs",
-      "count": 2
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "tests/hooks_provenance.rs",
-      "count": 3
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "tests/init_jsonl_reconciliation.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "fan_out_skew",
-      "source_id": "tests/ipc_docker_e2e.rs",
-      "count": 1
-    },
-    {
       "rule_id": "god_file",
       "source_id": "src/bead.rs",
       "count": 1
     },
     {
       "rule_id": "god_file",
-      "source_id": "src/bead_sqlite/mod.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "god_file",
-      "source_id": "src/dispatch/providers.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "god_file",
       "source_id": "src/dispatch/tests.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/epic.rs",
       "count": 1
     },
     {
@@ -1448,17 +883,22 @@
     },
     {
       "rule_id": "god_file",
+      "source_id": "src/scope.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "god_file",
       "source_id": "src/store.rs",
       "count": 1
     },
     {
       "rule_id": "god_file",
-      "source_id": "src/store_dolt.rs",
+      "source_id": "src/store_sqlite.rs",
       "count": 1
     },
     {
       "rule_id": "god_file",
-      "source_id": "src/store_sqlite.rs",
+      "source_id": "src/vcs.rs",
       "count": 1
     },
     {
@@ -1578,11 +1018,6 @@
     },
     {
       "rule_id": "long_file_rosary",
-      "source_id": "src/dsse.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file_rosary",
       "source_id": "src/epic.rs",
       "count": 1
     },
@@ -1648,6 +1083,11 @@
     },
     {
       "rule_id": "long_file_rosary",
+      "source_id": "src/pool.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
       "source_id": "src/queue.rs",
       "count": 1
     },
@@ -1673,6 +1113,11 @@
     },
     {
       "rule_id": "long_file_rosary",
+      "source_id": "src/reconcile/workspace_ops.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
       "source_id": "src/scope.rs",
       "count": 1
     },
@@ -1689,6 +1134,11 @@
     {
       "rule_id": "long_file_rosary",
       "source_id": "src/serve/handlers/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file_rosary",
+      "source_id": "src/serve/handlers/tests.rs",
       "count": 1
     },
     {
