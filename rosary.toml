@@ -40,11 +40,6 @@ path = "~/remotes/art/ley-line"
 lang = "rust"
 
 [[repo]]
-name = "kiln"
-path = "~/remotes/art/kiln"
-lang = "go"
-
-[[repo]]
 name = "signet"
 path = "~/github/art/signet"
 lang = "go"
