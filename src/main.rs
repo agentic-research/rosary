@@ -3213,6 +3213,12 @@ mod hooks {
         // that enforces at commit-msg time. Embedded so a fresh `rsry hooks
         // install` configures it without any manual symlink to ~/.rsry/hooks.
         ("commit-msg", include_str!("../docs/git-hooks/commit-msg")),
+        // Hard gate: refuse to push when the live bead store disagrees with
+        // the tracked export (rosary-9c0e6c). Exact (byte-`cmp`) rather than
+        // `hooks audit`'s coarse >2x-gap heuristic — see the template's own
+        // header comment for why the coarser check wouldn't have caught the
+        // drift that motivated this.
+        ("pre-push", include_str!("../docs/git-hooks/pre-push")),
     ];
 
     /// Resolve the actual hooks directory for `repo_root`.
@@ -4729,6 +4735,153 @@ mod hooks {
             // No .beads/beads.jsonl tracked — the embedded script's own
             // opt-in guard must make this a clean no-op.
             run(root, "pre-commit").unwrap();
+        }
+
+        /// Same opt-in-by-tracking guard on the new pre-push drift gate
+        /// (rosary-9c0e6c) — proven the same no-binary-needed way as
+        /// pre-commit's equivalent test above.
+        #[test]
+        fn hooks_run_prepush_is_a_noop_when_jsonl_not_tracked() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            run(root, "pre-push").unwrap();
+        }
+
+        /// Same worktree guard as pre-commit's rosary-599778 fix, on the new
+        /// pre-push hook: a linked worktree's on-demand-created empty store
+        /// must not be compared against the tracked export (which would
+        /// report every real bead as "missing" and block an unrelated push).
+        #[test]
+        fn hooks_run_prepush_is_a_noop_in_a_worktree() {
+            let tmp = tempfile::tempdir().unwrap();
+            let main = tmp.path().join("main");
+            std::fs::create_dir_all(&main).unwrap();
+            init_repo(&main);
+            seed_commit(&main);
+            std::fs::create_dir_all(main.join(".beads")).unwrap();
+            std::fs::write(main.join(".beads/beads.jsonl"), "").unwrap();
+            git(&main, &["add", ".beads/beads.jsonl"]);
+            git(&main, &["commit", "-q", "-m", "track beads.jsonl"]);
+
+            let wt = tmp.path().join("wt");
+            assert!(
+                git(
+                    &main,
+                    &[
+                        "worktree",
+                        "add",
+                        "-q",
+                        "-b",
+                        "wt-prepush",
+                        wt.to_str().unwrap(),
+                    ],
+                )
+                .status
+                .success()
+            );
+
+            run(&wt, "pre-push").unwrap();
+        }
+
+        /// `run`, but with an explicit `RSRY_BIN` — the hook's own
+        /// first-choice resolution, so a stub can stand in for a real store
+        /// without touching PATH. Returns the raw output because these tests
+        /// assert on the refusal itself (exit status + the operator-facing
+        /// message), which `run` collapses into an opaque `Err`.
+        fn run_hook_with_rsry(
+            repo_root: &Path,
+            name: &str,
+            rsry_bin: &Path,
+        ) -> std::process::Output {
+            let (_, block) = HOOKS
+                .iter()
+                .find(|(n, _)| *n == name)
+                .expect("hook must be registered");
+            Command::new("sh")
+                .arg("-c")
+                .arg(render_block(block))
+                .current_dir(repo_root)
+                .env("RSRY_BIN", rsry_bin)
+                .output()
+                .expect("spawn hook")
+        }
+
+        /// A stub `rsry` whose `bead export -o <path>` writes `body`.
+        ///
+        /// `body` travels in a sidecar file rather than being interpolated
+        /// into the script, so no amount of quoting in a bead record can
+        /// change what the stub does.
+        fn fake_rsry(dir: &Path, body: &str) -> PathBuf {
+            let path = dir.join("fake-rsry");
+            std::fs::write(dir.join("fake-rsry.out"), body).unwrap();
+            std::fs::write(
+                &path,
+                "#!/bin/sh\n\
+                 while [ $# -gt 0 ]; do\n\
+                 \x20 if [ \"$1\" = \"-o\" ]; then shift; cat \"$0.out\" > \"$1\"; fi\n\
+                 \x20 shift\n\
+                 done\n\
+                 exit 0\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            path
+        }
+
+        /// Set up a repo whose tracked export is `tracked`, then run pre-push
+        /// against a store that would export `live`.
+        fn prepush_against(tracked: &str, live: &str) -> (tempfile::TempDir, std::process::Output) {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().to_path_buf();
+            init_repo(&root);
+            seed_commit(&root);
+            std::fs::create_dir_all(root.join(".beads")).unwrap();
+            std::fs::write(root.join(".beads/beads.jsonl"), tracked).unwrap();
+            git(&root, &["add", ".beads/beads.jsonl"]);
+            git(&root, &["commit", "-q", "-m", "track beads.jsonl"]);
+
+            let rsry = fake_rsry(&root, live);
+            let out = run_hook_with_rsry(&root, "pre-push", &rsry);
+            (tmp, out)
+        }
+
+        /// The gate's whole purpose, pinned. Every other pre-push test covers
+        /// a path that deliberately skips the comparison, so without this the
+        /// check could stop refusing anything and stay green.
+        #[test]
+        fn hooks_run_prepush_refuses_the_push_when_the_export_disagrees() {
+            let (_tmp, out) = prepush_against("published\n", "published\nstore-only\n");
+
+            assert!(
+                !out.status.success(),
+                "drift must refuse the push, got {:?}",
+                out.status
+            );
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                stderr.contains("beads.jsonl is stale"),
+                "refusal must name the problem, got: {stderr}"
+            );
+        }
+
+        /// The other direction: an agreeing store must let the push through.
+        /// Pairs with the refusal test — together they prove the exit status
+        /// tracks the comparison rather than being constant.
+        #[test]
+        fn hooks_run_prepush_allows_the_push_when_the_export_agrees() {
+            let (_tmp, out) = prepush_against("published\n", "published\n");
+
+            assert!(
+                out.status.success(),
+                "an in-sync store must not block the push, stderr: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
 
         /// Exit-code propagation, proven without depending on the `rsry`

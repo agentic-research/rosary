@@ -1,0 +1,54 @@
+REPO=$(basename "$PWD")
+# Refuse to push if the live bead store disagrees with the tracked export
+# (rosary-9c0e6c). `hooks audit`'s store/export drift check is deliberately
+# coarse (only flags a >2x gap, tuned to catch catastrophic wipes without
+# false-positiving on routine commit-time churn) — it would NOT have caught
+# mache's actual drift (555 tracked vs 565 live, ~2% gap, ten beads that were
+# simply never exported). Push time is the right place for an EXACT check:
+# it is the last moment before bead state either ships to every clone or
+# doesn't, and it only runs once per push rather than once per commit.
+#
+# OPT-IN BY TRACKING + SQLite-only, matching every other managed hook:
+# Dolt-backed repos push their own store directly (`dolt push`, see
+# post-push) and a repo that never tracked beads.jsonl never asked for this.
+if [ ! -d ".beads/dolt/$REPO" ] && git ls-files --error-unmatch .beads/beads.jsonl >/dev/null 2>&1; then
+
+    # ---- GUARD: canonical checkout only (mirrors pre-commit's rosary-599778 guard) ----
+    # A linked worktree never receives `.beads/beads.db` (gitignored) but
+    # `SqliteBeadStore::connect` creates an empty one on demand — comparing
+    # against that would report every real bead as "drift" and block a push
+    # that has nothing to do with bead state.
+    _gd=$(git rev-parse --git-dir 2>/dev/null)
+    _gc=$(git rev-parse --git-common-dir 2>/dev/null)
+    if [ -n "$_gd" ] && [ -n "$_gc" ] && [ "$_gd" != "$_gc" ]; then
+        : # Skip only this managed block; continue the surrounding hook.
+    else
+        RSRY="${RSRY_BIN:-}"
+        if [ -z "$RSRY" ]; then
+            RSRY=$(command -v rsry 2>/dev/null || true)
+        fi
+        if [ -z "$RSRY" ] && [ -x "$HOME/.local/bin/rsry" ]; then
+            RSRY="$HOME/.local/bin/rsry"
+        fi
+        if [ -n "$RSRY" ]; then
+            # Export is id-sorted and convergent (relied on by pre-commit's own
+            # magnitude check) — an unchanged store re-exports byte-identical,
+            # so `cmp` is an exact drift check, not a heuristic.
+            _tmp=".beads/.beads.jsonl.prepush$$"
+            if "$RSRY" bead export --jsonl --status all -o "$_tmp" >/dev/null 2>&1; then
+                if ! cmp -s "$_tmp" .beads/beads.jsonl; then
+                    rm -f "$_tmp"
+                    echo "ERROR: .beads/beads.jsonl is stale — the live bead store has" >&2
+                    echo "  changes not reflected in the tracked export (bead created," >&2
+                    echo "  closed, or commented via MCP with no commit since to pick it up)." >&2
+                    echo "  Run: rsry bead export --jsonl --status all -o .beads/beads.jsonl" >&2
+                    echo "  then commit the result, and push again." >&2
+                    exit 1
+                fi
+                rm -f "$_tmp"
+            else
+                rm -f "$_tmp"
+            fi
+        fi
+    fi
+fi
