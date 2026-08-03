@@ -176,7 +176,7 @@ rsry bead comment delete <id> <comment_id> [--reason <why>] [--hard]   # --hard 
 rsry close-merged                            # catch-up sweep (gh): close beads whose PRs already merged
 rsry close-merged --local                    # rsry-native: close beads from local `git log` squash commits ([bead-id] … (#N)) — no gh/webhook/tunnel; run by the git post-merge hook
 rsry init [path] [--dolt] [--no-register]    # onboard a repo (bd-init equivalent, ADR-0014): create `.beads/` store (SQLite default, `--dolt` for server mode) + metadata.json + managed AGENTS.md section (replaces a legacy bd block) + `hooks install` + global register. Idempotent.
-rsry hooks install / status                  # install/report the post-merge + post-push bead-sync hooks (post-merge runs `close-merged --local`) + the `beads-jsonl` merge driver config
+rsry hooks install / status                  # install/report the pre-commit/commit-msg/post-merge/post-push bead-sync hooks (post-merge runs `close-merged --local`) + the `beads-jsonl` merge driver config + the pre-push hard gate: refuses to push when the live store disagrees with the tracked export (exact `cmp`, not `hooks audit`'s coarser >2x heuristic — rosary-9c0e6c)
 rsry hooks audit                             # mechanical gate (exit non-zero on failure): .gitignore shadowing beads.jsonl, .beads/embeddeddolt+beads.db backend ambiguity, store/export drift (rosary-b5c8a1)
 rsry thread-reparent <thread_id> <decade_id> [--name <new>]  # re-parent threads under a different decade
 rsry capture --from-session <path>           # transcript → BeadSpecs via LLM (Session provenance)

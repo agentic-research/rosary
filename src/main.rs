@@ -3213,6 +3213,12 @@ mod hooks {
         // that enforces at commit-msg time. Embedded so a fresh `rsry hooks
         // install` configures it without any manual symlink to ~/.rsry/hooks.
         ("commit-msg", include_str!("../docs/git-hooks/commit-msg")),
+        // Hard gate: refuse to push when the live bead store disagrees with
+        // the tracked export (rosary-9c0e6c). Exact (byte-`cmp`) rather than
+        // `hooks audit`'s coarse >2x-gap heuristic — see the template's own
+        // header comment for why the coarser check wouldn't have caught the
+        // drift that motivated this.
+        ("pre-push", include_str!("../docs/git-hooks/pre-push")),
     ];
 
     /// Resolve the actual hooks directory for `repo_root`.
@@ -4729,6 +4735,54 @@ mod hooks {
             // No .beads/beads.jsonl tracked — the embedded script's own
             // opt-in guard must make this a clean no-op.
             run(root, "pre-commit").unwrap();
+        }
+
+        /// Same opt-in-by-tracking guard on the new pre-push drift gate
+        /// (rosary-9c0e6c) — proven the same no-binary-needed way as
+        /// pre-commit's equivalent test above.
+        #[test]
+        fn hooks_run_prepush_is_a_noop_when_jsonl_not_tracked() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            init_repo(root);
+            seed_commit(root);
+            run(root, "pre-push").unwrap();
+        }
+
+        /// Same worktree guard as pre-commit's rosary-599778 fix, on the new
+        /// pre-push hook: a linked worktree's on-demand-created empty store
+        /// must not be compared against the tracked export (which would
+        /// report every real bead as "missing" and block an unrelated push).
+        #[test]
+        fn hooks_run_prepush_is_a_noop_in_a_worktree() {
+            let tmp = tempfile::tempdir().unwrap();
+            let main = tmp.path().join("main");
+            std::fs::create_dir_all(&main).unwrap();
+            init_repo(&main);
+            seed_commit(&main);
+            std::fs::create_dir_all(main.join(".beads")).unwrap();
+            std::fs::write(main.join(".beads/beads.jsonl"), "").unwrap();
+            git(&main, &["add", ".beads/beads.jsonl"]);
+            git(&main, &["commit", "-q", "-m", "track beads.jsonl"]);
+
+            let wt = tmp.path().join("wt");
+            assert!(
+                git(
+                    &main,
+                    &[
+                        "worktree",
+                        "add",
+                        "-q",
+                        "-b",
+                        "wt-prepush",
+                        wt.to_str().unwrap(),
+                    ],
+                )
+                .status
+                .success()
+            );
+
+            run(&wt, "pre-push").unwrap();
         }
 
         /// Exit-code propagation, proven without depending on the `rsry`
