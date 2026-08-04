@@ -1186,7 +1186,7 @@ async fn bead_migrate_run(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| repo.to_string());
 
-    if bead_backup::classify(beads_dir) != bead_backup::Backend::Dolt {
+    if bead_backup::classify(beads_dir)? != bead_backup::Backend::Dolt {
         if json {
             println!(
                 "{}",
