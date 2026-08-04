@@ -2674,8 +2674,14 @@ async fn main() -> Result<()> {
             if local {
                 let summary = run_close_merged_local(repo.as_deref(), dry_run).await?;
                 println!(
-                    "close-merged --local: {} {} (checked={}, held_open={})",
-                    summary.merged_closed, verb, summary.checked, summary.held_open,
+                    "close-merged --local: {} {} (checked={}, held_open={}, \
+                     refused_unmet_condition={}, close_failed={})",
+                    summary.merged_closed,
+                    verb,
+                    summary.checked,
+                    summary.held_open,
+                    summary.refused_unmet_condition,
+                    summary.close_failed,
                 );
                 for id in &summary.bead_ids_closed {
                     println!("  {id}");
@@ -2683,13 +2689,16 @@ async fn main() -> Result<()> {
             } else {
                 let summary = run_close_merged(repo.as_deref(), dry_run).await?;
                 println!(
-                    "close-merged: {} {} (checked={}, no_pr_url={}, not_merged={}, gh_errors={})",
+                    "close-merged: {} {} (checked={}, no_pr_url={}, not_merged={}, \
+                     gh_errors={}, refused_unmet_condition={}, close_failed={})",
                     summary.merged_closed,
                     verb,
                     summary.checked,
                     summary.no_pr_url,
                     summary.not_merged,
                     summary.gh_errors,
+                    summary.refused_unmet_condition,
+                    summary.close_failed,
                 );
                 for id in &summary.bead_ids_closed {
                     println!("  {id}");
@@ -6473,6 +6482,16 @@ mod tests {
             status.as_deref(),
             Some("open"),
             "bead must stay open — its declared condition was never verified"
+        );
+
+        // rosary-c75925 (Copilot review, PR #473): a counter incrementing is
+        // not evidence the refusal comment was actually written — pin the
+        // write itself, not just the summary that reports it.
+        let comments = store.list_comments("testrepo-abc123", false).await.unwrap();
+        assert!(
+            comments.iter().any(|c| c.text.contains("NOT auto-closed")
+                && c.text.contains("cargo test -p widget must pass")),
+            "refusal must be recorded as a comment naming the unmet condition, got: {comments:?}"
         );
     }
 
