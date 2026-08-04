@@ -234,12 +234,17 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead.rs",
-      "count": 2
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/bead_backup.rs",
       "count": 2
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/bead_close_condition.rs",
+      "count": 1
     },
     {
       "rule_id": "duplicate_definitions",
@@ -904,11 +909,6 @@
     {
       "rule_id": "god_file",
       "source_id": "src/verify.rs",
-      "count": 1
-    },
-    {
-      "rule_id": "long_file",
-      "source_id": "src/bead.rs",
       "count": 1
     },
     {

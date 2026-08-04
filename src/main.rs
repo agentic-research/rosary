@@ -26,6 +26,7 @@ mod bdr_enrich;
 mod bead;
 mod bead_backend;
 mod bead_backup;
+mod bead_close_condition;
 mod bead_correct;
 mod bead_diff;
 mod bead_dolt;
