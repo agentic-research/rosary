@@ -44,3 +44,13 @@ async fn audit_first_ok() {
     client.log_event(id, "state", "done").await;
     self.persist_status(id, state, evidence).await;
 }
+
+async fn raw_close_reaches_past_the_gate() {
+    // ruleid: bead-close-bypasses-gate
+    store.close_bead(&id).await.ok();
+}
+
+async fn gated_close_via_bead_ops_ok() {
+    // ok: bead-close-bypasses-gate
+    bead_ops::close_bead(store.as_ref(), &id, &repo_name, force).await?;
+}
