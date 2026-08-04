@@ -2333,7 +2333,30 @@ async fn main() -> Result<()> {
                     }
                 }
                 BeadAction::Reopen { id } => {
-                    client.update_status(&id, "open").await?;
+                    // rosary-ee49bf: `BeadState::Done` has no valid transitions
+                    // BY DESIGN (rosary-e0e19f: that's a claim the workflow has
+                    // no next step, not that the record can't be wrong) — so the
+                    // guarded update_status path refuses `done -> open` even
+                    // when the close was itself wrong. `reopen` on a terminal
+                    // bead IS that "the record was wrong" claim; route through
+                    // the same correction mechanism `bead correct` uses rather
+                    // than the transition gate, which would refuse it.
+                    let current = client
+                        .get_status(&id)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("no such bead: {id}"))?;
+                    if bead::BeadState::from(current.as_str()).is_terminal() {
+                        bead_correct::correct_status(
+                            client.as_ref(),
+                            &id,
+                            "open",
+                            "Reopened via `rsry bead reopen` — recovering a bead \
+                             left in a terminal state.",
+                        )
+                        .await?;
+                    } else {
+                        client.update_status(&id, "open").await?;
+                    }
                     client.log_event(&id, "reopened", "via rsry-cli").await;
                     println!("reopened {id}");
                 }

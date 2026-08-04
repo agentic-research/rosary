@@ -85,7 +85,6 @@ impl BeadState {
     }
 
     /// Whether this state is terminal (no further transitions).
-    #[allow(dead_code)]
     pub fn is_terminal(self) -> bool {
         self.valid_transitions().is_empty()
     }
@@ -832,6 +831,18 @@ mod tests {
             let s = state.to_string();
             assert_eq!(BeadState::from(s.as_str()), state);
         }
+    }
+
+    /// rosary-ee49bf: `reopen`'s terminal-check operates on the PARSED
+    /// `BeadState`, so "both terminal spellings" (done/closed) only need to
+    /// collapse correctly here — `From<&str>` already does that (line 175);
+    /// this pins `is_terminal` sees the same answer for both.
+    #[test]
+    fn is_terminal_agrees_for_both_done_and_closed_spellings() {
+        assert!(BeadState::from("done").is_terminal());
+        assert!(BeadState::from("closed").is_terminal());
+        assert_eq!(BeadState::from("done"), BeadState::from("closed"));
+        assert!(!BeadState::from("open").is_terminal());
     }
 
     #[test]
