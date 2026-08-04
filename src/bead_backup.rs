@@ -28,11 +28,24 @@ pub enum Backend {
 /// Detect the backend for a `.beads/` directory, via the single canonical
 /// classifier ([`crate::bead_backend`]) so this can never disagree with
 /// `connect_bead_store` or `hooks::audit` again.
-pub fn classify(beads_dir: &Path) -> Backend {
-    if crate::bead_backend::is_dolt_backed(beads_dir) {
-        Backend::Dolt
-    } else {
-        Backend::Sqlite
+///
+/// Refuses on `Ambiguous` rather than silently reporting `Dolt`
+/// (rosary-cd5e99): `is_dolt_backed` alone can't tell "clean Dolt" from
+/// "Dolt + a stray SQLite file neither `backup` nor `restore` would ever
+/// mention" — and both callers here already refuse Dolt outright, so this
+/// only changes WHY they refuse, not whether they act.
+pub fn classify(beads_dir: &Path) -> Result<Backend> {
+    use crate::bead_backend::BeadBackend;
+    match crate::bead_backend::detect_backend(beads_dir) {
+        BeadBackend::Dolt => Ok(Backend::Dolt),
+        BeadBackend::Ambiguous => bail!(
+            "{} holds BOTH a Dolt store and a SQLite store — can't tell which is \
+             authoritative, so refusing to guess which one to back up or restore. \
+             Resolve the ambiguity first: `rsry hooks audit` diagnoses it, `rsry bead \
+             migrate --to sqlite` converts Dolt->SQLite with verification.",
+            beads_dir.display()
+        ),
+        _ => Ok(Backend::Sqlite),
     }
 }
 
@@ -48,7 +61,7 @@ pub struct BackupOutcome {
 /// SQLite: a consistent `VACUUM INTO` snapshot. Dolt: returns a guiding error
 /// (full backup is Dolt's job). Refuses to overwrite an existing `dest`.
 pub fn backup(beads_dir: &Path, dest: &Path) -> Result<BackupOutcome> {
-    match classify(beads_dir) {
+    match classify(beads_dir)? {
         Backend::Sqlite => {
             let db = crate::bead_backend::sqlite_path(beads_dir);
             if !db.exists() {
@@ -102,7 +115,7 @@ pub fn backup(beads_dir: &Path, dest: &Path) -> Result<BackupOutcome> {
 /// `src` is a readable bead store before clobbering anything, and clears any
 /// stale `-wal`/`-shm` sidecars so the restored file is authoritative.
 pub fn restore(beads_dir: &Path, src: &Path, force: bool) -> Result<()> {
-    if classify(beads_dir) == Backend::Dolt {
+    if classify(beads_dir)? == Backend::Dolt {
         bail!(
             "this repo uses Dolt server mode ({}); restore via Dolt's native tooling, not rsry.",
             crate::bead_backend::dolt_dir(beads_dir).display()
@@ -170,9 +183,44 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let beads = tmp.path().join(".beads");
         std::fs::create_dir_all(&beads).unwrap();
-        assert_eq!(classify(&beads), Backend::Sqlite);
+        assert_eq!(classify(&beads).unwrap(), Backend::Sqlite);
         std::fs::create_dir_all(beads.join("dolt")).unwrap();
-        assert_eq!(classify(&beads), Backend::Dolt);
+        assert_eq!(classify(&beads).unwrap(), Backend::Dolt);
+    }
+
+    /// rosary-cd5e99: `classify` used to silently collapse Ambiguous into
+    /// `Backend::Dolt` — so `backup`/`restore` would tell the user "this repo
+    /// uses Dolt, go use `dolt backup`" without ever mentioning the stray
+    /// SQLite file sitting right next to it. Must refuse loudly instead.
+    #[test]
+    fn classify_refuses_ambiguous_rather_than_silently_reporting_dolt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let beads = tmp.path().join(".beads");
+        std::fs::create_dir_all(beads.join("dolt")).unwrap();
+        std::fs::write(beads.join("beads.db"), b"").unwrap();
+
+        let err = classify(&beads).unwrap_err().to_string();
+        assert!(err.contains("BOTH"), "must name the real problem: {err}");
+        assert!(
+            !err.contains("uses Dolt server mode"),
+            "must not misreport ambiguous as clean Dolt: {err}"
+        );
+    }
+
+    /// `backup` on an ambiguous `.beads/` must surface the real diagnosis
+    /// (both stores present), not the misleading "this repo uses Dolt" message
+    /// classify() used to produce by collapsing Ambiguous into Dolt.
+    #[test]
+    fn backup_on_ambiguous_repo_names_the_real_problem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let beads = tmp.path().join(".beads");
+        std::fs::create_dir_all(beads.join("dolt")).unwrap();
+        std::fs::write(beads.join("beads.db"), b"").unwrap();
+
+        let err = backup(&beads, &tmp.path().join("out.bak"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("BOTH"), "got: {err}");
     }
 
     #[test]
