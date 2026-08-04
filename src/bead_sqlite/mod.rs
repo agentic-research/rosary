@@ -405,6 +405,34 @@ impl SqliteBeadStore {
                 beads_dir.display()
             );
         }
+        Self::connect_unchecked(path)
+    }
+
+    /// Open (creating if absent) WITHOUT the 554a74 ambiguity guard.
+    ///
+    /// The guard exists to stop a stray tool from *accidentally* minting a
+    /// SQLite store beside a Dolt one — it must not also block the one
+    /// legitimate reason to create a fresh SQLite file in a Dolt-backed
+    /// `.beads/`: staging a `bead migrate --to sqlite --commit` build
+    /// (rosary-cb7a8d — `.beads/beads.db.new` tripped this same guard,
+    /// making `--commit` unreachable since 554a74 landed).
+    ///
+    /// `pub(crate)`, so any future internal caller could reach this and
+    /// silently reintroduce the exact footgun 554a74 exists to prevent —
+    /// restricted to the one literal filename `migrate --commit` actually
+    /// uses, so accidental misuse fails loudly instead of quietly bypassing
+    /// the guard.
+    pub(crate) fn connect_staging(path: &Path) -> Result<Self> {
+        anyhow::ensure!(
+            path.file_name() == Some(std::ffi::OsStr::new("beads.db.new")),
+            "connect_staging is restricted to the migrate --commit staging file \
+             (beads.db.new), got {} — use connect() for anything else",
+            path.display()
+        );
+        Self::connect_unchecked(path)
+    }
+
+    fn connect_unchecked(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
