@@ -341,6 +341,25 @@ pub fn bead_list_json(beads: &[Bead]) {
 /// `Bead::is_ready()`) and `"blocked"` (uses `Bead::is_blocked()`, which
 /// captures both the literal `status == "blocked"` and `status == "open" &&
 /// has unresolved deps`).
+/// Whether `bead` matches a single status filter token. `"all"` is a
+/// wildcard; `"ready"`/`"dispatchable"`/`"blocked"` are virtual names backed
+/// by their `Bead` predicate; anything else is a literal status match.
+///
+/// The one declaration both query surfaces derive from (rosary-cb1af4,
+/// rosary-c1f669 class) — before this, MCP's `rsry_list_beads` re-derived
+/// this match independently and never mapped `"all"` to wildcard-true the
+/// way this (CLI's original) logic did, so `status: "all"` over MCP silently
+/// matched nothing rather than everything.
+pub fn bead_matches_status_token(bead: &Bead, token: &str) -> bool {
+    match token {
+        "all" => true,
+        "ready" => bead.is_ready(),
+        "dispatchable" => bead.is_dispatchable(),
+        "blocked" => bead.is_blocked(),
+        other => bead.status == other,
+    }
+}
+
 pub fn filter_beads(
     beads: Vec<Bead>,
     statuses: &[String],
@@ -351,18 +370,7 @@ pub fn filter_beads(
     let cap = limit.min(200);
     beads
         .into_iter()
-        .filter(|b| {
-            if statuses.is_empty() {
-                return true;
-            }
-            statuses.iter().any(|s| match s.as_str() {
-                "all" => true,
-                "ready" => b.is_ready(),
-                "dispatchable" => b.is_dispatchable(),
-                "blocked" => b.is_blocked(),
-                other => b.status == other,
-            })
-        })
+        .filter(|b| statuses.is_empty() || statuses.iter().any(|s| bead_matches_status_token(b, s)))
         .filter(|b| priorities.is_empty() || priorities.contains(&b.priority))
         .filter(|b| issue_types.is_empty() || issue_types.iter().any(|t| t == &b.issue_type))
         .take(cap)

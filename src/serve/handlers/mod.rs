@@ -355,10 +355,11 @@ async fn tool_list_beads(
 
 fn bead_matches_status(bead: &crate::bead::Bead, status: Option<&str>) -> bool {
     match status {
-        Some("blocked") => bead.is_blocked(),
-        Some("ready") => bead.is_ready(),
-        Some("dispatchable") => bead.is_dispatchable(),
-        Some(s) => bead.status == s,
+        // Delegates to the one declaration CLI's filter_beads also derives
+        // from (rosary-cb1af4) — this used to hand-match here and never
+        // treated `status: "all"` as the wildcard CLI already did, so it
+        // silently matched nothing over MCP.
+        Some(s) => crate::cli::bead_matches_status_token(bead, s),
         None => true,
     }
 }

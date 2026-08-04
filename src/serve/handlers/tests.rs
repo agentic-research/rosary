@@ -95,6 +95,20 @@ fn bead_matches_dispatchable_virtual_status() {
     assert!(bead_matches_status(&ready_only, Some("ready")));
 }
 
+/// Regression for the bug this unification fixed (rosary-cb1af4): before
+/// delegating to cli::bead_matches_status_token, `status: "all"` over MCP
+/// fell through to a literal `bead.status == "all"` comparison — which no
+/// bead ever satisfies — so it silently matched NOTHING instead of
+/// everything, unlike CLI's `filter_beads` which always treated "all" as a
+/// wildcard.
+#[test]
+fn bead_matches_status_all_is_a_wildcard_like_cli() {
+    let done = test_bead("done", 0, "task", "d", &[], "");
+    let open = test_bead("open", 0, "task", "o", &[], "");
+    assert!(bead_matches_status(&done, Some("all")));
+    assert!(bead_matches_status(&open, Some("all")));
+}
+
 #[tokio::test]
 async fn mcp_close_refreshes_only_the_published_jsonl_record() {
     use crate::store::NewBead;
