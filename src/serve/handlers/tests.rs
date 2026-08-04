@@ -231,6 +231,162 @@ async fn mcp_create_publishes_into_an_opted_in_jsonl_projection() {
     assert_eq!(records[0]["title"], "created through MCP");
 }
 
+/// Comments are part of the canonical contract (bead_to_contract_value
+/// includes them) but never got the refresh that create/close did — a live
+/// instance of the re-declaration class (rosary-c1f669) this session found
+/// in its own substrate. Pins tool_bead_comment's refresh so it can't drift
+/// back to silent again.
+#[tokio::test]
+async fn mcp_comment_refreshes_the_published_jsonl_record() {
+    use crate::store::NewBead;
+    use std::process::Command;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path().join("project");
+    let beads_dir = repo.join(".beads");
+    std::fs::create_dir_all(&beads_dir).unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test User"]);
+
+    let store = crate::bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db")).unwrap();
+    store
+        .create_bead_full(NewBead {
+            id: "project-public1".to_string(),
+            title: "published".to_string(),
+            issue_type: "bug".to_string(),
+            files: vec!["src/lib.rs".to_string()],
+            test_files: vec!["tests/smoke.rs".to_string()],
+            acceptance_criteria: "cargo test".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let published = store
+        .get_bead("project-public1", "project")
+        .await
+        .unwrap()
+        .unwrap();
+    let jsonl = crate::import::export_beads_contract_jsonl(&store, &[published])
+        .await
+        .unwrap();
+    std::fs::write(beads_dir.join("beads.jsonl"), jsonl).unwrap();
+    git(&["add", ".beads/beads.jsonl"]);
+    git(&["commit", "-qm", "publish one bead"]);
+
+    let pool = RepoPool::from_client("project", repo, Box::new(store));
+    tool_bead_comment(
+        &json!({
+            "scope": "repo:project",
+            "id": "project-public1",
+            "body": "a comment that should reach the tracked export"
+        }),
+        &pool,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let records = crate::restore::read_beads_jsonl(Some(
+        beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
+    ))
+    .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0]["comment_count"].as_u64(),
+        Some(1),
+        "MCP comment must refresh the published record's comment_count, not leave it stale"
+    );
+}
+
+/// Same gap, different handler: rsry_bead_update (e.g. a priority downgrade)
+/// must reach the tracked export too, not just create/close.
+#[tokio::test]
+async fn mcp_update_refreshes_the_published_jsonl_record() {
+    use crate::store::NewBead;
+    use std::process::Command;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path().join("project");
+    let beads_dir = repo.join(".beads");
+    std::fs::create_dir_all(&beads_dir).unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test User"]);
+
+    let store = crate::bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db")).unwrap();
+    store
+        .create_bead_full(NewBead {
+            id: "project-public1".to_string(),
+            title: "published".to_string(),
+            priority: 0,
+            issue_type: "bug".to_string(),
+            files: vec!["src/lib.rs".to_string()],
+            test_files: vec!["tests/smoke.rs".to_string()],
+            acceptance_criteria: "cargo test".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let published = store
+        .get_bead("project-public1", "project")
+        .await
+        .unwrap()
+        .unwrap();
+    let jsonl = crate::import::export_beads_contract_jsonl(&store, &[published])
+        .await
+        .unwrap();
+    std::fs::write(beads_dir.join("beads.jsonl"), jsonl).unwrap();
+    git(&["add", ".beads/beads.jsonl"]);
+    git(&["commit", "-qm", "publish one bead"]);
+
+    let pool = RepoPool::from_client("project", repo, Box::new(store));
+    tool_bead_update(
+        &json!({ "scope": "repo:project", "id": "project-public1", "priority": 2 }),
+        &pool,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let records = crate::restore::read_beads_jsonl(Some(
+        beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
+    ))
+    .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0]["priority"].as_u64(),
+        Some(2),
+        "MCP update must refresh the published record's priority, not leave it stale"
+    );
+}
+
 /// get_client's own pool-hit-by-name fast path (rosary-2b8568 pool refactor):
 /// a caller with a repo_path whose basename matches an already-pooled repo
 /// gets the pooled Arc back directly, never touching connect_bead_store.
