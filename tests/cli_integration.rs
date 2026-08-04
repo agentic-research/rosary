@@ -366,6 +366,55 @@ fn bead_close() {
     );
 }
 
+/// rosary-ee49bf: the CLI help promises `rsry bead reopen <ID>` recovers a
+/// closed bead, but `BeadState::Done` has no valid transitions — the guarded
+/// `update_status` path used to refuse `done -> open` outright, exactly the
+/// case a real recovery hit (ley-line-open-048393, evidence proved its close
+/// was wrong). Reopen must route around the transition gate for a terminal
+/// bead, the same way `bead correct` already does.
+#[test]
+fn bead_reopen_recovers_a_done_bead() {
+    let sandbox = match CliSandbox::new() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let id = sandbox.create_bead("Wrongly closed");
+    sandbox.run_ok(&["bead", "close", &id, "--force"]);
+
+    // Default `bead list` is the active-only view — a closed bead must NOT
+    // appear there, and DOES appear with --status all (proves the close
+    // actually landed, before testing that reopen can undo it).
+    let active_before = sandbox.run_ok(&["bead", "list"]);
+    assert!(
+        !active_before.contains(&id),
+        "closed bead must not show in the default active-only view: {active_before}"
+    );
+    let all_before = sandbox.run_ok(&["bead", "list", "--status", "all"]);
+    assert!(
+        all_before.contains(&id),
+        "closed bead should still show with --status all: {all_before}"
+    );
+
+    let reopen_out = sandbox.run(&["bead", "reopen", &id]);
+    let reopen_stdout = String::from_utf8_lossy(&reopen_out.stdout);
+    let reopen_stderr = String::from_utf8_lossy(&reopen_out.stderr);
+    assert!(
+        reopen_out.status.success(),
+        "reopen must succeed on a done bead: stdout={reopen_stdout} stderr={reopen_stderr}"
+    );
+    assert!(
+        reopen_stdout.contains("reopened"),
+        "reopen output should confirm: {reopen_stdout}"
+    );
+
+    let after = sandbox.run_ok(&["bead", "list"]);
+    assert!(
+        after.contains(&id),
+        "reopened bead should show back in the default (open) view: {after}"
+    );
+}
+
 #[test]
 fn bead_comment() {
     let sandbox = match CliSandbox::new() {

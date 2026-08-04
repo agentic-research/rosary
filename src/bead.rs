@@ -85,7 +85,6 @@ impl BeadState {
     }
 
     /// Whether this state is terminal (no further transitions).
-    #[allow(dead_code)]
     pub fn is_terminal(self) -> bool {
         self.valid_transitions().is_empty()
     }
