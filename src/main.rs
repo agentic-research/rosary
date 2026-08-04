@@ -2370,6 +2370,15 @@ async fn main() -> Result<()> {
                         client.update_status(&id, "open").await?;
                     }
                     client.log_event(&id, "reopened", "via rsry-cli").await;
+                    jsonl_sync::refresh_tracked_beads_jsonl(
+                        client.as_ref(),
+                        &repo_name,
+                        &repo_root,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!("bead {id} reopened, but refreshing tracked .beads/beads.jsonl")
+                    })?;
                     println!("reopened {id}");
                 }
                 BeadAction::Review { id, json } => {
@@ -2391,6 +2400,22 @@ async fn main() -> Result<()> {
                     BeadCommentAction::Add { id, body } => {
                         bead_ops::validate_comment_body(&body)?;
                         client.add_comment(&id, &body, "rsry-cli").await?;
+                        // Comments are part of the canonical record (bead_to_contract_value
+                        // includes them) but were never wired into the refresh that create/close
+                        // get — a live instance of the re-declaration class (rosary-c1f669):
+                        // "the JSONL refresh wired into 2 of ~17 write paths" understated the
+                        // gap. No-ops for Dolt-backed/coordination-role/untracked beads.
+                        jsonl_sync::refresh_tracked_beads_jsonl(
+                            client.as_ref(),
+                            &repo_name,
+                            &repo_root,
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "comment added to {id}, but refreshing tracked .beads/beads.jsonl"
+                            )
+                        })?;
                         cli::bead_commented(&id);
                     }
                     BeadCommentAction::List {
