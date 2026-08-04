@@ -10,7 +10,7 @@ name: smells
 # the supported Mache↔leyline pairing is owned and verified by Mache.
 #
 # Both the action ref and the mache version are pinned to the SAME release tag
-# (v0.21.0) so the gate is reproducible — a drifting `@main` action SHA silently
+# (v0.21.1) so the gate is reproducible — a drifting `@main` action SHA silently
 # changes the invocation contract under a fixed binary version. mache >= v0.17.0
 # selects rules with `--tags=gate`, so an external rule in docs/smell-rules/ MUST
 # carry `"Tags": ["gate"]` or it is silently filtered out of the gate.
@@ -42,9 +42,9 @@ jobs:
       MACHE_SMELL_RULES_DIR: ${{ github.workspace }}/docs/smell-rules
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - uses: agentic-research/mache/.github/actions/find-smells@1288e81e5292dac4664f43633dfc4ed815fb00fe # v0.21.0
+      - uses: agentic-research/mache/.github/actions/find-smells@057a722595390e0c2945956597c0234061a0e038 # v0.21.1
         with:
-          mache-version: v0.21.0
+          mache-version: v0.21.1
           baseline: docs/smell-baseline.json
           fail-on-new: 'true'
           upload-sarif: 'true'
