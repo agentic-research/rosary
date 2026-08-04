@@ -5714,6 +5714,15 @@ pub struct CloseMergedSummary {
     /// parent/epic with open children, or a planning bead (rosary-649660).
     /// The PR is still associated; only the close is deferred.
     pub held_open: usize,
+    /// Beads whose PR merged but held open because their `acceptance_criteria`
+    /// explicitly requires more than a merge (rosary-c75925/e0e19f) — a
+    /// verification `close-merged` can't itself perform. The refusal is
+    /// recorded as a comment; close manually once actually verified.
+    pub refused_unmet_condition: usize,
+    /// Beads that passed every gate but whose `close_bead` write itself
+    /// failed — never folded into `merged_closed`/`bead_ids_closed`, so a
+    /// failed write is never counted as a success (rosary-c75925).
+    pub close_failed: usize,
     /// IDs of beads closed (in order processed)
     pub bead_ids_closed: Vec<String>,
 }
@@ -5846,12 +5855,43 @@ pub async fn run_close_merged_with_config(
             }
             let merge_sha = parsed["mergeCommit"]["oid"].as_str().unwrap_or("");
 
-            summary.merged_closed += 1;
-            summary.bead_ids_closed.push(b.id.clone());
-            if dry_run {
+            // rosary-c75925/e0e19f: a commit REFERENCING this bead merging is
+            // not proof that whatever this bead's acceptance_criteria actually
+            // demands (if it demands something beyond "a PR merges") ran and
+            // passed — this scan has no way to check that. Only auto-close
+            // when the bead's own declared condition IS "a PR merges".
+            if !crate::bead::merge_alone_satisfies_close(&b.acceptance_criteria) {
+                summary.refused_unmet_condition += 1;
+                eprintln!(
+                    "close-merged: PR {pr_url} merged for {} but NOT closed — \
+                     acceptance_criteria requires more than a merge: {}",
+                    b.id, b.acceptance_criteria
+                );
+                if !dry_run {
+                    store
+                        .add_comment(
+                            &b.id,
+                            &format!(
+                                "PR merged ({pr_url}), but NOT auto-closed — this bead's \
+                                 acceptance_criteria requires verification close-merged can't \
+                                 provide: \"{}\". Close manually once actually verified, or \
+                                 update the condition if a merge alone is sufficient.",
+                                b.acceptance_criteria
+                            ),
+                            "rosary",
+                        )
+                        .await
+                        .ok();
+                }
                 continue;
             }
-            // Record the merge SHA + close the bead. Best-effort logging.
+
+            if dry_run {
+                summary.merged_closed += 1;
+                summary.bead_ids_closed.push(b.id.clone());
+                continue;
+            }
+            // Record the merge SHA. Best-effort logging.
             if !merge_sha.is_empty() {
                 store.log_event(&b.id, "merge_sha", merge_sha).await;
             }
@@ -5862,8 +5902,28 @@ pub async fn run_close_merged_with_config(
             } else {
                 format!("Auto-closed by rsry close-merged: PR merged ({merge_sha})")
             };
-            store.add_comment(&b.id, &audit_msg, "rosary").await.ok();
-            store.close_bead(&b.id).await.ok();
+            if let Err(e) = store.add_comment(&b.id, &audit_msg, "rosary").await {
+                eprintln!(
+                    "close-merged: failed to record audit comment for {}: {e:#}",
+                    b.id
+                );
+            }
+            // rosary-c75925: only count a close as done once the write actually
+            // succeeds — a failed write must never be reported as a success.
+            // merge_alone_satisfies_close above IS this call site's gate;
+            // bead_ops::close_bead's stricter "looks like a runnable command"
+            // check is the wrong question here.
+            let close_result = store.close_bead(&b.id).await; // nosemgrep: bead-close-bypasses-gate
+            match close_result {
+                Ok(()) => {
+                    summary.merged_closed += 1;
+                    summary.bead_ids_closed.push(b.id.clone());
+                }
+                Err(e) => {
+                    summary.close_failed += 1;
+                    eprintln!("close-merged: failed to close {}: {e:#}", b.id);
+                }
+            }
         }
     }
 
@@ -6047,23 +6107,70 @@ pub async fn run_close_merged_local_with_config(
                 continue;
             }
 
-            summary.merged_closed += 1;
-            summary.bead_ids_closed.push(b.id.clone());
-            if dry_run {
+            // rosary-c75925/e0e19f: a commit REFERENCING this bead merging is
+            // not proof that whatever this bead's acceptance_criteria actually
+            // demands (if it demands something beyond "a PR merges") ran and
+            // passed — a local git-log scan has no way to check that. Only
+            // auto-close when the bead's own declared condition IS "a PR
+            // merges".
+            if !crate::bead::merge_alone_satisfies_close(&b.acceptance_criteria) {
+                summary.refused_unmet_condition += 1;
+                eprintln!(
+                    "close-merged --local: PR #{} merged for {} but NOT closed — \
+                     acceptance_criteria requires more than a merge: {}",
+                    closure.pr_number, b.id, b.acceptance_criteria
+                );
+                if !dry_run {
+                    store
+                        .add_comment(
+                            &b.id,
+                            &format!(
+                                "PR #{} merged, but NOT auto-closed — this bead's \
+                                 acceptance_criteria requires verification close-merged \
+                                 can't provide: \"{}\". Close manually once actually \
+                                 verified, or update the condition if a merge alone is \
+                                 sufficient.",
+                                closure.pr_number, b.acceptance_criteria
+                            ),
+                            "rosary",
+                        )
+                        .await
+                        .ok();
+                }
                 continue;
             }
-            store
-                .add_comment(
-                    &b.id,
-                    &format!(
-                        "Auto-closed by rsry close-merged --local: PR #{} merged",
-                        closure.pr_number
-                    ),
-                    "rosary",
-                )
-                .await
-                .ok();
-            store.close_bead(&b.id).await.ok();
+
+            if dry_run {
+                summary.merged_closed += 1;
+                summary.bead_ids_closed.push(b.id.clone());
+                continue;
+            }
+            let audit_msg = format!(
+                "Auto-closed by rsry close-merged --local: PR #{} merged",
+                closure.pr_number
+            );
+            if let Err(e) = store.add_comment(&b.id, &audit_msg, "rosary").await {
+                eprintln!(
+                    "close-merged --local: failed to record audit comment for {}: {e:#}",
+                    b.id
+                );
+            }
+            // rosary-c75925: only count a close as done once the write actually
+            // succeeds — a failed write must never be reported as a success.
+            // merge_alone_satisfies_close above IS this call site's gate;
+            // bead_ops::close_bead's stricter "looks like a runnable command"
+            // check is the wrong question here.
+            let close_result = store.close_bead(&b.id).await; // nosemgrep: bead-close-bypasses-gate
+            match close_result {
+                Ok(()) => {
+                    summary.merged_closed += 1;
+                    summary.bead_ids_closed.push(b.id.clone());
+                }
+                Err(e) => {
+                    summary.close_failed += 1;
+                    eprintln!("close-merged --local: failed to close {}: {e:#}", b.id);
+                }
+            }
         }
     }
 
@@ -6200,7 +6307,7 @@ mod tests {
         );
 
         // Now close the child and re-run: the parent is eligible and closes.
-        store.close_bead("testrepo-child").await.unwrap();
+        store.close_bead("testrepo-child").await.unwrap(); // nosemgrep: bead-close-bypasses-gate — test setup, not a bypass
         drop(store);
         let summary2 = run_close_merged_local_with_config(&cfg, None, false, Publication::Publish)
             .await
@@ -6292,6 +6399,125 @@ mod tests {
             })
             .unwrap_or(false);
         assert!(terminal, "bead should be terminal, got {status:?}");
+    }
+
+    /// rosary-c75925/e0e19f: a bead whose `acceptance_criteria` explicitly
+    /// demands something beyond "a PR merges" must NOT auto-close on mere
+    /// commit-message evidence — close-merged has no way to verify that
+    /// declared condition. This is the exact bug rosary-e0e19f described (and
+    /// was itself bitten by, twice, before landing this).
+    #[tokio::test]
+    async fn close_merged_local_refuses_a_bead_with_an_unmet_explicit_condition() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        tgit(root, &["init", "-q", "-b", "main"]);
+        tgit(root, &["config", "user.email", "t@t.invalid"]);
+        tgit(root, &["config", "user.name", "t"]);
+        tgit(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("f"), "x").unwrap();
+        tgit(root, &["add", "f"]);
+        tgit(
+            root,
+            &["commit", "-q", "-m", "[testrepo-abc123] fix: widget (#1)"],
+        );
+
+        let beads_dir = root.join(".beads");
+        let store = bead_sqlite::connect_bead_store(&beads_dir).await.unwrap();
+        store
+            .create_bead_full(store::NewBead {
+                id: "testrepo-abc123".to_string(),
+                title: "Fix widget".to_string(),
+                priority: 1,
+                issue_type: "task".to_string(),
+                acceptance_criteria: "cargo test -p widget must pass".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        drop(store);
+
+        let cfg = config::Config {
+            repo: vec![config::RepoConfig {
+                name: "testrepo".to_string(),
+                path: root.to_path_buf(),
+                lang: None,
+                self_managed: false,
+                approval: config::DispatchApproval::Approved,
+            }],
+            ..Default::default()
+        };
+
+        let summary = run_close_merged_local_with_config(&cfg, None, false, Publication::Publish)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            summary.refused_unmet_condition, 1,
+            "an explicit, unmet condition must be refused, not silently closed"
+        );
+        assert_eq!(summary.merged_closed, 0);
+        assert!(summary.bead_ids_closed.is_empty());
+
+        let store = bead_sqlite::connect_bead_store(&beads_dir).await.unwrap();
+        let status = store.get_status("testrepo-abc123").await.unwrap();
+        assert_eq!(
+            status.as_deref(),
+            Some("open"),
+            "bead must stay open — its declared condition was never verified"
+        );
+    }
+
+    /// The other half: a bead whose condition IS explicitly the PR-merge
+    /// default (not just absent) still closes normally — accepting it is
+    /// honoring what the bead declared, not a bypass.
+    #[tokio::test]
+    async fn close_merged_local_closes_a_bead_whose_condition_is_the_merge_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        tgit(root, &["init", "-q", "-b", "main"]);
+        tgit(root, &["config", "user.email", "t@t.invalid"]);
+        tgit(root, &["config", "user.name", "t"]);
+        tgit(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("f"), "x").unwrap();
+        tgit(root, &["add", "f"]);
+        tgit(
+            root,
+            &["commit", "-q", "-m", "[testrepo-def456] fix: gadget (#2)"],
+        );
+
+        let beads_dir = root.join(".beads");
+        let store = bead_sqlite::connect_bead_store(&beads_dir).await.unwrap();
+        store
+            .create_bead_full(store::NewBead {
+                id: "testrepo-def456".to_string(),
+                title: "Fix gadget".to_string(),
+                priority: 1,
+                issue_type: "task".to_string(),
+                acceptance_criteria: bead::DEFAULT_PR_MERGE_CLOSE_CONDITION.to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        drop(store);
+
+        let cfg = config::Config {
+            repo: vec![config::RepoConfig {
+                name: "testrepo".to_string(),
+                path: root.to_path_buf(),
+                lang: None,
+                self_managed: false,
+                approval: config::DispatchApproval::Approved,
+            }],
+            ..Default::default()
+        };
+
+        let summary = run_close_merged_local_with_config(&cfg, None, false, Publication::Publish)
+            .await
+            .unwrap();
+
+        assert_eq!(summary.refused_unmet_condition, 0);
+        assert_eq!(summary.merged_closed, 1);
+        assert_eq!(summary.bead_ids_closed, vec!["testrepo-def456"]);
     }
 
     #[test]

@@ -66,3 +66,37 @@ rules:
           $SELF.persist_status($A, $B, $C).await;
           ...
           $CLIENT.add_comment($D, $E, $F).await;
+
+  # Detect a raw `.close_bead(id)` method call reaching past the gate.
+  - id: bead-close-bypasses-gate
+    message: >
+      Raw `.close_bead(id)` bypasses the close-condition gate (rosary-c75925/e0e19f).
+      Use bead_ops::close_bead(store, id, repo_name, force), or if this call site has
+      its own equivalent pre-check (e.g. close-merged's merge_alone_satisfies_close),
+      mark it explicitly with `// nosemgrep: bead-close-bypasses-gate` and say why.
+    severity: ERROR
+    languages: [rust]
+    metadata:
+      category: correctness
+      confidence: HIGH
+      subcategory: [audit]
+      references:
+        - https://github.com/agentic-research/rosary (rosary-e0e19f, rosary-c75925)
+      why: >
+        rosary-e0e19f: close-merged called `store.close_bead(&b.id).await.ok()`
+        directly, skipping the gate that requires a close condition — auto-closed
+        two cloister beads, and its own bug report, with the condition plainly
+        unmet. The gate function (bead_ops::close_bead) existed the whole time;
+        nothing stopped a caller from reaching past it to the raw trait method.
+        This makes reaching past it a lint failure instead of a convention.
+    pattern: $STORE.close_bead($ID)
+    paths:
+      exclude:
+        - "**/tests.rs"
+        - "**/testutil.rs"
+        - "**/src/bead_ops.rs"
+        - "**/src/bead_sqlite/mod.rs"
+        - "**/src/bead_dolt.rs"
+        - "**/src/bead_move.rs"
+        - "**/src/import.rs"
+        - "**/src/publish/mod.rs"

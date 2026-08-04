@@ -279,6 +279,32 @@ pub fn has_close_condition(
 /// guaranteeing the ADR-0010 invariant — no bead exists without a declared way
 /// to close it. Callers who want something sharper pass `acceptance_criteria`,
 /// `test_files`, or a runnable command in the description.
+/// Whether "a linked PR merged" is BY ITSELF sufficient to close this bead —
+/// the question `close-merged` (a git/GitHub scan) must answer before acting
+/// on the merge signal, since it cannot itself run tests or verify anything
+/// beyond "a PR referencing this bead merged" (rosary-c75925, rosary-e0e19f).
+///
+/// An empty condition, or exactly [`DEFAULT_PR_MERGE_CLOSE_CONDITION`], names
+/// the merge itself as the completion signal — accepting it here is not a
+/// bypass, it's honoring what the bead already declared. An EXPLICIT,
+/// DIFFERENT condition (e.g. `cargo test -p foo`) claims something
+/// close-merged cannot verify; auto-closing on it anyway is rosary-e0e19f's
+/// bug — a proxy signal (a commit mentioned the id) treated as proof of a
+/// property (the declared verification actually ran).
+///
+/// A strict "refuse unless the description looks like a runnable command"
+/// gate was tried and rejected (2026-07-29 handoff, `git stash`: "TOO STRICT
+/// — would stop auto-close for 78-94% of live beads"). Re-measured against
+/// today's live set: 59% of open gated-type beads still have no
+/// `acceptance_criteria` at all (they predate `resolve_acceptance_criteria`'s
+/// default-backfill) — the concern holds. This is the narrower gate: refuse
+/// only when a condition was explicitly declared and isn't just "a PR
+/// merges", not whenever one happens to be absent.
+pub fn merge_alone_satisfies_close(acceptance_criteria: &str) -> bool {
+    let ac = acceptance_criteria.trim();
+    ac.is_empty() || ac == DEFAULT_PR_MERGE_CLOSE_CONDITION
+}
+
 pub const DEFAULT_PR_MERGE_CLOSE_CONDITION: &str = concat!(
     "Resolved when the linked PR merges — rosary's default close signal ",
     "(the GitHub merge webhook advances the bead). ",
@@ -1097,6 +1123,33 @@ mod tests {
             &["tests/foo.rs".to_string()],
             ""
         ));
+    }
+
+    /// rosary-c75925: the gate close-merged uses to decide whether a mere
+    /// merge is enough, as opposed to `has_close_condition` (whether a bead
+    /// is closeable AT ALL, by any means). Distinct question, distinct test.
+    #[test]
+    fn merge_alone_satisfies_close_only_for_absent_or_default_condition() {
+        assert!(
+            merge_alone_satisfies_close(""),
+            "no declared condition — a merge is what close-merged observed, honor it"
+        );
+        assert!(
+            merge_alone_satisfies_close("   "),
+            "whitespace-only counts as absent"
+        );
+        assert!(
+            merge_alone_satisfies_close(DEFAULT_PR_MERGE_CLOSE_CONDITION),
+            "the condition literally IS \"a PR merges\" — a merge satisfies it"
+        );
+        assert!(
+            !merge_alone_satisfies_close("cargo test -p widget must pass"),
+            "an explicit, different condition demands verification a merge alone can't provide"
+        );
+        assert!(
+            !merge_alone_satisfies_close("Resolved when the widget renders."),
+            "any other explicit resolution statement is equally unverifiable by a mere merge"
+        );
     }
 
     #[test]
