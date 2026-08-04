@@ -415,10 +415,20 @@ impl SqliteBeadStore {
     /// legitimate reason to create a fresh SQLite file in a Dolt-backed
     /// `.beads/`: staging a `bead migrate --to sqlite --commit` build
     /// (rosary-cb7a8d — `.beads/beads.db.new` tripped this same guard,
-    /// making `--commit` unreachable since 554a74 landed). `pub(crate)` and
-    /// named for exactly that: callers outside `bead_migrate`'s staging path
-    /// should use `connect`, not this.
+    /// making `--commit` unreachable since 554a74 landed).
+    ///
+    /// `pub(crate)`, so any future internal caller could reach this and
+    /// silently reintroduce the exact footgun 554a74 exists to prevent —
+    /// restricted to the one literal filename `migrate --commit` actually
+    /// uses, so accidental misuse fails loudly instead of quietly bypassing
+    /// the guard.
     pub(crate) fn connect_staging(path: &Path) -> Result<Self> {
+        anyhow::ensure!(
+            path.file_name() == Some(std::ffi::OsStr::new("beads.db.new")),
+            "connect_staging is restricted to the migrate --commit staging file \
+             (beads.db.new), got {} — use connect() for anything else",
+            path.display()
+        );
         Self::connect_unchecked(path)
     }
 

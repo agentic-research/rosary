@@ -1292,6 +1292,29 @@ fn connect_staging_bypasses_the_554a74_guard() {
     assert!(staging.exists(), "staging should have created the file");
 }
 
+/// rosary-cb7a8d (Copilot review on PR #471): `connect_staging` is a
+/// `pub(crate)` bypass of the 554a74 guard — any future internal caller
+/// reaching it on the WRONG path would silently reintroduce the exact
+/// footgun the guard exists to prevent. Restricted to the one literal
+/// filename `migrate --commit` actually stages to, so misuse fails loudly.
+#[test]
+fn connect_staging_refuses_a_filename_that_is_not_the_migration_staging_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let beads = tmp.path().join(".beads");
+    std::fs::create_dir_all(beads.join("dolt")).unwrap();
+    let wrong = beads.join("beads.db");
+
+    let err = match SqliteBeadStore::connect_staging(&wrong) {
+        Ok(_) => panic!("must refuse any filename other than beads.db.new"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains("beads.db.new"),
+        "error should name the one allowed filename: {err}"
+    );
+    assert!(!wrong.exists(), "must not create the file on refusal");
+}
+
 /// An EXISTING SQLite store beside Dolt still opens: that directory is already
 /// ambiguous, and `connect_bead_store` is the layer that refuses to read it.
 /// Blocking the open here too would break the migration path.
