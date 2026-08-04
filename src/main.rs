@@ -5867,8 +5867,8 @@ pub async fn run_close_merged_with_config(
                      acceptance_criteria requires more than a merge: {}",
                     b.id, b.acceptance_criteria
                 );
-                if !dry_run {
-                    store
+                if !dry_run
+                    && let Err(e) = store
                         .add_comment(
                             &b.id,
                             &format!(
@@ -5881,7 +5881,11 @@ pub async fn run_close_merged_with_config(
                             "rosary",
                         )
                         .await
-                        .ok();
+                {
+                    eprintln!(
+                        "close-merged: failed to record refusal comment for {}: {e:#}",
+                        b.id
+                    );
                 }
                 continue;
             }
@@ -6120,8 +6124,8 @@ pub async fn run_close_merged_local_with_config(
                      acceptance_criteria requires more than a merge: {}",
                     closure.pr_number, b.id, b.acceptance_criteria
                 );
-                if !dry_run {
-                    store
+                if !dry_run
+                    && let Err(e) = store
                         .add_comment(
                             &b.id,
                             &format!(
@@ -6135,7 +6139,11 @@ pub async fn run_close_merged_local_with_config(
                             "rosary",
                         )
                         .await
-                        .ok();
+                {
+                    eprintln!(
+                        "close-merged --local: failed to record refusal comment for {}: {e:#}",
+                        b.id
+                    );
                 }
                 continue;
             }

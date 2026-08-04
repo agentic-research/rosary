@@ -908,6 +908,11 @@
     },
     {
       "rule_id": "long_file",
+      "source_id": "src/bead.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "long_file",
       "source_id": "src/dispatch/tests.rs",
       "count": 1
     },

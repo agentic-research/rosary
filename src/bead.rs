@@ -270,15 +270,6 @@ pub fn has_close_condition(
         || verify::looks_like_test_command(description)
 }
 
-/// The default close condition applied at *authoring* time when an
-/// implementation bead is created without an explicit one. It's honest, not a
-/// placeholder: rosary's GitHub merge webhook already advances a bead when its
-/// linked PR merges, so "the PR merged" is a real, observable close signal.
-///
-/// This is what lets `rsry bead create "title"` stay frictionless while still
-/// guaranteeing the ADR-0010 invariant — no bead exists without a declared way
-/// to close it. Callers who want something sharper pass `acceptance_criteria`,
-/// `test_files`, or a runnable command in the description.
 /// Whether "a linked PR merged" is BY ITSELF sufficient to close this bead —
 /// the question `close-merged` (a git/GitHub scan) must answer before acting
 /// on the merge signal, since it cannot itself run tests or verify anything
@@ -305,6 +296,15 @@ pub fn merge_alone_satisfies_close(acceptance_criteria: &str) -> bool {
     ac.is_empty() || ac == DEFAULT_PR_MERGE_CLOSE_CONDITION
 }
 
+/// The default close condition applied at *authoring* time when an
+/// implementation bead is created without an explicit one. It's honest, not a
+/// placeholder: rosary's GitHub merge webhook already advances a bead when its
+/// linked PR merges, so "the PR merged" is a real, observable close signal.
+///
+/// This is what lets `rsry bead create "title"` stay frictionless while still
+/// guaranteeing the ADR-0010 invariant — no bead exists without a declared way
+/// to close it. Callers who want something sharper pass `acceptance_criteria`,
+/// `test_files`, or a runnable command in the description.
 pub const DEFAULT_PR_MERGE_CLOSE_CONDITION: &str = concat!(
     "Resolved when the linked PR merges — rosary's default close signal ",
     "(the GitHub merge webhook advances the bead). ",
