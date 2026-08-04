@@ -7,9 +7,43 @@
 
 Autonomous work orchestrator for AI agents across multiple code repos. Local-first, open source.
 
+The human reviews 5-10 feature PRs a day. The agents handle the atoms.
+
+Built for teams running fleets of coding agents across many repos who want a lightweight, local-first work tracker and dispatcher — not a hosted platform.
+
+<details>
+<summary>How work items are structured and stored</summary>
+
 Rosary structures work as **[beads](https://github.com/steveyegge/beads)** — small, trackable units stored in each repo (a local SQLite `beads.db`, or a per-repo [Dolt](https://www.dolthub.com/) server where concurrent access is needed). A reconciliation loop scans for ready beads, dispatches AI agents (Claude, Codex, Gemini) to execute them in isolated workspaces, verifies the results, and syncs status to [Linear](https://linear.app) for human review.
 
-The human reviews 5-10 feature PRs a day. The agents handle the atoms.
+</details>
+
+## Quick start
+
+```bash
+task build    # requires Task (taskfile.dev)
+task check    # canonical local/CI verification gate
+
+# Register repos to watch
+rsry enable ~/code/my-app
+rsry enable ~/code/my-lib
+
+# See what's ready
+rsry status
+
+# Dry run — see what would be dispatched
+rsry run --once --dry-run
+
+# Real run — dispatch agents, verify, close
+rsry run --once --concurrency 3
+
+# Continuous loop
+rsry run
+```
+
+> Use `task build` / `task check` instead of raw `cargo` — the Taskfile is the verification contract and sets `PKG_CONFIG_PATH` for the fuse-t dependency via ley-line.
+
+> Rosary also works as a standalone task tracker without ever running the dispatch loop — see [Use rosary as just a task tracker](#use-rosary-as-just-a-task-tracker-optional) below.
 
 ## How it works
 
@@ -40,7 +74,7 @@ stateDiagram-v2
 
 ## Issue tracking with beads
 
-Work items live in each repo as beads — an AI-native issue tracker. Rosary reads and writes beads in-process via its own stores: over the MySQL wire to a per-repo [Dolt](https://www.dolthub.com/) server when `.beads/dolt/` exists, otherwise directly against a local SQLite `beads.db`. The `bd` CLI is **not** required or invoked either way (see [ADR-0014](docs/adr/0014-decouple-rosary-from-bd.md)).
+Work items live in each repo as beads — an AI-native issue tracker.
 
 Beads are organized into **threads** (ordered progressions of related work) and **decades** (ADR-level groupings) via the BDR harmony lattice.
 
@@ -52,6 +86,13 @@ rsry bead search "auth"
 rsry bead close rsry-abc123          # requires a close condition (acceptance_criteria / test command)
 rsry bead close rsry-abc123 --force  # override (legacy / non-impl beads)
 ```
+
+<details>
+<summary>How beads are stored (Dolt vs. SQLite, no <code>bd</code> CLI)</summary>
+
+Rosary reads and writes beads in-process via its own stores: over the MySQL wire to a per-repo [Dolt](https://www.dolthub.com/) server when `.beads/dolt/` exists, otherwise directly against a local SQLite `beads.db`. The `bd` CLI is **not** required or invoked either way (see [ADR-0014](docs/adr/0014-decouple-rosary-from-bd.md)).
+
+</details>
 
 ### Capture beads from any provenance
 
@@ -65,31 +106,6 @@ rsry capture --from-code rosary src/bead.rs --symbol BeadSpec --commit
 # Markdown ADR → beads + Rust stubs for design review
 rsry decompose docs/adr/0009-feature.md --stub-output .
 ```
-
-## Getting started
-
-```bash
-task build    # requires Task (taskfile.dev)
-task check    # canonical local/CI verification gate
-
-# Register repos to watch
-rsry enable ~/code/my-app
-rsry enable ~/code/my-lib
-
-# See what's ready
-rsry status
-
-# Dry run — see what would be dispatched
-rsry run --once --dry-run
-
-# Real run — dispatch agents, verify, close
-rsry run --once --concurrency 3
-
-# Continuous loop
-rsry run
-```
-
-> Use `task build` / `task check` instead of raw `cargo` — the Taskfile is the verification contract and sets `PKG_CONFIG_PATH` for the fuse-t dependency via ley-line.
 
 ### Use rosary as just a task tracker (optional)
 
@@ -150,6 +166,9 @@ rsry serve --transport http --port 8383
 
 **41 tools** across eight categories:
 
+<details>
+<summary>Full tool list</summary>
+
 | Category   | Tools                                                                                                                                                                                                                                                                           |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_close`, `rsry_bead_link`, `rsry_bead_import`                                                                                                                                                             |
@@ -160,6 +179,8 @@ rsry serve --transport http --port 8383
 | Workspaces | `rsry_workspace_create`, `rsry_workspace_checkpoint`, `rsry_workspace_cleanup`, `rsry_workspace_merge`                                                                                                                                                                          |
 | Hierarchy  | `rsry_decade_list`, `rsry_decade_create`, `rsry_thread_list`, `rsry_thread_create`, `rsry_thread_assign`, `rsry_thread_reparent`                                                                                                                                                |
 | Repos      | `rsry_repo_register`, `rsry_repo_list`                                                                                                                                                                                                                                          |
+
+</details>
 
 ## Config
 
@@ -192,7 +213,7 @@ backend = "local"   # or "sprites" for remote containers
 Agents run in isolated workspaces (jj preferred, git worktree fallback). The compute backend is pluggable:
 
 | Provider  | What                                          | Config                  |
-| --------- | --------------------------------------------- | ----------------------- |
+| --------- | ---------------------------------------------- | ----------------------- |
 | `local`   | Host subprocess (default)                     | none                    |
 | `sprites` | [sprites.dev](https://sprites.dev) containers | `SPRITES_TOKEN` env var |
 
