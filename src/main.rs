@@ -1219,7 +1219,11 @@ async fn bead_migrate_run(
     cleanup_built(); // clear any stale build before starting
 
     let source = bead_sqlite::connect_bead_store(beads_dir).await?;
-    let target = bead_sqlite::SqliteBeadStore::connect(&built)?;
+    // `connect_staging`, not `connect`: `built` sits inside a Dolt-backed
+    // `.beads/` by construction (that's the whole premise of this command),
+    // and `connect`'s rosary-554a74 ambiguity guard would refuse to create it
+    // — rosary-cb7a8d, the guard blocking its own sanctioned remedy.
+    let target = bead_sqlite::SqliteBeadStore::connect_staging(&built)?;
     let result = async {
         let report = bead_migrate::migrate_store(source.as_ref(), &target, &repo_name).await?;
         bead_migrate::verify_migration(source.as_ref(), &target, &repo_name).await?;

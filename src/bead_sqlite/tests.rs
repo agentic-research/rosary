@@ -1273,6 +1273,25 @@ fn refuses_to_create_a_sqlite_store_beside_dolt() {
     );
 }
 
+/// rosary-cb7a8d: `connect_staging` is the sanctioned bypass of the 554a74
+/// guard, for `bead migrate --to sqlite --commit`'s own staging file — which
+/// tripped this exact guard (its target, `.beads/beads.db.new`, never exists
+/// yet, inside a `.beads/` that's Dolt-backed by construction) and made
+/// `--commit` unreachable since 554a74 landed. Same fixture shape as
+/// `refuses_to_create_a_sqlite_store_beside_dolt` — proves the bypass exists
+/// exactly where the guard would otherwise fire.
+#[test]
+fn connect_staging_bypasses_the_554a74_guard() {
+    let tmp = tempfile::tempdir().unwrap();
+    let beads = tmp.path().join(".beads");
+    std::fs::create_dir_all(beads.join("dolt")).unwrap();
+    let staging = beads.join("beads.db.new");
+
+    SqliteBeadStore::connect_staging(&staging)
+        .expect("staging must bypass the guard that connect() enforces");
+    assert!(staging.exists(), "staging should have created the file");
+}
+
 /// An EXISTING SQLite store beside Dolt still opens: that directory is already
 /// ambiguous, and `connect_bead_store` is the layer that refuses to read it.
 /// Blocking the open here too would break the migration path.
