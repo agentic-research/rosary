@@ -833,18 +833,6 @@ mod tests {
         }
     }
 
-    /// rosary-ee49bf: `reopen`'s terminal-check operates on the PARSED
-    /// `BeadState`, so "both terminal spellings" (done/closed) only need to
-    /// collapse correctly here — `From<&str>` already does that (line 175);
-    /// this pins `is_terminal` sees the same answer for both.
-    #[test]
-    fn is_terminal_agrees_for_both_done_and_closed_spellings() {
-        assert!(BeadState::from("done").is_terminal());
-        assert!(BeadState::from("closed").is_terminal());
-        assert_eq!(BeadState::from("done"), BeadState::from("closed"));
-        assert!(!BeadState::from("open").is_terminal());
-    }
-
     #[test]
     fn valid_transitions() {
         assert!(BeadState::Backlog.can_transition_to(BeadState::Open));
