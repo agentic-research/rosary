@@ -417,6 +417,20 @@ enum Command {
         #[arg(short, long, default_value = ".")]
         repo: String,
     },
+    /// Cluster the open backlog for near-duplicates, sequences, and shared
+    /// scope (rosary-cb1af4 slice 1: `epic::cluster_beads` computes
+    /// `ClusterAction::Merge` today with no executor anywhere in the
+    /// codebase — this is that executor). Reports by default; `--execute`
+    /// performs any suggested merges: the `close` beads get a comment
+    /// linking to `keep`, then close (force, since a merge is a
+    /// superseded-not-completed closure, not a normal done).
+    Epic {
+        #[command(subcommand)]
+        action: EpicAction,
+        /// Repo path (defaults to the current directory)
+        #[arg(short, long, default_value = ".")]
+        repo: String,
+    },
     /// Garbage-collect merged agent branches from origin
     Sweep {
         /// Repo path (defaults to current directory)
@@ -617,6 +631,20 @@ enum CoordAction {
     Rm {
         /// Namespace to delete
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum EpicAction {
+    /// Run `epic::cluster_beads` over the repo's open backlog and report
+    /// every cluster found. Pass `--execute` to perform suggested merges
+    /// instead of only reporting them.
+    Scan {
+        /// Perform suggested Merge actions instead of only reporting them.
+        #[arg(long)]
+        execute: bool,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -2695,6 +2723,21 @@ async fn main() -> Result<()> {
                         eprintln!("no such coordination namespace: {name}");
                         std::process::exit(1);
                     }
+                }
+            }
+        }
+        Command::Epic { action, repo } => {
+            let repo_root = scanner::resolve_repo_path(std::path::Path::new(&repo));
+            let beads_dir = resolve_beads_dir(&repo_root);
+            let client = bead_sqlite::connect_bead_store(&beads_dir).await?;
+            let repo_name = repo_root
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| repo.clone());
+
+            match action {
+                EpicAction::Scan { execute, json } => {
+                    run_epic_scan(client.as_ref(), &repo_root, &repo_name, execute, json).await?;
                 }
             }
         }
@@ -6029,6 +6072,105 @@ pub enum Publication {
     Suppress,
 }
 
+/// Cluster the repo's open backlog and, on `execute`, perform any suggested
+/// `ClusterAction::Merge`: close the `close` beads with a comment linking to
+/// `keep`, then refresh the tracked JSONL (rosary-cb1af4 slice 1 — the
+/// executor `ClusterAction::Merge` never had before this).
+pub async fn run_epic_scan(
+    client: &dyn store::BeadStore,
+    repo_root: &Path,
+    repo_name: &str,
+    execute: bool,
+    json: bool,
+) -> Result<()> {
+    let beads = client.list_beads(repo_name).await?;
+    let clusters = epic::cluster_beads(&beads);
+
+    if json {
+        let rendered: Vec<_> = clusters
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "relationship": format!("{:?}", c.relationship),
+                    "action": format!("{:?}", c.action),
+                    "cohesion": c.cohesion,
+                    "bead_ids": c.bead_ids,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rendered)?);
+    } else if clusters.is_empty() {
+        println!("no clusters found in {} open beads", beads.len());
+    } else {
+        for c in &clusters {
+            println!(
+                "{:?} cohesion={:.2} action={:?}",
+                c.relationship, c.cohesion, c.action
+            );
+            for id in &c.bead_ids {
+                if let Some(b) = beads.iter().find(|b| &b.id == id) {
+                    println!("  {} [P{}] {}", b.id, b.priority, b.title);
+                }
+            }
+        }
+    }
+
+    let merges: Vec<_> = clusters
+        .iter()
+        .filter_map(|c| match &c.action {
+            epic::ClusterAction::Merge { keep, close } => {
+                Some((keep.clone(), close.clone(), c.cohesion))
+            }
+            _ => None,
+        })
+        .collect();
+
+    if merges.is_empty() {
+        return Ok(());
+    }
+    if !execute {
+        eprintln!(
+            "\n{} suggested merge(s) — pass --execute to perform them",
+            merges.len()
+        );
+        return Ok(());
+    }
+    execute_epic_merges(client, repo_root, repo_name, merges).await
+}
+
+/// The mutation half of `run_epic_scan`, split out on its own (fan_out_skew):
+/// scanning/reporting talks to `epic`+`serde_json`, this talks to
+/// `bead_ops`+`jsonl_sync` — different concerns, different callees.
+async fn execute_epic_merges(
+    client: &dyn store::BeadStore,
+    repo_root: &Path,
+    repo_name: &str,
+    merges: Vec<(String, Vec<String>, f64)>,
+) -> Result<()> {
+    for (keep, close, cohesion) in merges {
+        for close_id in &close {
+            client
+                .add_comment(
+                    close_id,
+                    &format!(
+                        "Merged into {keep} — near-duplicate (cohesion {cohesion:.2}) detected \
+                         by `rsry epic scan --execute`."
+                    ),
+                    "rsry-cli",
+                )
+                .await?;
+            bead_ops::close_bead(client, close_id, repo_name, true).await?;
+        }
+        jsonl_sync::refresh_tracked_beads_jsonl(client, repo_name, repo_root)
+            .await
+            .with_context(|| {
+                "merge executed, but refreshing tracked .beads/beads.jsonl".to_string()
+            })?;
+        println!("merged {close:?} into {keep}");
+    }
+    Ok(())
+}
+
 pub async fn run_close_merged_local_with_config(
     cfg: &config::Config,
     repo_filter: Option<&str>,
@@ -6290,6 +6432,121 @@ mod tests {
             .args(args)
             .output()
             .expect("spawn git")
+    }
+
+    /// rosary-cb1af4 slice 1: `epic::cluster_beads` computes `ClusterAction::Merge`
+    /// but nothing executed it anywhere in the codebase before `run_epic_scan`.
+    /// Pins that the executor is dry-run by default and actually merges (close +
+    /// comment + jsonl refresh) on `--execute`, using the same near-duplicate
+    /// fixture `epic.rs`'s own `merge_action_keeps_highest_priority` test uses.
+    #[tokio::test]
+    async fn epic_scan_dry_run_reports_without_closing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let beads_dir = root.join(".beads");
+        std::fs::create_dir_all(&beads_dir).unwrap();
+        let store = bead_sqlite::connect_bead_store(&beads_dir).await.unwrap();
+        store
+            .create_bead_full(store::NewBead {
+                id: "t-a".to_string(),
+                title: "fix widget bug".to_string(),
+                priority: 1,
+                issue_type: "bug".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        store
+            .create_bead_full(store::NewBead {
+                id: "t-b".to_string(),
+                title: "fix widget bug in production".to_string(),
+                priority: 2,
+                issue_type: "bug".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        run_epic_scan(store.as_ref(), root, "t", false, false)
+            .await
+            .unwrap();
+
+        assert_eq!(store.get_status("t-a").await.unwrap().unwrap(), "open");
+        assert_eq!(store.get_status("t-b").await.unwrap().unwrap(), "open");
+    }
+
+    #[tokio::test]
+    async fn epic_scan_execute_merges_near_duplicates_and_refreshes_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        tgit(root, &["init", "-q", "-b", "main"]);
+        tgit(root, &["config", "user.email", "t@t.invalid"]);
+        tgit(root, &["config", "user.name", "t"]);
+        tgit(root, &["config", "commit.gpgsign", "false"]);
+        let beads_dir = root.join(".beads");
+        std::fs::create_dir_all(&beads_dir).unwrap();
+
+        // NearDuplicate requires RAW (unfiltered) title Jaccard > 0.8 across every
+        // pair in the cluster (epic::classify_relationship) — not the
+        // stopword-filtered signal combined_similarity otherwise uses. 9/11 shared
+        // tokens, one word differs, so raw Jaccard = 0.818. (epic.rs's own
+        // merge_action_keeps_highest_priority test picked a fixture that scores
+        // 0.6 here and silently never exercises Merge at all — its `if let
+        // Merge {...}` has no `else`, so a wrong relationship just passes.)
+        let store = bead_sqlite::connect_bead_store(&beads_dir).await.unwrap();
+        store
+            .create_bead_full(store::NewBead {
+                id: "t-a".to_string(),
+                title: "fix widget bug during checkout flow process on mobile devices".to_string(),
+                priority: 1,
+                issue_type: "bug".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        store
+            .create_bead_full(store::NewBead {
+                id: "t-b".to_string(),
+                title: "fix widget bug during checkout flow process on mobile browsers".to_string(),
+                priority: 2,
+                issue_type: "bug".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Opt in to the tracked export (jsonl_sync::refresh_tracked_beads_jsonl
+        // no-ops on an untracked file — matches every other jsonl-refresh test).
+        let both = store.list_beads("t").await.unwrap();
+        let jsonl = import::export_beads_contract_jsonl(store.as_ref(), &both)
+            .await
+            .unwrap();
+        std::fs::write(beads_dir.join("beads.jsonl"), jsonl).unwrap();
+        tgit(root, &["add", ".beads/beads.jsonl"]);
+        tgit(root, &["commit", "-qm", "opt in"]);
+
+        run_epic_scan(store.as_ref(), root, "t", true, false)
+            .await
+            .unwrap();
+
+        // Lower-priority bead (t-b, P2) merged away; higher-priority (t-a, P1) kept.
+        assert_eq!(store.get_status("t-a").await.unwrap().unwrap(), "open");
+        assert_eq!(store.get_status("t-b").await.unwrap().unwrap(), "closed");
+        let comments = store.list_comments("t-b", false).await.unwrap();
+        assert!(
+            comments.iter().any(|c| c.text.contains("Merged into t-a")),
+            "closed bead must record why it was merged, not just disappear"
+        );
+
+        let records = restore::read_beads_jsonl(Some(
+            beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
+        ))
+        .unwrap();
+        let b = records.iter().find(|r| r["id"] == "t-b").unwrap();
+        assert_eq!(
+            b["status"], "closed",
+            "the merge must reach the tracked export, not just the store"
+        );
     }
 
     #[tokio::test]
