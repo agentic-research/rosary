@@ -880,21 +880,39 @@ mod tests {
 
     #[test]
     fn merge_action_keeps_highest_priority() {
+        // NearDuplicate requires RAW title Jaccard > 0.8 across every pair
+        // (classify_relationship) — the original fixture here ("fix widget
+        // bug" vs "fix widget bug in production") only scores 0.6, so this
+        // test's `if let Merge {...}` (with no `else`) silently passed
+        // without ever exercising the Merge branch it's named for. Found
+        // while building rsry-cb1af4's merge executor, the first real
+        // caller of ClusterAction::Merge.
         let beads = vec![
-            make_bead_full("a", "fix widget bug", "", 1, "test"),
-            make_bead_full("b", "fix widget bug in production", "", 2, "test"),
+            make_bead_full(
+                "a",
+                "fix widget bug during checkout flow process on mobile devices",
+                "",
+                1,
+                "test",
+            ),
+            make_bead_full(
+                "b",
+                "fix widget bug during checkout flow process on mobile browsers",
+                "",
+                2,
+                "test",
+            ),
         ];
         let clusters = cluster_beads(&beads);
         assert_eq!(clusters.len(), 1);
-        if let ClusterAction::Merge {
-            ref keep,
-            ref close,
-        } = clusters[0].action
-        {
-            assert_eq!(keep, "a", "should keep higher-priority bead");
-            assert_eq!(close, &vec!["b".to_string()]);
+        assert_eq!(clusters[0].relationship, ClusterRelationship::NearDuplicate);
+        match &clusters[0].action {
+            ClusterAction::Merge { keep, close } => {
+                assert_eq!(keep, "a", "should keep higher-priority bead");
+                assert_eq!(close, &vec!["b".to_string()]);
+            }
+            other => panic!("expected Merge action, got {other:?}"),
         }
-        // NearDuplicate is expected for very similar titles
     }
 
     // --- file overlap ---

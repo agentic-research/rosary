@@ -216,6 +216,10 @@ pub const OPS: &[Op] = &[
     cli_only("close-merged", Gap("agents cannot run the merged-PR sweep")),
     cli_only("sweep", Gap("agents cannot GC their own merged branches")),
     cli_only(
+        "epic scan",
+        Gap("agents cannot run the near-duplicate merge executor (rosary-cb1af4 slice 1)"),
+    ),
+    cli_only(
         "lattice audit",
         Gap("observation-lattice audit is unreachable from MCP"),
     ),
