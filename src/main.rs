@@ -6135,7 +6135,18 @@ pub async fn run_epic_scan(
         );
         return Ok(());
     }
+    execute_epic_merges(client, repo_root, repo_name, merges).await
+}
 
+/// The mutation half of `run_epic_scan`, split out on its own (fan_out_skew):
+/// scanning/reporting talks to `epic`+`serde_json`, this talks to
+/// `bead_ops`+`jsonl_sync` — different concerns, different callees.
+async fn execute_epic_merges(
+    client: &dyn store::BeadStore,
+    repo_root: &Path,
+    repo_name: &str,
+    merges: Vec<(String, Vec<String>, f64)>,
+) -> Result<()> {
     for (keep, close, cohesion) in merges {
         for close_id in &close {
             client
