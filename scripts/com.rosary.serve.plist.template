@@ -13,11 +13,23 @@
         <string>--port</string>
         <string>8383</string>
     </array>
+    <!-- KeepAlive is UNCONDITIONAL, and the distinction cost an outage.
+         It was a dict setting SuccessfulExit to false — "restart only
+         on a FAILED exit". rsry handles SIGTERM gracefully and exits 0, so
+         any clean stop read to launchd as "it did what it was told", and the
+         service stayed dead. On 2026-08-28 23:46 it took a SIGTERM, exited
+         cleanly, and was simply gone until bead writes started failing in a
+         session the next day.
+         The old policy could not distinguish an upgrade from any other clean
+         stop. install-rsry-service.sh restarts explicitly via `launchctl
+         kickstart -k`, which behaves identically under KeepAlive=true, so
+         the upgrade path loses nothing.
+         CONSEQUENCE: `launchctl stop` no longer stops it — KeepAlive undoes
+         that immediately. To stop it deliberately:
+             launchctl bootout gui/$(id -u)/com.rosary.serve
+         ThrottleInterval below still bounds a crash loop to one restart/5s. -->
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     <key>ExitTimeOut</key>
     <integer>5</integer>
     <key>ThrottleInterval</key>
