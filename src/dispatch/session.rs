@@ -33,6 +33,12 @@ pub trait AgentSession: Send + Sync {
     fn try_wait(&mut self) -> Result<Option<bool>>;
 
     /// Block until the session completes. Returns true on success.
+    ///
+    /// Production polls via [`try_wait`](Self::try_wait) (the reconciler owns
+    /// completion since rosary-451a9a removed the blocking `dispatch::run`);
+    /// kept on the trait because the codex runtime's turn contract is
+    /// specified through it and its impls are exercised directly by tests.
+    #[allow(dead_code)]
     async fn wait(&mut self) -> Result<bool>;
 
     /// Forcefully terminate the session.

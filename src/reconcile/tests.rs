@@ -1159,3 +1159,65 @@ async fn verify_completed_feature_four_phase_progression() {
     assert_eq!(result.status_updates[0].2, "verifying");
     assert_eq!(result.status_updates[1].2, "pr_open", "Terminal → pr_open");
 }
+
+// ---------------------------------------------------------------------------
+// ensure_repo_in_config — `rsry dispatch` path injection (rosary-451a9a)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ensure_repo_in_config_appends_unregistered_path_named_by_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo_path = dir.path().join("myrepo");
+    std::fs::create_dir(&repo_path).unwrap();
+
+    let mut repos: Vec<RepoConfig> = Vec::new();
+    ensure_repo_in_config(&mut repos, &repo_path);
+
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0].name, "myrepo");
+    assert_eq!(repos[0].path, repo_path);
+}
+
+#[test]
+fn ensure_repo_in_config_does_not_duplicate_registered_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo_path = dir.path().join("registered");
+    std::fs::create_dir(&repo_path).unwrap();
+
+    let mut repos = vec![RepoConfig {
+        name: "custom-name".into(),
+        path: repo_path.clone(),
+        lang: None,
+        self_managed: false,
+        approval: Default::default(),
+    }];
+    ensure_repo_in_config(&mut repos, &repo_path);
+
+    assert_eq!(repos.len(), 1, "already-registered path must not duplicate");
+    assert_eq!(repos[0].name, "custom-name", "existing entry untouched");
+}
+
+#[test]
+fn ensure_repo_in_config_matches_unnormalized_spelling_of_same_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo_path = dir.path().join("spelled");
+    std::fs::create_dir(&repo_path).unwrap();
+
+    let mut repos = vec![RepoConfig {
+        name: "spelled".into(),
+        path: repo_path.clone(),
+        lang: None,
+        self_managed: false,
+        approval: Default::default(),
+    }];
+    // Same directory reached through a `.` component — canonicalization
+    // must recognize it as already registered.
+    let dotted = dir.path().join(".").join("spelled");
+    ensure_repo_in_config(&mut repos, &dotted);
+
+    assert_eq!(
+        repos.len(),
+        1,
+        "same dir via un-normalized spelling must not duplicate"
+    );
+}

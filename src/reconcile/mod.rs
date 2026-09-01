@@ -468,17 +468,27 @@ impl Reconciler {
             );
         }
 
-        // Recover orchestrators first — they claim their beads before the
-        // stuck-bead sweep runs, preventing accidental resets.
-        self.recover_orchestrators().await;
+        // Global recovery is a daemon-startup posture: recover_stuck_beads
+        // unconditionally resets EVERY Dispatched bead on the assumption that
+        // the process that dispatched it died with the previous daemon. A
+        // targeted run (`rsry dispatch` / `run --once --bead`) is surgical and
+        // may execute while other agents are live in the same repos — global
+        // sweeps here would reset their beads and reap their workspaces out
+        // from under them, so targeted mode skips them entirely.
+        if self.config.target_bead.is_none() {
+            // Recover orchestrators first — they claim their beads before the
+            // stuck-bead sweep runs, preventing accidental resets.
+            self.recover_orchestrators().await;
 
-        // Recover beads stuck at 'dispatched' from previous crashed run
-        self.recover_stuck_beads().await;
+            // Recover beads stuck at 'dispatched' from previous crashed run
+            self.recover_stuck_beads().await;
 
-        // Sweep orphaned workspaces from previous runs
-        let repo_paths: Vec<PathBuf> = self.repo_info.values().map(|(p, _)| p.clone()).collect();
-        let active_ids: Vec<String> = self.active.keys().cloned().collect();
-        crate::workspace::sweep_orphaned(&repo_paths, &active_ids);
+            // Sweep orphaned workspaces from previous runs
+            let repo_paths: Vec<PathBuf> =
+                self.repo_info.values().map(|(p, _)| p.clone()).collect();
+            let active_ids: Vec<String> = self.active.keys().cloned().collect();
+            crate::workspace::sweep_orphaned(&repo_paths, &active_ids);
+        }
 
         let start = Instant::now();
         let mut cumulative = IterationSummary::default();
@@ -516,6 +526,13 @@ impl Reconciler {
                 // reaches a terminal state. Check if the bead is still
                 // retriable (in backoff queue or was just dispatched).
                 if let Some(ref target) = self.config.target_bead {
+                    // Dry run never completes anything, so the retry-wait
+                    // logic below would spin forever ("would dispatch" counts
+                    // as still_active every pass). One pass is the answer.
+                    if self.config.dry_run {
+                        eprintln!("[reconcile] dry run complete for bead {target}");
+                        break;
+                    }
                     // Exit on terminal outcomes. Check specifically whether
                     // the TARGET bead was dead-lettered — not the counter,
                     // which now includes liveness-sweep deadletters for
@@ -1008,7 +1025,98 @@ pub async fn run(
     target_bead: Option<&str>,
 ) -> Result<()> {
     let cfg = config::load(config_path)?;
+    run_with_config(
+        cfg,
+        concurrency,
+        interval,
+        once,
+        dry_run,
+        provider,
+        overnight,
+        target_bead,
+    )
+    .await
+}
 
+/// `rsry dispatch` — one bead through the FULL targeted pipeline (tiered
+/// verify, feedback contract, retry/deadletter), blocking until terminal.
+///
+/// Replaces the legacy `dispatch::run`, whose bespoke two-signal completion
+/// heuristic discarded rejected status writes (`let _ = update_status(..)`)
+/// and left beads silently stuck at `dispatched` on the SQLite backend while
+/// printing a false success message (rosary-451a9a). There is deliberately no
+/// second completion path left to re-diverge.
+///
+/// Preflight (bead exists + close condition) runs here, loudly, before the
+/// reconciler starts: targeted mode bypasses triage gates by design, and the
+/// reconciler itself never re-checks the close condition — without this gate a
+/// close-condition-less bead would sail through to Done unverifiable.
+pub async fn run_targeted_dispatch(
+    bead_id: &str,
+    repo_path: &std::path::Path,
+    provider: &str,
+    dry_run: bool,
+) -> Result<()> {
+    use anyhow::Context;
+
+    let path = scanner::expand_path(repo_path);
+    let beads_dir = path.join(".beads");
+    let client = crate::bead_sqlite::connect_bead_store(&beads_dir).await?;
+    let bead = client
+        .get_bead(bead_id, &path.display().to_string())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("bead {bead_id} not found in {}", path.display()))?;
+    dispatch::ensure_dispatch_close_condition(&bead)?;
+
+    // Honor the user's config when present (backend store → feedback contract
+    // enforced, pipelines, Linear mirror); fall back to the global registry,
+    // which itself defaults to an empty config — `rsry dispatch` must keep
+    // working in a repo that was never registered anywhere.
+    let mut cfg = config::load(&config::resolve_config_path())
+        .or_else(|_| config::load_global())
+        .context("loading config for targeted dispatch")?;
+    ensure_repo_in_config(&mut cfg.repo, &path);
+
+    run_with_config(cfg, 1, 30, true, dry_run, provider, false, Some(bead_id)).await
+}
+
+/// Make sure `path`'s repo is scannable: return early if a configured repo
+/// already resolves to the same directory, else append a minimal entry named
+/// after the directory. Registration is not required to dispatch by path.
+fn ensure_repo_in_config(repos: &mut Vec<RepoConfig>, path: &std::path::Path) {
+    let target = scanner::expand_path(path);
+    let canonical_target = target.canonicalize().unwrap_or_else(|_| target.clone());
+    let already_present = repos.iter().any(|r| {
+        let rp = scanner::expand_path(&r.path);
+        rp == target || rp.canonicalize().is_ok_and(|c| c == canonical_target)
+    });
+    if already_present {
+        return;
+    }
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".to_string());
+    repos.push(RepoConfig {
+        name,
+        path: target,
+        lang: None,
+        self_managed: false,
+        approval: Default::default(),
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_with_config(
+    cfg: config::Config,
+    concurrency: usize,
+    interval: u64,
+    once: bool,
+    dry_run: bool,
+    provider: &str,
+    overnight: bool,
+    target_bead: Option<&str>,
+) -> Result<()> {
     // Extract linear config before cfg.repo is moved
     let linear_team = std::env::var("LINEAR_TEAM").unwrap_or_else(|_| {
         cfg.linear
