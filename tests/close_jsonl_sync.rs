@@ -1,6 +1,10 @@
 //! Closing a bead must immediately refresh its already-published JSONL record
 //! without publishing other records from the richer local store.
 
+#[path = "common/mod.rs"]
+mod close_common;
+
+use close_common::created_id;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -35,25 +39,6 @@ fn assert_close_success(label: &str, output: &Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-fn created_id(output: &Output) -> String {
-    let mut clean = String::from_utf8_lossy(&output.stdout).into_owned();
-    while let Some(start) = clean.find('\x1b') {
-        let end = clean[start..]
-            .find('m')
-            .map_or(start + 1, |i| start + i + 1);
-        clean.replace_range(start..end, "");
-    }
-    clean
-        .split_whitespace()
-        .find(|word| {
-            word.rsplit_once('-').is_some_and(|(_, suffix)| {
-                suffix.len() == 6 && suffix.chars().all(|c| c.is_ascii_hexdigit())
-            })
-        })
-        .unwrap_or_else(|| panic!("no bead id in output: {clean}"))
-        .to_string()
 }
 
 #[test]

@@ -1057,27 +1057,44 @@ pub async fn run_targeted_dispatch(
     provider: &str,
     dry_run: bool,
 ) -> Result<()> {
-    use anyhow::Context;
-
     let path = scanner::expand_path(repo_path);
-    let beads_dir = path.join(".beads");
-    let client = crate::bead_sqlite::connect_bead_store(&beads_dir).await?;
+    preflight_targeted_dispatch(bead_id, &path).await?;
+    let cfg = load_dispatch_config(&path)?;
+    run_with_config(cfg, 1, 30, true, dry_run, provider, false, Some(bead_id)).await
+}
+
+/// The loud, pre-reconciler gate for a targeted dispatch: the bead must exist
+/// and declare a close condition.
+async fn preflight_targeted_dispatch(bead_id: &str, path: &std::path::Path) -> Result<()> {
+    let client = crate::bead_sqlite::connect_bead_store(&path.join(".beads")).await?;
     let bead = client
         .get_bead(bead_id, &path.display().to_string())
         .await?
         .ok_or_else(|| anyhow::anyhow!("bead {bead_id} not found in {}", path.display()))?;
-    dispatch::ensure_dispatch_close_condition(&bead)?;
+    dispatch::ensure_dispatch_close_condition(&bead)
+}
 
-    // Honor the user's config when present (backend store → feedback contract
-    // enforced, pipelines, Linear mirror); fall back to the global registry,
-    // which itself defaults to an empty config — `rsry dispatch` must keep
-    // working in a repo that was never registered anywhere.
-    let mut cfg = config::load(&config::resolve_config_path())
-        .or_else(|_| config::load_global())
-        .context("loading config for targeted dispatch")?;
-    ensure_repo_in_config(&mut cfg.repo, &path);
+/// Config for a dispatch-by-path: the TARGET repo's own `rosary.toml` wins
+/// (dispatching into a different directory must honor that repo's backend/
+/// pipeline/Linear settings, not the CWD's), then the CWD-resolved config,
+/// then the global registry — which defaults to an empty config, so `rsry
+/// dispatch` keeps working in a repo that was never registered anywhere. A
+/// repo-local file that exists but fails to parse is a loud error, not a
+/// fallthrough.
+fn load_dispatch_config(path: &std::path::Path) -> Result<config::Config> {
+    use anyhow::Context;
 
-    run_with_config(cfg, 1, 30, true, dry_run, provider, false, Some(bead_id)).await
+    let repo_local = path.join("rosary.toml");
+    let mut cfg = if repo_local.exists() {
+        config::load(&repo_local.to_string_lossy())
+            .with_context(|| format!("loading {}", repo_local.display()))?
+    } else {
+        config::load(&config::resolve_config_path())
+            .or_else(|_| config::load_global())
+            .context("loading config for targeted dispatch")?
+    };
+    ensure_repo_in_config(&mut cfg.repo, path);
+    Ok(cfg)
 }
 
 /// Make sure `path`'s repo is scannable: return early if a configured repo
@@ -1157,26 +1174,38 @@ async fn run_with_config(
     };
 
     let mut reconciler = Reconciler::new(reconciler_config).await;
-    if let Ok(api_key) = std::env::var("LINEAR_API_KEY") {
-        match crate::linear_tracker::LinearTracker::with_overrides(
-            &api_key,
-            &linear_team,
-            linear_state_overrides,
-        )
-        .await
-        {
-            Ok(tracker) => {
-                eprintln!("[linear] attached tracker for team {linear_team}");
-                reconciler.set_issue_tracker(Box::new(tracker));
-            }
-            Err(e) => {
-                eprintln!("[linear] failed to attach tracker: {e} (continuing without)");
-            }
-        }
-    }
+    attach_linear_tracker(&mut reconciler, &linear_team, linear_state_overrides).await;
 
     reconciler.run().await?;
     Ok(())
+}
+
+/// Attach the Linear mirror when `LINEAR_API_KEY` is set; best-effort — a
+/// failed attach logs and continues without (Linear is a UI mirror, never
+/// authority).
+async fn attach_linear_tracker(
+    reconciler: &mut Reconciler,
+    linear_team: &str,
+    linear_state_overrides: std::collections::HashMap<String, String>,
+) {
+    let Ok(api_key) = std::env::var("LINEAR_API_KEY") else {
+        return;
+    };
+    match crate::linear_tracker::LinearTracker::with_overrides(
+        &api_key,
+        linear_team,
+        linear_state_overrides,
+    )
+    .await
+    {
+        Ok(tracker) => {
+            eprintln!("[linear] attached tracker for team {linear_team}");
+            reconciler.set_issue_tracker(Box::new(tracker));
+        }
+        Err(e) => {
+            eprintln!("[linear] failed to attach tracker: {e} (continuing without)");
+        }
+    }
 }
 
 #[cfg(test)]

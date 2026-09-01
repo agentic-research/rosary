@@ -8,30 +8,20 @@
 //! and asserts the different (text-merge) result — that contrast is the
 //! evidence the driver ran.
 
-use std::path::{Path, PathBuf};
+#[path = "common/mod.rs"]
+mod merge_common;
+
+use merge_common::{git_ok, rsry};
+use std::path::Path;
 use std::process::Command;
 
-fn rsry() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_rsry"))
-}
-
-fn git(repo: &Path, args: &[&str]) -> std::process::Output {
+fn git_out(repo: &Path, args: &[&str]) -> std::process::Output {
     Command::new("git")
         .arg("-C")
         .arg(repo)
         .args(args)
         .output()
         .expect("invoking git")
-}
-
-fn git_ok(repo: &Path, args: &[&str]) {
-    let out = git(repo, args);
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    );
 }
 
 /// One JSONL record. Only `id` and the marker field matter to the merge.
@@ -137,7 +127,7 @@ fn git_merge_uses_the_driver_and_produces_a_sorted_union() {
     );
 
     git_ok(repo, &["checkout", "-q", "ours"]);
-    let out = git(repo, &["merge", "--no-edit", "theirs"]);
+    let out = git_out(repo, &["merge", "--no-edit", "theirs"]);
     assert!(
         out.status.success(),
         "merge should be clean: {}{}",
@@ -186,7 +176,7 @@ fn control_without_driver_text_merge_does_not_sort() {
     );
 
     git_ok(repo, &["checkout", "-q", "ours"]);
-    let out = git(repo, &["merge", "--no-edit", "theirs"]);
+    let out = git_out(repo, &["merge", "--no-edit", "theirs"]);
     let merged = read_export(repo);
     let sorted = {
         let mut v = ids_in_order(&merged);
@@ -218,7 +208,7 @@ fn git_merge_conflicts_when_both_sides_changed_the_same_bead() {
     );
 
     git_ok(repo, &["checkout", "-q", "ours"]);
-    let out = git(repo, &["merge", "--no-edit", "theirs"]);
+    let out = git_out(repo, &["merge", "--no-edit", "theirs"]);
     assert!(
         !out.status.success(),
         "a bead changed on both sides must conflict, not silently pick a winner"
@@ -249,7 +239,7 @@ fn git_merge_takes_a_one_sided_edit_cleanly() {
     );
 
     git_ok(repo, &["checkout", "-q", "ours"]);
-    let out = git(repo, &["merge", "--no-edit", "theirs"]);
+    let out = git_out(repo, &["merge", "--no-edit", "theirs"]);
     assert!(
         out.status.success(),
         "one-sided edits should merge cleanly: {}",

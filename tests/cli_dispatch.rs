@@ -13,36 +13,12 @@
 //! the preflight failures (which must fire before the reconciler starts) and
 //! the dry-run path (which proves delegation reached the reconciler's queue).
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+#[path = "common/mod.rs"]
+mod dispatch_common;
 
-fn rsry() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_rsry"))
-}
-
-fn run(cwd: &Path, home: &Path, args: &[&str]) -> Output {
-    Command::new(rsry())
-        .args(args)
-        .current_dir(cwd)
-        .env("HOME", home)
-        .env("XDG_CONFIG_HOME", home.join(".config"))
-        .output()
-        .unwrap()
-}
-
-fn git(cwd: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {}: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+use dispatch_common::{created_id, git_ok as git, rsry_run as run};
+use std::path::Path;
+use std::process::Output;
 
 /// Fresh git repo with a SQLite bead store, isolated HOME.
 fn init_repo() -> (tempfile::TempDir, tempfile::TempDir) {
@@ -60,25 +36,6 @@ fn init_repo() -> (tempfile::TempDir, tempfile::TempDir) {
         String::from_utf8_lossy(&init.stderr)
     );
     (repo, home)
-}
-
-fn created_id(output: &Output) -> String {
-    let mut clean = String::from_utf8_lossy(&output.stdout).into_owned();
-    while let Some(start) = clean.find('\x1b') {
-        let end = clean[start..]
-            .find('m')
-            .map_or(start + 1, |i| start + i + 1);
-        clean.replace_range(start..end, "");
-    }
-    clean
-        .split_whitespace()
-        .find(|word| {
-            word.rsplit_once('-').is_some_and(|(_, suffix)| {
-                suffix.len() == 6 && suffix.chars().all(|c| c.is_ascii_hexdigit())
-            })
-        })
-        .unwrap_or_else(|| panic!("no bead id in output: {clean}"))
-        .to_string()
 }
 
 fn stderr_of(output: &Output) -> String {
