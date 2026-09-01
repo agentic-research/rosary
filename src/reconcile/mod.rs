@@ -1089,9 +1089,16 @@ fn load_dispatch_config(path: &std::path::Path) -> Result<config::Config> {
         config::load(&repo_local.to_string_lossy())
             .with_context(|| format!("loading {}", repo_local.display()))?
     } else {
-        config::load(&config::resolve_config_path())
-            .or_else(|_| config::load_global())
-            .context("loading config for targeted dispatch")?
+        // Same present-but-broken rule for the resolved path: fall back to
+        // the global registry only when the file is MISSING — a config that
+        // exists but fails to parse must not silently degrade to empty.
+        let resolved = config::resolve_config_path();
+        let resolved_path = std::path::PathBuf::from(shellexpand::tilde(&resolved).into_owned());
+        if resolved_path.exists() {
+            config::load(&resolved).with_context(|| format!("loading {resolved}"))?
+        } else {
+            config::load_global().context("loading global config for targeted dispatch")?
+        }
     };
     ensure_repo_in_config(&mut cfg.repo, path);
     Ok(cfg)

@@ -1221,3 +1221,31 @@ fn ensure_repo_in_config_matches_unnormalized_spelling_of_same_dir() {
         "same dir via un-normalized spelling must not duplicate"
     );
 }
+
+#[test]
+fn load_dispatch_config_fails_loud_on_malformed_repo_local_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo_path = dir.path().join("broken");
+    std::fs::create_dir(&repo_path).unwrap();
+    std::fs::write(repo_path.join("rosary.toml"), "this is [not valid toml").unwrap();
+
+    let err = load_dispatch_config(&repo_path).unwrap_err();
+    assert!(
+        err.to_string().contains("rosary.toml"),
+        "a present-but-broken repo-local config must error loudly, not \
+         silently fall through to global/empty: {err:#}"
+    );
+}
+
+#[test]
+fn load_dispatch_config_without_repo_local_file_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo_path = dir.path().join("plain");
+    std::fs::create_dir(&repo_path).unwrap();
+
+    let cfg = load_dispatch_config(&repo_path).expect("missing repo-local config falls back");
+    assert!(
+        cfg.repo.iter().any(|r| r.name == "plain"),
+        "target repo must be injected into the scan set"
+    );
+}
