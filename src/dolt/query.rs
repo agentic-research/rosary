@@ -9,11 +9,12 @@ impl DoltClient {
     /// Get the current status of a bead by ID. Resolves short ids first,
     /// like the SQLite impl and this client's own `close_bead` — a raw
     /// `WHERE id = ?` returned `None` for known beads queried by suffix
-    /// (rosary-44eec8 gap 2). An unresolvable id is `Ok(None)`, not an error,
-    /// matching SQLite's contract.
+    /// (rosary-44eec8 gap 2). No-single-match is `Ok(None)`; real SQL or
+    /// connection errors propagate rather than masquerading as "no such
+    /// bead" (Copilot review on PR #483).
     #[allow(dead_code)] // Used by is_bead_agent_closed (agent-first path)
     pub async fn get_status(&self, id: &str) -> Result<Option<String>> {
-        let Ok(full_id) = self.resolve_id(id).await else {
+        let Some(full_id) = self.resolve_id_opt(id).await? else {
             return Ok(None);
         };
         let row = query("SELECT status FROM issues WHERE id = ?")

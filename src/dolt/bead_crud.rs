@@ -5,31 +5,59 @@ use sqlx_core::row::Row;
 use super::DoltClient;
 use crate::bead::Bead;
 
+/// Outcome of short/full bead-id resolution — one query body serving two
+/// contracts: `resolve_id` (errors with diagnostics) and `resolve_id_opt`
+/// (no-single-match is `None`, SQL errors still propagate).
+enum IdResolution {
+    Found(String),
+    NotFound,
+    Ambiguous(Vec<String>),
+}
+
 impl DoltClient {
     /// Resolve a short or full bead ID to the canonical full ID in the DB.
     /// Accepts exact match or suffix match ("2a3970" → "ley-line-open-2a3970").
     /// Errors on zero matches (not found) or multiple matches (ambiguous).
     pub async fn resolve_id(&self, id: &str) -> Result<String> {
+        match self.resolve(id).await? {
+            IdResolution::Found(full_id) => Ok(full_id),
+            IdResolution::NotFound => anyhow::bail!("bead not found: {id}"),
+            IdResolution::Ambiguous(ids) => {
+                anyhow::bail!("ambiguous bead ID {id:?} — matches: {}", ids.join(", "))
+            }
+        }
+    }
+
+    /// Like [`resolve_id`], but not-found and ambiguous resolve to `Ok(None)`
+    /// while real SQL/connection errors still propagate — for read paths whose
+    /// contract is "no single such bead is `None`" (rosary-44eec8: mapping
+    /// *every* resolve error to `None` masked transient DB failures as
+    /// "no such bead").
+    pub async fn resolve_id_opt(&self, id: &str) -> Result<Option<String>> {
+        Ok(match self.resolve(id).await? {
+            IdResolution::Found(full_id) => Some(full_id),
+            IdResolution::NotFound | IdResolution::Ambiguous(_) => None,
+        })
+    }
+
+    async fn resolve(&self, id: &str) -> Result<IdResolution> {
         let exact = query("SELECT id FROM issues WHERE id = ?")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
         if let Some(row) = exact {
-            return Ok(row.get("id"));
+            return Ok(IdResolution::Found(row.get("id")));
         }
         let suffix_pattern = format!("%-{id}");
         let matches = query("SELECT id FROM issues WHERE id LIKE ?")
             .bind(&suffix_pattern)
             .fetch_all(&self.pool)
             .await?;
-        match matches.len() {
-            0 => anyhow::bail!("bead not found: {id}"),
-            1 => Ok(matches[0].get("id")),
-            _ => {
-                let ids: Vec<String> = matches.iter().map(|r| r.get("id")).collect();
-                anyhow::bail!("ambiguous bead ID {id:?} — matches: {}", ids.join(", "))
-            }
-        }
+        Ok(match matches.len() {
+            0 => IdResolution::NotFound,
+            1 => IdResolution::Found(matches[0].get("id")),
+            _ => IdResolution::Ambiguous(matches.iter().map(|r| r.get("id")).collect()),
+        })
     }
 
     /// List all open issues as Beads.
@@ -305,16 +333,19 @@ impl DoltClient {
             .fetch_optional(&mut *tx)
             .await
             .with_context(|| format!("reading status for {id}"))?;
-        if let Some(r) = row {
-            let current = crate::bead::BeadState::from(r.get::<String, _>("status").as_str());
-            if !current.can_transition_to(next) {
-                return Err(anyhow::anyhow!(
-                    "invalid state transition: {} -> {} for bead {}",
-                    current,
-                    next,
-                    id
-                ));
-            }
+        // A row that vanished between resolve_id and this locked read must be
+        // an error, not a 0-row UPDATE that commits and reports success.
+        let Some(r) = row else {
+            anyhow::bail!("bead {id} disappeared during status update");
+        };
+        let current = crate::bead::BeadState::from(r.get::<String, _>("status").as_str());
+        if !current.can_transition_to(next) {
+            return Err(anyhow::anyhow!(
+                "invalid state transition: {} -> {} for bead {}",
+                current,
+                next,
+                id
+            ));
         }
         // Canonicalize at the write boundary, matching the SQLite impl:
         // aliases are tolerated on input, never persisted.

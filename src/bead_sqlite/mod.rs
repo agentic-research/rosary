@@ -862,7 +862,13 @@ impl BeadStore for SqliteBeadStore {
                 |row| row.get(0),
             )
             .optional()?;
-        if let Some(ref cs) = current_str {
+        // A row that vanished between resolve_id and this read must be an
+        // error, not a 0-row UPDATE that reports success (same hole as the
+        // Dolt impl had — closed on both for parity, rosary-44eec8).
+        let Some(ref cs) = current_str else {
+            anyhow::bail!("bead {id} disappeared during status update");
+        };
+        {
             let current = BeadState::from(cs.as_str());
             if !current.can_transition_to(next) {
                 return Err(anyhow::anyhow!(
@@ -1303,9 +1309,8 @@ impl BeadStore for SqliteBeadStore {
         reason: Option<&str>,
     ) -> Result<crate::bead::Comment> {
         // Scrub secrets before writing — parity with the Dolt path
-        // (rosary-44eec8 gap 3).
+        // (rosary-44eec8 gap 3). The String binds directly via ToSql.
         let body = crate::secrets::scrub_and_warn(body, &format!("comment update {comment_id}"));
-        let body = body.as_str();
         let conn = self.conn.lock().unwrap();
         // Read current state to decide whether to capture original_text.
         let (prior_text, has_original): (String, bool) = conn
