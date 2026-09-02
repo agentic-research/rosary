@@ -279,42 +279,29 @@ impl DoltClient {
         .ok_or_else(|| anyhow::anyhow!("comment {comment_id} not found"))?;
 
         let issue_id: String = existing.try_get("issue_id").unwrap_or_default();
-        let prior_text: String = existing.try_get("text").unwrap_or_default();
-        let prior_original: Option<String> = existing
-            .try_get::<Option<String>, _>("original_text")
-            .ok()
-            .flatten();
 
         let scrubbed =
             crate::secrets::scrub_and_warn(body, &format!("comment update {comment_id}"));
 
-        // First-edit captures original_text. Subsequent edits leave it alone.
-        if prior_original.is_none() {
-            query(
-                "UPDATE comments
-                 SET text = ?, edited_at = NOW(), edit_reason = ?, original_text = ?
-                 WHERE id = ?",
-            )
-            .bind(&scrubbed)
-            .bind(reason)
-            .bind(&prior_text)
-            .bind(comment_id)
-            .execute(&self.pool)
-            .await
-            .with_context(|| format!("updating comment {comment_id}"))?;
-        } else {
-            query(
-                "UPDATE comments
-                 SET text = ?, edited_at = NOW(), edit_reason = ?
-                 WHERE id = ?",
-            )
-            .bind(&scrubbed)
-            .bind(reason)
-            .bind(comment_id)
-            .execute(&self.pool)
-            .await
-            .with_context(|| format!("updating comment {comment_id}"))?;
-        }
+        // First-edit captures original_text, atomically IN the update itself:
+        // SET clauses evaluate left-to-right (MySQL semantics), so
+        // `COALESCE(original_text, text)` reads the pre-edit text before the
+        // `text = ?` assignment lands. The previous read-then-conditional-write
+        // let two concurrent first edits both observe original_text as NULL and
+        // the second clobber the true original with already-edited text
+        // (rosary-44eec8 gap 6).
+        query(
+            "UPDATE comments
+             SET original_text = COALESCE(original_text, text),
+                 text = ?, edited_at = NOW(), edit_reason = ?
+             WHERE id = ?",
+        )
+        .bind(&scrubbed)
+        .bind(reason)
+        .bind(comment_id)
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("updating comment {comment_id}"))?;
 
         self.auto_commit(&format!("comment update {comment_id} on {issue_id}"))
             .await;

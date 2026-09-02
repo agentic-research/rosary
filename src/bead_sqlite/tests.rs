@@ -326,7 +326,7 @@ async fn close_bead_short_id_resolves() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(status, "closed");
+    assert_eq!(status, "done");
 }
 
 #[tokio::test]
@@ -799,9 +799,11 @@ async fn update_status_and_close() {
     );
 
     store.close_bead("x").await.unwrap();
+    // close_bead stores the canonical terminal form directly (rosary-44eec8
+    // gap 4) — previously the alias 'closed', healed only on next connect.
     assert_eq!(
         store.get_status("x").await.unwrap().as_deref(),
-        Some("closed")
+        Some("done")
     );
 }
 

@@ -870,7 +870,10 @@ async fn tool_bead_close(
         let _ = registry.unregister(id, repo);
     }
 
-    Ok(json!({ "id": id, "status": "closed" }))
+    // Echo the store's canonical terminal form — close_bead persists 'done'
+    // (rosary-44eec8 gap 4); answering 'closed' here left API consumers
+    // observing a status string the store never holds.
+    Ok(json!({ "id": id, "status": "done" }))
 }
 
 async fn tool_bead_comment(

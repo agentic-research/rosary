@@ -166,13 +166,19 @@ async fn mcp_close_refreshes_only_the_published_jsonl_record() {
     git(&["commit", "-qm", "publish one bead"]);
 
     let pool = RepoPool::from_client("project", repo, Box::new(store));
-    tool_bead_close(
+    let response = tool_bead_close(
         &json!({ "scope": "repo:project", "id": "project-public1" }),
         &pool,
         None,
     )
     .await
     .unwrap();
+    // The API response must echo the store's canonical terminal form, not a
+    // status string the store never holds (Copilot review on PR #483).
+    assert_eq!(
+        response["status"], "done",
+        "tool_bead_close response must match the persisted status"
+    );
 
     let records = crate::restore::read_beads_jsonl(Some(
         beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
@@ -185,7 +191,7 @@ async fn mcp_close_refreshes_only_the_published_jsonl_record() {
     );
     assert_eq!(records[0]["id"], "project-public1");
     assert_eq!(
-        records[0]["status"], "closed",
+        records[0]["status"], "done",
         "MCP close must immediately refresh the published record to the store's terminal status"
     );
 }
