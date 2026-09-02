@@ -1139,19 +1139,18 @@ async fn parity_set_status_verbatim_bypasses_transitions_on_both_backends() {
 async fn parity_secrets_scrubbed_on_both_backends() {
     use crate::bead::BeadUpdate;
     use crate::store::BeadStore;
-    // A GitHub classic PAT shape the scrubber recognizes (36+ chars after ghp_).
-    let leak = "token ghp_0123456789abcdefghijABCDEFGHIJ0123456789 end";
 
     async fn assert_scrubbed(store: &dyn BeadStore, tag: &str) {
+        // PAT-shaped fixture built at runtime (matching the secrets.rs unit
+        // tests) so no token-shaped literal lands in source to trip secret
+        // scanning — Copilot review on PR #483.
+        let token = format!("ghp_{}", "A".repeat(36));
         let id = format!("par-scrub-{tag}");
         store
             .create_bead_full(crate::store::NewBead {
                 id: id.clone(),
-                title: format!(
-                    "t {leak}",
-                    leak = "ghp_0123456789abcdefghijABCDEFGHIJ0123456789"
-                ),
-                description: "token ghp_0123456789abcdefghijABCDEFGHIJ0123456789 end".into(),
+                title: format!("t {token}"),
+                description: format!("token {token} end"),
                 priority: 2,
                 issue_type: "task".into(),
                 owner: String::new(),
@@ -1167,41 +1166,33 @@ async fn parity_secrets_scrubbed_on_both_backends() {
             .unwrap();
         let bead = store.get_bead(&id, "r").await.unwrap().unwrap();
         assert!(
-            !bead.title.contains("ghp_0123456789"),
+            !bead.title.contains(&token),
             "title scrubbed [{tag}]: {}",
             bead.title
         );
         assert!(
-            !bead.description.contains("ghp_0123456789"),
+            !bead.description.contains(&token),
             "description scrubbed [{tag}]"
         );
 
         store
-            .add_comment(
-                &id,
-                "note ghp_0123456789abcdefghijABCDEFGHIJ0123456789",
-                "tester",
-            )
+            .add_comment(&id, &format!("note {token}"), "tester")
             .await
             .unwrap();
         let comments = store.list_comments(&id, false).await.unwrap();
         assert!(
-            !comments.last().unwrap().text.contains("ghp_0123456789"),
+            !comments.last().unwrap().text.contains(&token),
             "comment add scrubbed [{tag}]"
         );
 
         let cid = comments.last().unwrap().id.clone();
         store
-            .update_comment(
-                &cid,
-                "edit ghp_0123456789abcdefghijABCDEFGHIJ0123456789",
-                None,
-            )
+            .update_comment(&cid, &format!("edit {token}"), None)
             .await
             .unwrap();
         let comments = store.list_comments(&id, false).await.unwrap();
         assert!(
-            !comments.last().unwrap().text.contains("ghp_0123456789"),
+            !comments.last().unwrap().text.contains(&token),
             "comment update scrubbed [{tag}]"
         );
 
@@ -1209,7 +1200,7 @@ async fn parity_secrets_scrubbed_on_both_backends() {
             .update_bead_fields(
                 &id,
                 &BeadUpdate {
-                    description: Some("upd ghp_0123456789abcdefghijABCDEFGHIJ0123456789".into()),
+                    description: Some(format!("upd {token}")),
                     ..Default::default()
                 },
             )
@@ -1217,11 +1208,10 @@ async fn parity_secrets_scrubbed_on_both_backends() {
             .unwrap();
         let bead = store.get_bead(&id, "r").await.unwrap().unwrap();
         assert!(
-            !bead.description.contains("ghp_0123456789"),
+            !bead.description.contains(&token),
             "update_bead_fields scrubbed [{tag}]"
         );
     }
-    let _ = leak; // fixture documented above; inlined per call to keep rows independent
 
     let sq = sqlite_store_for_parity().await;
     assert_scrubbed(&sq, "sq").await;
