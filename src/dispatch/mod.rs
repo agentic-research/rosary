@@ -150,21 +150,6 @@ pub const STREAM_LOG_FILENAME: &str = ".rsry-stream.jsonl";
 /// failed dispatch (auth / skew / missing-binary / …).
 pub const STDERR_LOG_FILENAME: &str = ".rsry-stderr.log";
 
-/// True if the agent's stream-json result reports an auth failure
-/// ("Not logged in"). A credential-less agent exits ~instantly having done no
-/// work; dispatch must fail LOUD on this rather than treat the exit as normal
-/// (rosary-562b2e; the credential-propagation class from rosary-b1495c).
-fn stream_result_auth_failed(stream_log: &Path) -> bool {
-    let Ok(content) = std::fs::read_to_string(stream_log) else {
-        return false;
-    };
-    // The stream-json result line carries `"type":"result"`; on auth failure
-    // the CLI sets `"result":"Not logged in · Please run /login"`.
-    content
-        .lines()
-        .any(|line| line.contains("\"type\":\"result\"") && line.contains("Not logged in"))
-}
-
 /// Handle to a running agent session.
 pub struct AgentHandle {
     #[allow(dead_code)]
@@ -196,11 +181,6 @@ impl AgentHandle {
     /// Non-blocking check: has the agent completed? Returns Some(success).
     pub fn try_wait(&mut self) -> Result<Option<bool>> {
         self.session.try_wait()
-    }
-
-    /// Block until the agent completes. Returns success.
-    pub async fn wait(&mut self) -> Result<bool> {
-        self.session.wait().await
     }
 
     /// Kill the agent.
@@ -550,140 +530,12 @@ pub async fn spawn(
     })
 }
 
-/// Original blocking dispatch -- reads Dolt, spawns agent, waits for completion.
-/// Kept for `rsry dispatch` CLI command.
-pub async fn run(
-    bead_id: &str,
-    repo_path: &Path,
-    isolate: bool,
-    provider_name: &str,
-) -> Result<()> {
-    let path = expand_path(repo_path);
-    let beads_dir = path.join(".beads");
-
-    let client = crate::bead_sqlite::connect_bead_store(&beads_dir).await?;
-
-    let bead = client
-        .get_bead(bead_id, &path.display().to_string())
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("bead {bead_id} not found"))?;
-
-    ensure_dispatch_close_condition(&bead)?;
-
-    client.update_status(bead_id, "dispatched").await?;
-
-    let agents_dir = resolve_agents_dir();
-    let provider = provider_by_name(provider_name, &std::collections::HashMap::new())
-        .with_context(|| format!("resolving provider {provider_name}"))?;
-    let mut handle = spawn(
-        &bead,
-        &path,
-        isolate,
-        bead.generation(),
-        provider.as_ref(),
-        agents_dir.as_deref(),
-        None, // compute: local subprocess (default)
-        None, // model: use provider default
-    )
-    .await?;
-
-    if let Some(session_ref) = handle.session_ref()
-        && handle.pid().is_none()
-    {
-        eprintln!(
-            "[dispatch] {bead_id} started native {} session {} — leaving bead dispatched for follow-up",
-            session_ref.provider, session_ref.id
-        );
-        return Ok(());
-    }
-
-    let success = handle.wait().await?;
-
-    // Fail loud on credential failure: a "Not logged in" agent exits without
-    // doing any work. Treat it as a hard dispatch failure (not a normal exit
-    // the pipeline then mis-infers), unstick the bead, and surface the fix
-    // (rosary-562b2e / rosary-b1495c).
-    if stream_result_auth_failed(&handle.work_dir.join(STREAM_LOG_FILENAME)) {
-        eprintln!(
-            "[dispatch] {bead_id} agent FAILED authentication ('Not logged in') — no work done. \
-             Set CLAUDE_CODE_OAUTH_TOKEN / run `claude setup-token` (rosary-b1495c)."
-        );
-        let _ = client.update_status(bead_id, "open").await; // unstick: retryable
-        anyhow::bail!(
-            "dispatch {bead_id}: agent not authenticated ('Not logged in') — see {}",
-            handle.work_dir.join(STREAM_LOG_FILENAME).display()
-        );
-    }
-
-    // The pipeline is authoritative for lifecycle transitions — not the agent.
-    // If the agent already transitioned the bead (via MCP tools), respect that.
-    // If it's still Dispatched after exit, the pipeline infers the next state
-    // from artifacts so the bead never gets permanently stuck.
-    let current_state = client
-        .get_bead(bead_id, &path.display().to_string())
-        .await
-        .ok()
-        .flatten()
-        .map(|b| b.status);
-
-    let still_dispatched = current_state
-        .as_deref()
-        .map(|s| crate::bead::BeadState::from(s) == crate::bead::BeadState::Dispatched)
-        .unwrap_or(true);
-
-    if !still_dispatched {
-        eprintln!(
-            "[dispatch] {bead_id} agent already transitioned to {:?} — pipeline defers",
-            current_state
-        );
-        return Ok(());
-    }
-
-    // Bead is still Dispatched — pipeline takes over.
-    let has_commits = if let Some(ref ws_path) = handle.workspace_path {
-        tokio::process::Command::new("git")
-            .args(["log", "--oneline", "HEAD", "--not", "origin/HEAD", "--"])
-            .current_dir(ws_path)
-            .output()
-            .await
-            .map(|o| o.status.success() && !o.stdout.is_empty())
-            .unwrap_or(false)
-    } else {
-        false
-    };
-
-    if success {
-        if has_commits {
-            eprintln!("[dispatch] {bead_id} exited clean with commits — marking verifying");
-            let _ = client.update_status(bead_id, "verifying").await;
-        } else {
-            eprintln!("[dispatch] {bead_id} exited clean, no new commits — closing");
-            let _ = client.update_status(bead_id, "closed").await;
-        }
-    } else if has_commits {
-        eprintln!("[dispatch] {bead_id} failed but left commits -- marking blocked for review");
-        let _ = client
-            .add_comment(
-                bead_id,
-                "agent",
-                "Agent exited with failure but produced commits. Needs human review.",
-            )
-            .await;
-        let _ = client.update_status(bead_id, "blocked").await;
-    } else {
-        eprintln!("[dispatch] {bead_id} crashed silently -- no commits, no artifacts");
-        let _ = client
-            .add_comment(
-                bead_id,
-                "agent",
-                "Agent crashed silently -- no commits produced. Returning to open for retry.",
-            )
-            .await;
-        let _ = client.update_status(bead_id, "open").await;
-    }
-
-    Ok(())
-}
+// The legacy blocking `dispatch::run` lived here until rosary-451a9a: its
+// bespoke two-signal completion heuristic discarded rejected status writes
+// (`let _ = update_status(..)`), leaving beads silently stuck at `dispatched`
+// on the SQLite backend while printing a false success message. `rsry
+// dispatch` now delegates to `reconcile::run_targeted_dispatch` — one
+// completion judgment for every dispatch surface, none left to re-diverge.
 
 pub(crate) fn ensure_dispatch_close_condition(bead: &Bead) -> Result<()> {
     crate::bead::ensure_close_condition(
@@ -1186,35 +1038,10 @@ mod detached_tests {
     use super::*;
     use std::time::Duration;
 
-    /// rosary-562b2e: an auth-failure result line is detected; a normal
-    /// success result and a missing log are not.
-    #[test]
-    fn stream_result_auth_failed_detects_not_logged_in() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("s.jsonl");
-        std::fs::write(
-            &log,
-            "{\"type\":\"result\",\"is_error\":false,\"result\":\"done\"}\n",
-        )
-        .unwrap();
-        assert!(
-            !stream_result_auth_failed(&log),
-            "success result is not a failure"
-        );
-        std::fs::write(
-            &log,
-            "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\"Not logged in · Please run /login\"}\n",
-        )
-        .unwrap();
-        assert!(
-            stream_result_auth_failed(&log),
-            "'Not logged in' result must be detected"
-        );
-        assert!(
-            !stream_result_auth_failed(&dir.path().join("missing.jsonl")),
-            "missing log is not a failure"
-        );
-    }
+    // The `stream_result_auth_failed` fast-path (rosary-562b2e) left with the
+    // legacy `dispatch::run` (rosary-451a9a): auth failures now flow through
+    // the shared FailureClass classifier (`provenance.rs`, `failure:auth`)
+    // like every other dispatch surface — MCP dispatch already behaved so.
 
     /// Minimal test provider that exposes a shell command via
     /// `build_command`. Avoids needing a real `claude` binary in tests.

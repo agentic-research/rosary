@@ -1,33 +1,9 @@
-use std::path::{Path, PathBuf};
+#[path = "common/mod.rs"]
+mod create_common;
+
+use create_common::{git_ok as git, rsry_run as run};
+use std::path::Path;
 use std::process::{Command, Output};
-
-fn rsry() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_rsry"))
-}
-
-fn run(cwd: &Path, home: &Path, args: &[&str]) -> Output {
-    Command::new(rsry())
-        .args(args)
-        .current_dir(cwd)
-        .env("HOME", home)
-        .env("XDG_CONFIG_HOME", home.join(".config"))
-        .output()
-        .unwrap()
-}
-
-fn git(cwd: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {}: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
 
 fn create(cwd: &Path, home: &Path, title: &str) -> Output {
     run(

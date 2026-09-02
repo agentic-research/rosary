@@ -340,9 +340,16 @@ async fn run_rejects_unclosable_impl_bead_before_status_mutation() {
         .await
         .unwrap();
 
-    let err = run("rsry-no-close", repo.path(), false, "not-a-provider")
-        .await
-        .unwrap_err();
+    // `rsry dispatch` delegates to the targeted reconciler (rosary-451a9a);
+    // the close-condition preflight must still fire before any status write.
+    let err = crate::reconcile::run_targeted_dispatch(
+        "rsry-no-close",
+        repo.path(),
+        "not-a-provider",
+        false,
+    )
+    .await
+    .unwrap_err();
 
     assert!(err.to_string().contains("no close condition"), "{err}");
     assert_eq!(
@@ -355,7 +362,8 @@ async fn run_rejects_unclosable_impl_bead_before_status_mutation() {
 #[tokio::test]
 async fn dispatch_missing_beads_dir_errors() {
     let dir = TempDir::new().unwrap();
-    let result = run("fake-id", dir.path(), false, "claude").await;
+    let result =
+        crate::reconcile::run_targeted_dispatch("fake-id", dir.path(), "claude", false).await;
     assert!(result.is_err());
 }
 

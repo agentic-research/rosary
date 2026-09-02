@@ -204,9 +204,20 @@ enum Command {
         /// Agent provider (claude, gemini, acp, codex experimental)
         #[arg(long, default_value = "claude")]
         provider: String,
-        /// Use isolated jj workspace
-        #[arg(long, default_value_t = true)]
+        /// Deprecated: isolation is mandatory (a shared-checkout dispatch
+        /// caused a real data-loss incident; see workspace/lifecycle.rs).
+        /// Parsed for compatibility, ignored with a warning when false.
+        #[arg(
+            long,
+            default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true"
+        )]
         isolate: bool,
+        /// Show what the targeted pipeline would dispatch without spawning
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Run the reconciliation loop (scan → triage → dispatch → verify → report)
     Run {
@@ -1612,8 +1623,22 @@ async fn main() -> Result<()> {
             repo,
             provider,
             isolate,
+            dry_run,
         } => {
-            dispatch::run(&bead_id, std::path::Path::new(&repo), isolate, &provider).await?;
+            if !isolate {
+                eprintln!(
+                    "[dispatch] --isolate=false is deprecated and ignored — isolation is \
+                     mandatory (a shared-checkout dispatch caused a data-loss incident; \
+                     see workspace/lifecycle.rs). Dispatching isolated."
+                );
+            }
+            reconcile::run_targeted_dispatch(
+                &bead_id,
+                std::path::Path::new(&repo),
+                &provider,
+                dry_run,
+            )
+            .await?;
         }
         Command::Run {
             config,

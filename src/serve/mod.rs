@@ -403,25 +403,32 @@ fn sweep_expired(sessions: &mut HashMap<String, Instant>, now: Instant, ttl: Dur
 
 /// Validate session ID is present and known, and touch its last-activity time
 /// (so active sessions aren't swept).
+///
+/// The error is boxed: `axum::response::Response` is ≥128 bytes and clippy
+/// 1.98's `result_large_err` (CI toolchain; `-D warnings`) rejects it inline.
 async fn validate_session(
     headers: &axum::http::HeaderMap,
     sessions: &RwLock<HashMap<String, Instant>>,
-) -> std::result::Result<(), axum::response::Response> {
+) -> std::result::Result<(), Box<axum::response::Response>> {
     use axum::response::IntoResponse;
     let session_id = headers.get("mcp-session-id").and_then(|v| v.to_str().ok());
     match session_id {
-        None => Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "Missing Mcp-Session-Id header",
-        )
-            .into_response()),
+        None => Err(Box::new(
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                "Missing Mcp-Session-Id header",
+            )
+                .into_response(),
+        )),
         Some(id) => {
             let mut guard = sessions.write().await;
             if let Some(last) = guard.get_mut(id) {
                 *last = Instant::now(); // touch → last-activity TTL
                 Ok(())
             } else {
-                Err((axum::http::StatusCode::NOT_FOUND, "Unknown session").into_response())
+                Err(Box::new(
+                    (axum::http::StatusCode::NOT_FOUND, "Unknown session").into_response(),
+                ))
             }
         }
     }
@@ -501,7 +508,7 @@ fn handle_mcp_post(
         #[allow(clippy::collapsible_if)]
         if !is_initialize {
             if let Err(resp) = validate_session(&headers, &state.sessions).await {
-                return resp;
+                return *resp;
             }
         }
 
