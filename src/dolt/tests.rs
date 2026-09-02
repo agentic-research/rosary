@@ -649,7 +649,7 @@ async fn crud_lifecycle_live_dolt() {
     // Close
     client.close_bead(&test_id).await.unwrap();
 
-    // Verify closed (canonical terminal form, rosary-44eec8 gap 4)
+    // Verify the canonical terminal status landed (rosary-44eec8 gap 4)
     let bead = client.get_bead(&test_id, "test").await.unwrap();
     assert!(bead.is_some());
     assert_eq!(bead.unwrap().status, "done");
