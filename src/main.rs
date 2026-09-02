@@ -6556,7 +6556,7 @@ mod tests {
 
         // Lower-priority bead (t-b, P2) merged away; higher-priority (t-a, P1) kept.
         assert_eq!(store.get_status("t-a").await.unwrap().unwrap(), "open");
-        assert_eq!(store.get_status("t-b").await.unwrap().unwrap(), "closed");
+        assert_eq!(store.get_status("t-b").await.unwrap().unwrap(), "done");
         let comments = store.list_comments("t-b", false).await.unwrap();
         assert!(
             comments.iter().any(|c| c.text.contains("Merged into t-a")),
@@ -6569,7 +6569,7 @@ mod tests {
         .unwrap();
         let b = records.iter().find(|r| r["id"] == "t-b").unwrap();
         assert_eq!(
-            b["status"], "closed",
+            b["status"], "done",
             "the merge must reach the tracked export, not just the store"
         );
     }

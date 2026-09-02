@@ -185,7 +185,7 @@ async fn mcp_close_refreshes_only_the_published_jsonl_record() {
     );
     assert_eq!(records[0]["id"], "project-public1");
     assert_eq!(
-        records[0]["status"], "closed",
+        records[0]["status"], "done",
         "MCP close must immediately refresh the published record to the store's terminal status"
     );
 }

@@ -267,7 +267,9 @@ impl DoltClient {
         }))
     }
 
-    /// Update a bead's status.
+    /// Update a bead's status — RAW write, no transition validation. The
+    /// verbatim primitive behind `set_status_verbatim`/`bead_correct`
+    /// (rosary-e0e19f); normal callers go through [`update_status_checked`].
     pub async fn update_status(&self, id: &str, status: &str) -> Result<()> {
         let full_id = self.resolve_id(id).await?;
         query("UPDATE issues SET status = ?, updated_at = NOW() WHERE id = ?")
@@ -277,6 +279,55 @@ impl DoltClient {
             .await
             .with_context(|| format!("updating status for {id}"))?;
         self.auto_commit(&format!("{full_id}: status → {status}"))
+            .await;
+        Ok(())
+    }
+
+    /// Update a bead's status with the same transition validation
+    /// `SqliteBeadStore::update_status` enforces (rosary-44eec8 — previously
+    /// Dolt accepted any transition). The read-check-write runs inside one
+    /// transaction with `FOR UPDATE`, not as an unprotected sequence: Dolt
+    /// exists for concurrent access, and a bare read-then-write here would be
+    /// a race that *claims* the guarantee without delivering it.
+    pub async fn update_status_checked(
+        &self,
+        id: &str,
+        next: crate::bead::BeadState,
+    ) -> Result<()> {
+        let full_id = self.resolve_id(id).await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("starting transaction for checked status update")?;
+        let row = query("SELECT status FROM issues WHERE id = ? FOR UPDATE")
+            .bind(&full_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .with_context(|| format!("reading status for {id}"))?;
+        if let Some(r) = row {
+            let current = crate::bead::BeadState::from(r.get::<String, _>("status").as_str());
+            if !current.can_transition_to(next) {
+                return Err(anyhow::anyhow!(
+                    "invalid state transition: {} -> {} for bead {}",
+                    current,
+                    next,
+                    id
+                ));
+            }
+        }
+        // Canonicalize at the write boundary, matching the SQLite impl:
+        // aliases are tolerated on input, never persisted.
+        query("UPDATE issues SET status = ?, updated_at = NOW() WHERE id = ?")
+            .bind(next.to_string())
+            .bind(&full_id)
+            .execute(&mut *tx)
+            .await
+            .with_context(|| format!("updating status for {id}"))?;
+        tx.commit()
+            .await
+            .with_context(|| format!("committing status update for {id}"))?;
+        self.auto_commit(&format!("{full_id}: status → {next}"))
             .await;
         Ok(())
     }
@@ -443,12 +494,20 @@ impl DoltClient {
 
         if let Some(ref title) = update.title {
             set_clauses.push("title = ?");
-            bind_values.push(title.clone());
+            // Scrub secrets — this path can rewrite title/description and was
+            // unscrubbed on BOTH backends before rosary-44eec8 (gap 3).
+            bind_values.push(crate::secrets::scrub_and_warn(
+                title,
+                &format!("bead {id} title update"),
+            ));
             updated_fields.push("title".to_string());
         }
         if let Some(ref description) = update.description {
             set_clauses.push("description = ?");
-            bind_values.push(description.clone());
+            bind_values.push(crate::secrets::scrub_and_warn(
+                description,
+                &format!("bead {id} description update"),
+            ));
             updated_fields.push("description".to_string());
         }
         if let Some(priority) = update.priority {
@@ -547,10 +606,13 @@ impl DoltClient {
         Ok(updated_fields)
     }
 
-    /// Close a bead by setting its status to 'closed'.
+    /// Close a bead — stores the CANONICAL terminal form 'done', not the
+    /// alias 'closed'. SQLite heals aliases on connect but Dolt never did,
+    /// so the Linear close sweep saw divergent result sets across backends
+    /// (rosary-44eec8 gap 4). Readers still tolerate legacy 'closed' rows.
     pub async fn close_bead(&self, id: &str) -> Result<()> {
         let full_id = self.resolve_id(id).await?;
-        query("UPDATE issues SET status = 'closed', updated_at = NOW() WHERE id = ?")
+        query("UPDATE issues SET status = 'done', updated_at = NOW() WHERE id = ?")
             .bind(&full_id)
             .execute(&self.pool)
             .await

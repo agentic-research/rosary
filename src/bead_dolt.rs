@@ -52,10 +52,12 @@ impl BeadStore for DoltBeadStore {
     }
 
     async fn update_status(&self, id: &str, status: &str) -> Result<()> {
-        // Canonicalize at the write boundary — store only `BeadState` canonical
-        // forms; aliases are tolerated on input, never persisted.
-        let canonical = crate::bead::BeadState::from(status).to_string();
-        self.client.update_status(id, &canonical).await
+        // Transition-validated, transaction-protected — the same guarantee
+        // SqliteBeadStore::update_status gives (rosary-44eec8). Canonicalizes
+        // at the write boundary; aliases tolerated on input, never persisted.
+        self.client
+            .update_status_checked(id, crate::bead::BeadState::from(status))
+            .await
     }
 
     async fn get_status(&self, id: &str) -> Result<Option<String>> {
