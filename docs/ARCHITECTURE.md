@@ -170,7 +170,7 @@ graph LR
     subgraph "Data"
         bead["bead.rs<br/>data model"]
         bead_ops["bead_ops.rs<br/>shared CLI/MCP create+close gates"]
-        bead_sqlite["bead_sqlite/<br/>SqliteBeadStore (default)"]
+        bead_sqlite["bead_sqlite/<br/>connect_bead_store (selects backend)<br/>+ SqliteBeadStore (default)"]
         bead_dolt["bead_dolt.rs + dolt/<br/>DoltBeadStore (server mode)"]
         pool["pool.rs<br/>RepoPool"]
         epic["epic.rs<br/>clustering + overlap"]
