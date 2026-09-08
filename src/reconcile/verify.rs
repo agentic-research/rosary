@@ -188,10 +188,13 @@ impl Reconciler {
                 ActionOutcome::Retrying
             }
             CompletionAction::Deadletter => {
+                // "retry budget exhausted" not "max retries": decide() deadletters
+                // on EITHER retries >= max_retries OR the consecutive-reverts
+                // threshold, and the observation can't tell which fired.
                 let detail = if exit_success {
-                    "verify failed, max retries"
+                    "verify failed, retry budget exhausted"
                 } else {
-                    "agent exit non-zero, max retries"
+                    "agent exit non-zero, retry budget exhausted"
                 };
                 self.handle_failure(bead_id, exit_success, verify_summary, false);
                 self.append_observation(bead_id, repo, &agent, phase, Verdict::Deadletter, detail)

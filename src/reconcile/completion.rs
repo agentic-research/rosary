@@ -147,7 +147,6 @@ impl Reconciler {
         // Cleanup happens after checkpoint (called from iterate)
     }
 
-    /// Handle a verification failure. Returns true if deadlettered.
     /// Record a verify failure: revert tracking + retry count + (when
     /// `schedule_retry`) the backoff entry and fix-forward note. Pure
     /// bookkeeping — the retry/deadletter thresholds live ONLY in
@@ -189,11 +188,15 @@ impl Reconciler {
         tracker.retries += 1;
 
         if !schedule_retry {
-            // Deadletter path (decided upstream): record the counts, no backoff.
+            // Deadletter path (decided upstream): record the counts and drop any
+            // backoff a prior retry left — deadletter is terminal, and a stale
+            // entry would delay the bead if it is reopened in-process.
             eprintln!(
                 "[deadletter] {bead_id}: retries={}, consecutive_reverts={}",
                 tracker.retries, tracker.consecutive_reverts
             );
+            let repo = tracker.repo.clone();
+            self.queue.clear_backoff(&repo, bead_id);
             return;
         }
 
@@ -251,6 +254,8 @@ impl Reconciler {
                 "[deadletter] {bead_id}: exit failure, retries={}",
                 tracker.retries
             );
+            let repo = tracker.repo.clone();
+            self.queue.clear_backoff(&repo, bead_id);
             return;
         }
 

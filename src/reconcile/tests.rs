@@ -233,6 +233,59 @@ async fn on_fail_consecutive_reverts_deadletter() {
 }
 
 #[tokio::test]
+async fn deadletter_clears_stale_backoff() {
+    // A retry queues a backoff entry; dequeue skips-but-keeps entries still in
+    // backoff. When the NEXT failure deadletters, the entry from the prior
+    // retry must be dropped — deadletter is terminal, and a stale entry would
+    // delay the bead if it is later reopened in the same process.
+    let config = ReconcilerConfig {
+        once: true,
+        repo: Vec::new(),
+        ..Default::default()
+    };
+    let mut r = Reconciler::new(config).await;
+
+    r.trackers.insert(
+        "x".into(),
+        BeadTracker {
+            repo: "test".into(),
+            last_generation: 1,
+            retries: 0,
+            consecutive_reverts: 0,
+            highest_tier: None,
+            current_agent: None,
+            phase_index: 0,
+            issue_type: "task".into(),
+            dispatch_id: None,
+            scope: String::new(),
+        },
+    );
+    let summary = crate::verify::VerifySummary {
+        results: vec![(
+            "test".into(),
+            crate::verify::VerifyResult::Fail("fail".into()),
+        )],
+        highest_passing_tier: None,
+    };
+
+    r.on_fail("x", &summary, true); // retry → backoff recorded
+    assert!(r.queue.has_backoff("test", "x"), "retry must queue backoff");
+    r.on_fail("x", &summary, false); // deadletter → backoff cleared
+    assert!(
+        !r.queue.has_backoff("test", "x"),
+        "deadletter must clear the backoff left by the prior retry"
+    );
+
+    r.on_fail_exit("x", true); // exit-failure retry path
+    assert!(r.queue.has_backoff("test", "x"));
+    r.on_fail_exit("x", false); // exit-failure deadletter path
+    assert!(
+        !r.queue.has_backoff("test", "x"),
+        "exit-failure deadletter must also clear backoff"
+    );
+}
+
+#[tokio::test]
 async fn failed_bead_retries_despite_same_generation() {
     // Scenario: bead dispatched → agent fails → retry scheduled.
     // On next iterate(), the bead's generation hasn't changed (Dolt wasn't updated).
