@@ -148,7 +148,13 @@ impl Reconciler {
     }
 
     /// Handle a verification failure. Returns true if deadlettered.
-    pub(super) fn on_fail(&mut self, bead_id: &str, summary: &VerifySummary) -> bool {
+    /// Record a verify failure: revert tracking + retry count + (when
+    /// `schedule_retry`) the backoff entry and fix-forward note. Pure
+    /// bookkeeping — the retry/deadletter thresholds live ONLY in
+    /// `pipeline.decide()` (rosary-45b069: this fn's old boolean return
+    /// carried its own copy of the thresholds, which nothing consulted —
+    /// the docs' consecutive-reverts rule was dead in production).
+    pub(super) fn on_fail(&mut self, bead_id: &str, summary: &VerifySummary, schedule_retry: bool) {
         // Resolve repo before or_insert — orchestrator beads may not be in trackers.
         let fallback_repo = self
             .orchestrators
@@ -182,17 +188,13 @@ impl Reconciler {
         tracker.highest_tier = summary.highest_passing_tier;
         tracker.retries += 1;
 
-        // Stopping conditions
-        if tracker.retries >= self.config.max_retries {
-            eprintln!("[deadletter] {bead_id}: max retries ({})", tracker.retries);
-            return true;
-        }
-        if tracker.consecutive_reverts >= 3 {
+        if !schedule_retry {
+            // Deadletter path (decided upstream): record the counts, no backoff.
             eprintln!(
-                "[deadletter] {bead_id}: {} consecutive reverts",
-                tracker.consecutive_reverts
+                "[deadletter] {bead_id}: retries={}, consecutive_reverts={}",
+                tracker.retries, tracker.consecutive_reverts
             );
-            return true;
+            return;
         }
 
         // Schedule retry with backoff
@@ -216,12 +218,12 @@ impl Reconciler {
                 let _ = std::fs::write(work_dir.join(".rsry-retry.md"), body);
             }
         }
-
-        false
     }
 
-    /// Handle agent exit failure (non-zero exit). Returns true if deadlettered.
-    pub(super) fn on_fail_exit(&mut self, bead_id: &str) -> bool {
+    /// Record an agent exit failure (non-zero exit): retry count + (when
+    /// `schedule_retry`) the backoff entry. Thresholds live in
+    /// `pipeline.decide()` alone (rosary-45b069).
+    pub(super) fn on_fail_exit(&mut self, bead_id: &str, schedule_retry: bool) {
         let fallback_repo = self
             .orchestrators
             .get(bead_id)
@@ -244,12 +246,12 @@ impl Reconciler {
             });
         tracker.retries += 1;
 
-        if tracker.retries >= self.config.max_retries {
+        if !schedule_retry {
             eprintln!(
-                "[deadletter] {bead_id}: max retries after exit failure ({})",
+                "[deadletter] {bead_id}: exit failure, retries={}",
                 tracker.retries
             );
-            return true;
+            return;
         }
 
         let repo = tracker.repo.clone();
@@ -262,7 +264,5 @@ impl Reconciler {
         );
         // Preserve workspace on failure so stderr/stream logs are readable
         eprintln!("[retry] {bead_id}: preserving workspace for post-mortem");
-
-        false
     }
 }

@@ -408,11 +408,11 @@ async fn on_fail_consecutive_reverts_reset_on_improvement() {
     };
 
     // Regression: 3 → 1 (consecutive_reverts becomes 1)
-    assert!(!r.on_fail("imp-1", &summary(Some(1))));
+    r.on_fail("imp-1", &summary(Some(1)), true);
     assert_eq!(r.trackers["imp-1"].consecutive_reverts, 1);
 
     // Improvement: 1 → 2 (consecutive_reverts resets to 0)
-    assert!(!r.on_fail("imp-1", &summary(Some(2))));
+    r.on_fail("imp-1", &summary(Some(2)), true);
     assert_eq!(
         r.trackers["imp-1"].consecutive_reverts, 0,
         "improvement must reset consecutive_reverts"
@@ -432,7 +432,7 @@ async fn on_fail_creates_tracker_for_unknown_bead() {
         highest_passing_tier: None,
     };
     assert!(!r.trackers.contains_key("new-bead"));
-    let _ = r.on_fail("new-bead", &summary);
+    r.on_fail("new-bead", &summary, true);
     assert!(
         r.trackers.contains_key("new-bead"),
         "on_fail must create tracker for unknown bead"
