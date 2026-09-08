@@ -144,7 +144,7 @@ impl Reconciler {
 
                                 // Record dispatch to backend
                                 let dispatch_id =
-                                    format!("{}-{}", bead_id, handle.started_at.timestamp_millis());
+                                    crate::pipeline::make_dispatch_id(&bead_id, handle.started_at);
                                 let dispatch_record = DispatchRecord {
                                     id: dispatch_id.clone(),
                                     bead_ref: WorkRef {

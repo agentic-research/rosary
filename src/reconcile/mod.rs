@@ -901,7 +901,7 @@ impl Reconciler {
                         // Unique per-dispatch ID: bead_id + started_at millis (generation
                         // is a content hash that doesn't change on retry, so it's not unique).
                         let dispatch_id =
-                            format!("{}-{}", entry.bead_id, handle.started_at.timestamp_millis());
+                            crate::pipeline::make_dispatch_id(&entry.bead_id, handle.started_at);
                         // Record dispatch to backend store (captures chain_hash + workspace).
                         // Use dispatch_bead.owner (may differ from bead.owner if the pipeline
                         // corrected a stale assignee above).
@@ -996,11 +996,6 @@ impl Reconciler {
             .collect();
         if !newly_pr_open.is_empty() {
             self.assemble_feature_prs(&newly_pr_open).await;
-        }
-
-        // Phase 6: PERSIST orchestrator state for crash recovery
-        if self.is_hierarchical() && !self.orchestrators.is_empty() {
-            self.persist_orchestrator_records();
         }
 
         // Phase 6: PERSIST orchestrator state for crash recovery

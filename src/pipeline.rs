@@ -23,6 +23,24 @@ pub enum CompletionAction {
     Deadletter,
 }
 
+/// The one place the dispatch-id format lives (rosary-46812e; it was
+/// hand-duplicated at three call sites). A prior run's feedback must not
+/// satisfy this run's feedback-contract gate, so the id embeds the run's
+/// start time: `"{bead_id}-{start_millis}"`.
+pub fn make_dispatch_id(bead_id: &str, started_at: chrono::DateTime<chrono::Utc>) -> String {
+    format!("{}-{}", bead_id, started_at.timestamp_millis())
+}
+
+/// Inverse of [`make_dispatch_id`]: the run-start instant encoded in a
+/// dispatch id. `None` for ids that don't carry one — `dispatch_left_feedback`
+/// treats that as fail-open.
+pub fn parse_dispatch_start_millis(dispatch_id: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    dispatch_id
+        .rsplit_once('-')
+        .and_then(|(_, ms)| ms.parse::<i64>().ok())
+        .and_then(chrono::DateTime::from_timestamp_millis)
+}
+
 /// Config-driven pipeline engine with optional persistent state.
 pub struct PipelineEngine {
     /// issue_type → ordered agent sequence (from config).
@@ -214,10 +232,7 @@ impl PipelineEngine {
         // instant belongs to THIS run (a prior attempt's feedback is older and
         // correctly excluded). This avoids threading the id into the agent's
         // prompt — the agent just records a feedback event during its run.
-        let since = dispatch_id
-            .rsplit_once('-')
-            .and_then(|(_, ms)| ms.parse::<i64>().ok())
-            .and_then(chrono::DateTime::from_timestamp_millis);
+        let since = parse_dispatch_start_millis(dispatch_id);
         match store.agent_run_events_for_bead(bead).await {
             Ok(events) => events.iter().any(|e| {
                 e.event_type == "feedback" && since.map(|s| e.created_at >= s).unwrap_or(true)
@@ -271,6 +286,17 @@ impl PipelineEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rosary-46812e: the dispatch-id format is load-bearing for the
+    /// feedback-contract gate — make/parse must round-trip, including bead
+    /// ids that themselves contain dashes.
+    #[test]
+    fn dispatch_id_round_trips_start_millis() {
+        let t = chrono::DateTime::from_timestamp_millis(1_725_000_000_123).unwrap();
+        let id = make_dispatch_id("ley-line-open-abc123", t);
+        assert_eq!(parse_dispatch_start_millis(&id), Some(t));
+        assert_eq!(parse_dispatch_start_millis("no-millis-here"), None);
+    }
     use crate::config::default_pipelines;
 
     fn engine() -> PipelineEngine {

@@ -141,6 +141,14 @@ pub enum FieldName {
     /// collision with `crate::store::PipelineState::pipeline_phase`
     /// (which is a `u8` index into the agent sequence — a different
     /// quantity entirely).
+    /// Renamed from `PipelinePhase` during ADR-0010 review to stop
+    /// colliding with `PipelineState::pipeline_phase`. The residual
+    /// "Pipeline" prefix is INTENTIONALLY kept: this variant name is the
+    /// persisted field discriminator (`serde_json::to_string(&obs.field)`,
+    /// log_sqlite.rs) in every stored observation row — renaming it again
+    /// orphans existing history unless a serde-rename shim pins the wire
+    /// form, which would split the Rust name from the stored name
+    /// (rosary-46812e: judged worse than the mild prefix debt).
     PipelineVerdict,
     /// Single-valued, identity. LWW-register.
     Assignee,
