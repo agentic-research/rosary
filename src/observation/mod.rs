@@ -139,11 +139,8 @@ pub enum FieldName {
     /// (Mirrors `src/dolt/observations.rs::Verdict` in the substrate.)
     /// Renamed from `PipelinePhase` per ADR-0010 review to avoid name
     /// collision with `crate::store::PipelineState::pipeline_phase`
-    /// (which is a `u8` index into the agent sequence — a different
-    /// quantity entirely).
-    /// Renamed from `PipelinePhase` during ADR-0010 review to stop
-    /// colliding with `PipelineState::pipeline_phase`. The residual
-    /// "Pipeline" prefix is INTENTIONALLY kept: this variant name is the
+    /// (a `u8` index into the agent sequence — a different quantity).
+    /// The residual "Pipeline" prefix is INTENTIONALLY kept: this name is the
     /// persisted field discriminator (`serde_json::to_string(&obs.field)`,
     /// log_sqlite.rs) in every stored observation row — renaming it again
     /// orphans existing history unless a serde-rename shim pins the wire
