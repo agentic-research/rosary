@@ -109,10 +109,9 @@ stateDiagram-v2
     queued --> dispatched : semaphore acquired
     dispatched --> verifying : agent exits
     verifying --> done : all tiers pass
-    verifying --> rejected : tier fails
+    verifying --> open : tier fails (retry after backoff)
     verifying --> blocked : needs human
 
-    rejected --> open : retry after backoff
     blocked --> open : human /resume
 
     done --> [*]
@@ -155,7 +154,7 @@ graph LR
     end
 
     subgraph "Execution"
-        workspace["workspace.rs<br/>jj/git isolation"]
+        workspace["workspace/<br/>lifecycle + sweep (jj/git isolation)"]
         backend["backend.rs<br/>ComputeProvider"]
         handoff["handoff.rs<br/>phase context"]
         manifest["manifest.rs<br/>dispatch SBOM"]
@@ -170,11 +169,14 @@ graph LR
 
     subgraph "Data"
         bead["bead.rs<br/>data model"]
-        dolt["dolt/mod.rs<br/>MySQL client"]
+        bead_ops["bead_ops.rs<br/>shared CLI/MCP create+close gates"]
+        bead_sqlite["bead_sqlite/<br/>SqliteBeadStore (default)"]
+        bead_dolt["bead_dolt.rs + dolt/<br/>DoltBeadStore (server mode)"]
         pool["pool.rs<br/>RepoPool"]
         epic["epic.rs<br/>clustering + overlap"]
         store["store.rs<br/>HierarchyStore trait"]
-        store_dolt["store_dolt.rs<br/>DoltBackend"]
+        store_dolt["store_sqlite.rs / store_dolt.rs<br/>orchestrator backends"]
+        observation["observation/<br/>ADR-0010 lattice (shadow)"]
     end
 
     subgraph "Integration"
@@ -187,7 +189,8 @@ graph LR
 
     subgraph "Interface"
         main["main.rs<br/>CLI"]
-        serve["serve/<br/>MCP 41 tools + webhooks"]
+        serve["serve/<br/>MCP 42 tools + webhooks"]
+        session["session.rs<br/>live session registry"]
         config["config/mod.rs<br/>TOML config"]
         plugin["plugin.rs<br/>kind=hook|mcp|dispatch|state_sink"]
     end
@@ -208,15 +211,20 @@ graph LR
         bdr_accrete["accrete.rs<br/>completion → status"]
     end
 
-    reconcile --> scanner --> dolt
+    reconcile --> scanner --> bead_sqlite
     reconcile --> queue --> bead
     reconcile --> dispatch --> workspace --> backend
     dispatch --> providers --> codex_rt
     dispatch --> prov_d
     reconcile --> verify
+    reconcile --> observation
     reconcile --> store --> store_dolt
-    serve --> pool --> dolt
-    linear --> sync --> linear_tracker
+    serve --> bead_ops --> bead
+    main --> bead_ops
+    serve --> pool --> bead_sqlite
+    pool --> bead_dolt
+    serve --> session
+    linear_tracker --> bead
     main --> reconcile & serve
 ```
 
@@ -270,16 +278,15 @@ graph TB
 
 Connection safety: `dolt_transaction_commit=1` (auto-commit per statement), `max_connections=1` (session variable consistency), bail on known dead port (no silent empty DB).
 
-## MCP Tools (41)
+## MCP Tools (42)
 
-| Category   | Tools                                                                                                                                              |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_comment`, `rsry_bead_close`, `rsry_bead_link`, `rsry_bead_import`           |
-| Status     | `rsry_status`, `rsry_list_beads`, `rsry_scan`, `rsry_active`                                                                                       |
-| Dispatch   | `rsry_dispatch`, `rsry_run_once`, `rsry_decompose`, `rsry_pipeline_upsert`, `rsry_pipeline_query`, `rsry_dispatch_record`, `rsry_dispatch_history` |
-| Workspaces | `rsry_workspace_create`, `rsry_workspace_checkpoint`, `rsry_workspace_cleanup`, `rsry_workspace_merge`                                             |
-| Hierarchy  | `rsry_decade_list`, `rsry_thread_list`, `rsry_thread_assign`                                                                                       |
-| Repos      | `rsry_repo_register`, `rsry_repo_list`                                                                                                             |
+42 tools across eight categories (Beads, Comments, Status, Dispatch, Review,
+Workspaces, Hierarchy, Repos). The authoritative declarations live in
+`src/serve/tools.rs` (36 hand-written) + `src/serve/tools.generated.json`
+(6 capnp-generated, drift-gated by `generated_registry_reproduces_live_tool_shapes`);
+README.md carries the full human-readable table. This file deliberately does
+not repeat the list — a third hand-maintained copy is how the previous table
+here drifted 15 tools behind.
 
 ## Linear Integration
 

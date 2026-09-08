@@ -84,7 +84,7 @@ else. `task ci` is also an alias for `task check`.
 | src/observation/audit.rs       | `rsry lattice audit` — fold every bead, diff derived status vs persist_status (corpus evidence for the source-of-truth flip)                                         |
 | src/skills.rs                  | Deterministic skill discovery — resolve skill name → SKILL.md + blake3 digest, fail-loud pre-dispatch (rosary-cf52cf)                                                |
 | src/handoff.rs                 | Structured context transfer between pipeline phases                                                                                                                  |
-| src/verify.rs                  | Ordered verify tiers (compile → test → review → close-condition); `VerifyTier` trait                                                                                 |
+| src/verify.rs                  | Ordered verify tiers (compile → test → lint → close-condition → review); `VerifyTier` trait                                                                                 |
 | src/reconcile/verify.rs        | `verify_completed` — verify + pipeline decision; the **feedback-contract gate** (downgrade pass→retry when no `feedback` run-event, rosary-0908bc)                   |
 | src/reconcile/completion.rs    | Retry/deadletter logic; `on_fail` writes `.rsry-retry.md` for **fix-forward** retries                                                                                |
 | src/pipeline.rs                | `PipelineEngine` — issue_type→agent sequence, DispatchStore delegation, `dispatch_left_feedback` (run-start-gated feedback check)                                    |
@@ -204,9 +204,12 @@ File overlap is also re-checked in Phase 4 (dispatch loop) to catch beads queued
 ## Verify & the Feedback Contract
 
 After an agent completes, the reconciler verifies its work through ordered
-**tiers** (`src/verify.rs`): compile → `test` (runs `cargo test`) → `review`
-(adversarial, nonce-fenced) → `close-condition` (the bead's acceptance
-command/criteria). `highest_tier` records how far it got; a tier failure
+**tiers** (`src/verify.rs`): commit → bead-ref → compile → `test` (runs
+`cargo test`) → lint → `close-condition` (the bead's acceptance
+command/criteria) → diff-sanity → mache blast-radius/duplication (advisory)
+→ `review` (adversarial, nonce-fenced). The order matters: `Verifier::run`
+short-circuits on first failure, so a failing close-condition never reaches
+review. `highest_tier` records how far it got; a tier failure
 schedules a backoff retry until `max_retries` (default 5) → deadletter. The
 targeted-run loop exits when the **target's own** deadletter id is recorded
 (rosary-5361f4 — else it re-dispatches forever). Keep the suite green: a live
