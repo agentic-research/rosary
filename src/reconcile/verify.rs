@@ -768,7 +768,7 @@ impl Reconciler {
                             eprintln!("[dispatch] {bead_id} phase {phase} → {next_agent}");
                             // Record this inline re-dispatch and update tracker.
                             let new_dispatch_id =
-                                format!("{}-{}", bead_id, handle.started_at.timestamp_millis());
+                                crate::pipeline::make_dispatch_id(bead_id, handle.started_at);
                             let dispatch_record = crate::store::DispatchRecord {
                                 id: new_dispatch_id.clone(),
                                 bead_ref: crate::store::WorkRef {

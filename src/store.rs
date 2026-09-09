@@ -79,7 +79,7 @@ pub struct PipelineState {
 /// Record of a single dispatch (agent execution).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DispatchRecord {
-    /// UUID v4
+    /// `"{bead_id}-{start_millis}"` via [`crate::pipeline::make_dispatch_id`] — NOT a UUID; the millis suffix scopes the feedback-contract gate to this run.
     pub id: String,
     pub bead_ref: WorkRef,
     pub agent: String,
