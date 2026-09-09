@@ -285,37 +285,80 @@ pub(crate) async fn handle_github_webhook(
         let matched = beads
             .iter()
             .find(|b| b.id.ends_with(&bead_id) || b.id == bead_id);
-        let matched_id = match matched {
-            Some(b) => b.id.clone(),
-            None => continue,
-        };
+        let Some(matched) = matched else { continue };
+        let matched_id = matched.id.clone();
+        // The bead WAS found — record that before anything can fail, so a
+        // failed close is never mis-logged as "no bead found" (the old code's
+        // `continue` on error re-entered the per-repo loop and let `found`
+        // stay false — rosary-45504f).
+        found = true;
 
-        // Advance bead to done
-        match client.update_status(&matched_id, "done").await {
-            Ok(()) => {
-                eprintln!(
-                    "[github-webhook] bead {matched_id} in {repo_name} → done (PR #{pr_number})"
-                );
-                client
-                    .log_event(
-                        &matched_id,
-                        "github_merge",
-                        &format!("PR #{pr_number} merged → done"),
-                    )
-                    .await;
-                found = true;
+        // A merge closes a bead only under the same gate close-merged uses
+        // (rosary-e0e19f): the close condition is absent or IS the PR-merge
+        // default. `bead_ops::close_bead`'s runnable-command check is the
+        // wrong question for merge-driven closes; a raw
+        // `update_status("done")` (the old code) bypassed both gates AND was
+        // rejected by the transition table for beads still Dispatched —
+        // leaving them stuck while the log claimed success.
+        if crate::bead_close_condition::merge_alone_satisfies_close(&matched.acceptance_criteria) {
+            let close_result = client.close_bead(&matched_id).await; // nosemgrep: bead-close-bypasses-gate
+            match close_result {
+                Ok(()) => {
+                    eprintln!(
+                        "[github-webhook] bead {matched_id} in {repo_name} closed (PR #{pr_number})"
+                    );
+                    client
+                        .log_event(
+                            &matched_id,
+                            "github_merge",
+                            &format!("PR #{pr_number} merged → closed"),
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    eprintln!("[github-webhook] failed to close {matched_id}: {e}");
+                    break;
+                }
             }
-            Err(e) => {
-                eprintln!("[github-webhook] failed to advance {matched_id}: {e}");
-                continue;
-            }
+        } else {
+            // A sharper close condition was declared — a mere merge must not
+            // close it. Record the merge as evidence and leave verification
+            // to the reconciler (or a human).
+            eprintln!(
+                "[github-webhook] bead {matched_id} declares its own close condition — \
+                 recording PR #{pr_number} merge as evidence, not closing"
+            );
+            let _ = client
+                .add_comment(
+                    &matched_id,
+                    &format!(
+                        "PR #{pr_number} merged, but this bead declares its own close \
+                         condition — left open for verification."
+                    ),
+                    "github-webhook",
+                )
+                .await;
+            client
+                .log_event(
+                    &matched_id,
+                    "github_merge",
+                    &format!("PR #{pr_number} merged — close condition pending"),
+                )
+                .await;
+            break;
         }
 
-        // Unblock dependents: beads that were waiting on this one
+        // Unblock dependents — ONLY those currently blocked. The old
+        // unconditional update_status(dep, "open") relied on the transition
+        // table to reject wrong cases, which silently re-opened any state
+        // with a legal path to Open (Rejected/Stale/DeadLetter).
         match client.get_dependents(&matched_id).await {
             Ok(deps) => {
                 for dep_id in deps {
-                    // Only unblock beads that are explicitly blocked
+                    let dep_status = client.get_status(&dep_id).await.ok().flatten();
+                    if dep_status.as_deref() != Some("blocked") {
+                        continue;
+                    }
                     match client.update_status(&dep_id, "open").await {
                         Ok(()) => {
                             eprintln!(
@@ -652,5 +695,197 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    // --- Merged-PR close path with a REAL store (rosary-45504f) ---
+    //
+    // Every pre-existing handler test used RepoPool::empty(), so the
+    // close/unblock branch was never exercised: the audit found the raw
+    // update_status("done") bypassing both close gates, a transition
+    // rejection mis-logged as "no bead found", and dependent unblocking
+    // that ignored the dependents' current status.
+
+    fn make_state_with_pool(pool: Arc<RepoPool>) -> crate::serve::AppState {
+        crate::serve::AppState {
+            pool,
+            config_path: Arc::from("test.toml"),
+            sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            webhook_secret: None,
+            github_webhook_secret: None,
+            backend: None,
+            repo_cache: Arc::new(crate::repo_cache::RepoCache::new()),
+        }
+    }
+
+    /// File-backed fixture: `connect_all` re-opens stores from disk, so the
+    /// seeded fixtures must live in a real `.beads/beads.db`. Returns the
+    /// tempdir (keep it alive), the repo path, and a writer handle.
+    fn sqlite_repo() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        crate::bead_sqlite::SqliteBeadStore,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let beads = dir.path().join(".beads");
+        std::fs::create_dir_all(&beads).unwrap();
+        let store = crate::bead_sqlite::SqliteBeadStore::connect(&beads.join("beads.db")).unwrap();
+        let repo_path = dir.path().to_path_buf();
+        (dir, repo_path, store)
+    }
+
+    async fn fire_merged_pr(state: crate::serve::AppState, bead_ref: &str) {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let app = axum::Router::new()
+            .route(
+                "/webhook/github",
+                axum::routing::post(handle_github_webhook),
+            )
+            .with_state(state);
+        let body = format!(
+            r#"{{"action":"closed","pull_request":{{"number":7,"merged":true,"title":"[{bead_ref}] fix: thing","body":""}}}}"#
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhook/github")
+            .header("content-type", "application/json")
+            .header("x-github-event", "pull_request")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    /// A bead whose close condition is the PR-merge default (or absent) IS
+    /// closed by its PR merging — even from Dispatched, where the old raw
+    /// update_status("done") was rejected by the transition table, discarded,
+    /// and mis-logged as "no bead found".
+    #[tokio::test]
+    async fn merged_pr_closes_default_condition_bead_even_from_dispatched() {
+        use crate::store::BeadStore;
+        let (_tmp, repo_path, store) = sqlite_repo();
+        store
+            .create_bead_full(crate::store::NewBead {
+                id: "t-c10e01".into(),
+                title: "default condition".into(),
+                description: String::new(),
+                priority: 2,
+                issue_type: "task".into(),
+                acceptance_criteria: crate::bead_close_condition::DEFAULT_PR_MERGE_CLOSE_CONDITION
+                    .into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        store.update_status("t-c10e01", "dispatched").await.unwrap();
+
+        let pool = Arc::new(RepoPool::from_client("t", repo_path, Box::new(store)));
+        fire_merged_pr(make_state_with_pool(pool.clone()), "t-c10e01").await;
+
+        let (_, verify) = pool.connect_all().await.into_iter().next().unwrap();
+        let status = verify.get_status("t-c10e01").await.unwrap().unwrap();
+        assert_eq!(
+            crate::bead::BeadState::from(status.as_str()),
+            crate::bead::BeadState::Done,
+            "merge must terminally close a default-condition bead; got {status}"
+        );
+    }
+
+    /// A bead that declared a SHARPER close condition is NOT closed by a mere
+    /// merge — the merge is recorded as evidence and the bead left for verify.
+    #[tokio::test]
+    async fn merged_pr_records_evidence_but_does_not_close_sharper_condition_bead() {
+        use crate::store::BeadStore;
+        let (_tmp, repo_path, store) = sqlite_repo();
+        store
+            .create_bead_full(crate::store::NewBead {
+                id: "t-c10e02".into(),
+                title: "sharper condition".into(),
+                description: String::new(),
+                priority: 2,
+                issue_type: "task".into(),
+                acceptance_criteria: "cargo test -p rosary specific_case passes".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let pool = Arc::new(RepoPool::from_client("t", repo_path, Box::new(store)));
+        fire_merged_pr(make_state_with_pool(pool.clone()), "t-c10e02").await;
+
+        let (_, verify) = pool.connect_all().await.into_iter().next().unwrap();
+        let status = verify.get_status("t-c10e02").await.unwrap().unwrap();
+        assert_eq!(
+            crate::bead::BeadState::from(status.as_str()),
+            crate::bead::BeadState::Open,
+            "a sharper close condition must survive a mere merge; got {status}"
+        );
+        let comments = verify.list_comments("t-c10e02", false).await.unwrap();
+        assert!(
+            comments.iter().any(|c| c.text.contains("PR #7")),
+            "the merge must be recorded as evidence on the bead"
+        );
+    }
+
+    /// Dependent unblocking touches ONLY dependents currently blocked — a
+    /// done dependent must not be re-opened (the old code called
+    /// update_status(dep, "open") unconditionally and let the transition
+    /// table sort it out, which re-opened any state with a legal path to
+    /// Open).
+    #[tokio::test]
+    async fn merged_pr_unblocks_only_blocked_dependents() {
+        use crate::store::BeadStore;
+        let (_tmp, repo_path, store) = sqlite_repo();
+        for (id, ac) in [
+            (
+                "t-d00e00",
+                crate::bead_close_condition::DEFAULT_PR_MERGE_CLOSE_CONDITION,
+            ),
+            ("t-b10c4d", "cargo test"),
+            ("t-d0ee0d", "cargo test"),
+        ] {
+            store
+                .create_bead_full(crate::store::NewBead {
+                    id: id.into(),
+                    title: id.into(),
+                    description: String::new(),
+                    priority: 2,
+                    issue_type: "task".into(),
+                    acceptance_criteria: ac.into(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+        }
+        store.add_dependency("t-b10c4d", "t-d00e00").await.unwrap();
+        store.add_dependency("t-d0ee0d", "t-d00e00").await.unwrap();
+        store
+            .set_status_verbatim("t-b10c4d", "blocked")
+            .await
+            .unwrap();
+        store.set_status_verbatim("t-d0ee0d", "done").await.unwrap();
+
+        let pool = Arc::new(RepoPool::from_client("t", repo_path, Box::new(store)));
+        fire_merged_pr(make_state_with_pool(pool.clone()), "t-d00e00").await;
+
+        let (_, verify) = pool.connect_all().await.into_iter().next().unwrap();
+        assert_eq!(
+            verify.get_status("t-b10c4d").await.unwrap().as_deref(),
+            Some("open"),
+            "a blocked dependent must be unblocked"
+        );
+        assert_eq!(
+            crate::bead::BeadState::from(
+                verify
+                    .get_status("t-d0ee0d")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .as_str()
+            ),
+            crate::bead::BeadState::Done,
+            "a done dependent must NOT be re-opened by its dependency closing"
+        );
     }
 }

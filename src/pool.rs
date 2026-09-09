@@ -125,14 +125,20 @@ impl RepoPool {
         let mut clients: HashMap<String, Arc<dyn BeadStore>> = HashMap::new();
         clients.insert(name.to_string(), Arc::from(store));
         let mut paths = HashMap::new();
-        paths.insert(name.to_string(), path);
+        paths.insert(name.to_string(), path.clone());
+        // Also record the beads dir so `connect_all` (which re-opens stores
+        // from disk rather than reusing seeded clients) can serve this repo —
+        // without it, handlers reached via connect_all saw an empty pool and
+        // their close/unblock branches were untestable (rosary-45504f).
+        let mut beads_dirs = HashMap::new();
+        beads_dirs.insert(name.to_string(), path.join(".beads"));
         RepoPool {
             config_path: String::new(),
             config_mtime: AtomicU64::new(0),
             state: RwLock::new(PoolState {
                 clients,
                 paths,
-                beads_dirs: HashMap::new(),
+                beads_dirs,
                 known_ports: HashMap::new(),
             }),
         }
