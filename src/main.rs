@@ -72,6 +72,7 @@ mod jsonl_sync;
 mod linear;
 #[allow(dead_code)]
 mod linear_tracker;
+mod linear_transport;
 #[allow(dead_code)] // API surface — consumed by orchestrator after dispatch
 mod manifest;
 #[allow(dead_code)]

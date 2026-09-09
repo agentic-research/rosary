@@ -1,12 +1,11 @@
 //! Linear implementation of the IssueTracker trait.
 
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::bead::{BeadState, BeadUpdate};
+use crate::linear_transport::{graphql, resolve_team_id};
 use crate::sync::{ExternalIssue, IssueTracker};
-
-const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 
 /// A cached Linear workflow state: id, name, type.
 #[derive(Debug, Clone)]
@@ -38,15 +37,7 @@ impl LinearTracker {
         team_key: &str,
         state_overrides: std::collections::HashMap<String, String>,
     ) -> Result<Self> {
-        use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
-
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(api_key)?);
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()?;
+        let client = crate::linear_transport::build_client(api_key)?;
 
         // Resolve team ID
         let team_id = resolve_team_id(&client, team_key).await?;
@@ -181,51 +172,6 @@ impl LinearTracker {
     }
 }
 
-async fn graphql(client: &reqwest::Client, query: &str, variables: Value) -> Result<Value> {
-    let body = json!({ "query": query, "variables": variables });
-    let resp = client
-        .post(LINEAR_API_URL)
-        .json(&body)
-        .send()
-        .await
-        .context("Linear API request failed")?;
-
-    let status = resp.status();
-    let text = resp.text().await.context("reading Linear response")?;
-
-    if !status.is_success() {
-        anyhow::bail!("Linear API {status}: {text}");
-    }
-
-    let json: Value = serde_json::from_str(&text).context("parsing Linear response")?;
-    if let Some(errors) = json.get("errors") {
-        anyhow::bail!("Linear GraphQL errors: {errors}");
-    }
-    Ok(json)
-}
-
-async fn resolve_team_id(client: &reqwest::Client, team_key: &str) -> Result<String> {
-    let query = r#"
-        query Teams {
-            teams { nodes { id key } }
-        }
-    "#;
-    let resp = graphql(client, query, json!({})).await?;
-    let teams = resp
-        .pointer("/data/teams/nodes")
-        .and_then(|v| v.as_array())
-        .context("fetching teams")?;
-
-    for team in teams {
-        if team["key"].as_str() == Some(team_key)
-            && let Some(id) = team["id"].as_str()
-        {
-            return Ok(id.to_string());
-        }
-    }
-    anyhow::bail!("team '{team_key}' not found")
-}
-
 /// Fetch and cache all workflow states for a team.
 async fn fetch_team_states(client: &reqwest::Client, team_id: &str) -> Result<Vec<CachedState>> {
     let query = r#"
@@ -253,23 +199,18 @@ async fn fetch_team_states(client: &reqwest::Client, team_id: &str) -> Result<Ve
         .collect())
 }
 
-/// Map Linear state (type + name) to rosary status string.
-/// Uses type for stability, name for refinement within started type.
-fn map_linear_status(state_type: &str, state_name: &str) -> &'static str {
-    match BeadState::from_linear_type(state_type, state_name) {
-        BeadState::Done => "closed",
-        BeadState::Dispatched => "in_progress",
-        BeadState::Verifying => "verifying",
-        // DeadLetter must round-trip: from_linear_type maps
-        // (canceled, "Dead Letter") → DeadLetter, and this match must
-        // emit "dead_letter" so the Linear→Dolt sync path preserves
-        // the operator-triage semantics. Without this explicit arm
-        // the `_ => "open"` fall-through would demote DeadLetter to
-        // open on every sync — the exact failure mode flagged in
-        // Copilot review round 3 on PR #202.
-        BeadState::DeadLetter => "dead_letter",
-        _ => "open",
-    }
+/// Map Linear state (type + name) to the CANONICAL rosary status string.
+///
+/// Delegates entirely to `from_linear_type` + `Display` — the same pattern
+/// the live Linear webhook uses — so the pull path can never diverge from
+/// the canonical mapping again. The previous hand-rolled match collapsed
+/// every state outside its four arms to "open"; PR #202's review caught
+/// DeadLetter falling through and added one arm, but Backlog / PrOpen /
+/// Rejected / Blocked / Stale kept falling until rosary-457927 closed the
+/// class by deleting the wildcard along with the table (rosary-c1f669's
+/// re-declaration discipline: one declaration per set).
+fn map_linear_status(state_type: &str, state_name: &str) -> String {
+    BeadState::from_linear_type(state_type, state_name).to_string()
 }
 
 /// Map rosary priority to Linear priority.
@@ -341,7 +282,7 @@ impl IssueTracker for LinearTracker {
                     external_id: n["identifier"].as_str().unwrap_or("").to_string(),
                     title: n["title"].as_str().unwrap_or("").to_string(),
                     description: n["description"].as_str().unwrap_or("").to_string(),
-                    status: map_linear_status(state_type, state_name).to_string(),
+                    status: map_linear_status(state_type, state_name),
                     priority: n["priority"].as_u64().unwrap_or(3) as u8,
                     labels,
                 }
@@ -492,8 +433,8 @@ mod tests {
 
     #[test]
     fn map_status_done() {
-        assert_eq!(map_linear_status("completed", "Done"), "closed");
-        assert_eq!(map_linear_status("canceled", "Cancelled"), "closed");
+        assert_eq!(map_linear_status("completed", "Done"), "done");
+        assert_eq!(map_linear_status("canceled", "Cancelled"), "done");
     }
 
     /// Regression for Copilot review round 3 on PR #202: the Linear→Dolt
@@ -513,7 +454,7 @@ mod tests {
 
     #[test]
     fn map_status_in_progress() {
-        assert_eq!(map_linear_status("started", "In Progress"), "in_progress");
+        assert_eq!(map_linear_status("started", "In Progress"), "dispatched");
     }
 
     #[test]
@@ -524,15 +465,15 @@ mod tests {
     #[test]
     fn map_status_open() {
         assert_eq!(map_linear_status("unstarted", "Todo"), "open");
-        assert_eq!(map_linear_status("backlog", "Backlog"), "open");
+        assert_eq!(map_linear_status("backlog", "Backlog"), "backlog");
     }
 
     #[test]
     fn map_status_custom_names() {
         // Custom team names — type-based matching still works
-        assert_eq!(map_linear_status("started", "Working On It"), "in_progress");
+        assert_eq!(map_linear_status("started", "Working On It"), "dispatched");
         assert_eq!(map_linear_status("started", "Peer Review"), "verifying");
-        assert_eq!(map_linear_status("completed", "Shipped"), "closed");
+        assert_eq!(map_linear_status("completed", "Shipped"), "done");
         assert_eq!(map_linear_status("unstarted", "Planned"), "open");
     }
 
@@ -542,5 +483,40 @@ mod tests {
         assert_eq!(to_linear_priority(1), 2); // P1 → High
         assert_eq!(to_linear_priority(2), 3); // P2 → Medium
         assert_eq!(to_linear_priority(3), 4); // P3 → Low
+    }
+
+    /// rosary-457927: the pull mapping must add ZERO loss beyond
+    /// `from_linear_type` — for every BeadState, pushing it to Linear
+    /// (`to_linear_type`) and pulling it back must yield exactly the state
+    /// `from_linear_type` resolves, spelled canonically. The old hand-rolled
+    /// 4-armed match collapsed Backlog/PrOpen/Rejected/Blocked/Stale to
+    /// "open" (the same wildcard that demoted DeadLetter before PR #202's
+    /// review caught that one arm — this closes the whole class).
+    /// (Verifying/PrOpen both map to Linear "started/In Review" by design;
+    /// that collapse belongs to to_linear_type, not the pull path.)
+    #[test]
+    fn pull_mapping_is_lossless_relative_to_from_linear_type() {
+        use crate::bead::BeadState;
+        for state in [
+            BeadState::Backlog,
+            BeadState::Open,
+            BeadState::Queued,
+            BeadState::Dispatched,
+            BeadState::Verifying,
+            BeadState::PrOpen,
+            BeadState::Done,
+            BeadState::Rejected,
+            BeadState::Blocked,
+            BeadState::Stale,
+            BeadState::DeadLetter,
+        ] {
+            let (ltype, lname) = state.to_linear_type();
+            let resolved = BeadState::from_linear_type(ltype, lname);
+            assert_eq!(
+                map_linear_status(ltype, lname),
+                resolved.to_string(),
+                "pull mapping lost information for {state:?} (linear {ltype}/{lname})"
+            );
+        }
     }
 }
