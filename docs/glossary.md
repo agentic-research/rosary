@@ -8,7 +8,7 @@ Terms used across rosary, agents, and ADRs.
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
 | **Decade**  | One ADR decomposed — the top-level organizing primitive. Contains threads. Named after a rosary decade (10 beads in a group). | `ADR-003` "Linear hierarchy mapping"          |
 | **Thread**  | A semantic grouping of related beads within a decade: context, implementation, validation, etc.                               | `ADR-003/implementation`                      |
-| **Bead**    | Atomic work item. Lives in a repo's `.beads/` Dolt database. The unit an agent receives, works, and closes.                   | `rsry-d93546` "Add webhook HMAC verification" |
+| **Bead**    | Atomic work item. Lives in a repo's `.beads/` store — a SQLite `beads.db` by default, or a Dolt server where concurrent access is needed (ADR-0014). The unit an agent receives, works, and closes. | `rsry-d93546` "Add webhook HMAC verification" |
 | **Channel** | BDR visibility tier. Decade (internal) → Thread (team) → Bead (external). Maps atoms to the right granularity.                | `BdrChannel::Bead`                            |
 | **Atom**    | A single extractable concept from a document — friction point, decision, phase, validation point, etc. Decomposed into beads. | `AtomKind::Phase` "Phase 1: Scaffold"         |
 
@@ -46,8 +46,8 @@ Terms used across rosary, agents, and ADRs.
 
 | Term            | What                                                                                                                                                                                                        |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Dolt**        | Version-controlled SQL database. Each repo has a `.beads/` directory with its own Dolt server. Beads live here.                                                                                             |
-| **Backend**     | Rosary's own persistent state store (`~/.rsry/dolt/rosary/`). Stores cross-repo relationships: pipeline state, dispatch history, decades/threads, Linear links. Separate from per-repo bead Dolt databases. |
+| **Dolt**        | Version-controlled SQL database — the optional server-mode bead backend, used when `.beads/dolt/` exists (concurrent access). The default backend is a local SQLite `beads.db` (ADR-0014).                  |
+| **Backend**     | Rosary's own persistent state store (`~/.rsry/backend.db` SQLite, or Dolt when configured). Stores cross-repo relationships: pipeline state, dispatch history, decades/threads, Linear links. Separate from the per-repo bead stores. |
 | **Linear**      | External issue tracker used as a human-facing UI. Bidirectional sync — beads are source of truth, Linear is a projection.                                                                                   |
 | **LinearLink**  | Mapping between a bead and its Linear representation (issue, sub-issue, or milestone). Replaces the overloaded `external_ref` field.                                                                        |
 | **Mirror bead** | (Legacy) A cross-repo reference created by copying a bead into another repo's `.beads/`. Being replaced by `CrossRepoDep` in the backend.                                                                   |

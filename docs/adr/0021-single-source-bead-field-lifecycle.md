@@ -1,7 +1,10 @@
 # ADR-0021: Single-source the bead field lifecycle — one field set, every surface projects from it
 
-**Status:** Proposed
-**Date:** 2026-07-14
+**Status:** Accepted (writer unified across both backends; reader unified
+for SQLite — the Dolt read path and the bd-legacy-column question remain
+open, tracked via rosary-44eec8's parity matrix)
+**Date:** 2026-07-14 (status corrected 2026-09-08 — ADR-0024 already cited
+this ADR as Accepted while this header still said Proposed)
 **Repo:** rosary
 
 **Relates to:**

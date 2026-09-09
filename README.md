@@ -143,7 +143,7 @@ rsry bead search "auth"
 rsry bead close rsry-abc123 --force          # `--force` skips the close-condition gate
 
 # Or wire rosary as an MCP server in your AI client (Claude Code, etc.)
-rsry serve --transport stdio                 # exposes 41 bead/thread/decade tools
+rsry serve --transport stdio                 # exposes 42 MCP tools
 
 # Optionally sync to Linear for human review (read+write, bidirectional)
 rsry sync                                    # one-shot
@@ -154,7 +154,7 @@ Future: an explicit `--no-default-features --features task-tracker-only` build t
 
 ## MCP server
 
-Rosary exposes 41 tools as MCP. Any AI agent or human with an MCP client can scan beads, dispatch work, manage threads, and track progress.
+Rosary exposes 42 tools as MCP. Any AI agent or human with an MCP client can scan beads, dispatch work, manage threads, and track progress.
 
 ```bash
 # Add to Claude Code (one-time)
@@ -164,14 +164,14 @@ claude mcp add -s user rsry -- rsry serve --transport stdio
 rsry serve --transport http --port 8383
 ```
 
-**41 tools** across eight categories:
+**42 tools** across eight categories:
 
 <details>
 <summary>Full tool list</summary>
 
 | Category   | Tools                                                                                                                                                                                                                                                                           |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_close`, `rsry_bead_link`, `rsry_bead_import`                                                                                                                                                             |
+| Beads      | `rsry_bead_create`, `rsry_bead_update`, `rsry_bead_search`, `rsry_bead_close`, `rsry_bead_correct`, `rsry_bead_link`, `rsry_bead_import`                                                                                                                                                             |
 | Comments   | `rsry_bead_comment`, `rsry_bead_comment_list`, `rsry_bead_comment_update`, `rsry_bead_comment_delete` (audit-trail preserved; hard-delete CLI-only)                                                                                                                             |
 | Status     | `rsry_status`, `rsry_list_beads`, `rsry_scan`, `rsry_active`, `rsry_bead_history`, `rsry_expand_ref`                                                                                                                                                                            |
 | Dispatch   | `rsry_dispatch`, `rsry_run_once`, `rsry_decompose`, `rsry_pipeline_upsert`, `rsry_pipeline_query`, `rsry_dispatch_record`, `rsry_dispatch_history`, `rsry_agent_run_event_record`, `rsry_agent_run_events`, `rsry_agent_session_addresses`, `rsry_agent_session_message_record` |
