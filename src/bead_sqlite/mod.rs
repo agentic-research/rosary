@@ -652,6 +652,12 @@ impl BeadStore for SqliteBeadStore {
             derived_from,
             acceptance_criteria,
         } = &bead;
+        // Scrub secrets before writing — parity with the Dolt create path
+        // (rosary-44eec8 gap 3): the SQLite store is the default backend and
+        // projects into the git-tracked JSONL.
+        let title = crate::secrets::scrub_and_warn(title, &format!("bead {id} title"));
+        let description =
+            crate::secrets::scrub_and_warn(description, &format!("bead {id} description"));
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
 
@@ -701,49 +707,65 @@ impl BeadStore for SqliteBeadStore {
     }
 
     async fn update_bead_fields(&self, id: &str, update: &BeadUpdate) -> Result<Vec<String>> {
+        // Scrub the free-text fields — this path could rewrite title or
+        // description with a secret on BOTH backends before rosary-44eec8
+        // (gap 3), unlike create/comment which were Dolt-scrubbed.
+        let scrubbed_title = update
+            .title
+            .as_ref()
+            .map(|t| crate::secrets::scrub_and_warn(t, &format!("bead {id} title update")));
+        let scrubbed_description = update
+            .description
+            .as_ref()
+            .map(|d| crate::secrets::scrub_and_warn(d, &format!("bead {id} description update")));
+
         let conn = self.conn.lock().unwrap();
         let full_id = Self::resolve_id(&conn, id)?;
+        // One transaction: previously each field was its own statement, so a
+        // mid-sequence error left a partially-applied update (gap 7); the
+        // Dolt impl was already single-statement atomic.
+        let tx = conn.unchecked_transaction()?;
         let mut updated_fields = Vec::new();
 
         // Build dynamic SET clauses. We execute each field update separately
         // to avoid dynamic bind complexity with rusqlite.
-        if let Some(ref title) = update.title {
-            conn.execute(
+        if let Some(ref title) = scrubbed_title {
+            tx.execute(
                 "UPDATE issues SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![title, full_id],
             )?;
             updated_fields.push("title".to_string());
         }
-        if let Some(ref description) = update.description {
-            conn.execute(
+        if let Some(ref description) = scrubbed_description {
+            tx.execute(
                 "UPDATE issues SET description = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![description, full_id],
             )?;
             updated_fields.push("description".to_string());
         }
         if let Some(priority) = update.priority {
-            conn.execute(
+            tx.execute(
                 "UPDATE issues SET priority = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![priority as i32, full_id],
             )?;
             updated_fields.push("priority".to_string());
         }
         if let Some(ref issue_type) = update.issue_type {
-            conn.execute(
+            tx.execute(
                 "UPDATE issues SET issue_type = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![issue_type, full_id],
             )?;
             updated_fields.push("issue_type".to_string());
         }
         if let Some(ref owner) = update.owner {
-            conn.execute(
+            tx.execute(
                 "UPDATE issues SET assignee = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![owner, full_id],
             )?;
             updated_fields.push("owner".to_string());
         }
         if let Some(ref ac) = update.acceptance_criteria {
-            conn.execute(
+            tx.execute(
                 "UPDATE issues SET acceptance_criteria = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![ac, full_id],
             )?;
@@ -751,7 +773,7 @@ impl BeadStore for SqliteBeadStore {
         }
         if update.files.is_some() || update.test_files.is_some() {
             // Read existing notes to preserve fields not being updated
-            let existing_notes: serde_json::Value = conn
+            let existing_notes: serde_json::Value = tx
                 .query_row(
                     "SELECT notes FROM issues WHERE id = ?1",
                     params![full_id],
@@ -790,7 +812,7 @@ impl BeadStore for SqliteBeadStore {
             };
             notes_json["files"] = files;
             notes_json["test_files"] = test_files_val;
-            conn.execute(
+            tx.execute(
                 "UPDATE issues SET notes = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![notes_json.to_string(), full_id],
             )?;
@@ -807,14 +829,15 @@ impl BeadStore for SqliteBeadStore {
             .iter()
             .any(|f| f == "title" || f == "description")
         {
-            let _ = conn.execute("DELETE FROM bead_fts WHERE id = ?1", params![full_id]);
-            let _ = conn.execute(
+            let _ = tx.execute("DELETE FROM bead_fts WHERE id = ?1", params![full_id]);
+            let _ = tx.execute(
                 "INSERT INTO bead_fts(id, title, description) \
                  SELECT id, title, description FROM issues WHERE id = ?1",
                 params![full_id],
             );
         }
 
+        tx.commit()?;
         Ok(updated_fields)
     }
 
@@ -839,7 +862,13 @@ impl BeadStore for SqliteBeadStore {
                 |row| row.get(0),
             )
             .optional()?;
-        if let Some(ref cs) = current_str {
+        // A row that vanished between resolve_id and this read must be an
+        // error, not a 0-row UPDATE that reports success (same hole as the
+        // Dolt impl had — closed on both for parity, rosary-44eec8).
+        let Some(ref cs) = current_str else {
+            anyhow::bail!("bead {id} disappeared during status update");
+        };
+        {
             let current = BeadState::from(cs.as_str());
             if !current.can_transition_to(next) {
                 return Err(anyhow::anyhow!(
@@ -881,8 +910,11 @@ impl BeadStore for SqliteBeadStore {
     async fn close_bead(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let full_id = Self::resolve_id(&conn, id)?;
+        // Canonical terminal form directly — previously the alias 'closed',
+        // which canonicalize_statuses only healed on the NEXT connect, and
+        // which Dolt never healed at all (rosary-44eec8 gap 4).
         conn.execute(
-            "UPDATE issues SET status = 'closed', updated_at = datetime('now') WHERE id = ?1",
+            "UPDATE issues SET status = 'done', updated_at = datetime('now') WHERE id = ?1",
             params![full_id],
         )
         .with_context(|| format!("closing bead {id}"))?;
@@ -1216,6 +1248,10 @@ impl BeadStore for SqliteBeadStore {
     }
 
     async fn add_comment(&self, issue_id: &str, body: &str, author: &str) -> Result<()> {
+        // Scrub secrets before writing — parity with the Dolt path
+        // (rosary-44eec8 gap 3): SQLite is the DEFAULT backend and its
+        // comments flow into the git-tracked JSONL projection.
+        let body = crate::secrets::scrub_and_warn(body, &format!("comment on {issue_id}"));
         let conn = self.conn.lock().unwrap();
         let full_id = Self::resolve_id(&conn, issue_id)?;
         conn.execute(
@@ -1272,6 +1308,9 @@ impl BeadStore for SqliteBeadStore {
         body: &str,
         reason: Option<&str>,
     ) -> Result<crate::bead::Comment> {
+        // Scrub secrets before writing — parity with the Dolt path
+        // (rosary-44eec8 gap 3). The String binds directly via ToSql.
+        let body = crate::secrets::scrub_and_warn(body, &format!("comment update {comment_id}"));
         let conn = self.conn.lock().unwrap();
         // Read current state to decide whether to capture original_text.
         let (prior_text, has_original): (String, bool) = conn

@@ -307,7 +307,7 @@ async fn all_write_paths_visible_across_connections() {
 
     let reader = sandbox.fresh_client().await;
     let bead = reader.get_bead("wp-1", "test").await.unwrap().unwrap();
-    assert_eq!(bead.status, "closed", "close_bead must auto_commit");
+    assert_eq!(bead.status, "done", "close_bead must auto_commit");
 }
 
 /// Regression: when a port file exists, reconnecting must use THAT server,
@@ -649,10 +649,10 @@ async fn crud_lifecycle_live_dolt() {
     // Close
     client.close_bead(&test_id).await.unwrap();
 
-    // Verify closed
+    // Verify the canonical terminal status landed (rosary-44eec8 gap 4)
     let bead = client.get_bead(&test_id, "test").await.unwrap();
     assert!(bead.is_some());
-    assert_eq!(bead.unwrap().status, "closed");
+    assert_eq!(bead.unwrap().status, "done");
 }
 
 /// Multi-word search should match words appearing non-contiguously.
@@ -1026,5 +1026,265 @@ async fn migrate_is_idempotent_across_invocations() {
     assert!(
         applied.is_empty(),
         "second migrate() must report zero applied migrations; got: {applied:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-backend guardrail parity (rosary-44eec8)
+//
+// Each test drives the SAME sequence through both `BeadStore` impls —
+// SqliteBeadStore (pure, always runs) and DoltBeadStore (SandboxBeads,
+// self-skips without a dolt binary) — and asserts identical guarantees.
+// These pin the gap set from the rosary-46e7ff parity matrix; before this
+// suite, the headline update_status divergence was unpinned by any test on
+// either backend.
+// ---------------------------------------------------------------------------
+
+async fn sqlite_store_for_parity() -> crate::bead_sqlite::SqliteBeadStore {
+    crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap()
+}
+
+/// Both backends must reject a transition the state machine forbids, with the
+/// same error shape, leaving status untouched. Dolt previously accepted ANY
+/// transition (raw UPDATE, no can_transition_to — bead_crud.rs:271).
+#[tokio::test]
+async fn parity_update_status_rejects_invalid_transition_on_both_backends() {
+    use crate::store::BeadStore;
+
+    // SQLite half — always runs.
+    let sq = sqlite_store_for_parity().await;
+    sq.create_bead("par-inv-1", "t", "d", 2, "task")
+        .await
+        .unwrap();
+    sq.update_status("par-inv-1", "dispatched").await.unwrap();
+    let err = sq
+        .update_status("par-inv-1", "done")
+        .await
+        .expect_err("SQLite must reject dispatched -> done");
+    assert!(
+        err.to_string().contains("invalid state transition"),
+        "{err}"
+    );
+    assert_eq!(
+        sq.get_status("par-inv-1").await.unwrap().as_deref(),
+        Some("dispatched"),
+        "rejected transition must not mutate status"
+    );
+
+    // Dolt half — self-skips without dolt.
+    let Some(sandbox) = SandboxBeads::new().await else {
+        return;
+    };
+    let dolt = crate::bead_dolt::DoltBeadStore::new(sandbox.fresh_client().await);
+    dolt.create_bead("par-inv-2", "t", "d", 2, "task")
+        .await
+        .unwrap();
+    dolt.update_status("par-inv-2", "dispatched").await.unwrap();
+    let err = dolt
+        .update_status("par-inv-2", "done")
+        .await
+        .expect_err("Dolt must reject dispatched -> done exactly like SQLite");
+    assert!(
+        err.to_string().contains("invalid state transition"),
+        "{err}"
+    );
+    assert_eq!(
+        dolt.get_status("par-inv-2").await.unwrap().as_deref(),
+        Some("dispatched"),
+        "rejected transition must not mutate status on Dolt"
+    );
+}
+
+/// The bead_correct escape hatch (rosary-e0e19f): set_status_verbatim must
+/// KEEP bypassing the transition table on both backends. A guardrail that
+/// closes this reintroduces the unrecoverable-terminal-state incident.
+#[tokio::test]
+async fn parity_set_status_verbatim_bypasses_transitions_on_both_backends() {
+    use crate::store::BeadStore;
+
+    let sq = sqlite_store_for_parity().await;
+    sq.create_bead("par-vrb-1", "t", "d", 2, "task")
+        .await
+        .unwrap();
+    sq.set_status_verbatim("par-vrb-1", "done")
+        .await
+        .expect("verbatim write must bypass the transition table (SQLite)");
+    assert_eq!(
+        sq.get_status("par-vrb-1").await.unwrap().as_deref(),
+        Some("done")
+    );
+
+    let Some(sandbox) = SandboxBeads::new().await else {
+        return;
+    };
+    let dolt = crate::bead_dolt::DoltBeadStore::new(sandbox.fresh_client().await);
+    dolt.create_bead("par-vrb-2", "t", "d", 2, "task")
+        .await
+        .unwrap();
+    dolt.set_status_verbatim("par-vrb-2", "done")
+        .await
+        .expect("verbatim write must bypass the transition table (Dolt)");
+    assert_eq!(
+        dolt.get_status("par-vrb-2").await.unwrap().as_deref(),
+        Some("done")
+    );
+}
+
+/// Secret scrubbing must hold on BOTH backends for every text write path:
+/// create (title/description), comment add/update, and field updates.
+/// Previously Dolt-only (create + comments) and absent everywhere for
+/// update_bead_fields — the DEFAULT backend wrote secrets verbatim into the
+/// store and the git-tracked JSONL projection.
+#[tokio::test]
+async fn parity_secrets_scrubbed_on_both_backends() {
+    use crate::bead::BeadUpdate;
+    use crate::store::BeadStore;
+
+    async fn assert_scrubbed(store: &dyn BeadStore, tag: &str) {
+        // PAT-shaped fixture built at runtime (matching the secrets.rs unit
+        // tests) so no token-shaped literal lands in source to trip secret
+        // scanning — Copilot review on PR #483.
+        let token = format!("ghp_{}", "A".repeat(36));
+        let id = format!("par-scrub-{tag}");
+        store
+            .create_bead_full(crate::store::NewBead {
+                id: id.clone(),
+                title: format!("t {token}"),
+                description: format!("token {token} end"),
+                priority: 2,
+                issue_type: "task".into(),
+                owner: String::new(),
+                files: vec![],
+                test_files: vec![],
+                depends_on: vec![],
+                created_by: None,
+                scope: String::new(),
+                derived_from: vec![],
+                acceptance_criteria: String::new(),
+            })
+            .await
+            .unwrap();
+        let bead = store.get_bead(&id, "r").await.unwrap().unwrap();
+        assert!(
+            !bead.title.contains(&token),
+            "title scrubbed [{tag}]: {}",
+            bead.title
+        );
+        assert!(
+            !bead.description.contains(&token),
+            "description scrubbed [{tag}]"
+        );
+
+        store
+            .add_comment(&id, &format!("note {token}"), "tester")
+            .await
+            .unwrap();
+        let comments = store.list_comments(&id, false).await.unwrap();
+        assert!(
+            !comments.last().unwrap().text.contains(&token),
+            "comment add scrubbed [{tag}]"
+        );
+
+        let cid = comments.last().unwrap().id.clone();
+        store
+            .update_comment(&cid, &format!("edit {token}"), None)
+            .await
+            .unwrap();
+        let comments = store.list_comments(&id, false).await.unwrap();
+        assert!(
+            !comments.last().unwrap().text.contains(&token),
+            "comment update scrubbed [{tag}]"
+        );
+
+        store
+            .update_bead_fields(
+                &id,
+                &BeadUpdate {
+                    description: Some(format!("upd {token}")),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let bead = store.get_bead(&id, "r").await.unwrap().unwrap();
+        assert!(
+            !bead.description.contains(&token),
+            "update_bead_fields scrubbed [{tag}]"
+        );
+    }
+
+    let sq = sqlite_store_for_parity().await;
+    assert_scrubbed(&sq, "sq").await;
+
+    let Some(sandbox) = SandboxBeads::new().await else {
+        return;
+    };
+    let dolt = crate::bead_dolt::DoltBeadStore::new(sandbox.fresh_client().await);
+    assert_scrubbed(&dolt, "dolt").await;
+}
+
+/// close_bead must persist the CANONICAL terminal form on both backends.
+/// Both previously stored the alias 'closed'; SQLite healed it on the next
+/// connect (canonicalize_statuses) but Dolt never did, so the Linear close
+/// sweep (list_closed_linked_beads) saw divergent result sets over time.
+#[tokio::test]
+async fn parity_close_bead_stores_canonical_done_on_both_backends() {
+    use crate::store::BeadStore;
+
+    let sq = sqlite_store_for_parity().await;
+    sq.create_bead("par-cls-1", "t", "d", 2, "task")
+        .await
+        .unwrap();
+    sq.close_bead("par-cls-1").await.unwrap();
+    assert_eq!(
+        sq.get_status("par-cls-1").await.unwrap().as_deref(),
+        Some("done"),
+        "SQLite close_bead must store canonical 'done', not the alias"
+    );
+
+    let Some(sandbox) = SandboxBeads::new().await else {
+        return;
+    };
+    let dolt = crate::bead_dolt::DoltBeadStore::new(sandbox.fresh_client().await);
+    dolt.create_bead("par-cls-2", "t", "d", 2, "task")
+        .await
+        .unwrap();
+    dolt.close_bead("par-cls-2").await.unwrap();
+    assert_eq!(
+        dolt.get_status("par-cls-2").await.unwrap().as_deref(),
+        Some("done"),
+        "Dolt close_bead must store canonical 'done', not the alias"
+    );
+}
+
+/// get_status must resolve short ids on both backends. Dolt's raw
+/// `WHERE id = ?` (query.rs) returned None for a known bead queried by
+/// suffix, while its own close_bead resolves first — an omission, not a
+/// missing capability.
+#[tokio::test]
+async fn parity_get_status_resolves_short_ids_on_both_backends() {
+    use crate::store::BeadStore;
+
+    let sq = sqlite_store_for_parity().await;
+    sq.create_bead("rsry-abc123", "t", "d", 2, "task")
+        .await
+        .unwrap();
+    assert_eq!(
+        sq.get_status("abc123").await.unwrap().as_deref(),
+        Some("open"),
+        "SQLite resolves the short id"
+    );
+
+    let Some(sandbox) = SandboxBeads::new().await else {
+        return;
+    };
+    let dolt = crate::bead_dolt::DoltBeadStore::new(sandbox.fresh_client().await);
+    dolt.create_bead("rsry-def456", "t", "d", 2, "task")
+        .await
+        .unwrap();
+    assert_eq!(
+        dolt.get_status("def456").await.unwrap().as_deref(),
+        Some("open"),
+        "Dolt must resolve the short id like SQLite (and like its own close_bead)"
     );
 }

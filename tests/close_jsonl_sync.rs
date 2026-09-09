@@ -161,7 +161,7 @@ fn close_refreshes_published_record_without_publishing_local_only_bead() {
     );
     assert_eq!(records[0]["id"], published_id);
     assert_eq!(
-        records[0]["status"], "closed",
+        records[0]["status"], "done",
         "close must immediately refresh the published record to the store's terminal status"
     );
     assert!(

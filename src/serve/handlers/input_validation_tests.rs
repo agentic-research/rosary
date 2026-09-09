@@ -314,7 +314,7 @@ async fn bead_close_force_bypasses_verifiable_test_command_gate() {
             .await
             .unwrap()
             .as_deref(),
-        Some("closed")
+        Some("done")
     );
 }
 

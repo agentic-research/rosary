@@ -257,7 +257,7 @@ mod tests {
             "source bead should be closed after move"
         );
         let src_bead = src.get_bead("mache-lbn6", "mache").await.unwrap().unwrap();
-        assert_eq!(src_bead.status, "closed");
+        assert_eq!(src_bead.status, "done");
     }
 
     #[tokio::test]
@@ -272,9 +272,9 @@ mod tests {
         let outcome = move_bead(&src, "mache", &dst, "llo", "mache-x1", "llo-bbbbbb")
             .await
             .unwrap();
-        assert_eq!(outcome.status, "closed");
+        assert_eq!(outcome.status, "done");
         let moved = dst.get_bead("llo-bbbbbb", "llo").await.unwrap().unwrap();
-        assert_eq!(moved.status, "closed");
+        assert_eq!(moved.status, "done");
     }
 
     #[tokio::test]
