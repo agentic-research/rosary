@@ -10,6 +10,13 @@ use std::collections::HashMap;
 
 use crate::store::{DispatchRecord, DispatchStore, PipelineState, WorkRef};
 
+/// A bead that REGRESSES across verify tiers this many times in a row
+/// deadletters even before `max_retries` — flapping burns an agent
+/// invocation per attempt, and a tier regression means the retry made
+/// things worse, not better. One declaration; `on_fail` only records the
+/// count (docs/ARCHITECTURE.md "Stopping Conditions", docs/glossary.md).
+pub const MAX_CONSECUTIVE_REVERTS: u32 = 3;
+
 /// What the reconciler should do after a bead's agent completes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompletionAction {
@@ -90,6 +97,16 @@ impl PipelineEngine {
     /// - `verify_passed`: Some(true) = passed, Some(false) = failed, None = no verifier
     /// - `retries`: how many times this phase has been retried
     /// - `max_retries`: threshold for deadlettering
+    /// - `consecutive_reverts`: verify-tier regressions in a row (tracker
+    ///   state). Both counts follow the same pre-increment convention: they
+    ///   reflect PRIOR attempts, so a bead deadletters on the completion
+    ///   after the threshold-reaching attempt is recorded.
+    ///
+    /// This is the ONLY place retry-vs-deadletter thresholds live. `on_fail`
+    /// used to duplicate them in a return value nothing consulted — the
+    /// "3 consecutive reverts → deadletter" rule the docs promised was dead
+    /// in production until rosary-45b069 wired it here.
+    #[allow(clippy::too_many_arguments)]
     pub fn decide(
         &self,
         issue_type: &str,
@@ -98,10 +115,12 @@ impl PipelineEngine {
         verify_passed: Option<bool>,
         retries: u32,
         max_retries: u32,
+        consecutive_reverts: u32,
     ) -> CompletionAction {
+        let exhausted = retries >= max_retries || consecutive_reverts >= MAX_CONSECUTIVE_REVERTS;
         // Non-zero exit → retry or deadletter
         if !exit_success {
-            return if retries >= max_retries {
+            return if exhausted {
                 CompletionAction::Deadletter
             } else {
                 CompletionAction::Retry
@@ -110,7 +129,7 @@ impl PipelineEngine {
 
         // Verification failed → retry or deadletter
         if verify_passed == Some(false) {
-            return if retries >= max_retries {
+            return if exhausted {
                 CompletionAction::Deadletter
             } else {
                 CompletionAction::Retry
@@ -400,7 +419,7 @@ mod tests {
     fn decide_exit_failure_retries() {
         let e = engine();
         assert_eq!(
-            e.decide("bug", Some("dev-agent"), false, None, 0, 3),
+            e.decide("bug", Some("dev-agent"), false, None, 0, 3, 0),
             CompletionAction::Retry
         );
     }
@@ -409,7 +428,7 @@ mod tests {
     fn decide_exit_failure_deadletters() {
         let e = engine();
         assert_eq!(
-            e.decide("bug", Some("dev-agent"), false, None, 3, 3),
+            e.decide("bug", Some("dev-agent"), false, None, 3, 3, 0),
             CompletionAction::Deadletter
         );
     }
@@ -418,7 +437,7 @@ mod tests {
     fn decide_verify_failed_retries() {
         let e = engine();
         assert_eq!(
-            e.decide("bug", Some("dev-agent"), true, Some(false), 1, 3),
+            e.decide("bug", Some("dev-agent"), true, Some(false), 1, 3, 0),
             CompletionAction::Retry
         );
     }
@@ -427,7 +446,7 @@ mod tests {
     fn decide_verify_failed_deadletters() {
         let e = engine();
         assert_eq!(
-            e.decide("bug", Some("dev-agent"), true, Some(false), 3, 3),
+            e.decide("bug", Some("dev-agent"), true, Some(false), 3, 3, 0),
             CompletionAction::Deadletter
         );
     }
@@ -436,7 +455,7 @@ mod tests {
     fn decide_pass_advances_bug() {
         let e = engine();
         assert_eq!(
-            e.decide("bug", Some("dev-agent"), true, Some(true), 0, 3),
+            e.decide("bug", Some("dev-agent"), true, Some(true), 0, 3, 0),
             CompletionAction::Advance {
                 next_agent: "staging-agent".to_string(),
                 phase: 2,
@@ -448,7 +467,7 @@ mod tests {
     fn decide_pass_terminal_at_end() {
         let e = engine();
         assert_eq!(
-            e.decide("bug", Some("staging-agent"), true, Some(true), 0, 3),
+            e.decide("bug", Some("staging-agent"), true, Some(true), 0, 3, 0),
             CompletionAction::Terminal
         );
     }
@@ -457,7 +476,7 @@ mod tests {
     fn decide_no_verifier_advances() {
         let e = engine();
         assert_eq!(
-            e.decide("bug", Some("dev-agent"), true, None, 0, 3),
+            e.decide("bug", Some("dev-agent"), true, None, 0, 3, 0),
             CompletionAction::Advance {
                 next_agent: "staging-agent".to_string(),
                 phase: 2,
@@ -469,7 +488,7 @@ mod tests {
     fn decide_task_single_stage_terminal() {
         let e = engine();
         assert_eq!(
-            e.decide("task", Some("dev-agent"), true, Some(true), 0, 3),
+            e.decide("task", Some("dev-agent"), true, Some(true), 0, 3, 0),
             CompletionAction::Terminal
         );
     }
@@ -478,7 +497,7 @@ mod tests {
     fn decide_no_current_agent_terminal() {
         let e = engine();
         assert_eq!(
-            e.decide("bug", None, true, Some(true), 0, 3),
+            e.decide("bug", None, true, Some(true), 0, 3, 0),
             CompletionAction::Terminal
         );
     }
@@ -561,8 +580,69 @@ mod tests {
         let e = PipelineEngine::new(default_pipelines(), None, 1);
         // Bug with depth=1: scoping-agent passes → Terminal (only agent in truncated pipeline)
         assert_eq!(
-            e.decide("bug", Some("scoping-agent"), true, Some(true), 0, 3),
+            e.decide("bug", Some("scoping-agent"), true, Some(true), 0, 3, 0),
             CompletionAction::Terminal
+        );
+    }
+
+    /// rosary-45b069: the consecutive-reverts threshold — promised by two
+    /// docs, encoded in on_fail's discarded return value, never live —
+    /// now gates BOTH failure branches, well before max_retries.
+    #[test]
+    fn decide_consecutive_reverts_deadletter_both_failure_branches() {
+        let e = engine();
+        assert_eq!(
+            e.decide(
+                "bug",
+                Some("dev-agent"),
+                true,
+                Some(false),
+                1,
+                99,
+                MAX_CONSECUTIVE_REVERTS
+            ),
+            CompletionAction::Deadletter,
+            "verify-failure branch must deadletter on the revert threshold"
+        );
+        assert_eq!(
+            e.decide(
+                "bug",
+                Some("dev-agent"),
+                false,
+                None,
+                1,
+                99,
+                MAX_CONSECUTIVE_REVERTS
+            ),
+            CompletionAction::Deadletter,
+            "exit-failure branch must deadletter on the revert threshold"
+        );
+        assert_eq!(
+            e.decide(
+                "bug",
+                Some("dev-agent"),
+                true,
+                Some(false),
+                1,
+                99,
+                MAX_CONSECUTIVE_REVERTS - 1
+            ),
+            CompletionAction::Retry,
+            "below the threshold it retries"
+        );
+    }
+
+    /// Reverts gate FAILURES only — a passing bead advances regardless of
+    /// how rough the road was.
+    #[test]
+    fn decide_reverts_never_gate_success() {
+        let e = engine();
+        assert_eq!(
+            e.decide("bug", Some("dev-agent"), true, Some(true), 0, 3, 99),
+            CompletionAction::Advance {
+                next_agent: "staging-agent".to_string(),
+                phase: 2,
+            }
         );
     }
 }

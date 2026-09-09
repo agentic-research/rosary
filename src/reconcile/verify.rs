@@ -76,6 +76,11 @@ impl Reconciler {
             });
 
         let retries = self.trackers.get(bead_id).map(|t| t.retries).unwrap_or(0);
+        let consecutive_reverts = self
+            .trackers
+            .get(bead_id)
+            .map(|t| t.consecutive_reverts)
+            .unwrap_or(0);
 
         let close_condition = beads
             .iter()
@@ -100,6 +105,7 @@ impl Reconciler {
             verify_passed,
             retries,
             self.config.max_retries,
+            consecutive_reverts,
         );
 
         (action, verify_summary)
@@ -174,7 +180,7 @@ impl Reconciler {
                 } else {
                     "agent exit non-zero"
                 };
-                self.handle_failure(bead_id, exit_success, verify_summary);
+                self.handle_failure(bead_id, exit_success, verify_summary, true);
                 self.append_observation(bead_id, repo, &agent, phase, Verdict::Fail, detail)
                     .await;
                 self.persist_status(bead_id, repo, crate::bead::BeadState::Open)
@@ -182,12 +188,15 @@ impl Reconciler {
                 ActionOutcome::Retrying
             }
             CompletionAction::Deadletter => {
+                // "retry budget exhausted" not "max retries": decide() deadletters
+                // on EITHER retries >= max_retries OR the consecutive-reverts
+                // threshold, and the observation can't tell which fired.
                 let detail = if exit_success {
-                    "verify failed, max retries"
+                    "verify failed, retry budget exhausted"
                 } else {
-                    "agent exit non-zero, max retries"
+                    "agent exit non-zero, retry budget exhausted"
                 };
-                self.handle_failure(bead_id, exit_success, verify_summary);
+                self.handle_failure(bead_id, exit_success, verify_summary, false);
                 self.append_observation(bead_id, repo, &agent, phase, Verdict::Deadletter, detail)
                     .await;
                 self.cleanup_workspace(bead_id);
@@ -208,20 +217,24 @@ impl Reconciler {
         }
     }
 
-    /// Handle a failure (retry or deadletter) — shared between both verify paths.
+    /// Record a failure's bookkeeping — shared between both verify paths.
+    /// `schedule_retry` distinguishes Retry (backoff queued) from Deadletter
+    /// (terminal — no backoff). The retry/deadletter DECISION itself lives in
+    /// `pipeline.decide()` alone (rosary-45b069).
     fn handle_failure(
         &mut self,
         bead_id: &str,
         exit_success: bool,
         verify_summary: Option<&VerifySummary>,
+        schedule_retry: bool,
     ) {
         if exit_success {
             if let Some(vs) = verify_summary {
-                self.on_fail(bead_id, vs);
+                self.on_fail(bead_id, vs, schedule_retry);
             }
         } else {
             self.completed_work_dirs.remove(bead_id);
-            self.on_fail_exit(bead_id);
+            self.on_fail_exit(bead_id, schedule_retry);
         }
     }
 

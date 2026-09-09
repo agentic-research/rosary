@@ -148,10 +148,26 @@ async fn on_fail_exit_deadletters_after_max() {
     };
     let mut r = Reconciler::new(config).await;
 
-    // Retries increment: 1, 2, 3 — deadletter at 3 == max_retries
-    assert!(!r.on_fail_exit("x")); // retries=1
-    assert!(!r.on_fail_exit("x")); // retries=2
-    assert!(r.on_fail_exit("x")); // retries=3 == max, deadletter
+    // on_fail_exit is pure bookkeeping now — retries increment; the
+    // deadletter decision itself lives in pipeline.decide() (rosary-45b069).
+    r.on_fail_exit("x", true); // retries=1
+    r.on_fail_exit("x", true); // retries=2
+    r.on_fail_exit("x", true); // retries=3
+    assert_eq!(r.trackers["x"].retries, 3);
+    // decide() sees pre-increment counts: with retries == max_retries the
+    // next failing completion deadletters.
+    assert_eq!(
+        r.pipeline.decide(
+            "task",
+            Some("dev-agent"),
+            false,
+            None,
+            r.trackers["x"].retries,
+            r.config.max_retries,
+            r.trackers["x"].consecutive_reverts,
+        ),
+        crate::pipeline::CompletionAction::Deadletter
+    );
 }
 
 #[tokio::test]
@@ -193,9 +209,80 @@ async fn on_fail_consecutive_reverts_deadletter() {
         highest_passing_tier: highest,
     };
 
-    assert!(!r.on_fail("x", &regress(Some(2)))); // 4→2, revert #1
-    assert!(!r.on_fail("x", &regress(Some(1)))); // 2→1, revert #2
-    assert!(r.on_fail("x", &regress(Some(0)))); // 1→0, revert #3 → deadletter
+    r.on_fail("x", &regress(Some(2)), true); // 4→2, revert #1
+    r.on_fail("x", &regress(Some(1)), true); // 2→1, revert #2
+    r.on_fail("x", &regress(Some(0)), true); // 1→0, revert #3
+    assert_eq!(r.trackers["x"].consecutive_reverts, 3);
+    // The threshold now actually fires — through decide(), the one place
+    // the rule lives. Before rosary-45b069 this rule existed only in
+    // on_fail's discarded return value: tests passed, production never
+    // deadlettered a flapping bead.
+    assert_eq!(
+        r.pipeline.decide(
+            "task",
+            Some("dev-agent"),
+            true,
+            Some(false),
+            r.trackers["x"].retries,
+            r.config.max_retries,
+            r.trackers["x"].consecutive_reverts,
+        ),
+        crate::pipeline::CompletionAction::Deadletter,
+        "3 recorded consecutive reverts must deadletter the next failure"
+    );
+}
+
+#[tokio::test]
+async fn deadletter_clears_stale_backoff() {
+    // A retry queues a backoff entry; dequeue skips-but-keeps entries still in
+    // backoff. When the NEXT failure deadletters, the entry from the prior
+    // retry must be dropped — deadletter is terminal, and a stale entry would
+    // delay the bead if it is later reopened in the same process.
+    let config = ReconcilerConfig {
+        once: true,
+        repo: Vec::new(),
+        ..Default::default()
+    };
+    let mut r = Reconciler::new(config).await;
+
+    r.trackers.insert(
+        "x".into(),
+        BeadTracker {
+            repo: "test".into(),
+            last_generation: 1,
+            retries: 0,
+            consecutive_reverts: 0,
+            highest_tier: None,
+            current_agent: None,
+            phase_index: 0,
+            issue_type: "task".into(),
+            dispatch_id: None,
+            scope: String::new(),
+        },
+    );
+    let summary = crate::verify::VerifySummary {
+        results: vec![(
+            "test".into(),
+            crate::verify::VerifyResult::Fail("fail".into()),
+        )],
+        highest_passing_tier: None,
+    };
+
+    r.on_fail("x", &summary, true); // retry → backoff recorded
+    assert!(r.queue.has_backoff("test", "x"), "retry must queue backoff");
+    r.on_fail("x", &summary, false); // deadletter → backoff cleared
+    assert!(
+        !r.queue.has_backoff("test", "x"),
+        "deadletter must clear the backoff left by the prior retry"
+    );
+
+    r.on_fail_exit("x", true); // exit-failure retry path
+    assert!(r.queue.has_backoff("test", "x"));
+    r.on_fail_exit("x", false); // exit-failure deadletter path
+    assert!(
+        !r.queue.has_backoff("test", "x"),
+        "exit-failure deadletter must also clear backoff"
+    );
 }
 
 #[tokio::test]
@@ -427,21 +514,21 @@ fn pipeline_bug_three_phase_sequence() {
     let e = PipelineEngine::new(default_pipelines(), None, 0);
     // scoping → dev → staging → Terminal
     assert_eq!(
-        e.decide("bug", Some("scoping-agent"), true, None, 0, 3),
+        e.decide("bug", Some("scoping-agent"), true, None, 0, 3, 0),
         CompletionAction::Advance {
             next_agent: "dev-agent".into(),
             phase: 1
         }
     );
     assert_eq!(
-        e.decide("bug", Some("dev-agent"), true, Some(true), 0, 3),
+        e.decide("bug", Some("dev-agent"), true, Some(true), 0, 3, 0),
         CompletionAction::Advance {
             next_agent: "staging-agent".into(),
             phase: 2
         }
     );
     assert_eq!(
-        e.decide("bug", Some("staging-agent"), true, None, 0, 3),
+        e.decide("bug", Some("staging-agent"), true, None, 0, 3, 0),
         CompletionAction::Terminal
     );
 }
@@ -453,7 +540,7 @@ fn pipeline_feature_four_phase_with_retry() {
 
     let e = PipelineEngine::new(default_pipelines(), None, 0);
     assert_eq!(
-        e.decide("feature", Some("scoping-agent"), true, None, 0, 3),
+        e.decide("feature", Some("scoping-agent"), true, None, 0, 3, 0),
         CompletionAction::Advance {
             next_agent: "dev-agent".into(),
             phase: 1
@@ -461,26 +548,26 @@ fn pipeline_feature_four_phase_with_retry() {
     );
     // dev fails → retry
     assert_eq!(
-        e.decide("feature", Some("dev-agent"), true, Some(false), 0, 3),
+        e.decide("feature", Some("dev-agent"), true, Some(false), 0, 3, 0),
         CompletionAction::Retry
     );
     // dev retry passes → advance
     assert_eq!(
-        e.decide("feature", Some("dev-agent"), true, Some(true), 1, 3),
+        e.decide("feature", Some("dev-agent"), true, Some(true), 1, 3, 0),
         CompletionAction::Advance {
             next_agent: "staging-agent".into(),
             phase: 2
         }
     );
     assert_eq!(
-        e.decide("feature", Some("staging-agent"), true, None, 0, 3),
+        e.decide("feature", Some("staging-agent"), true, None, 0, 3, 0),
         CompletionAction::Advance {
             next_agent: "prod-agent".into(),
             phase: 3
         }
     );
     assert_eq!(
-        e.decide("feature", Some("prod-agent"), true, Some(true), 0, 3),
+        e.decide("feature", Some("prod-agent"), true, Some(true), 0, 3, 0),
         CompletionAction::Terminal
     );
 }
@@ -493,12 +580,12 @@ fn pipeline_crash_retries_then_deadletters() {
     let e = PipelineEngine::new(default_pipelines(), None, 0);
     for retry in 0..3 {
         assert_eq!(
-            e.decide("bug", Some("dev-agent"), false, None, retry, 3),
+            e.decide("bug", Some("dev-agent"), false, None, retry, 3, 0),
             CompletionAction::Retry
         );
     }
     assert_eq!(
-        e.decide("bug", Some("dev-agent"), false, None, 3, 3),
+        e.decide("bug", Some("dev-agent"), false, None, 3, 3, 0),
         CompletionAction::Deadletter
     );
 }
@@ -510,7 +597,7 @@ fn pipeline_task_single_phase_terminal() {
 
     let e = PipelineEngine::new(default_pipelines(), None, 0);
     assert_eq!(
-        e.decide("task", Some("dev-agent"), true, Some(true), 0, 3),
+        e.decide("task", Some("dev-agent"), true, Some(true), 0, 3, 0),
         CompletionAction::Terminal
     );
 }
@@ -529,7 +616,7 @@ fn mock_agent_verify_decide_compose_to_advance() {
     let pipeline = PipelineEngine::new(default_pipelines(), None, 0);
 
     // Simulate scoping-agent (ReadOnly — skip verify, just decide)
-    let action = pipeline.decide("bug", Some("scoping-agent"), true, None, 0, 3);
+    let action = pipeline.decide("bug", Some("scoping-agent"), true, None, 0, 3, 0);
     assert_eq!(
         action,
         CompletionAction::Advance {
@@ -553,7 +640,15 @@ fn mock_agent_verify_decide_compose_to_advance() {
     );
 
     // Pipeline decides: dev passes → advance to staging
-    let action = pipeline.decide("bug", Some("dev-agent"), true, Some(summary.passed()), 0, 3);
+    let action = pipeline.decide(
+        "bug",
+        Some("dev-agent"),
+        true,
+        Some(summary.passed()),
+        0,
+        3,
+        0,
+    );
     assert_eq!(
         action,
         CompletionAction::Advance {
@@ -563,7 +658,7 @@ fn mock_agent_verify_decide_compose_to_advance() {
     );
 
     // Simulate staging-agent (ReadOnly — skip verify)
-    let action = pipeline.decide("bug", Some("staging-agent"), true, None, 0, 3);
+    let action = pipeline.decide("bug", Some("staging-agent"), true, None, 0, 3, 0);
     assert_eq!(action, CompletionAction::Terminal);
 }
 
@@ -583,7 +678,7 @@ fn mock_agent_bad_commit_verify_fails_triggers_retry() {
     assert!(!summary.passed(), "commit without bead ref should fail");
 
     let pipeline = PipelineEngine::new(default_pipelines(), None, 0);
-    let action = pipeline.decide("bug", Some("dev-agent"), true, Some(false), 0, 3);
+    let action = pipeline.decide("bug", Some("dev-agent"), true, Some(false), 0, 3, 0);
     assert_eq!(action, CompletionAction::Retry);
 }
 
