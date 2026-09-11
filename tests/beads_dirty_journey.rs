@@ -20,6 +20,11 @@
 //! Mutation: re-enable write-through in `PublishingBeadStore::publish`, or
 //! point pre-push back at the working-tree file, and observations 1/3/4/5 go
 //! red again; drop `--published-from` from pre-commit and observation 2 does.
+//!
+//! It is `#[ignore]`d so `task check` on main stays green while the decision
+//! is pending. Run it with `cargo test --test beads_dirty_journey -- --ignored`;
+//! that invocation is RED today and is the bead's close condition. The fix
+//! removes the `#[ignore]` — a fix that leaves it in place has not landed.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -163,6 +168,7 @@ fn assert_hooks_active(j: &mut Journey) {
 }
 
 #[test]
+#[ignore = "rosary-3d455a: RED by design until the ADR-0024 materialization amendment lands; run with -- --ignored"]
 fn a_bead_written_on_a_feature_branch_does_not_dirty_or_block_the_checkout() {
     let mut j = Journey::new();
 

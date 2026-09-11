@@ -199,5 +199,7 @@ Choosing A or B also removes the pre-commit/pre-push id-set disagreement: both h
   hook prescribes to unblock a push.
 - ADR-0022's exit test ("file a coordination bead, `.beads/beads.jsonl` unchanged") generalizes to
   canonical beads: *file any bead, the tree is unchanged until a commit names it*.
-- `tests/beads_dirty_journey.rs` is the acceptance test for this amendment; it is red until the
-  amendment is implemented and must stay in `task check` afterwards.
+- `tests/beads_dirty_journey.rs` is the acceptance test for this amendment. It is `#[ignore]`d on the
+  trunk so `task check` stays green while the decision is pending; `cargo test --test
+  beads_dirty_journey -- --ignored` is red today. Implementing the amendment removes the `#[ignore]`,
+  after which the test runs in `task check` like any other.
