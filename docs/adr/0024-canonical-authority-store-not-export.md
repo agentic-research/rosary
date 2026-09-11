@@ -134,3 +134,70 @@ differed.
   exist.
 - Falsifier 4 (cloister recovery) remains open. Before generalizing this decision to cloister or signet
   (the 2 Dolt repos), that question must be answered against their actual history, not assumed.
+
+## Amendment (proposed 2026-09-11): *when* the projection is materialized
+
+**Status: proposed — decision pending. Tracking bead `rosary-3d455a`.**
+
+This ADR decided *which* artifact is canonical. It also fixed, without deciding it, *when* the cache is
+written: "every write path that mutates the store refreshes the export" — i.e. on every store write, from
+every surface. That is a timing decision, and it is the one that produces the standing `M .beads/beads.jsonl`.
+
+### The gap
+
+The store is one, git-ignored and **branch-independent**. The tracked export is one file in the working
+tree, **branch-dependent**. Materializing the former into the latter on every write means at most one
+branch's HEAD can ever equal the store, and only until the next write. Reproduced with the released binary
+and the hooks `rsry init` installs (`tests/beads_dirty_journey.rs`; evidence pack
+`~/codebase-audits/rosary/ac360e8/beads-dirty/`):
+
+1. One `bead create` on a feature branch → `M .beads/beads.jsonl`.
+2. `git add b.rs && git commit` → the commit carries `.beads/beads.jsonl` too, with every bead record
+   that changed since the last commit, related or not (pre-commit re-exports and `git add`s it). On
+   `main`, 57 of 57 mixed commits in the last 90 days carry unrelated bead records; median 10 per commit.
+3. A comment written after the commit, then `git push` → exit 0, but the pushed blob is stale. The
+   pre-push gate compares the store against the *working-tree* file the refresh just rewrote, so it is
+   tautological on the branch that wrote.
+4. `git checkout main` is refused; stash/pop conflicts in a generated file.
+5. `git push origin main` with nothing written on main is refused — the store holds a bead from the
+   feature branch. Pre-commit exports `--published-from` (only ids already in the file) while pre-push
+   exports the whole store, so the only remedy is a *broadening* export committed as a sync PR
+   (12 in 90 days).
+
+Each mechanism that tightened store↔file consistency (#399, #406, #431, #465, #477) made this more
+frequent and more visible, because each one was faithful to the every-write rule.
+
+### What the amendment changes
+
+The invariant "a write that does not refresh the export is a bug" is replaced by an invariant about
+**commits and the trunk**, not writes:
+
+> Every commit on any branch carries the current records of the beads it names, and no others. The trunk
+> carries the current record of every published bead. Between commits the working tree is clean.
+
+The "rebuildable projection" framing above is exactly what makes this legal: a cache may be rebuilt at
+any time, so it may also be rebuilt *only* at the moments git observes.
+
+### Options considered
+
+| | Where the projection is written | Effect on the five observations |
+|---|---|---|
+| **A. Commit-time, scoped** *(recommended now)* | `PublishingBeadStore` stops writing through. Pre-commit upserts only the records of the bead ids the commit names (`[bead-id]` in the subject). Pre-push compares the **pushed ref's blob** for those ids against the store, not the working tree. Post-merge **on the trunk only** does a full refresh + commit. | All five green. Smallest change; no new artifact. |
+| B. Trunk-only | Feature branches never touch the file; a post-merge job on the trunk regenerates and commits. | All five green; PRs carry no bead records at all, so reviewers lose the "this PR's bead" diff. A subset of A. |
+| C. Out of the working tree | Projection lives under `refs/beads/*` (ADR-0020 P4, ADR-0022, `rosary-131957` RefFolder). | Structurally cannot dirty the tree. The destination; larger, and gated on that design. |
+| D. Keep every-write, hide it | `skip-worktree` / `assume-unchanged` on the file. | Breaks checkout and merge; rejected. |
+
+Choosing A or B also removes the pre-commit/pre-push id-set disagreement: both hooks must export the
+**same** id set, and the gate must compare against the artifact being pushed.
+
+### Consequences of adopting A
+
+- `PublishingBeadStore` keeps its classification of writes (`Create`/`Update`/`Whole`) but records them
+  as *pending* for the next commit instead of writing the file; the pre-commit hook drains the pending
+  set filtered by the commit's own bead ids.
+- `rsry bead export --jsonl` remains the explicit, whole-store escape hatch; it is no longer something a
+  hook prescribes to unblock a push.
+- ADR-0022's exit test ("file a coordination bead, `.beads/beads.jsonl` unchanged") generalizes to
+  canonical beads: *file any bead, the tree is unchanged until a commit names it*.
+- `tests/beads_dirty_journey.rs` is the acceptance test for this amendment; it is red until the
+  amendment is implemented and must stay in `task check` afterwards.
