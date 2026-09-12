@@ -492,6 +492,11 @@ pub fn scan_merged_closures(repo_path: &Path, limit: usize) -> Vec<MergedClosure
     }
     String::from_utf8_lossy(&output.stdout)
         .split('\0')
+        // git emits `\n` after each record's NUL, so every chunk after the
+        // first starts with a newline; without stripping it the "subject" is
+        // an empty line and only the newest trunk commit ever parses
+        // (rosary-e5fcd2). `parse_merge_commit_record` does the same.
+        .map(|m| m.trim_start_matches('\n'))
         .filter(|m| !m.trim().is_empty())
         .flat_map(parse_merged_closures)
         .collect()
@@ -1087,5 +1092,51 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&"rsry-abc".to_string()));
         assert!(ids.contains(&"loom-xyz".to_string()));
+    }
+
+    /// rosary-e5fcd2: `git log --format=%B%x00` emits `\n` after each NUL, so
+    /// every chunk after the first starts with a newline. Without stripping
+    /// it, the "subject" is an empty line and only the newest trunk commit's
+    /// closure is found — a merge train closed one bead. Mutation: drop the
+    /// `trim_start_matches('\n')` in `scan_merged_closures` and this finds 1.
+    #[test]
+    fn scan_merged_closures_sees_every_commit_in_the_window() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.com", "-c", "user.name=t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "main"]);
+        for subject in [
+            "[x-aaaaaa] feat: first (#1)",
+            "[x-bbbbbb] feat: second (#2)",
+            "[x-cccccc] feat: third (#3)",
+        ] {
+            git(&[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "--no-verify",
+                "-m",
+                subject,
+            ]);
+        }
+
+        let mut ids: Vec<String> = scan_merged_closures(tmp.path(), 100)
+            .into_iter()
+            .map(|c| c.bead_id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["x-aaaaaa", "x-bbbbbb", "x-cccccc"]);
     }
 }
