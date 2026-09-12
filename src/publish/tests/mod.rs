@@ -1,11 +1,17 @@
 use super::*;
 use crate::bead_sqlite::SqliteBeadStore;
+use crate::jsonl_sync::{
+    PublishReport, export_published_beads_contract_jsonl, publish_ids, refresh_tracked_beads_jsonl,
+};
 use serde_json::Value;
+use std::path::PathBuf;
+
+mod publish_ids_tests;
 
 /// A repo with a git-tracked `.beads/beads.jsonl` holding `seed_ids`.
 ///
-/// The tracked check really does shell out to git, so this really does init a
-/// repo and commit the file. Faking that would test the fake.
+/// The tracked check and the cleanliness check both shell out to git, so this
+/// really does init a repo and commit the file. Faking that would test the fake.
 struct Repo {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -46,11 +52,43 @@ impl Repo {
         PublishingBeadStore::new(Box::new(inner), &beads)
     }
 
+    fn repo_name(&self) -> String {
+        self.root
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// `git status --porcelain` scoped to the tracked file, trimmed. Empty means
+    /// the working tree is clean — the observation ADR-0024 amendment A is
+    /// about, taken from git rather than from the store.
+    fn jsonl_status(&self) -> String {
+        let out = std::process::Command::new("git")
+            .args(["status", "--porcelain", "--", ".beads/beads.jsonl"])
+            .current_dir(&self.root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git status: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    fn raw(&self) -> String {
+        std::fs::read_to_string(self.root.join(".beads/beads.jsonl")).unwrap()
+    }
+
     fn published(&self) -> Vec<Value> {
-        let text = std::fs::read_to_string(self.root.join(".beads/beads.jsonl")).unwrap();
-        text.lines()
+        self.raw()
+            .lines()
             .filter(|l| !l.trim().is_empty())
             .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    fn ids(&self) -> Vec<String> {
+        self.published()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
             .collect()
     }
 
@@ -71,52 +109,71 @@ fn new_bead(id: &str, title: &str) -> NewBead {
     }
 }
 
-/// THE REGRESSION. `persist_status` drives `update_status`, which was the
-/// loudest unwired path: every dispatch transition landed in the store and
-/// never reached the tracked file.
+fn s(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|i| i.to_string()).collect()
+}
+
+/// THE INVERSION of rosary-8ca6e5's regression test. `persist_status` drives
+/// `update_status`, the loudest write path; under write-through every dispatch
+/// transition rewrote the tracked file on whatever branch was checked out
+/// (rosary-3d455a). Now the store moves and the tree stays clean.
+///
+/// Not vacuous: `r-1` IS published (seeded and committed), so under
+/// write-through both the create and the transition would have dirtied it.
 #[tokio::test]
-async fn update_status_reaches_the_tracked_projection() {
-    let repo = Repo::new(&[]);
+async fn a_status_transition_leaves_the_projection_untouched() {
+    let repo = Repo::new(&["r-1"]);
     let store = repo.store();
     store
         .create_bead_full(new_bead("r-1", "a bead"))
         .await
         .unwrap();
-    assert_eq!(repo.record("r-1").unwrap()["status"], "open");
-
     store.update_status("r-1", "in_progress").await.unwrap();
 
-    // Assert the projection agrees with the STORE rather than with a literal.
-    // The store canonicalises aliases (`in_progress` is stored as `dispatched`),
-    // and the invariant that matters is "the file says what the store says" —
-    // hardcoding the canonical spelling would make this test a change-detector
-    // for the state machine instead of a check on publication.
     let stored = store.get_status("r-1").await.unwrap().expect("bead exists");
-    assert_ne!(stored, "open", "the transition actually happened");
+    assert_ne!(stored, "open", "the transition happened in the store");
     assert_eq!(
-        repo.record("r-1").unwrap()["status"],
-        serde_json::json!(stored),
-        "a status transition must reach the tracked file without the caller opting in"
+        repo.jsonl_status(),
+        "",
+        "a store write must not dirty the tracked projection"
+    );
+    assert_eq!(
+        repo.record("r-1").unwrap(),
+        serde_json::json!({"id": "r-1"}),
+        "the committed record is untouched"
     );
 }
 
-/// Creates broaden the published set by exactly one id.
+/// A create — both surfaces — leaves the file exactly as committed.
 #[tokio::test]
-async fn create_publishes_the_new_bead() {
+async fn a_create_leaves_the_projection_untouched() {
     let repo = Repo::new(&[]);
     let store = repo.store();
     store.create_bead("r-1", "t", "d", 1, "bug").await.unwrap();
-    let rec = repo.record("r-1").expect("created bead is published");
-    assert_eq!(rec["title"], "t");
+    store
+        .create_bead_full(new_bead("r-2", "two"))
+        .await
+        .unwrap();
+
+    assert!(
+        store
+            .get_bead("r-1", &repo.repo_name())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(repo.jsonl_status(), "", "a create must not dirty the tree");
+    assert!(
+        repo.ids().is_empty(),
+        "nothing is published until a commit names it"
+    );
 }
 
-/// The rosary-a7ee3a boundary: an UPDATE must never publish an id the owner
-/// has not published. Without this, a store-only bead would leak into the
-/// tracked record the first time anything touched it.
+/// The rosary-a7ee3a boundary, still true with the write gone: touching a
+/// store-only bead never leaks it into the published set.
 #[tokio::test]
-async fn update_never_adds_an_unpublished_bead() {
+async fn an_update_of_a_store_only_bead_leaves_the_projection_untouched() {
     let repo = Repo::new(&["r-published"]);
-    // Seed a bead directly in the inner store so it is store-only.
     let beads = repo.root.join(".beads");
     let inner = SqliteBeadStore::connect(&beads.join("beads.db")).unwrap();
     inner
@@ -131,22 +188,14 @@ async fn update_never_adds_an_unpublished_bead() {
         .await
         .unwrap();
 
-    let ids: Vec<_> = repo
-        .published()
-        .iter()
-        .map(|r| r["id"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(
-        ids,
-        vec!["r-published"],
-        "an update must not broaden the published id set"
-    );
+    assert_eq!(repo.jsonl_status(), "");
+    assert_eq!(repo.ids(), s(&["r-published"]));
 }
 
-/// Published-but-absent-locally records survive. A repo whose store was
-/// rebuilt must not have the rest of its history blanked by one write.
+/// A published-but-absent-locally record sits next to a store-only create and
+/// neither side is disturbed.
 #[tokio::test]
-async fn preserves_published_records_absent_from_the_store() {
+async fn a_create_alongside_a_published_but_absent_record_leaves_the_file_untouched() {
     let repo = Repo::new(&["r-gone"]);
     let store = repo.store();
     store
@@ -154,19 +203,15 @@ async fn preserves_published_records_absent_from_the_store() {
         .await
         .unwrap();
 
-    let ids: Vec<_> = repo
-        .published()
-        .iter()
-        .map(|r| r["id"].as_str().unwrap().to_string())
-        .collect();
-    assert!(ids.contains(&"r-gone".to_string()), "got {ids:?}");
-    assert!(ids.contains(&"r-new".to_string()), "got {ids:?}");
+    assert_eq!(repo.jsonl_status(), "");
+    assert_eq!(repo.ids(), s(&["r-gone"]));
 }
 
-/// Comments and dependencies are part of the contract, so both must publish.
+/// Every `Update`-classified path on a PUBLISHED bead: the store changes, the
+/// tree does not.
 #[tokio::test]
-async fn comments_and_dependencies_publish() {
-    let repo = Repo::new(&[]);
+async fn comments_and_dependencies_leave_the_projection_untouched() {
+    let repo = Repo::new(&["r-1"]);
     let store = repo.store();
     store
         .create_bead_full(new_bead("r-1", "one"))
@@ -179,57 +224,88 @@ async fn comments_and_dependencies_publish() {
 
     store.add_comment("r-1", "a note", "tester").await.unwrap();
     store.add_dependency("r-1", "r-2").await.unwrap();
+    store
+        .update_bead_fields(
+            "r-1",
+            &BeadUpdate {
+                title: Some("renamed".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    // Exercises the decorator's own `close_bead` classification; the
+    // close-condition gate lives in bead_ops, above this seam.
+    store.close_bead("r-1").await.unwrap(); // nosemgrep: bead-close-bypasses-gate
 
-    let rec = repo.record("r-1").unwrap();
     assert_eq!(
-        rec["dependencies"],
-        serde_json::json!(["r-2"]),
-        "dependency edge must publish"
+        store.get_status("r-1").await.unwrap().as_deref(),
+        Some("done")
     );
-    let comments = rec["comments"].as_array().expect("comments array");
-    assert_eq!(comments.len(), 1, "comment must publish: {rec}");
+    assert_eq!(store.list_comments("r-1", false).await.unwrap().len(), 1);
+    assert_eq!(store.get_dependencies("r-1").await.unwrap(), s(&["r-2"]));
+    assert_eq!(repo.jsonl_status(), "", "updates must not dirty the tree");
     assert_eq!(
-        comments[0]["text"], "a note",
-        "the contract renders a comment as `text` (bead::Comment), not `body`"
+        repo.record("r-1").unwrap(),
+        serde_json::json!({"id": "r-1"})
     );
 }
 
-/// The single-record splice must be field-identical to the whole-file render.
-///
-/// The fast path renders from `get_bead`; the bounded path renders from
-/// `list_all_beads`. They share `bead_read_sql` and `bead_from_row` today, but
-/// "today" is exactly the assumption ADR-0021 was written about — so pin it
-/// rather than trust it. If the two projections ever diverge, this fails
-/// instead of silently writing a lossy record.
+/// A status CORRECTION (`bead correct`, rosary-e0e19f) writes through
+/// `set_status_verbatim`; it is classified as an update and, like every update,
+/// leaves the tree clean until a commit names the bead.
 #[tokio::test]
-async fn upsert_matches_full_refresh_field_for_field() {
-    let repo = Repo::new(&[]);
+async fn a_status_correction_leaves_the_projection_untouched() {
+    let repo = Repo::new(&["r-1"]);
     let store = repo.store();
     store
-        .create_bead_full(NewBead {
-            files: vec!["src/a.rs".into()],
-            test_files: vec!["tests/a.rs".into()],
-            description: "a description".into(),
-            ..new_bead("r-1", "one")
-        })
+        .create_bead_full(new_bead("r-1", "wrongly closed"))
         .await
         .unwrap();
-    store.add_comment("r-1", "note", "tester").await.unwrap();
-    let spliced = repo.record("r-1").expect("spliced record");
+    store.set_status_verbatim("r-1", "done").await.unwrap();
 
-    // Now force the bounded whole-file path over the same state.
-    crate::jsonl_sync::refresh_tracked_beads_jsonl(
-        store.inner.as_ref(),
-        &repo.root.file_name().unwrap().to_string_lossy(),
-        &repo.root,
+    crate::bead_correct::correct_status(
+        &store,
+        "r-1",
+        "open",
+        "auto-closed with acceptance criteria unmet",
     )
     .await
     .unwrap();
-    let refreshed = repo.record("r-1").expect("refreshed record");
 
     assert_eq!(
-        spliced, refreshed,
-        "single-record splice diverged from the whole-file render"
+        store.get_status("r-1").await.unwrap().as_deref(),
+        Some("open")
+    );
+    assert_eq!(
+        repo.jsonl_status(),
+        "",
+        "a correction must not dirty the tree"
+    );
+}
+
+/// The `Whole` kind used to trigger a full-file refresh. Now nothing.
+#[tokio::test]
+async fn a_comment_delete_leaves_the_projection_untouched() {
+    let repo = Repo::new(&["r-1"]);
+    let store = repo.store();
+    store
+        .create_bead_full(new_bead("r-1", "one"))
+        .await
+        .unwrap();
+    store.add_comment("r-1", "soft", "tester").await.unwrap();
+    store.add_comment("r-1", "hard", "tester").await.unwrap();
+    let comments = store.list_comments("r-1", false).await.unwrap();
+    assert_eq!(comments.len(), 2);
+
+    store.delete_comment(&comments[0].id, None).await.unwrap();
+    store.hard_delete_comment(&comments[1].id).await.unwrap();
+
+    assert!(store.list_comments("r-1", false).await.unwrap().is_empty());
+    assert_eq!(
+        repo.jsonl_status(),
+        "",
+        "a whole-kind write must not dirty the tree"
     );
 }
 
@@ -298,20 +374,20 @@ fn dolt_repos_have_no_projection() {
 /// Every `BeadStore` method is classified, and the classification is not a
 /// comment — it is checked against the trait as the compiler sees it.
 ///
-/// The compiler already forces this file to implement all 33 methods (there is
-/// no blanket forward). This test guards the *other* half: that the count in
-/// the module docs, and the reviewer's mental model, match reality.
+/// The compiler already forces mod.rs to implement every REQUIRED method (there
+/// is no blanket forward). This test guards the other half: provided methods,
+/// the count in the module docs, and the reviewer's mental model match reality.
 #[test]
 fn every_trait_method_is_classified() {
     // The wider vocabulary the runtime enum deliberately does not carry: a
     // method can be a projected write, a write the JSONL contract does not
     // represent, or a read. `log_event` is the only UnprojectedWrite —
-    // `bead_to_contract_value` renders no event stream, so republishing after
-    // one would rewrite 3 MB to produce a byte-identical file.
+    // `bead_to_contract_value` renders no event stream, so an event changes
+    // nothing the projection would ever show.
     //
-    // Adding a trait method breaks the build in mod.rs first (there is no
-    // blanket forward); this catches the case where someone adds it to the
-    // impl but forgets to decide what it means for the projection.
+    // Adding a required trait method breaks the build in mod.rs first; this
+    // catches the case where someone adds a method (required or provided) but
+    // forgets to decide what it means for the projection.
     #[derive(Debug, PartialEq, Eq)]
     enum Class {
         Writes(Projected),
@@ -357,7 +433,7 @@ fn every_trait_method_is_classified() {
         ("log_event", UnprojectedWrite),
     ];
 
-    let src = include_str!("../store.rs");
+    let src = include_str!("../../store.rs");
     let trait_body = src
         .split_once("pub trait BeadStore")
         .expect("BeadStore trait present")
@@ -384,46 +460,5 @@ fn every_trait_method_is_classified() {
         declared.len(),
         34,
         "trait size changed; re-read the classes"
-    );
-}
-
-/// A status CORRECTION must reach the tracked projection too.
-///
-/// `bead correct` (rosary-e0e19f) writes through `set_status_verbatim`, a path
-/// that did not exist when this decorator was written. If it did not publish,
-/// the store and the tracked export would disagree about a bead whose status was
-/// just declared wrong — the exact drift #431 exists to prevent, reintroduced by
-/// the fix for a different bug.
-#[tokio::test]
-async fn a_status_correction_reaches_the_tracked_projection() {
-    let repo = Repo::new(&[]);
-    let store = repo.store();
-    store
-        .create_bead_full(new_bead("r-1", "wrongly closed"))
-        .await
-        .unwrap();
-    store.set_status_verbatim("r-1", "done").await.unwrap();
-    assert_eq!(repo.record("r-1").unwrap()["status"], "done");
-
-    crate::bead_correct::correct_status(
-        &store,
-        "r-1",
-        "open",
-        "auto-closed with acceptance criteria unmet",
-    )
-    .await
-    .unwrap();
-
-    let rec = repo.record("r-1").expect("still published");
-    assert_eq!(
-        rec["status"], "open",
-        "the correction must reach the tracked export, not just the store"
-    );
-    let comments = rec["comments"].as_array().expect("comments array");
-    assert!(
-        comments.iter().any(|c| c["text"]
-            .as_str()
-            .is_some_and(|t| t.contains("Status corrected"))),
-        "the audit comment must publish with it: {rec}"
     );
 }
