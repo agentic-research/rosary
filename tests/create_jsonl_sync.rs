@@ -21,8 +21,11 @@ fn create(cwd: &Path, home: &Path, title: &str) -> Output {
     )
 }
 
+/// ADR-0024 amendment A (rosary-e5fb88): a store write never touches the
+/// projection, even an opted-in one. The commit that names the bead publishes
+/// it (rosary-e5bfd3); `create` itself leaves the file and the tree untouched.
 #[test]
-fn create_adds_only_the_new_bead_to_an_opted_in_projection() {
+fn create_leaves_an_opted_in_projection_untouched() {
     let home = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
     git(repo.path(), &["init", "-q", "-b", "main"]);
@@ -48,13 +51,21 @@ fn create_adds_only_the_new_bead_to_an_opted_in_projection() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let records: Vec<serde_json::Value> = std::fs::read_to_string(&projection)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["title"], "newly published bead");
+    assert_eq!(
+        std::fs::read_to_string(&projection).unwrap(),
+        "",
+        "create must not write the projection; publication happens at commit"
+    );
+    let status = Command::new("git")
+        .args(["status", "--porcelain", "--", ".beads/beads.jsonl"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout).trim(),
+        "",
+        "the tree must stay clean after a store write"
+    );
 }
 
 #[test]
