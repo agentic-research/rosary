@@ -93,6 +93,10 @@ fn atomic_replace(path: &Path, content: &str) -> Result<()> {
 }
 
 /// Atomically refresh an opted-in, tracked JSONL projection in place.
+#[expect(
+    dead_code,
+    reason = "the trunk refresh (P4, rosary-e5c0a0, `publish::trunk`) is its caller and is still a stub; `expect`, not `allow`, so the annotation fails the build once it is stale"
+)]
 pub async fn refresh_tracked_beads_jsonl(
     store: &dyn BeadStore,
     repo_name: &str,
