@@ -1,11 +1,12 @@
 use super::*;
 use crate::bead_sqlite::SqliteBeadStore;
 use crate::jsonl_sync::{
-    PublishReport, export_published_beads_contract_jsonl, publish_ids,
-    refresh_tracked_beads_jsonl,
+    PublishReport, export_published_beads_contract_jsonl, publish_ids, refresh_tracked_beads_jsonl,
 };
 use serde_json::Value;
 use std::path::PathBuf;
+
+mod publish_ids_tests;
 
 /// A repo with a git-tracked `.beads/beads.jsonl` holding `seed_ids`.
 ///
@@ -52,7 +53,11 @@ impl Repo {
     }
 
     fn repo_name(&self) -> String {
-        self.root.file_name().unwrap().to_string_lossy().into_owned()
+        self.root
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// `git status --porcelain` scoped to the tracked file, trimmed. Empty means
@@ -150,9 +155,18 @@ async fn a_create_leaves_the_projection_untouched() {
         .await
         .unwrap();
 
-    assert!(store.get_bead("r-1", &repo.repo_name()).await.unwrap().is_some());
+    assert!(
+        store
+            .get_bead("r-1", &repo.repo_name())
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(repo.jsonl_status(), "", "a create must not dirty the tree");
-    assert!(repo.ids().is_empty(), "nothing is published until a commit names it");
+    assert!(
+        repo.ids().is_empty(),
+        "nothing is published until a commit names it"
+    );
 }
 
 /// The rosary-a7ee3a boundary, still true with the write gone: touching a
@@ -220,13 +234,21 @@ async fn comments_and_dependencies_leave_the_projection_untouched() {
         )
         .await
         .unwrap();
-    store.close_bead("r-1").await.unwrap();
+    // Exercises the decorator's own `close_bead` classification; the
+    // close-condition gate lives in bead_ops, above this seam.
+    store.close_bead("r-1").await.unwrap(); // nosemgrep: bead-close-bypasses-gate
 
-    assert_eq!(store.get_status("r-1").await.unwrap().as_deref(), Some("done"));
+    assert_eq!(
+        store.get_status("r-1").await.unwrap().as_deref(),
+        Some("done")
+    );
     assert_eq!(store.list_comments("r-1", false).await.unwrap().len(), 1);
     assert_eq!(store.get_dependencies("r-1").await.unwrap(), s(&["r-2"]));
     assert_eq!(repo.jsonl_status(), "", "updates must not dirty the tree");
-    assert_eq!(repo.record("r-1").unwrap(), serde_json::json!({"id": "r-1"}));
+    assert_eq!(
+        repo.record("r-1").unwrap(),
+        serde_json::json!({"id": "r-1"})
+    );
 }
 
 /// A status CORRECTION (`bead correct`, rosary-e0e19f) writes through
@@ -251,8 +273,15 @@ async fn a_status_correction_leaves_the_projection_untouched() {
     .await
     .unwrap();
 
-    assert_eq!(store.get_status("r-1").await.unwrap().as_deref(), Some("open"));
-    assert_eq!(repo.jsonl_status(), "", "a correction must not dirty the tree");
+    assert_eq!(
+        store.get_status("r-1").await.unwrap().as_deref(),
+        Some("open")
+    );
+    assert_eq!(
+        repo.jsonl_status(),
+        "",
+        "a correction must not dirty the tree"
+    );
 }
 
 /// The `Whole` kind used to trigger a full-file refresh. Now nothing.
@@ -273,162 +302,11 @@ async fn a_comment_delete_leaves_the_projection_untouched() {
     store.hard_delete_comment(&comments[1].id).await.unwrap();
 
     assert!(store.list_comments("r-1", false).await.unwrap().is_empty());
-    assert_eq!(repo.jsonl_status(), "", "a whole-kind write must not dirty the tree");
-}
-
-/// `publish_ids` (the commit-time splice) renders exactly what `bead export
-/// --published-from` (`export_published_beads_contract_jsonl`) renders over the
-/// same published set, byte for byte — and its single record is field-identical
-/// to the whole-file refresh (P4). Pinned rather than trusted: the fast path
-/// renders from `get_bead`, the bounded paths from `list_all_beads`, and
-/// ADR-0021 exists because those have drifted before.
-#[tokio::test]
-async fn publish_ids_matches_full_refresh_and_published_export_byte_for_byte() {
-    let repo = Repo::new(&["r-0"]);
-    let store = repo.store();
-    store
-        .create_bead_full(NewBead {
-            files: vec!["src/a.rs".into()],
-            test_files: vec!["tests/a.rs".into()],
-            description: "a description".into(),
-            ..new_bead("r-1", "one")
-        })
-        .await
-        .unwrap();
-    store.add_comment("r-1", "note", "tester").await.unwrap();
-    let mut published_with_r1 = repo.published();
-    published_with_r1.push(serde_json::json!({"id": "r-1"}));
-
-    let report = publish_ids(store.inner.as_ref(), &repo.repo_name(), &repo.root, &s(&["r-1"]))
-        .await
-        .unwrap();
-    assert_eq!(report.inserted, s(&["r-1"]));
-    let spliced_file = repo.raw();
-    let spliced = repo.record("r-1").expect("spliced record");
-
-    let exported =
-        export_published_beads_contract_jsonl(store.inner.as_ref(), &published_with_r1, &repo.repo_name())
-            .await
-            .unwrap();
-    assert_eq!(spliced_file, exported, "publish_ids diverged from `bead export --published-from`");
-
-    refresh_tracked_beads_jsonl(store.inner.as_ref(), &repo.repo_name(), &repo.root)
-        .await
-        .unwrap();
-    assert_eq!(repo.record("r-1").expect("refreshed record"), spliced);
-    assert_eq!(repo.raw(), spliced_file, "whole-file refresh rewrote a spliced file");
-}
-
-/// Publishing is what dirties the tree — once per id, however often named.
-#[tokio::test]
-async fn publish_ids_inserts_a_named_bead_once() {
-    let repo = Repo::new(&[]);
-    let store = repo.store();
-    store.create_bead("r-1", "t", "d", 1, "bug").await.unwrap();
-
-    let report = publish_ids(&store, &repo.repo_name(), &repo.root, &s(&["r-1", "r-1"]))
-        .await
-        .unwrap();
-
     assert_eq!(
-        report,
-        PublishReport {
-            inserted: s(&["r-1"]),
-            ..Default::default()
-        }
+        repo.jsonl_status(),
+        "",
+        "a whole-kind write must not dirty the tree"
     );
-    assert_eq!(repo.record("r-1").unwrap()["title"], "t");
-    assert!(repo.jsonl_status().starts_with("M "), "got {:?}", repo.jsonl_status());
-}
-
-#[tokio::test]
-async fn publish_ids_reports_unchanged_then_updated() {
-    let repo = Repo::new(&[]);
-    let store = repo.store();
-    store.create_bead("r-1", "t", "d", 1, "bug").await.unwrap();
-    let name = repo.repo_name();
-    let ids = s(&["r-1"]);
-    publish_ids(&store, &name, &repo.root, &ids).await.unwrap();
-
-    let again = publish_ids(&store, &name, &repo.root, &ids).await.unwrap();
-    assert_eq!(again.unchanged, ids, "{again:?}");
-    assert!(again.inserted.is_empty() && again.updated.is_empty());
-
-    store.update_status("r-1", "in_progress").await.unwrap();
-    let after = publish_ids(&store, &name, &repo.root, &ids).await.unwrap();
-    assert_eq!(after.updated, ids, "{after:?}");
-    let stored = store.get_status("r-1").await.unwrap().unwrap();
-    assert_eq!(repo.record("r-1").unwrap()["status"], serde_json::json!(stored));
-}
-
-/// A repo whose store was rebuilt must not have the rest of its history blanked
-/// by publishing one bead.
-#[tokio::test]
-async fn publish_ids_preserves_published_records_absent_from_the_store() {
-    let repo = Repo::new(&["r-gone"]);
-    let store = repo.store();
-    store
-        .create_bead_full(new_bead("r-new", "fresh"))
-        .await
-        .unwrap();
-
-    let report = publish_ids(&store, &repo.repo_name(), &repo.root, &s(&["r-new"]))
-        .await
-        .unwrap();
-
-    assert_eq!(report.inserted, s(&["r-new"]));
-    assert_eq!(repo.ids(), s(&["r-gone", "r-new"]));
-}
-
-/// A subject naming an id the store does not hold (`rosary-000000` in
-/// fixtures) is reported, not an error, and never blanks or dirties anything.
-#[tokio::test]
-async fn publish_ids_reports_an_id_the_store_does_not_hold_as_missing() {
-    let repo = Repo::new(&[]);
-    let store = repo.store();
-    store.create_bead("r-1", "t", "d", 1, "bug").await.unwrap();
-    let name = repo.repo_name();
-
-    let only_missing = publish_ids(&store, &name, &repo.root, &s(&["rosary-000000"]))
-        .await
-        .unwrap();
-    assert_eq!(
-        only_missing,
-        PublishReport {
-            missing: s(&["rosary-000000"]),
-            ..Default::default()
-        }
-    );
-    assert_eq!(repo.jsonl_status(), "", "a missing id must not touch the file");
-
-    let mixed = publish_ids(&store, &name, &repo.root, &s(&["r-1", "rosary-000000"]))
-        .await
-        .unwrap();
-    assert_eq!(mixed.inserted, s(&["r-1"]));
-    assert_eq!(mixed.missing, s(&["rosary-000000"]));
-    assert_eq!(repo.ids(), s(&["r-1"]));
-}
-
-/// An untracked `beads.jsonl` is not opted in — for `publish_ids` too.
-#[tokio::test]
-async fn publish_ids_does_not_publish_to_an_untracked_file() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    let beads = root.join(".beads");
-    std::fs::create_dir_all(&beads).unwrap();
-    std::fs::write(beads.join("beads.jsonl"), "").unwrap();
-    std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    let store = SqliteBeadStore::connect(&beads.join("beads.db")).unwrap();
-    store.create_bead("r-1", "t", "d", 1, "bug").await.unwrap();
-
-    let report = publish_ids(&store, "x", root, &s(&["r-1"])).await.unwrap();
-
-    assert_eq!(report, PublishReport::default());
-    assert_eq!(std::fs::read_to_string(beads.join("beads.jsonl")).unwrap(), "");
 }
 
 /// A repo that has not opted in stays opted out. Publication is the owner's
@@ -555,7 +433,7 @@ fn every_trait_method_is_classified() {
         ("log_event", UnprojectedWrite),
     ];
 
-    let src = include_str!("../store.rs");
+    let src = include_str!("../../store.rs");
     let trait_body = src
         .split_once("pub trait BeadStore")
         .expect("BeadStore trait present")

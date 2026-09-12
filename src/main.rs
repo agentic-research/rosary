@@ -3620,6 +3620,11 @@ pub enum Publication {
     /// Bootstrap replay. The closures are re-derived from history the
     /// projection already reflects, so publishing them would echo local
     /// inference back into a shared file.
+    ///
+    /// ADR-0024 amendment A (rosary-e5bf6b): no store write publishes any
+    /// more, so `Publish` and `Suppress` now behave identically at the store.
+    /// Kept until P5 removes the last callers along with
+    /// `connect_bead_store_unpublished`.
     Suppress,
 }
 

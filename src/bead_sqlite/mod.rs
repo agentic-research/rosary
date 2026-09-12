@@ -207,9 +207,11 @@ pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> 
         eprintln!("[bead] WARNING: {warning}");
     }
     let store = SqliteBeadStore::connect(&sqlite_path(beads_dir))?;
-    // Every bead write goes through this one seam, so the tracked-JSONL refresh
-    // hangs off it rather than off the ~50 call sites (rosary-8ca6e5). Inert
-    // when there is no tracked projection to publish to.
+    // Every bead write goes through this one seam, so the projection gate
+    // hangs off it rather than off the ~50 call sites (rosary-8ca6e5). Under
+    // ADR-0024 amendment A the gate classifies writes but never writes
+    // `.beads/beads.jsonl`; publication happens at commit and on the trunk
+    // (rosary-e5bf6b). Inert when there is no projection to classify against.
     Ok(Box::new(crate::publish::PublishingBeadStore::new(
         Box::new(store),
         beads_dir,
@@ -231,6 +233,12 @@ pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> 
 /// Reach for this only when a write's effect on the projection would be an ECHO
 /// of what the projection already told us. Everything else wants
 /// [`connect_bead_store`].
+///
+/// ADR-0024 amendment A (rosary-e5bf6b): the published store no longer writes
+/// the projection on any write, so the distinction this function draws is
+/// gone — both entry points leave `.beads/beads.jsonl` untouched. It stays
+/// only because `main.rs` still calls it; P5 (the handlers/main.rs call-site
+/// pass) removes the last callers and then this function.
 pub async fn connect_bead_store_unpublished(beads_dir: &Path) -> Result<Box<dyn BeadStore>> {
     if crate::bead_backend::is_dolt_backed(beads_dir) {
         return connect_bead_store(beads_dir).await;

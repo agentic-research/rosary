@@ -169,6 +169,10 @@ pub async fn publish_created_bead_to_tracked_jsonl(
 /// no-op, not an error.
 ///
 /// Returns whether the file changed.
+#[expect(
+    dead_code,
+    reason = "reachable only through `publish_ids` until P2 (rosary-e5bfd3) wires the commit-msg hook; `expect`, not `allow`, so the annotation fails the build once it is stale"
+)]
 pub async fn upsert_tracked_bead(
     store: &dyn BeadStore,
     bead_id: &str,
@@ -224,6 +228,10 @@ pub async fn upsert_tracked_bead(
 
 /// Outcome of publishing a named id set into the tracked projection.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[expect(
+    dead_code,
+    reason = "constructed only by `publish_ids` until P2 (rosary-e5bfd3) wires the commit-msg hook; `expect`, not `allow`, so the annotation fails the build once it is stale"
+)]
 pub struct PublishReport {
     pub inserted: Vec<String>,
     pub updated: Vec<String>,
@@ -246,6 +254,10 @@ pub struct PublishReport {
 /// [`upsert_tracked_bead`]'s opt-in check (Dolt / file missing / untracked)
 /// remains the boundary: a repo that has not opted in gets an empty report and
 /// an untouched tree.
+#[expect(
+    dead_code,
+    reason = "the commit-msg hook (P2, rosary-e5bfd3, `publish::commit`) is its caller and is still a stub; `expect`, not `allow`, so the annotation fails the build once it is stale"
+)]
 pub async fn publish_ids(
     store: &dyn BeadStore,
     repo_name: &str,
