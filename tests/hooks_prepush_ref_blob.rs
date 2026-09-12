@@ -190,6 +190,24 @@ impl PrepushRepo {
         created_id(&out)
     }
 
+    /// Publish the whole store into the tracked file by hand — the explicit
+    /// escape hatch. Since #495/#498 a store write publishes nothing, and the
+    /// commit-time publish is P2 (rosary-e5bfd3); this fixture only needs X's
+    /// record IN the commit so the gate's verdict is about staleness.
+    fn publish_all(&self) {
+        let out = self.rsry(&[
+            "bead",
+            "export",
+            "--jsonl",
+            "--status",
+            "all",
+            "-o",
+            PREPUSH_JSONL,
+        ]);
+        self.must("bead export", &out);
+        self.must("git add jsonl", &self.git(&["add", PREPUSH_JSONL]));
+    }
+
     /// Commit `file` under `subject` through the real commit-msg/pre-commit hooks.
     fn commit_code(&self, file: &str, subject: &str) {
         self.write_file(file, "fn f() {}\n");
@@ -235,6 +253,7 @@ fn a_pushed_record_that_lags_the_store_is_refused_until_published() {
         &r.git(&["checkout", "-q", "-b", "feature"]),
     );
     let id = r.create_bead("feature work", "a.rs");
+    r.publish_all();
     r.commit_code("a.rs", &format!("[{id}] feat(core): work"));
     let committed = r.blob("HEAD");
     assert!(
@@ -264,11 +283,10 @@ fn a_pushed_record_that_lags_the_store_is_refused_until_published() {
         "the refused push must not have created the remote ref"
     );
 
-    // Publish X. `rsry bead publish X` is the verb (rosary-e5bfd3); the
-    // artifact it produces — X's current record in the tracked file — is
-    // already in the working tree via the every-write refresh, and the
-    // pre-commit hook re-renders the published set regardless.
-    r.must("stage publish", &r.git(&["add", PREPUSH_JSONL]));
+    // Publish X. `rsry bead publish X` is the verb (rosary-e5bfd3); until it
+    // lands, the whole-store export is the explicit hand that puts X's current
+    // record into the tracked file — the same artifact, then committed.
+    r.publish_all();
     r.must(
         "publish commit",
         &r.git(&["commit", "-q", "-m", &format!("[{id}] chore: publish")]),
