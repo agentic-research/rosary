@@ -218,36 +218,6 @@ pub async fn connect_bead_store(beads_dir: &Path) -> Result<Box<dyn BeadStore>> 
     )))
 }
 
-/// The same store, but with tracked-JSONL publication switched OFF.
-///
-/// For paths that REPLAY the published record into a local store rather than
-/// originate new state — today just `rsry init`'s bootstrap. A fresh clone
-/// imports the projection and then overlays terminal state derived from trunk
-/// merge commits; that derivation is local inference, not a publication event,
-/// and echoing it back would rewrite the shared file in every consumer's
-/// working tree on first init. `bootstrap_git_tracked_beads` states the
-/// invariant ("never exports the live store, preserving intentionally
-/// scrubbed/omitted records") and `tests/init_jsonl_reconciliation.rs` enforces
-/// it.
-///
-/// Reach for this only when a write's effect on the projection would be an ECHO
-/// of what the projection already told us. Everything else wants
-/// [`connect_bead_store`].
-///
-/// ADR-0024 amendment A (rosary-e5bf6b): the published store no longer writes
-/// the projection on any write, so the distinction this function draws is
-/// gone — both entry points leave `.beads/beads.jsonl` untouched. It stays
-/// only because `main.rs` still calls it; P5 (the handlers/main.rs call-site
-/// pass) removes the last callers and then this function.
-pub async fn connect_bead_store_unpublished(beads_dir: &Path) -> Result<Box<dyn BeadStore>> {
-    if crate::bead_backend::is_dolt_backed(beads_dir) {
-        return connect_bead_store(beads_dir).await;
-    }
-    Ok(Box::new(SqliteBeadStore::connect(
-        &crate::bead_backend::sqlite_path(beads_dir),
-    )?))
-}
-
 pub struct SqliteBeadStore {
     conn: Mutex<Connection>,
     #[allow(dead_code)]

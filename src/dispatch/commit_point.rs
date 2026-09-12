@@ -7,6 +7,12 @@ use anyhow::{Context, Result};
 /// The private field prevents providers or agent output from fabricating the
 /// receipt. External writes receive it only through
 /// [`commit_external_mutation`].
+///
+/// No production caller since `rosary-e5fb88` removed the create-time
+/// projection publish (ADR-0024 amendment A: store writes never touch the
+/// projection). Kept as the Golden Rule 13 commit point for the external
+/// mutations still to land — the trunk refresh + push in `publish::trunk`.
+#[allow(dead_code)]
 pub struct VerificationReceipt {
     _sealed: (),
 }
@@ -15,6 +21,7 @@ pub struct VerificationReceipt {
 ///
 /// Both closures execute in the trusted Rosary host harness, never as sibling
 /// commands in an agent-authored shell sequence.
+#[allow(dead_code)]
 pub fn commit_external_mutation(
     verifier: &mut dyn FnMut() -> Result<()>,
     mutation: &mut dyn FnMut(&VerificationReceipt) -> Result<()>,

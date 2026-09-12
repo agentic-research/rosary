@@ -624,7 +624,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/dolt/bead_crud.rs",
-      "count": 1
+      "count": 2
     },
     {
       "rule_id": "fan_out_skew",
@@ -734,7 +734,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/reconcile/completion.rs",
-      "count": 1
+      "count": 2
     },
     {
       "rule_id": "fan_out_skew",
@@ -839,7 +839,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/vcs.rs",
-      "count": 1
+      "count": 2
     },
     {
       "rule_id": "fan_out_skew",

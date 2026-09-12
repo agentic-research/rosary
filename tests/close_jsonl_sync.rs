@@ -1,5 +1,6 @@
-//! Closing a bead must immediately refresh its already-published JSONL record
-//! without publishing other records from the richer local store.
+//! Closing a bead leaves the tracked JSONL untouched (ADR-0024 amendment A);
+//! the commit that names the bead publishes it, and never other records from
+//! the richer local store.
 
 #[path = "common/mod.rs"]
 mod close_common;
@@ -160,9 +161,12 @@ fn close_refreshes_published_record_without_publishing_local_only_bead() {
         "close must not publish local-only records"
     );
     assert_eq!(records[0]["id"], published_id);
+    // ADR-0024 amendment A (rosary-e5fb88): a store write never touches the
+    // projection, so the published record still reads what the last commit
+    // rendered. It reaches the file when a commit names the bead (rosary-e5bfd3).
     assert_eq!(
-        records[0]["status"], "done",
-        "close must immediately refresh the published record to the store's terminal status"
+        records[0]["status"], "open",
+        "close must NOT touch the projection; publication happens at commit"
     );
     assert!(
         !std::fs::read_to_string(&jsonl_path)
