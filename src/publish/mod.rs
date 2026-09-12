@@ -1,62 +1,71 @@
-//! Keep the git-tracked bead projection current by construction (rosary-8ca6e5).
+//! Classify every bead-store write; publish only at commit and on the trunk
+//! (ADR-0024 amendment A).
 //!
-//! ## The defect this replaces
+//! ## What this decorator is
 //!
-//! `rosary-a7ee3a` built the bounded projection refresh correctly, then wired it
-//! into exactly two operations — `bead create` and `bead close`, once each on
-//! the CLI and MCP surfaces. Every other write path updated `.beads/beads.db`
-//! and left `.beads/beads.jsonl` behind: `update`, `comment`, `link`, `import`,
-//! the Linear and GitHub webhook writes, and — loudest — `persist_status`, which
-//! is every dispatch state transition the reconciler makes.
+//! [`connect_bead_store`](crate::bead_sqlite::connect_bead_store) is the single
+//! entry point for all bead I/O, so wrapping its result puts a gate under every
+//! write path — the ~50 that exist and every one not yet written. The gate's job
+//! is CLASSIFICATION: each `BeadStore` write is named `Create`, `Update` or
+//! `Whole` ([`Projected`]), or explicitly a write the tracked projection does not
+//! represent. Nothing reaches the store without someone having decided what it
+//! means for `.beads/beads.jsonl`.
 //!
-//! The cost was measured, not theorised: rosary carried 49 store-only beads and
-//! cloister 30, all recovered by hand. A survey of all 20 registered repos found
-//! three more still drifting (mache +14, agents +6, q-q-dev +2).
+//! What the gate does NOT do is write that file. Publication happens at exactly
+//! the moments git observes:
 //!
-//! ## Why a decorator, and why here
+//! - **At commit** (P2, [`commit`], `rosary-e5bfd3`): the commit-msg hook
+//!   publishes the beads the commit subject names, via
+//!   [`crate::jsonl_sync::publish_ids`].
+//! - **On the trunk after a merge** (P4, [`trunk`], `rosary-e5c0a0`): a full
+//!   [`crate::jsonl_sync::refresh_tracked_beads_jsonl`], committed as rosary.
 //!
-//! The failure mode is not "someone wrote the refresh wrong". It is "someone
-//! wrote a new write path and did not know a refresh existed". No amount of care
-//! at the call site fixes that, because the call sites are the thing being
-//! forgotten. So the refresh moves *underneath* every caller:
-//! [`connect_bead_store`](crate::bead_sqlite::connect_bead_store) is already the
-//! single entry point for all bead I/O, so wrapping its result covers all 50
-//! current call sites — and, more to the point, every one not yet written.
+//! A store write in between leaves the working tree clean. The invariant is
+//! about commits and the trunk, not writes: *every commit carries the current
+//! records of the beads it names, and no others; the trunk carries the current
+//! record of every published bead.*
 //!
-//! ## The gate is the compiler
+//! ## Why the classification stays even though the write went
 //!
-//! `BeadStore` has 33 methods and this type implements every one *by hand*.
-//! There is deliberately no blanket forwarding impl and no `Deref`, because both
-//! would let a 34th method appear and silently forward without anyone deciding
-//! whether it mutates the projection. As written, adding a REQUIRED method to
-//! the trait fails to compile until it is classified here.
+//! `BeadStore` has 34 methods and this type implements every one *by hand*.
+//! There is deliberately no blanket forwarding impl and no `Deref`, so a new
+//! REQUIRED method fails to compile until it is classified here. `create_bead`
+//! is a *provided* method (ADR-0021 slice 2, `rosary-c7126b`) and provided
+//! methods do not break this impl, so the compile-time half covers required
+//! methods only; `tests::every_trait_method_is_classified` reads the trait body
+//! out of `store.rs` and covers both. That classification is what P2 and P4
+//! inherit: "is this a projected write, and which kind" is decided once, here,
+//! as reviewable data, rather than re-derived by each hook.
 //!
-//! Caveat added by ADR-0021 slice 2 (`rosary-c7126b`): `create_bead` became a
-//! *provided* method, and a provided method does not break this impl when added.
-//! So the compile-time half of the guarantee covers required methods only. The
-//! test half — `tests::every_trait_method_is_classified`, which reads the trait
-//! body out of `store.rs` — covers both, and is what actually holds the line
-//! now. Worth knowing before relying on "it won't compile" alone.
+//! ## History
 //!
-//! That is the same property `src/parity` has, obtained more cheaply: a
-//! mechanical check nobody has to remember to run, whose failure is a build
-//! error rather than a report someone reads. The classification itself is a
-//! judgement — [`Projected`] records it as data so it can be reviewed and
-//! tested, rather than being implicit in which methods happen to call `mark`.
+//! `rosary-8ca6e5` introduced this decorator as a write-through: every
+//! projected write re-rendered its record into the tracked file, ending the
+//! store-only drift left by `rosary-a7ee3a`'s two hand-wired call sites (49
+//! beads in rosary, 30 in cloister). `rosary-3d455a` then measured what
+//! write-through costs: the store is branch-independent and the file is
+//! branch-dependent, so materializing on every write produces the standing
+//! `M .beads/beads.jsonl`, commits carrying unrelated bead records (57/57 mixed
+//! commits on `main`), and refused checkouts. ADR-0024 amendment A (accepted
+//! 2026-09-12) moved publication to commit time and the trunk; this module kept
+//! the gate and dropped the write.
 //!
 //! ## What it deliberately does not do
 //!
-//! - **It does not create the projection.** An absent or untracked
-//!   `.beads/beads.jsonl` stays absent; publication remains the repo owner's
-//!   opt-in, exactly as `rosary-a7ee3a` established. The ten legacy repos with
-//!   no export at all are `rosary-9c0e6c`, a migration, not this.
-//! - **It does not publish non-canonical beads.** Coordination beads live in
-//!   `refs/agents/*` and personal beads in `~/.rsry/personal.db` (ADR-0022); a
-//!   store opened on those paths has no tracked projection, so the wrapper is
-//!   inert there by construction rather than by a role check it could get wrong.
-//! - **It does not touch Dolt repos.** Their projection is generated elsewhere.
+//! - **It does not write `.beads/beads.jsonl`** — not on create, update, or
+//!   the whole-file kinds. `tests::a_create_leaves_the_projection_untouched`
+//!   and its siblings observe that through `git status`, not through the store.
+//! - **It does not keep a pending set.** The commit hook derives the ids to
+//!   publish from the commit subject (`[bead-id]`), so there is nothing for the
+//!   decorator to remember.
+//! - **It does not opt a repo into publication.** An absent or untracked file
+//!   stays that way; `jsonl_sync`'s tracked-file check remains the owner's
+//!   opt-in boundary, applied at publish time.
+//! - **It does not touch Dolt repos.** [`Projection::discover`] is `None`
+//!   there, and non-canonical stores (coordination `refs/agents/*`, personal
+//!   `~/.rsry/personal.db`, ADR-0022) have no repo-rooted projection at all.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -71,10 +80,10 @@ pub mod trunk;
 #[cfg(test)]
 mod tests;
 
-/// What a projected write needs done to the tracked file.
+/// What kind of projected write just happened.
 ///
 /// Only the three *writing* kinds live here, because only they are ever
-/// constructed. The full 33-method classification — including the read-only and
+/// constructed. The full 34-method classification — including the read-only and
 /// unprojected-write methods — is the concern of
 /// `tests::every_trait_method_is_classified`, which owns the wider vocabulary.
 /// Modelling "this method does nothing to the projection" as a runtime value
@@ -87,51 +96,41 @@ pub enum Projected {
     Update,
     /// Mutates the projection but does not name the affected bead — the comment
     /// deletes, which key off `comment_id` and return nothing identifying the
-    /// owner. Falls back to the bounded whole-file refresh, which is correct and
-    /// rare enough for the cost not to matter.
+    /// owner. At publish time only a whole-file refresh can carry these.
     Whole,
 }
 
-/// Where the tracked projection lives, and what to call the repo in it.
-struct Projection {
-    repo_root: PathBuf,
-    repo_name: String,
-}
+/// Marker: this store has a tracked, non-Dolt projection under a repo root.
+///
+/// Carries no path because the decorator no longer writes; the commit-msg hook
+/// (P2) and the trunk refresh (P4) resolve the file from their own repo root.
+struct Projection;
 
 impl Projection {
-    /// Derive the projection from the resolved `.beads/` directory.
-    ///
-    /// `repo_root` is the PARENT of the resolved beads dir, not the caller's
-    /// cwd. That matters under git worktrees: `resolve_beads_dir` follows
-    /// `--git-common-dir` back to the main worktree, and the tracked JSONL lives
-    /// there, so an agent working in a worktree publishes to the one real file
-    /// instead of creating a second one nobody reads.
+    /// `None` for Dolt-backed stores (their projection is generated elsewhere)
+    /// and for stores with no named repo directory above the beads dir
+    /// (`:memory:`, the personal store).
     fn discover(beads_dir: &Path) -> Option<Self> {
         if crate::bead_backend::is_dolt_backed(beads_dir) {
             return None;
         }
-        let repo_root = beads_dir.parent()?.to_path_buf();
-        // Matches how every CLI call site derives it (`main.rs`): the repo
-        // directory name. Only a label stamped onto each rendered record.
-        let repo_name = repo_root.file_name()?.to_string_lossy().into_owned();
-        Some(Self {
-            repo_root,
-            repo_name,
-        })
+        beads_dir.parent()?.file_name().map(|_| Self)
     }
 }
 
-/// A `BeadStore` that keeps `.beads/beads.jsonl` in step with every write.
+/// A `BeadStore` that classifies every write against the tracked projection
+/// without writing it. Publication is the commit hook's and the trunk's job.
 pub struct PublishingBeadStore {
     inner: Box<dyn BeadStore>,
-    /// `None` when there is nothing to publish to — a Dolt repo, or a store
-    /// outside a repo (`:memory:`, the personal store). The wrapper is then a
-    /// pure pass-through.
+    /// `None` when there is no projection to classify against — a Dolt repo,
+    /// or a store outside a repo (`:memory:`, the personal store). The wrapper
+    /// is then a pure pass-through.
     projection: Option<Projection>,
 }
 
 impl PublishingBeadStore {
-    /// Wrap `inner`, publishing into the projection implied by `beads_dir`.
+    /// Wrap `inner`, classifying writes against the projection implied by
+    /// `beads_dir`.
     pub fn new(inner: Box<dyn BeadStore>, beads_dir: &Path) -> Self {
         Self {
             projection: Projection::discover(beads_dir),
@@ -139,36 +138,24 @@ impl PublishingBeadStore {
         }
     }
 
-    /// Republish after a write. Failures are surfaced, never swallowed: a
-    /// silently-skipped publish is precisely the bug this module exists to end.
+    /// Record what a write meant for the projection. Writes NOTHING.
+    ///
+    /// Kept as the single seam every projected method passes through: it is
+    /// where the classification is enforced (a `Create`/`Update` that does not
+    /// name its bead is a bug, not a silent skip). Under ADR-0024 amendment A
+    /// the per-write behaviour is "none" — the file is written by
+    /// `jsonl_sync::publish_ids` at commit and by
+    /// `jsonl_sync::refresh_tracked_beads_jsonl` on the trunk.
     async fn publish(&self, kind: Projected, bead_id: Option<&str>) -> Result<()> {
-        let Some(projection) = &self.projection else {
+        if self.projection.is_none() {
             return Ok(());
-        };
+        }
         match (kind, bead_id) {
-            (Projected::Create | Projected::Update, Some(id)) => {
-                crate::jsonl_sync::upsert_tracked_bead(
-                    self.inner.as_ref(),
-                    id,
-                    &projection.repo_name,
-                    &projection.repo_root,
-                    kind == Projected::Create,
-                )
-                .await?;
-            }
-            (Projected::Whole, _) => {
-                crate::jsonl_sync::refresh_tracked_beads_jsonl(
-                    self.inner.as_ref(),
-                    &projection.repo_name,
-                    &projection.repo_root,
-                )
-                .await?;
-            }
+            (Projected::Create | Projected::Update, Some(_)) | (Projected::Whole, _) => Ok(()),
             (Projected::Create | Projected::Update, None) => {
                 unreachable!("a projected bead write always names its bead")
             }
         }
-        Ok(())
     }
 }
 
@@ -259,8 +246,9 @@ impl BeadStore for PublishingBeadStore {
         self.inner.update_status(id, status).await?;
         self.publish(Projected::Update, Some(id)).await
     }
-    /// A correction changes the record, so it publishes like any other update —
-    /// the tracked export must not keep asserting the status that was wrong.
+    /// A correction changes the record, so it is classified like any other
+    /// update — the corrected status reaches the tracked export the next time
+    /// the bead is named in a commit, not a stale one.
     async fn set_status_verbatim(&self, id: &str, status: &str) -> Result<()> {
         self.inner.set_status_verbatim(id, status).await?;
         self.publish(Projected::Update, Some(id)).await
@@ -311,8 +299,8 @@ impl BeadStore for PublishingBeadStore {
         self.publish(Projected::Update, Some(issue_id)).await
     }
     /// Keyed by `comment_id`, but the returned `Comment` carries `issue_id`, so
-    /// the owning bead IS recoverable and this takes the precise path rather
-    /// than the whole-file fallback its siblings need.
+    /// the owning bead IS recoverable and this classifies as a named update
+    /// rather than the whole-file kind its siblings need.
     async fn update_comment(
         &self,
         comment_id: &str,
@@ -327,8 +315,8 @@ impl BeadStore for PublishingBeadStore {
 
     // --- Projected::Whole -------------------------------------------------
     // Keyed off `comment_id`, and unlike `update_comment` these return nothing
-    // that names the owning bead — so the bounded whole-file refresh is the
-    // only correct option. Rare enough that its cost does not matter.
+    // that names the owning bead — so at publish time only a whole-file refresh
+    // (the trunk's P4) can carry them.
     async fn delete_comment(&self, comment_id: &str, reason: Option<&str>) -> Result<()> {
         self.inner.delete_comment(comment_id, reason).await?;
         self.publish(Projected::Whole, None).await

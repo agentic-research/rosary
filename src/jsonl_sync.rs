@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use crate::store::BeadStore;
@@ -70,6 +70,14 @@ fn is_git_tracked(repo_root: &Path) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// The repo owner's opt-in boundary: a non-Dolt store whose
+/// `.beads/beads.jsonl` exists AND is git-tracked. The file existing is not
+/// consent; being committed is.
+fn is_opted_in(repo_root: &Path, jsonl: &Path) -> bool {
+    let beads_dir = crate::resolve_beads_dir(repo_root);
+    !crate::bead_backend::is_dolt_backed(&beads_dir) && jsonl.is_file() && is_git_tracked(repo_root)
+}
+
 fn atomic_replace(path: &Path, content: &str) -> Result<()> {
     let tmp = path.with_file_name(format!(
         ".beads.jsonl.tmp-{}-{}",
@@ -90,12 +98,8 @@ pub async fn refresh_tracked_beads_jsonl(
     repo_name: &str,
     repo_root: &Path,
 ) -> Result<bool> {
-    let beads_dir = crate::resolve_beads_dir(repo_root);
     let jsonl = repo_root.join(".beads/beads.jsonl");
-    if crate::bead_backend::is_dolt_backed(&beads_dir)
-        || !jsonl.is_file()
-        || !is_git_tracked(repo_root)
-    {
+    if !is_opted_in(repo_root, &jsonl) {
         return Ok(false);
     }
 
@@ -116,12 +120,8 @@ pub async fn publish_created_bead_to_tracked_jsonl(
     repo_name: &str,
     repo_root: &Path,
 ) -> Result<bool> {
-    let beads_dir = crate::resolve_beads_dir(repo_root);
     let jsonl = repo_root.join(".beads/beads.jsonl");
-    if crate::bead_backend::is_dolt_backed(&beads_dir)
-        || !jsonl.is_file()
-        || !is_git_tracked(repo_root)
-    {
+    if !is_opted_in(repo_root, &jsonl) {
         return Ok(false);
     }
 
@@ -176,12 +176,8 @@ pub async fn upsert_tracked_bead(
     repo_root: &Path,
     allow_insert: bool,
 ) -> Result<bool> {
-    let beads_dir = crate::resolve_beads_dir(repo_root);
     let jsonl = repo_root.join(".beads/beads.jsonl");
-    if crate::bead_backend::is_dolt_backed(&beads_dir)
-        || !jsonl.is_file()
-        || !is_git_tracked(repo_root)
-    {
+    if !is_opted_in(repo_root, &jsonl) {
         return Ok(false);
     }
 
@@ -224,6 +220,69 @@ pub async fn upsert_tracked_bead(
     }
     atomic_replace(&jsonl, &next)?;
     Ok(true)
+}
+
+/// Outcome of publishing a named id set into the tracked projection.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PublishReport {
+    pub inserted: Vec<String>,
+    pub updated: Vec<String>,
+    pub unchanged: Vec<String>,
+    /// Named but absent from the store (e.g. the `rosary-000000` placeholder
+    /// fixtures use). Not an error: a commit subject naming an id the store
+    /// does not hold must not fail the commit.
+    pub missing: Vec<String>,
+}
+
+/// Publish exactly `ids` into an opted-in projection (ADR-0024 amendment A).
+///
+/// This is the primitive the commit-msg hook (P2, `publish::commit`) and the
+/// trunk refresh (P4, `publish::trunk`) call; the decorator in [`crate::publish`]
+/// classifies writes but never touches the file. Naming a bead in a commit IS
+/// publishing it, so every id is upserted with `allow_insert = true` — the
+/// commit subject already made the create/update decision. Repeated ids are
+/// published once.
+///
+/// [`upsert_tracked_bead`]'s opt-in check (Dolt / file missing / untracked)
+/// remains the boundary: a repo that has not opted in gets an empty report and
+/// an untouched tree.
+pub async fn publish_ids(
+    store: &dyn BeadStore,
+    repo_name: &str,
+    repo_root: &Path,
+    ids: &[String],
+) -> Result<PublishReport> {
+    let jsonl = repo_root.join(".beads/beads.jsonl");
+    let mut report = PublishReport::default();
+    if !is_opted_in(repo_root, &jsonl) {
+        return Ok(report);
+    }
+    // Read once, before the loop: `upsert_tracked_bead` adds each id as it
+    // goes, so re-reading would misreport an id it just inserted as "updated".
+    let published_before: BTreeSet<String> =
+        crate::restore::read_beads_jsonl(Some(jsonl.to_string_lossy().into_owned()))?
+            .iter()
+            .filter_map(|record| record.get("id").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect();
+    let mut seen = BTreeSet::new();
+    for id in ids {
+        if !seen.insert(id.as_str()) {
+            continue;
+        }
+        if store.get_bead(id, repo_name).await?.is_none() {
+            report.missing.push(id.clone());
+            continue;
+        }
+        let changed = upsert_tracked_bead(store, id, repo_name, repo_root, true).await?;
+        let bucket = match (published_before.contains(id), changed) {
+            (false, true) => &mut report.inserted,
+            (true, true) => &mut report.updated,
+            (_, false) => &mut report.unchanged,
+        };
+        bucket.push(id.clone());
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
