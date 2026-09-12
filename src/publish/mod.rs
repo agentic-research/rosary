@@ -64,6 +64,10 @@ use async_trait::async_trait;
 use crate::bead::{Bead, BeadUpdate, Comment};
 use crate::store::{BeadStore, NewBead};
 
+pub mod commit;
+pub mod push;
+pub mod trunk;
+
 #[cfg(test)]
 mod tests;
 

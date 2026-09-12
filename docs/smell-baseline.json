@@ -284,7 +284,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/coordination/mod.rs",
-      "count": 2
+      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
@@ -364,7 +364,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/main.rs",
-      "count": 15
+      "count": 11
     },
     {
       "rule_id": "duplicate_definitions",
@@ -504,7 +504,7 @@
     {
       "rule_id": "duplicate_definitions",
       "source_id": "src/vcs.rs",
-      "count": 2
+      "count": 3
     },
     {
       "rule_id": "duplicate_definitions",
@@ -674,7 +674,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/main.rs",
-      "count": 9
+      "count": 5
     },
     {
       "rule_id": "fan_out_skew",
@@ -1204,6 +1204,91 @@
     {
       "rule_id": "long_file_rosary",
       "source_id": "tests/cli_integration.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "dead_code",
+      "source_id": "src/hooks/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/hooks/audit.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/hooks/install.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/hooks/mod.rs",
+      "count": 6
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/hooks/tests/mod.rs",
+      "count": 5
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/publish/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "src/restore/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "duplicate_definitions",
+      "source_id": "tests/cli_dispatch.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/hooks/audit.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/hooks/install.rs",
+      "count": 2
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/hooks/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "crates/bdr/src/parse.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/backend.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/bead_sqlite/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/dispatch/providers.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/observation/mod.rs",
+      "count": 1
+    },
+    {
+      "rule_id": "god_file",
+      "source_id": "src/store_dolt.rs",
       "count": 1
     }
   ]

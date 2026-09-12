@@ -158,6 +158,22 @@ pub const OPS: &[Op] = &[
         "bead merge-jsonl",
         ByDesign("a git merge driver; git invokes it, never a human or agent"),
     ),
+    // Projection-timing surfaces (thread trusted-kernel/projection-timing):
+    // agents WRITE beads through MCP; git PUBLISHES them. These three are the
+    // hooks' primitives (commit-msg / pre-push / post-merge on the trunk),
+    // so they run on the operator's checkout, never as agent tools.
+    cli_only(
+        "bead publish",
+        ByDesign("commit-msg hook primitive: publication is a commit-time act on the checkout"),
+    ),
+    cli_only(
+        "bead verify-pushed",
+        ByDesign("pre-push hook primitive: reads git's pre-push stdin"),
+    ),
+    cli_only(
+        "bead trunk-refresh",
+        ByDesign("post-merge hook primitive on the trunk checkout"),
+    ),
     cli_only("bead backup", ByDesign("operator disaster-recovery")),
     cli_only("bead restore", ByDesign("operator disaster-recovery")),
     cli_only(
