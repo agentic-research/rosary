@@ -137,7 +137,11 @@ differed.
 
 ## Amendment (proposed 2026-09-11): *when* the projection is materialized
 
-**Status: proposed — decision pending. Tracking bead `rosary-3d455a`.**
+**Status: accepted 2026-09-12 — option A (commit-time, scoped). Implementation thread
+`trusted-kernel/projection-timing`; falsifier `tests/beads_dirty_journey.rs` (`rosary-3d455a`).**
+**Trunk writer: undecided (`rosary-e5be46`)** — the post-merge trunk refresh (P4) needs an identity that
+can advance `main`; the choice between the rosary GitHub App as a ruleset bypass actor and a bot PR is
+open and gates only P4 and the docs bead.
 
 This ADR decided *which* artifact is canonical. It also fixed, without deciding it, *when* the cache is
 written: "every write path that mutates the store refreshes the export" — i.e. on every store write, from
@@ -182,7 +186,7 @@ any time, so it may also be rebuilt *only* at the moments git observes.
 
 | | Where the projection is written | Effect on the five observations |
 |---|---|---|
-| **A. Commit-time, scoped** *(recommended now)* | `PublishingBeadStore` stops writing through. Pre-commit upserts only the records of the bead ids the commit names (`[bead-id]` in the subject). Pre-push compares the **pushed ref's blob** for those ids against the store, not the working tree. Post-merge **on the trunk only** does a full refresh + commit. | All five green. Smallest change; no new artifact. |
+| **A. Commit-time, scoped** *(accepted 2026-09-12)* | `PublishingBeadStore` stops writing through. Pre-commit upserts only the records of the bead ids the commit names (`[bead-id]` in the subject). Pre-push compares the **pushed ref's blob** for those ids against the store, not the working tree. Post-merge **on the trunk only** does a full refresh + commit. | All five green. Smallest change; no new artifact. |
 | B. Trunk-only | Feature branches never touch the file; a post-merge job on the trunk regenerates and commits. | All five green; PRs carry no bead records at all, so reviewers lose the "this PR's bead" diff. A subset of A. |
 | C. Out of the working tree | Projection lives under `refs/beads/*` (ADR-0020 P4, ADR-0022, `rosary-131957` RefFolder). | Structurally cannot dirty the tree. The destination; larger, and gated on that design. |
 | D. Keep every-write, hide it | `skip-worktree` / `assume-unchanged` on the file. | Breaks checkout and merge; rejected. |
