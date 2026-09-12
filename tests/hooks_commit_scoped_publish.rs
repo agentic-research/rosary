@@ -40,10 +40,18 @@ impl Fixture {
         f.git_ok(&["commit", "-q", "--no-verify", "-m", "chore: seed"]);
         let root = f.root.to_string_lossy().into_owned();
         f.rsry_ok(&["init", &root]);
-        f.rsry_ok(&["bead", "export", "--jsonl", "--status", "all", "-o", JSONL]);
+        f.rsry_ok(&[
+            "bead",
+            "export",
+            "--jsonl",
+            "--status",
+            "all",
+            "-o",
+            TRACKED_JSONL,
+        ]);
         f.git_ok(&[
             "add",
-            JSONL,
+            TRACKED_JSONL,
             ".beads/metadata.json",
             ".beads/.gitignore",
             "AGENTS.md",
@@ -121,8 +129,8 @@ impl Fixture {
     /// dirties the working-tree file; discard that so the only writer under
     /// test is commit-msg. A no-op once write-through is gone.
     fn discard_projection(&self) {
-        self.git_ok(&["checkout", "--", JSONL]);
-        let st = self.git_ok(&["status", "--porcelain", "--", JSONL]);
+        self.git_ok(&["checkout", "--", TRACKED_JSONL]);
+        let st = self.git_ok(&["status", "--porcelain", "--", TRACKED_JSONL]);
         assert_eq!(stdout(&st).trim(), "", "projection must start clean");
     }
     fn head(&self) -> String {
@@ -138,7 +146,7 @@ impl Fixture {
     }
     /// Bead ids whose record is added or changed by HEAD's diff of the export.
     fn head_touched_ids(&self) -> Vec<String> {
-        let diff = self.git_ok(&["show", "--format=", "HEAD", "--", JSONL]);
+        let diff = self.git_ok(&["show", "--format=", "HEAD", "--", TRACKED_JSONL]);
         stdout(&diff)
             .lines()
             .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
@@ -175,7 +183,7 @@ fn commit_carries_only_the_bead_its_subject_names() {
         "staged file missing: {files:?}"
     );
     assert!(
-        files.contains(&JSONL.to_string()),
+        files.contains(&TRACKED_JSONL.to_string()),
         "projection not staged: {files:?}"
     );
     assert_eq!(
@@ -183,9 +191,9 @@ fn commit_carries_only_the_bead_its_subject_names() {
         vec![x.clone()],
         "unrelated {y} must not be swept in"
     );
-    let blob = stdout(&f.git_ok(&["show", &format!("HEAD:{JSONL}")]));
+    let blob = stdout(&f.git_ok(&["show", &format!("HEAD:{TRACKED_JSONL}")]));
     assert!(blob.contains(&x) && !blob.contains(&y));
-    let st = f.git_ok(&["status", "--porcelain", "--", JSONL]);
+    let st = f.git_ok(&["status", "--porcelain", "--", TRACKED_JSONL]);
     assert_eq!(stdout(&st).trim(), "", "commit-msg leaves the tree clean");
 }
 
@@ -195,7 +203,7 @@ fn commit_naming_no_own_bead_leaves_the_projection_untouched() {
     let y = f.create_bead("written but unnamed", "z.rs");
     f.discard_projection();
     f.rsry_ok(&["bead", "comment", "add", &y, "a write after tracking"]);
-    let before = stdout(&f.git_ok(&["show", &format!("HEAD:{JSONL}")]));
+    let before = stdout(&f.git_ok(&["show", &format!("HEAD:{TRACKED_JSONL}")]));
 
     // The primitive itself: no id in the subject → nothing published.
     let msg = Path::new(&f.root).join("MSG");
@@ -219,7 +227,7 @@ fn commit_naming_no_own_bead_leaves_the_projection_untouched() {
     f.git_ok(&["commit", "-q", "-m", "[other-000000] chore: not ours"]);
     assert_eq!(f.head_files(), vec!["c.rs".to_string()]);
     assert_eq!(
-        stdout(&f.git_ok(&["show", &format!("HEAD:{JSONL}")])),
+        stdout(&f.git_ok(&["show", &format!("HEAD:{TRACKED_JSONL}")])),
         before
     );
 
@@ -233,7 +241,7 @@ fn commit_naming_no_own_bead_leaves_the_projection_untouched() {
     assert!(!out.status.success());
     assert_eq!(f.head(), head);
     assert_eq!(
-        stdout(&f.git_ok(&["show", &format!("HEAD:{JSONL}")])),
+        stdout(&f.git_ok(&["show", &format!("HEAD:{TRACKED_JSONL}")])),
         before
     );
 }
@@ -258,7 +266,7 @@ fn commit_naming_an_unknown_own_bead_is_refused() {
         stderr(&out)
     );
     assert_eq!(f.head(), head, "refused commit must not land");
-    let st = f.git_ok(&["status", "--porcelain", "--", JSONL]);
+    let st = f.git_ok(&["status", "--porcelain", "--", TRACKED_JSONL]);
     assert_eq!(
         stdout(&st).trim(),
         "",
