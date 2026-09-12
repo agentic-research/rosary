@@ -82,11 +82,12 @@ pub(crate) const HOOKS: &[(&str, &str)] = &[
         "commit-msg",
         include_str!("../../docs/git-hooks/commit-msg"),
     ),
-    // Hard gate: refuse to push when the live bead store disagrees with
-    // the tracked export (rosary-9c0e6c). Exact (byte-`cmp`) rather than
-    // `hooks audit`'s coarse >2x-gap heuristic — see the template's own
-    // header comment for why the coarser check wouldn't have caught the
-    // drift that motivated this.
+    // Hard gate over the ARTIFACT being pushed (rosary-e5c037): for the
+    // beads the pushed commits name, the pushed tip's `.beads/beads.jsonl`
+    // must carry the store's exact rendering (`bead verify-pushed`). The
+    // rosary-9c0e6c gate this replaces compared the working tree instead —
+    // see the template's header comment for why that measured the wrong
+    // thing.
     ("pre-push", include_str!("../../docs/git-hooks/pre-push")),
     // Folds the record commit-msg staged into the commit that named it: git
     // writes the tree from an index it read BEFORE commit-msg, so the stage

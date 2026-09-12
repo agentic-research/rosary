@@ -20,10 +20,14 @@ fn run_fixture_rsry(home: &Path, cwd: &Path, args: &[&str]) -> Output {
         .expect("spawn rsry")
 }
 
+/// The installed hooks resolve `rsry` through `RSRY_BIN` first; pin it to the
+/// binary under test so a push exercises THIS build's gate, not whatever
+/// `rsry` happens to be on PATH.
 fn run_fixture_git(dir: &Path, args: &[&str]) -> Output {
     Command::new("git")
         .args(args)
         .current_dir(dir)
+        .env("RSRY_BIN", env!("CARGO_BIN_EXE_rsry"))
         .output()
         .unwrap_or_else(|e| panic!("git {}: {e}", args.join(" ")))
 }

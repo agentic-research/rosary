@@ -94,29 +94,6 @@ fn hooks_run_unknown_hook_errors() {
     assert!(format!("{err:#}").contains("unknown hook"), "{err:#}");
 }
 
-/// `run`, but with an explicit `RSRY_BIN` — the hook's own
-/// first-choice resolution, so a stub can stand in for a real store
-/// without touching PATH. Returns the raw output because these tests
-/// assert on the refusal itself (exit status + the operator-facing
-/// message), which `run` collapses into an opaque `Err`.
-pub(in crate::hooks) fn run_hook_with_rsry(
-    repo_root: &Path,
-    name: &str,
-    rsry_bin: &Path,
-) -> std::process::Output {
-    let (_, block) = HOOKS
-        .iter()
-        .find(|(n, _)| *n == name)
-        .expect("hook must be registered");
-    Command::new("sh")
-        .arg("-c")
-        .arg(render_block(block))
-        .current_dir(repo_root)
-        .env("RSRY_BIN", rsry_bin)
-        .output()
-        .expect("spawn hook")
-}
-
 /// Exit-code propagation, proven without depending on the `rsry`
 /// binary: `commit-msg`'s embedded script reads `$1` for the commit
 /// message file. `hooks run` passes no positional argument, so `$1`
@@ -178,29 +155,3 @@ fn templates_embedded_and_nonempty() {
 // --- audit: end-to-end fixtures --------------------------------------
 
 // --- documentation / marker consistency ---------------------------
-
-/// A stub `rsry` whose `bead export -o <path>` writes `body`.
-///
-/// `body` travels in a sidecar file rather than being interpolated
-/// into the script, so no amount of quoting in a bead record can
-/// change what the stub does.
-pub(in crate::hooks) fn fake_rsry(dir: &Path, body: &str) -> PathBuf {
-    let path = dir.join("fake-rsry");
-    std::fs::write(dir.join("fake-rsry.out"), body).unwrap();
-    std::fs::write(
-        &path,
-        "#!/bin/sh\n\
-         while [ $# -gt 0 ]; do\n\
-         \x20 if [ \"$1\" = \"-o\" ]; then shift; cat \"$0.out\" > \"$1\"; fi\n\
-         \x20 shift\n\
-         done\n\
-         exit 0\n",
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    path
-}

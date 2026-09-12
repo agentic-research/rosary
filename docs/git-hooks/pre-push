@@ -1,12 +1,17 @@
 REPO=$(basename "$PWD")
-# Refuse to push if the live bead store disagrees with the tracked export
-# (rosary-9c0e6c). `hooks audit`'s store/export drift check is deliberately
-# coarse (only flags a >2x gap, tuned to catch catastrophic wipes without
-# false-positiving on routine commit-time churn) — it would NOT have caught
-# mache's actual drift (555 tracked vs 565 live, ~2% gap, ten beads that were
-# simply never exported). Push time is the right place for an EXACT check:
-# it is the last moment before bead state either ships to every clone or
-# doesn't, and it only runs once per push rather than once per commit.
+# Refuse to push when the PUSHED ref's tracked bead export is stale for the
+# beads the pushed commits name (rosary-e5c037). This gates the ARTIFACT, not
+# the checkout: the rosary-9c0e6c gate it replaces re-exported the whole store
+# and `cmp`'d it against the WORKING-TREE file, which on the branch that wrote
+# had just been refreshed (a tautology — a stale pushed commit passed), and on
+# any other branch differed by construction (pushes refused for beads written
+# elsewhere, "fixed" by a broadening sync commit that swept them in).
+#
+# `bead verify-pushed` reads git's pre-push stdin (`<local ref> <local sha>
+# <remote ref> <remote sha>` per ref): for every `[<repo>-<hex>]` in the
+# SUBJECTS of the commits being pushed, `<local sha>:.beads/beads.jsonl` must
+# hold the store's exact rendering of that bead. A push whose subjects name no
+# bead is never refused, whatever the store holds.
 #
 # OPT-IN BY TRACKING + SQLite-only, matching every other managed hook:
 # Dolt-backed repos push their own store directly (`dolt push`, see
@@ -15,9 +20,9 @@ if [ ! -d ".beads/dolt/$REPO" ] && git ls-files --error-unmatch .beads/beads.jso
 
     # ---- GUARD: canonical checkout only (mirrors pre-commit's rosary-599778 guard) ----
     # A linked worktree never receives `.beads/beads.db` (gitignored) but
-    # `SqliteBeadStore::connect` creates an empty one on demand — comparing
-    # against that would report every real bead as "drift" and block a push
-    # that has nothing to do with bead state.
+    # `SqliteBeadStore::connect` creates an empty one on demand — checking
+    # against that would report every named bead as "missing" and block a
+    # push whose records are perfectly current in the real store.
     _gd=$(git rev-parse --git-dir 2>/dev/null)
     _gc=$(git rev-parse --git-common-dir 2>/dev/null)
     if [ -n "$_gd" ] && [ -n "$_gc" ] && [ "$_gd" != "$_gc" ]; then
@@ -31,23 +36,22 @@ if [ ! -d ".beads/dolt/$REPO" ] && git ls-files --error-unmatch .beads/beads.jso
             RSRY="$HOME/.local/bin/rsry"
         fi
         if [ -n "$RSRY" ]; then
-            # Export is id-sorted and convergent (relied on by pre-commit's own
-            # magnitude check) — an unchanged store re-exports byte-identical,
-            # so `cmp` is an exact drift check, not a heuristic.
-            _tmp=".beads/.beads.jsonl.prepush$$"
-            if "$RSRY" bead export --jsonl --status all -o "$_tmp" >/dev/null 2>&1; then
-                if ! cmp -s "$_tmp" .beads/beads.jsonl; then
-                    rm -f "$_tmp"
-                    echo "ERROR: .beads/beads.jsonl is stale — the live bead store has" >&2
-                    echo "  changes not reflected in the tracked export (bead created," >&2
-                    echo "  closed, or commented via MCP with no commit since to pick it up)." >&2
-                    echo "  Run: rsry bead export --jsonl --status all -o .beads/beads.jsonl" >&2
-                    echo "  then commit the result, and push again." >&2
-                    exit 1
-                fi
-                rm -f "$_tmp"
-            else
-                rm -f "$_tmp"
+            # stdin is git's ref list; the primitive consumes it directly and
+            # prints the offending ids plus the fix (`rsry bead publish <ids>
+            # && git commit --amend --no-edit`) on refusal.
+            "$RSRY" bead verify-pushed
+            _rc=$?
+            if [ "$_rc" -eq 2 ]; then
+                # clap usage error: this rsry predates `bead verify-pushed`
+                # (hook newer than binary). The check cannot run, which is
+                # not a refusal — warn, like pre-commit's version-drift
+                # notice, rather than block every push until the upgrade.
+                echo "⚠ rsry at $RSRY cannot run 'bead verify-pushed' — upgrade rsry and re-run rsry hooks install; pre-push gate skipped." >&2
+            elif [ "$_rc" -ne 0 ]; then
+                echo "ERROR: push refused — the pushed .beads/beads.jsonl is stale for beads" >&2
+                echo "  the pushed commits name (see the ids above). Publish them, commit," >&2
+                echo "  and push again." >&2
+                exit 1
             fi
         fi
     fi

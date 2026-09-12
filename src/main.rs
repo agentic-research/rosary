@@ -2217,7 +2217,7 @@ async fn main() -> Result<()> {
                     return Ok(());
                 }
                 BeadAction::VerifyPushed => {
-                    publish::push::verify_pushed(&repo_root, std::io::stdin().lock())?;
+                    publish::push::verify_pushed(&repo_root, std::io::stdin().lock()).await?;
                     return Ok(());
                 }
                 BeadAction::TrunkRefresh { push } => {
