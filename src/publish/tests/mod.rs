@@ -493,6 +493,18 @@ async fn render_bead_line_is_the_line_upsert_writes() {
         .await
         .unwrap();
 
+    // Under ADR-0024 amendment A the store write above publishes nothing;
+    // the commit-time path (P2) publishes through this exact primitive.
+    let changed = crate::jsonl_sync::upsert_tracked_bead(
+        &store,
+        "rosary-render1",
+        &repo_name,
+        &repo.root,
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(changed, "upsert must insert a bead the projection lacks");
     let written = std::fs::read_to_string(repo.root.join(".beads/beads.jsonl")).unwrap();
     let written_line = written
         .lines()
