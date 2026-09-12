@@ -9,25 +9,75 @@ esac
 types='feat|fix|docs|chore|refactor|test|perf|build|ci|style|revert'
 bead_re='^\[[-a-zA-Z0-9._]+\] '
 conv_re="(${types})(\([a-zA-Z0-9._/-]+\))?!?: .+"
+_contract_ok=1
 # Full contract already present — pass.
-if printf '%s' "$subject" | grep -qE "${bead_re}${conv_re}"; then exit 0; fi
+if printf '%s' "$subject" | grep -qE "${bead_re}${conv_re}"; then
+    _contract_ok=0
 # Conventional but missing the bead ref — inject from .rsry-bead-id (agent worktrees).
-if printf '%s' "$subject" | grep -qE "^${conv_re}"; then
+elif printf '%s' "$subject" | grep -qE "^${conv_re}"; then
     bead_id_file="$(git rev-parse --show-toplevel 2>/dev/null)/.rsry-bead-id"
     if [ -f "$bead_id_file" ]; then
         bead_id=$(tr -d '[:space:]' <"$bead_id_file")
         if [ -n "$bead_id" ]; then
             printf '[%s] %s' "$bead_id" "$(cat "$1")" >"$1"
-            exit 0
+            _contract_ok=0
         fi
     fi
 fi
-if ! printf '%s' "$subject" | grep -qE "$bead_re"; then
-    echo "ERROR: commit must start with a bead reference (Golden Rule 11)."
-else
-    echo "ERROR: commit must use Conventional Commits after the bead reference (type in ${types})."
+if [ "$_contract_ok" -ne 0 ]; then
+    if ! printf '%s' "$subject" | grep -qE "$bead_re"; then
+        echo "ERROR: commit must start with a bead reference (Golden Rule 11)."
+    else
+        echo "ERROR: commit must use Conventional Commits after the bead reference (type in ${types})."
+    fi
+    echo "  Required: [bead-id] <type>(<scope>): <subject>"
+    echo "  Example:  [rosary-d3a3dd] fix(serve): rename domain"
+    echo "  Got:      ${subject}"
+    exit 1
 fi
-echo "  Required: [bead-id] <type>(<scope>): <subject>"
-echo "  Example:  [rosary-d3a3dd] fix(serve): rename domain"
-echo "  Got:      ${subject}"
-exit 1
+
+# ---- commit-scoped publication (rosary-e5bfd3, ADR-0024 amendment A) ------
+# The commit is the moment a bead reaches git, and the MESSAGE says which bead:
+# publish exactly the beads the subject names into the tracked projection, and
+# stage it. `git add` inherits GIT_INDEX_FILE, so for `git commit <paths>` it
+# adds to the temporary index git handed the hook. Git writes the tree from an
+# index it read BEFORE this hook, so the stage alone would land in the NEXT
+# commit — the post-commit hook folds it into this one. No id in the subject
+# → publish nothing, add nothing. An own-repo id absent from the store refuses
+# the commit (a typo must not silently publish nothing).
+#
+# OPT-IN BY TRACKING: only when `.beads/beads.jsonl` is already tracked by git.
+REPO=$(basename "$PWD")
+if [ ! -d ".beads/dolt/$REPO" ] && git ls-files --error-unmatch .beads/beads.jsonl >/dev/null 2>&1; then
+    # Canonical checkout only (rosary-599778): a linked worktree never holds
+    # `.beads/beads.db`, so any rsry command there sees an empty store.
+    _gd=$(git rev-parse --git-dir 2>/dev/null)
+    _gc=$(git rev-parse --git-common-dir 2>/dev/null)
+    if [ -n "$_gd" ] && [ -n "$_gc" ] && [ "$_gd" != "$_gc" ]; then
+        : # Skip only this managed block; continue the surrounding hook.
+    else
+        RSRY_HOOK_VERSION="__RSRY_VERSION__"
+        RSRY="${RSRY_BIN:-}"
+        if [ -z "$RSRY" ]; then
+            RSRY=$(command -v rsry 2>/dev/null || true)
+        fi
+        if [ -z "$RSRY" ] && [ -x "$HOME/.local/bin/rsry" ]; then
+            RSRY="$HOME/.local/bin/rsry"
+        fi
+        if [ -n "$RSRY" ]; then
+            _rsry_runtime_version=$("$RSRY" --version 2>/dev/null | awk '{print $2}')
+            if [ -n "$_rsry_runtime_version" ] && [ "$_rsry_runtime_version" != "$RSRY_HOOK_VERSION" ]; then
+                printf '⚠ rsry hook drift: hook v%s, runtime v%s — run `rsry hooks install`.\n' "$RSRY_HOOK_VERSION" "$_rsry_runtime_version" >&2
+            fi
+            # stdout lists the beads whose record changed; stage only then.
+            if ! _published=$("$RSRY" bead publish --from-commit-msg "$1"); then
+                echo "ERROR: commit-scoped bead publication failed; commit refused." >&2
+                exit 1
+            fi
+            if [ -n "$_published" ]; then
+                git add .beads/beads.jsonl || exit 1
+            fi
+        fi
+    fi
+fi
+exit 0

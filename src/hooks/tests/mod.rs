@@ -7,6 +7,7 @@ use std::process::Command;
 mod gitignore;
 mod install;
 mod merge;
+mod post_commit;
 mod post_merge;
 mod pre_commit;
 mod pre_push;

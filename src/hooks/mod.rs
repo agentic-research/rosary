@@ -67,16 +67,17 @@ pub(crate) const HOOKS: &[(&str, &str)] = &[
         "post-merge",
         include_str!("../../docs/git-hooks/post-merge"),
     ),
-    // Export half of JSONL bead sync (rosary-4ebf52): refresh the
-    // git-tracked export so bead state rides with the commit. Inert unless
-    // `.beads/beads.jsonl` is already tracked — opt-in by tracking.
+    // Canonical-checkout / opt-in-by-tracking shell only: the projection
+    // write moved to commit-msg, scoped to the beads the subject names
+    // (rosary-e5bfd3, ADR-0024 amendment A).
     (
         "pre-commit",
         include_str!("../../docs/git-hooks/pre-commit"),
     ),
-    // The commit contract (Rule 11 + Conventional Commits) — the same body
-    // that enforces at commit-msg time. Embedded so a fresh `rsry hooks
-    // install` configures it without any manual symlink to ~/.rsry/hooks.
+    // The commit contract (Rule 11 + Conventional Commits), then the
+    // commit-scoped publication of the beads the subject names into the
+    // tracked `.beads/beads.jsonl` (rosary-e5bfd3). Embedded so a fresh `rsry
+    // hooks install` configures it without any manual symlink to ~/.rsry/hooks.
     (
         "commit-msg",
         include_str!("../../docs/git-hooks/commit-msg"),
@@ -87,6 +88,13 @@ pub(crate) const HOOKS: &[(&str, &str)] = &[
     // header comment for why the coarser check wouldn't have caught the
     // drift that motivated this.
     ("pre-push", include_str!("../../docs/git-hooks/pre-push")),
+    // Folds the record commit-msg staged into the commit that named it: git
+    // writes the tree from an index it read BEFORE commit-msg, so the stage
+    // alone lands in the next commit, not this one (rosary-e5bfd3).
+    (
+        "post-commit",
+        include_str!("../../docs/git-hooks/post-commit"),
+    ),
 ];
 
 /// Resolve the actual hooks directory for `repo_root`.

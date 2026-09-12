@@ -128,10 +128,6 @@ pub async fn refresh_tracked_beads_jsonl(
 /// no-op, not an error.
 ///
 /// Returns whether the file changed.
-#[expect(
-    dead_code,
-    reason = "reachable only through `publish_ids` until P2 (rosary-e5bfd3) wires the commit-msg hook; `expect`, not `allow`, so the annotation fails the build once it is stale"
-)]
 pub async fn upsert_tracked_bead(
     store: &dyn BeadStore,
     bead_id: &str,
