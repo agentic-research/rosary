@@ -13,10 +13,12 @@ REPO=$(basename "$PWD")
 # hold the store's exact rendering of that bead. A push whose subjects name no
 # bead is never refused, whatever the store holds.
 #
-# OPT-IN BY TRACKING + SQLite-only, matching every other managed hook:
+# OPT-IN PER PUSHED TIP + SQLite-only: a tip that does not carry
+# `.beads/beads.jsonl` never asked for this, whatever branch the push runs
+# from (the primitive checks each pushed sha, not this checkout's index).
 # Dolt-backed repos push their own store directly (`dolt push`, see
-# post-push) and a repo that never tracked beads.jsonl never asked for this.
-if [ ! -d ".beads/dolt/$REPO" ] && git ls-files --error-unmatch .beads/beads.jsonl >/dev/null 2>&1; then
+# post-push); an ambiguous dolt/+beads.db store fails closed.
+if [ ! -d ".beads/dolt/$REPO" ]; then
 
     # ---- GUARD: canonical checkout only (mirrors pre-commit's rosary-599778 guard) ----
     # A linked worktree never receives `.beads/beads.db` (gitignored) but
@@ -39,7 +41,7 @@ if [ ! -d ".beads/dolt/$REPO" ] && git ls-files --error-unmatch .beads/beads.jso
             # stdin is git's ref list; the primitive consumes it directly and
             # prints the offending ids plus the fix (`rsry bead publish <ids>
             # && git commit --amend --no-edit`) on refusal.
-            "$RSRY" bead verify-pushed
+            "$RSRY" bead verify-pushed --remote "$1"
             _rc=$?
             if [ "$_rc" -eq 2 ]; then
                 # clap usage error: this rsry predates `bead verify-pushed`

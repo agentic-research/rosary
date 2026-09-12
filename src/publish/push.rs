@@ -29,7 +29,7 @@
 //! never touched cannot block it. The store is not even opened unless some
 //! pushed subject names a bead.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::Path;
 use std::process::Command;
@@ -89,12 +89,24 @@ fn run_git_in(repo_root: &Path, args: &[String]) -> Result<std::process::Output>
 /// new-branch push, so the range is instead everything not already on a
 /// remote-tracking ref — for a branch cut from `origin/main`, exactly the
 /// branch's own commits. With no remotes at all it degrades to full history.
-fn pushed_subjects(repo_root: &Path, pushed: &PushedRef) -> Result<Vec<String>> {
+fn pushed_subjects(
+    repo_root: &Path,
+    pushed: &PushedRef,
+    remote: Option<&str>,
+) -> Result<Vec<String>> {
     let mut args: Vec<String> = vec!["log".into(), "--format=%s".into()];
     if is_null_sha(&pushed.remote_sha) {
+        // A new remote ref: everything the DESTINATION does not already have.
+        // Scoped to that remote's tracking refs when the hook tells us which
+        // one (`--remote "$1"`); a second remote's refs, or a stale tracking
+        // ref, must not hide commits from the check. Without the name, fall
+        // back to every remote-tracking ref.
         args.push(pushed.local_sha.clone());
         args.push("--not".into());
-        args.push("--remotes".into());
+        args.push(match remote {
+            Some(name) if !name.is_empty() => format!("--remotes={name}"),
+            _ => "--remotes".into(),
+        });
     } else {
         args.push(format!("{}..{}", pushed.remote_sha, pushed.local_sha));
     }
@@ -125,29 +137,59 @@ pub(crate) fn named_bead_ids(subjects: &[String]) -> Vec<String> {
 
 /// Records in the tip's tracked projection, id → the exact line. A tip
 /// without the file has no records, so every named bead is "missing" there.
-fn blob_records(repo_root: &Path, sha: &str) -> Result<BTreeMap<String, String>> {
+/// Whether the pushed tip tracks the export at all. Opt-in is a property of
+/// the ARTIFACT being pushed, not of the checkout the push runs from: a tip
+/// without `.beads/beads.jsonl` never asked for the gate, whatever branch the
+/// operator happens to be on.
+fn tip_tracks_export(repo_root: &Path, sha: &str) -> Result<bool> {
+    let out = run_git_in(
+        repo_root,
+        &[
+            "cat-file".into(),
+            "-e".into(),
+            format!("{sha}:{PUSHED_JSONL_PATH}"),
+        ],
+    )?;
+    Ok(out.status.success())
+}
+
+fn blob_records(repo_root: &Path, sha: &str) -> Result<BlobIndex> {
     let out = run_git_in(
         repo_root,
         &["show".into(), format!("{sha}:{PUSHED_JSONL_PATH}")],
     )?;
     if !out.status.success() {
-        return Ok(BTreeMap::new());
+        return Ok(BlobIndex::default());
     }
     let text = String::from_utf8(out.stdout).context("pushed beads.jsonl is not UTF-8")?;
     Ok(parse_blob(&text))
 }
 
+/// The pushed projection, indexed by bead id. A duplicated id is recorded
+/// rather than collapsed: a file carrying two lines for one bead is not an
+/// exact projection whichever line happens to come last.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct BlobIndex {
+    pub records: BTreeMap<String, String>,
+    pub duplicates: BTreeSet<String>,
+}
+
 /// Index a projection's lines by id. A line that does not parse cannot be a
 /// current rendering of anything, so it simply does not index.
-pub(crate) fn parse_blob(text: &str) -> BTreeMap<String, String> {
-    text.lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| {
-            let record: serde_json::Value = serde_json::from_str(line).ok()?;
-            let id = record.get("id")?.as_str()?.to_owned();
-            Some((id, line.to_owned()))
-        })
-        .collect()
+pub(crate) fn parse_blob(text: &str) -> BlobIndex {
+    let mut index = BlobIndex::default();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let Some(id) = serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|record| record.get("id")?.as_str().map(str::to_owned))
+        else {
+            continue;
+        };
+        if index.records.insert(id.clone(), line.to_owned()).is_some() {
+            index.duplicates.insert(id);
+        }
+    }
+    index
 }
 
 /// The named beads whose pushed record is absent or differs from the store.
@@ -167,7 +209,7 @@ pub(crate) async fn compare(
     store: &dyn BeadStore,
     repo_name: &str,
     ids: &[String],
-    blob: &BTreeMap<String, String>,
+    blob: &BlobIndex,
 ) -> Result<Disagreement> {
     let mut disagreement = Disagreement::default();
     for id in ids {
@@ -177,8 +219,9 @@ pub(crate) async fn compare(
             continue;
         };
         let rendered = crate::jsonl_sync::render_bead_line(store, &bead).await?;
-        match blob.get(id) {
+        match blob.records.get(id) {
             None => disagreement.missing.push(id.clone()),
+            Some(_) if blob.duplicates.contains(id) => disagreement.stale.push(id.clone()),
             Some(line) if *line != rendered => disagreement.stale.push(id.clone()),
             Some(_) => {}
         }
@@ -189,10 +232,17 @@ pub(crate) async fn compare(
 /// What a push asks the gate to check: each pushed ref with the ids its new
 /// commits name. Refs naming no bead are dropped here, so a push of code-only
 /// commits never reaches the store.
-fn pushed_work(repo_root: &Path, input: &str) -> Result<Vec<(PushedRef, Vec<String>)>> {
+fn pushed_work(
+    repo_root: &Path,
+    input: &str,
+    remote: Option<&str>,
+) -> Result<Vec<(PushedRef, Vec<String>)>> {
     let mut work = Vec::new();
     for pushed in parse_prepush_stdin(input)? {
-        let ids = named_bead_ids(&pushed_subjects(repo_root, &pushed)?);
+        if !tip_tracks_export(repo_root, &pushed.local_sha)? {
+            continue; // this tip never opted in
+        }
+        let ids = named_bead_ids(&pushed_subjects(repo_root, &pushed, remote)?);
         if !ids.is_empty() {
             work.push((pushed, ids));
         }
@@ -205,15 +255,28 @@ fn pushed_work(repo_root: &Path, input: &str) -> Result<Vec<(PushedRef, Vec<Stri
 /// there is no projection to gate: a Dolt repo pushes its own store.
 async fn open_projection_store(repo_root: &Path) -> Result<Option<(Box<dyn BeadStore>, String)>> {
     let beads_dir = crate::resolve_beads_dir(repo_root);
-    if crate::bead_backend::is_dolt_backed(&beads_dir) {
-        return Ok(None);
-    }
-    if !crate::bead_backend::sqlite_path(&beads_dir).is_file() {
-        bail!(
+    use crate::bead_backend::{BeadBackend, detect_backend};
+    match detect_backend(&beads_dir) {
+        // Dolt repos push their own store (`dolt push`); no projection gate.
+        BeadBackend::Dolt => return Ok(None),
+        BeadBackend::Sqlite => {}
+        // Fail closed: an ambiguous source of truth cannot vouch for a record.
+        BeadBackend::Ambiguous => bail!(
+            "bead verify-pushed: {} holds both dolt/ and beads.db — resolve the \
+             ambiguous store before pushing bead records (rsry hooks audit)",
+            beads_dir.display()
+        ),
+        // embeddeddolt/ alone is not readable by rsry; nothing to vouch with.
+        BeadBackend::UnreadableEmbeddedOnly => bail!(
+            "bead verify-pushed: {} holds only embeddeddolt/, which rsry cannot read — \
+             migrate the store (rsry bead migrate) before pushing bead records",
+            beads_dir.display()
+        ),
+        BeadBackend::Uninitialized => bail!(
             "bead verify-pushed: the pushed commits name beads, but there is no bead store \
              under {} to check their pushed records against",
             beads_dir.display()
-        );
+        ),
     }
     let repo_name = beads_dir
         .parent()
@@ -256,12 +319,16 @@ pub(crate) fn refusal_message(failures: &[(String, Disagreement)]) -> String {
 /// `rsry bead verify-pushed`: the pre-push hook's primitive. Reads git's
 /// pre-push stdin; `Err` (exit 1) names the beads whose pushed record is
 /// missing or stale and the fix.
-pub async fn verify_pushed(repo_root: &Path, mut prepush_stdin: impl Read) -> Result<()> {
+pub async fn verify_pushed(
+    repo_root: &Path,
+    remote: Option<&str>,
+    mut prepush_stdin: impl Read,
+) -> Result<()> {
     let mut input = String::new();
     prepush_stdin
         .read_to_string(&mut input)
         .context("reading pre-push stdin")?;
-    let work = pushed_work(repo_root, &input)?;
+    let work = pushed_work(repo_root, &input, remote)?;
     if work.is_empty() {
         return Ok(());
     }
@@ -284,127 +351,4 @@ pub async fn verify_pushed(repo_root: &Path, mut prepush_stdin: impl Read) -> Re
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_keeps_updates_and_creates_but_drops_deletes() {
-        let input = "refs/heads/a 1111 refs/heads/a 2222\n\
-                     refs/heads/new 3333 refs/heads/new 0000000000000000000000000000000000000000\n\
-                     (delete) 0000000000000000000000000000000000000000 refs/heads/gone 4444\n\n";
-        let refs = parse_prepush_stdin(input).unwrap();
-        assert_eq!(
-            refs,
-            vec![
-                PushedRef {
-                    local_sha: "1111".into(),
-                    remote_sha: "2222".into()
-                },
-                PushedRef {
-                    local_sha: "3333".into(),
-                    remote_sha: "0000000000000000000000000000000000000000".into()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_rejects_a_malformed_line_rather_than_guessing() {
-        assert!(parse_prepush_stdin("refs/heads/a 1111\n").is_err());
-    }
-
-    #[test]
-    fn named_ids_come_from_brackets_deduplicated_and_sorted() {
-        let subjects = vec![
-            "[rosary-bbb222] fix: b".to_string(),
-            "chore: nothing".to_string(),
-            "[rosary-aaa111] feat: a [rosary-bbb222] again".to_string(),
-        ];
-        assert_eq!(
-            named_bead_ids(&subjects),
-            vec!["rosary-aaa111", "rosary-bbb222"]
-        );
-    }
-
-    #[test]
-    fn blob_index_keeps_the_exact_line_and_skips_junk() {
-        let blob = parse_blob("{\"id\":\"rosary-aaa111\",\"k\":1}\n\nnot json\n{\"no\":\"id\"}\n");
-        assert_eq!(blob.len(), 1);
-        assert_eq!(blob["rosary-aaa111"], "{\"id\":\"rosary-aaa111\",\"k\":1}");
-    }
-
-    /// The comparison against the store: an exact match passes, a byte
-    /// difference is stale, an absent record is missing, and an id the store
-    /// does not hold is nobody's problem.
-    #[tokio::test]
-    async fn compare_classifies_exact_stale_missing_and_unknown() {
-        let store = crate::bead_sqlite::SqliteBeadStore::connect(Path::new(":memory:")).unwrap();
-        for id in ["rosary-exact1", "rosary-stale1", "rosary-miss01"] {
-            store
-                .create_bead_full(crate::store::NewBead {
-                    id: id.to_string(),
-                    title: format!("bead {id}"),
-                    issue_type: "task".to_string(),
-                    acceptance_criteria: "cargo test".to_string(),
-                    ..Default::default()
-                })
-                .await
-                .unwrap();
-        }
-        let exact = store
-            .get_bead("rosary-exact1", "rosary")
-            .await
-            .unwrap()
-            .unwrap();
-        let exact_line = crate::jsonl_sync::render_bead_line(&store, &exact)
-            .await
-            .unwrap();
-        let stale = store
-            .get_bead("rosary-stale1", "rosary")
-            .await
-            .unwrap()
-            .unwrap();
-        let stale_line = crate::jsonl_sync::render_bead_line(&store, &stale)
-            .await
-            .unwrap()
-            .replace("bead rosary-stale1", "older title");
-        let blob = parse_blob(&format!("{exact_line}\n{stale_line}\n"));
-
-        let ids: Vec<String> = [
-            "rosary-exact1",
-            "rosary-stale1",
-            "rosary-miss01",
-            "rosary-unknown",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        let d = compare(&store, "rosary", &ids, &blob).await.unwrap();
-        assert_eq!(d.missing, vec!["rosary-miss01"]);
-        assert_eq!(d.stale, vec!["rosary-stale1"]);
-    }
-
-    /// The refusal is the operator's whole diagnosis: which tip, which ids,
-    /// in which way, and the exact command that fixes it.
-    #[test]
-    fn refusal_names_the_tip_the_ids_and_the_fix() {
-        let failures = vec![(
-            "abcdef0123456789".to_string(),
-            Disagreement {
-                missing: vec!["rosary-mis001".into()],
-                stale: vec!["rosary-sta001".into()],
-            },
-        )];
-        let msg = refusal_message(&failures);
-        assert!(
-            msg.contains("abcdef012345: missing rosary-mis001; stale rosary-sta001"),
-            "{msg}"
-        );
-        assert!(
-            msg.contains(
-                "rsry bead publish rosary-mis001 rosary-sta001 && git commit --amend --no-edit"
-            ),
-            "{msg}"
-        );
-    }
-}
+mod tests;
