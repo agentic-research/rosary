@@ -11,7 +11,7 @@ use tempfile::TempDir;
 mod scoped_publish_common;
 use scoped_publish_common::created_id;
 
-const JSONL: &str = ".beads/beads.jsonl";
+const TRACKED_JSONL: &str = ".beads/beads.jsonl";
 
 struct Fixture {
     home: TempDir,
