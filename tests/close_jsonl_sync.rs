@@ -25,10 +25,13 @@ fn run_close_rsry(home: &Path, cwd: &Path, args: &[&str]) -> Output {
         .expect("spawn rsry")
 }
 
+/// `RSRY_BIN` pins the hooks `rsry init` installed to THIS build, never the
+/// developer's installed rsry (commit-msg calls `bead publish`, rosary-e5bfd3).
 fn run_close_git(cwd: &Path, args: &[&str]) -> Output {
     Command::new("git")
         .args(args)
         .current_dir(cwd)
+        .env("RSRY_BIN", rsry_binary())
         .output()
         .unwrap_or_else(|e| panic!("git {}: {e}", args.join(" ")))
 }
@@ -184,19 +187,19 @@ fn close_refreshes_published_record_without_publishing_local_only_bead() {
         "stage hook trigger",
         &run_close_git(repo.path(), &["add", "src/lib.rs"]),
     );
-    let hook_commit = format!("[{published_id}] test(sync): exercise bounded pre-commit");
+    let hook_commit = format!("[{published_id}] test(sync): exercise the commit hooks");
     assert_close_success(
-        "commit through pre-commit hook",
+        "commit through the commit hooks",
         &run_close_git(repo.path(), &["commit", "-qm", &hook_commit]),
     );
     let after_hook = std::fs::read_to_string(&jsonl_path).unwrap();
     assert!(
         !after_hook.contains(&local_only_id),
-        "pre-commit must use the same publication boundary as close"
+        "the commit hooks must use the same publication boundary as close"
     );
     assert_eq!(
         after_hook.lines().count(),
         1,
-        "pre-commit must not broaden the public projection"
+        "the commit hooks must not broaden the public projection"
     );
 }

@@ -1,0 +1,32 @@
+# Fold the commit-scoped bead record into the commit that named it
+# (rosary-e5bfd3, ADR-0024 amendment A).
+#
+# commit-msg publishes the beads the subject names into `.beads/beads.jsonl`
+# and stages it — but git reads the index into memory right after pre-commit
+# and writes the tree from memory after commit-msg, so a `git add` from
+# commit-msg lands in the INDEX, not in the tree (verified: git 2.50, both
+# `git commit` and `git commit <paths>`). The only hook that can see the
+# message AND affect this commit is therefore post-commit, by amending.
+#
+# Precise and re-entrant: fires only when the staged projection differs from
+# HEAD's (commit-msg staged it), amends ONLY that path from the working tree
+# (`--only`, so other staged paths from a `git commit <paths>` stay staged
+# and out of the commit), and `--no-verify` keeps commit-msg from
+# republishing. The amend re-runs this hook; the projection then matches
+# HEAD and it exits. Same guards as commit-msg: opt-in by tracking, canonical
+# checkout only.
+REPO=$(basename "$PWD")
+if [ ! -d ".beads/dolt/$REPO" ] && git ls-files --error-unmatch .beads/beads.jsonl >/dev/null 2>&1; then
+    _gd=$(git rev-parse --git-dir 2>/dev/null)
+    _gc=$(git rev-parse --git-common-dir 2>/dev/null)
+    if [ -n "$_gd" ] && [ -n "$_gc" ] && [ "$_gd" != "$_gc" ]; then
+        : # Skip only this managed block; continue the surrounding hook.
+    elif ! git diff --cached --quiet HEAD -- .beads/beads.jsonl 2>/dev/null; then
+        if git commit --amend --no-edit --no-verify --quiet --only -- .beads/beads.jsonl; then
+            echo "rsry: bead record folded into $(git rev-parse --short HEAD)" >&2
+        else
+            echo "ERROR: could not fold .beads/beads.jsonl into HEAD; it is staged for the next commit." >&2
+        fi
+    fi
+fi
+exit 0

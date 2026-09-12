@@ -383,7 +383,7 @@ pub fn parse_merged_closure(subject: &str) -> Option<MergedClosure> {
 /// Find every `[<prefix>-<suffix>]` bead-id bracket anywhere in `text` (the
 /// caller decides how much of the message qualifies — see
 /// [`parse_merged_closures`] on why that is the subject line only).
-fn extract_bracket_ids(text: &str) -> Vec<String> {
+pub(crate) fn extract_bracket_ids(text: &str) -> Vec<String> {
     let mut ids = Vec::new();
     let mut rest = text;
     // `split_once` structurally rules out the off-by-one class this loop

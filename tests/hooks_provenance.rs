@@ -282,10 +282,14 @@ fn pre_commit_managed_block_runs_before_framework_exec() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
-    assert!(rsry_ran.exists(), "rsry export block was unreachable");
+    // The projection is written by commit-msg now (rosary-e5bfd3): a
+    // pre-commit that invokes rsry has grown the export block back.
+    assert!(
+        !rsry_ran.exists(),
+        "pre-commit must not invoke rsry; the export moved to commit-msg"
+    );
     assert!(framework_ran.exists(), "pre-commit framework did not run");
 
-    std::fs::remove_file(&rsry_ran).unwrap();
     std::fs::remove_file(&framework_ran).unwrap();
     let linked = temp.path().join("linked");
     let linked_output = run_provenance_git(
@@ -308,10 +312,7 @@ fn pre_commit_managed_block_runs_before_framework_exec() {
         .output()
         .unwrap();
     assert!(linked_hook.status.success(), "{linked_hook:?}");
-    assert!(
-        !rsry_ran.exists(),
-        "linked worktree must skip the rsry export"
-    );
+    assert!(!rsry_ran.exists(), "linked worktree must not invoke rsry");
     assert!(
         framework_ran.exists(),
         "linked-worktree skip must continue into the framework hook"

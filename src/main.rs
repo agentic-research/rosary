@@ -2212,7 +2212,8 @@ async fn main() -> Result<()> {
                         &repo_root,
                         from_commit_msg.as_deref().map(Path::new),
                         ids,
-                    )?;
+                    )
+                    .await?;
                     return Ok(());
                 }
                 BeadAction::VerifyPushed => {
