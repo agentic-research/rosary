@@ -57,7 +57,7 @@ pub async fn publish_from_commit(
             beads_dir.display()
         );
     }
-    let store = crate::bead_sqlite::connect_bead_store_unpublished(&beads_dir).await?;
+    let store = crate::bead_sqlite::connect_bead_store(&beads_dir).await?;
 
     // Validate every id before writing any: a refused commit must leave the
     // projection exactly as it found it.
