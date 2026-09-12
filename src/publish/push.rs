@@ -220,7 +220,7 @@ async fn open_projection_store(repo_root: &Path) -> Result<Option<(Box<dyn BeadS
         .and_then(Path::file_name)
         .map(|name| name.to_string_lossy().into_owned())
         .with_context(|| format!("resolving the repo name from {}", beads_dir.display()))?;
-    let store = crate::bead_sqlite::connect_bead_store_unpublished(&beads_dir).await?;
+    let store = crate::bead_sqlite::connect_bead_store(&beads_dir).await?;
     Ok(Some((store, repo_name)))
 }
 
