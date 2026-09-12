@@ -637,24 +637,6 @@ async fn tool_bead_create(
         client.log_event(&id, "created_by", uid).await;
     }
 
-    // Publish only after all create-time metadata is applied so the tracked
-    // projection cannot expose an intermediate record.
-    let repo_root = match args.get("repo_path").and_then(Value::as_str) {
-        Some(path) => Some(crate::scanner::resolve_repo_path(std::path::Path::new(
-            path,
-        ))),
-        None => pool.path_for(repo_name).await,
-    };
-    if let Some(repo_root) = repo_root {
-        crate::jsonl_sync::publish_created_bead_to_tracked_jsonl(
-            client, &id, repo_name, &repo_root,
-        )
-        .await
-        .with_context(|| {
-            format!("bead {id} created locally, but publishing it to tracked .beads/beads.jsonl")
-        })?;
-    }
-
     let owner = create_args.resolved_owner();
     Ok(json!({ "id": id, "title": title, "priority": priority, "owner": owner }))
 }
@@ -754,20 +736,14 @@ async fn tool_bead_update(
         );
     }
 
-    let (scope, client_ref) = resolve_repo_client(args, pool).await?;
+    let (_scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
-    let repo = scope
-        .as_repo_name()
-        .expect("Repo-only scope verified by resolve_repo_client");
     let updated_fields = client.update_bead_fields(id, &update).await?;
 
     // Log the update event for audit trail
     client
         .log_event(id, "fields_updated", &updated_fields.join(", "))
         .await;
-    refresh_tracked_jsonl(args, pool, repo, client)
-        .await
-        .with_context(|| format!("bead {id} updated, but refreshing tracked .beads/beads.jsonl"))?;
 
     Ok(json!({ "id": id, "updated_fields": updated_fields }))
 }
@@ -791,55 +767,15 @@ async fn tool_bead_correct(
         .ok_or_else(|| anyhow::anyhow!("status required — the value the bead should have had"))?;
     let reason = args["reason"].as_str().unwrap_or_default();
 
-    let (scope, client_ref) = resolve_repo_client(args, pool).await?;
+    let (_scope, client_ref) = resolve_repo_client(args, pool).await?;
     let client = client_ref.as_store();
-    let repo = scope
-        .as_repo_name()
-        .expect("Repo-only scope verified by resolve_repo_client");
     crate::bead_correct::correct_status(client, id, status, reason).await?;
-    refresh_tracked_jsonl(args, pool, repo, client)
-        .await
-        .with_context(|| {
-            format!("bead {id} corrected, but refreshing tracked .beads/beads.jsonl")
-        })?;
     Ok(serde_json::json!({
         "id": id,
         "status": status,
         "corrected": true,
         "note": "recorded status corrected; the reason is on the bead as a comment"
     }))
-}
-
-/// Resolve `repo_root` for a scope and refresh the tracked `.beads/beads.jsonl`.
-///
-/// Shared by every mutating handler rather than hand-wired per call site —
-/// this session found the re-declaration class (rosary-c1f669) live in its
-/// own substrate: comment/update/correct never got the refresh that
-/// create/close did, drifting silently even though rosary-8ca6e5 claimed
-/// this solved for "a mutating store write". No-op for Dolt-backed repos,
-/// coordination/personal-role beads, or an untracked `.beads/beads.jsonl`
-/// (see [`crate::jsonl_sync::refresh_tracked_beads_jsonl`]).
-async fn refresh_tracked_jsonl(
-    args: &Value,
-    pool: &RepoPool,
-    repo: &str,
-    client: &dyn BeadStore,
-) -> Result<()> {
-    let repo_root = match args.get("repo_path").and_then(Value::as_str) {
-        Some(path) => Some(crate::scanner::resolve_repo_path(std::path::Path::new(
-            path,
-        ))),
-        None => pool.path_for(repo).await,
-    }
-    .ok_or_else(|| {
-        anyhow::anyhow!(
-            "repo path for `repo:{repo}` is unavailable; pass repo_path or register the \
-             repo so tracked JSONL can be refreshed"
-        )
-    })?;
-    crate::jsonl_sync::refresh_tracked_beads_jsonl(client, repo, &repo_root)
-        .await
-        .map(|_| ())
 }
 
 async fn tool_bead_close(
@@ -858,11 +794,6 @@ async fn tool_bead_close(
         .as_repo_name()
         .expect("Repo-only scope verified by resolve_repo_client");
     crate::bead_ops::close_bead(client, id, repo, force).await?;
-    refresh_tracked_jsonl(args, pool, repo, client)
-        .await
-        .with_context(|| {
-            format!("bead {id} closed locally, but refreshing tracked .beads/beads.jsonl")
-        })?;
 
     // Unregister the session so rsry_active stops showing it.
     // Best-effort — session may not exist if bead was closed manually.
@@ -898,11 +829,6 @@ async fn tool_bead_comment(
         .as_repo_name()
         .expect("Repo-only scope verified by resolve_repo_client");
     client.add_comment(id, body, "rsry-mcp").await?;
-    refresh_tracked_jsonl(args, pool, repo, client)
-        .await
-        .with_context(|| {
-            format!("comment added to {id}, but refreshing tracked .beads/beads.jsonl")
-        })?;
 
     // Update session registry so rsry_active shows last activity
     if let Ok(mut registry) = crate::session::SessionRegistry::load() {

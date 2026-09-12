@@ -1420,20 +1420,20 @@ async fn bootstrap_git_tracked_beads(
         bead_sqlite::SqliteBeadStore::connect(&crate::bead_backend::sqlite_path(&beads_dir))?;
     let records = restore::read_beads_jsonl(Some(jsonl.to_string_lossy().into_owned()))?;
     let restored = restore::restore_beads_from_contract(&records, &store, &repo_entry.name).await?;
-    let cfg = config::Config {
-        repo: vec![repo_entry.clone()],
-        ..Default::default()
-    };
-    // Suppress: these closures are re-derived from trunk history the projection
-    // already reflects; republishing them would rewrite the shared file in every
-    // consumer's tree on first init (tests/init_jsonl_reconciliation.rs).
-    let closed = run_close_merged_local_with_config(
-        &cfg,
-        Some(&repo_entry.name),
+    // Replay trunk-derived closures into the SAME raw store the restore just
+    // filled. Under ADR-0024 amendment A a store write never touches the
+    // projection — the hooks publish at commit time — so there is nothing to
+    // suppress here any more (tests/init_jsonl_reconciliation.rs).
+    let mut closed = CloseMergedSummary::default();
+    close_merged_in_repo(
+        &store,
+        repo_entry,
+        repo_root,
+        &merged_closures_for(repo_root),
         false,
-        Publication::Suppress,
+        &mut closed,
     )
-    .await?;
+    .await;
 
     Ok(InitSyncSummary {
         restored: restored.restored,
@@ -2305,7 +2305,6 @@ async fn main() -> Result<()> {
                         force,
                         role: bead_ops::parse_role(&role)?,
                     };
-                    let role = args.role;
                     bead_ops::create_bead(
                         client.as_ref(),
                         &repo_root,
@@ -2314,39 +2313,10 @@ async fn main() -> Result<()> {
                         created_by.as_deref(),
                     )
                     .await?;
-                    // ADR-0022: publishing is a CANONICAL-tier operation. A
-                    // coordination bead lives in refs/agents/* precisely so it
-                    // never enters the git-tracked record; publishing it here
-                    // would undo the routing two lines above.
-                    if role == bead_genesis::Role::Canonical {
-                        jsonl_sync::publish_created_bead_to_tracked_jsonl(
-                        client.as_ref(),
-                        &id,
-                        &repo_name,
-                        &repo_root,
-                    )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "bead {id} created locally, but publishing it to tracked .beads/beads.jsonl"
-                        )
-                    })?;
-                    }
                     cli::bead_created(&id, &args.title);
                 }
                 BeadAction::Close { id, force } => {
                     bead_ops::close_bead(client.as_ref(), &id, &repo_name, force).await?;
-                    jsonl_sync::refresh_tracked_beads_jsonl(
-                        client.as_ref(),
-                        &repo_name,
-                        &repo_root,
-                    )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "bead {id} closed locally, but refreshing tracked .beads/beads.jsonl"
-                        )
-                    })?;
                     cli::bead_closed(&id);
                 }
                 BeadAction::Move { id, dest } => {
@@ -2469,15 +2439,6 @@ async fn main() -> Result<()> {
                         client.update_status(&id, "open").await?;
                     }
                     client.log_event(&id, "reopened", "via rsry-cli").await;
-                    jsonl_sync::refresh_tracked_beads_jsonl(
-                        client.as_ref(),
-                        &repo_name,
-                        &repo_root,
-                    )
-                    .await
-                    .with_context(|| {
-                        format!("bead {id} reopened, but refreshing tracked .beads/beads.jsonl")
-                    })?;
                     println!("reopened {id}");
                 }
                 BeadAction::Review { id, json } => {
@@ -2499,22 +2460,6 @@ async fn main() -> Result<()> {
                     BeadCommentAction::Add { id, body } => {
                         bead_ops::validate_comment_body(&body)?;
                         client.add_comment(&id, &body, "rsry-cli").await?;
-                        // Comments are part of the canonical record (bead_to_contract_value
-                        // includes them) but were never wired into the refresh that create/close
-                        // get — a live instance of the re-declaration class (rosary-c1f669):
-                        // "the JSONL refresh wired into 2 of ~17 write paths" understated the
-                        // gap. No-ops for Dolt-backed/coordination-role/untracked beads.
-                        jsonl_sync::refresh_tracked_beads_jsonl(
-                            client.as_ref(),
-                            &repo_name,
-                            &repo_root,
-                        )
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "comment added to {id}, but refreshing tracked .beads/beads.jsonl"
-                            )
-                        })?;
                         cli::bead_commented(&id);
                     }
                     BeadCommentAction::List {
@@ -2813,7 +2758,7 @@ async fn main() -> Result<()> {
 
             match action {
                 EpicAction::Scan { execute, json } => {
-                    run_epic_scan(client.as_ref(), &repo_root, &repo_name, execute, json).await?;
+                    run_epic_scan(client.as_ref(), &repo_name, execute, json).await?;
                 }
             }
         }
@@ -3600,41 +3545,17 @@ pub async fn run_close_merged_local(
     dry_run: bool,
 ) -> Result<CloseMergedSummary> {
     let cfg = config::load_merged(&config::resolve_config_path())?;
-    run_close_merged_local_with_config(&cfg, repo_filter, dry_run, Publication::Publish).await
+    run_close_merged_local_with_config(&cfg, repo_filter, dry_run).await
 }
 
 /// Inner form taking an explicit Config (mirrors [`run_close_merged_with_config`]
 /// so tests can pass a hand-built Config).
-/// Whether a merge sweep may write its closures back to the git-tracked
-/// projection.
-///
-/// A bare `bool` here would read as `(&cfg, name, false, false)` at the call
-/// site — two unrelated switches, indistinguishable. This one is load-bearing
-/// enough to name: getting it wrong makes every fresh clone rewrite the shared
-/// `beads.jsonl` on first `init`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Publication {
-    /// Normal operation, including the post-merge hook: a closure derived from
-    /// a merge that just landed SHOULD reach the tracked file.
-    Publish,
-    /// Bootstrap replay. The closures are re-derived from history the
-    /// projection already reflects, so publishing them would echo local
-    /// inference back into a shared file.
-    ///
-    /// ADR-0024 amendment A (rosary-e5bf6b): no store write publishes any
-    /// more, so `Publish` and `Suppress` now behave identically at the store.
-    /// Kept until P5 removes the last callers along with
-    /// `connect_bead_store_unpublished`.
-    Suppress,
-}
-
 /// Cluster the repo's open backlog and, on `execute`, perform any suggested
 /// `ClusterAction::Merge`: close the `close` beads with a comment linking to
-/// `keep`, then refresh the tracked JSONL (rosary-cb1af4 slice 1 — the
-/// executor `ClusterAction::Merge` never had before this).
+/// `keep` (rosary-cb1af4 slice 1 — the executor `ClusterAction::Merge` never
+/// had before this).
 pub async fn run_epic_scan(
     client: &dyn store::BeadStore,
-    repo_root: &Path,
     repo_name: &str,
     execute: bool,
     json: bool,
@@ -3691,15 +3612,14 @@ pub async fn run_epic_scan(
         );
         return Ok(());
     }
-    execute_epic_merges(client, repo_root, repo_name, merges).await
+    execute_epic_merges(client, repo_name, merges).await
 }
 
 /// The mutation half of `run_epic_scan`, split out on its own (fan_out_skew):
 /// scanning/reporting talks to `epic`+`serde_json`, this talks to
-/// `bead_ops`+`jsonl_sync` — different concerns, different callees.
+/// `bead_ops` — different concerns, different callees.
 async fn execute_epic_merges(
     client: &dyn store::BeadStore,
-    repo_root: &Path,
     repo_name: &str,
     merges: Vec<(String, Vec<String>, f64)>,
 ) -> Result<()> {
@@ -3717,11 +3637,6 @@ async fn execute_epic_merges(
                 .await?;
             bead_ops::close_bead(client, close_id, repo_name, true).await?;
         }
-        jsonl_sync::refresh_tracked_beads_jsonl(client, repo_name, repo_root)
-            .await
-            .with_context(|| {
-                "merge executed, but refreshing tracked .beads/beads.jsonl".to_string()
-            })?;
         println!("merged {close:?} into {keep}");
     }
     Ok(())
@@ -3731,7 +3646,6 @@ pub async fn run_close_merged_local_with_config(
     cfg: &config::Config,
     repo_filter: Option<&str>,
     dry_run: bool,
-    publication: Publication,
 ) -> Result<CloseMergedSummary> {
     let mut summary = CloseMergedSummary::default();
     let repos: Vec<&config::RepoConfig> = cfg
@@ -3750,195 +3664,217 @@ pub async fn run_close_merged_local_with_config(
         if !beads_dir.exists() {
             continue;
         }
-        // Recent merged-PR closures from local git (trunk, first-parent). Dedup
-        // by bead id so a bead referenced by two recent commits is closed once.
-        // Bounded window of the last 100 first-parent commits — wide enough that
-        // a busy multi-PR session on an active trunk doesn't push a just-merged
-        // release commit out of range before the sweep sees it (rosary-cb9321).
-        let mut seen = std::collections::HashSet::new();
-        let closures: Vec<vcs::MergedClosure> = vcs::scan_merged_closures(&resolved, 100)
-            .into_iter()
-            .filter(|c| seen.insert(c.bead_id.clone()))
-            .collect();
+        let closures = merged_closures_for(&resolved);
         if closures.is_empty() {
             continue;
         }
 
-        let opened = match publication {
-            Publication::Publish => bead_sqlite::connect_bead_store(&beads_dir).await,
-            Publication::Suppress => bead_sqlite::connect_bead_store_unpublished(&beads_dir).await,
-        };
-        let store = match opened {
+        let store = match bead_sqlite::connect_bead_store(&beads_dir).await {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("close-merged --local: skipping {}: {e}", repo.name);
                 continue;
             }
         };
-        let beads = match store.list_beads(&repo.name).await {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!(
-                    "close-merged --local: list_beads({}) failed: {e}",
-                    repo.name
-                );
-                continue;
-            }
+        close_merged_in_repo(
+            store.as_ref(),
+            repo,
+            &resolved,
+            &closures,
+            dry_run,
+            &mut summary,
+        )
+        .await;
+    }
+
+    Ok(summary)
+}
+
+/// Recent merged-PR closures from local git (trunk, first-parent). Dedup by
+/// bead id so a bead referenced by two recent commits is closed once. Bounded
+/// window of the last 100 first-parent commits — wide enough that a busy
+/// multi-PR session on an active trunk doesn't push a just-merged release
+/// commit out of range before the sweep sees it (rosary-cb9321).
+fn merged_closures_for(resolved: &Path) -> Vec<vcs::MergedClosure> {
+    let mut seen = std::collections::HashSet::new();
+    vcs::scan_merged_closures(resolved, 100)
+        .into_iter()
+        .filter(|c| seen.insert(c.bead_id.clone()))
+        .collect()
+}
+
+/// One repo's merge sweep against an already-open store.
+///
+/// Takes the store rather than opening one so `rsry init`'s bootstrap can
+/// replay into the raw store it just restored the projection into, and the
+/// post-merge sweep can pass whatever `connect_bead_store` hands it. Neither
+/// path writes the projection: under ADR-0024 amendment A only the hooks do.
+async fn close_merged_in_repo(
+    store: &dyn store::BeadStore,
+    repo: &config::RepoConfig,
+    resolved: &Path,
+    closures: &[vcs::MergedClosure],
+    dry_run: bool,
+    summary: &mut CloseMergedSummary,
+) {
+    let beads = match store.list_beads(&repo.name).await {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!(
+                "close-merged --local: list_beads({}) failed: {e}",
+                repo.name
+            );
+            return;
+        }
+    };
+
+    for closure in closures {
+        summary.checked += 1;
+        // Match the webhook's rule: the full id ends with the ref. Only
+        // non-terminal beads are eligible (idempotent on re-run).
+        let matched = beads.iter().find(|b| {
+            !matches!(b.state(), bead::BeadState::Done | bead::BeadState::Rejected)
+                && (b.id == closure.bead_id || b.id.ends_with(&closure.bead_id))
+        });
+        let Some(b) = matched else {
+            continue;
         };
 
-        for closure in &closures {
-            summary.checked += 1;
-            // Match the webhook's rule: the full id ends with the ref. Only
-            // non-terminal beads are eligible (idempotent on re-run).
-            let matched = beads.iter().find(|b| {
-                !matches!(b.state(), bead::BeadState::Done | bead::BeadState::Rejected)
-                    && (b.id == closure.bead_id || b.id.ends_with(&closure.bead_id))
-            });
-            let Some(b) = matched else {
-                continue;
-            };
-
-            // Containment gate (rosary-649660): a parent/epic must not
-            // auto-close while its children are still open — a merged PR on one
-            // child shouldn't sweep the umbrella shut. Children are the open
-            // beads linked to b by a parent-child / discovered-from edge.
-            let child_ids = store.get_children(&b.id).await.unwrap_or_default();
-            let open_children: Vec<String> = child_ids
-                .into_iter()
-                .filter(|cid| {
-                    beads.iter().any(|c| {
-                        &c.id == cid
-                            && !matches!(
-                                c.state(),
-                                bead::BeadState::Done | bead::BeadState::Rejected
-                            )
-                    })
+        // Containment gate (rosary-649660): a parent/epic must not
+        // auto-close while its children are still open — a merged PR on one
+        // child shouldn't sweep the umbrella shut. Children are the open
+        // beads linked to b by a parent-child / discovered-from edge.
+        let child_ids = store.get_children(&b.id).await.unwrap_or_default();
+        let open_children: Vec<String> = child_ids
+            .into_iter()
+            .filter(|cid| {
+                beads.iter().any(|c| {
+                    &c.id == cid
+                        && !matches!(c.state(), bead::BeadState::Done | bead::BeadState::Rejected)
                 })
-                .collect();
-            let is_planning = matches!(b.issue_type.as_str(), "epic" | "design" | "research");
-            let hold_open = is_planning || !open_children.is_empty();
+            })
+            .collect();
+        let is_planning = matches!(b.issue_type.as_str(), "epic" | "design" | "research");
+        let hold_open = is_planning || !open_children.is_empty();
 
-            // Record the PR association either way — structured `pr_url` event so
-            // a parent + its children's PRs surface as a chain (parity with the
-            // gh/webhook path), plus the human-readable github_merge event.
-            let pr_ref = vcs::origin_pr_url(&resolved, closure.pr_number)
-                .unwrap_or_else(|| format!("#{}", closure.pr_number));
+        // Record the PR association either way — structured `pr_url` event so
+        // a parent + its children's PRs surface as a chain (parity with the
+        // gh/webhook path), plus the human-readable github_merge event.
+        let pr_ref = vcs::origin_pr_url(resolved, closure.pr_number)
+            .unwrap_or_else(|| format!("#{}", closure.pr_number));
+        if !dry_run {
+            store.log_event(&b.id, "pr_url", &pr_ref).await;
+            store
+                .log_event(
+                    &b.id,
+                    "github_merge",
+                    &format!("PR #{} merged (local git scan)", closure.pr_number),
+                )
+                .await;
+        }
+
+        if hold_open {
+            summary.held_open += 1;
+            let reason = if !open_children.is_empty() {
+                format!(
+                    "has {} open child bead(s): {}",
+                    open_children.len(),
+                    open_children.join(", ")
+                )
+            } else {
+                format!("is a {} (planning) bead", b.issue_type)
+            };
+            eprintln!(
+                "close-merged --local: PR #{} associated with {} but NOT closed — {reason}",
+                closure.pr_number, b.id
+            );
             if !dry_run {
-                store.log_event(&b.id, "pr_url", &pr_ref).await;
                 store
-                    .log_event(
+                    .add_comment(
                         &b.id,
-                        "github_merge",
-                        &format!("PR #{} merged (local git scan)", closure.pr_number),
-                    )
-                    .await;
-            }
-
-            if hold_open {
-                summary.held_open += 1;
-                let reason = if !open_children.is_empty() {
-                    format!(
-                        "has {} open child bead(s): {}",
-                        open_children.len(),
-                        open_children.join(", ")
-                    )
-                } else {
-                    format!("is a {} (planning) bead", b.issue_type)
-                };
-                eprintln!(
-                    "close-merged --local: PR #{} associated with {} but NOT closed — {reason}",
-                    closure.pr_number, b.id
-                );
-                if !dry_run {
-                    store
-                        .add_comment(
-                            &b.id,
-                            &format!(
-                                "PR #{} merged and linked to this bead, but it was NOT \
+                        &format!(
+                            "PR #{} merged and linked to this bead, but it was NOT \
                                  auto-closed because it {reason}. Close it once the \
                                  remaining work lands.",
-                                closure.pr_number
-                            ),
-                            "rosary",
-                        )
-                        .await
-                        .ok();
-                }
-                continue;
+                            closure.pr_number
+                        ),
+                        "rosary",
+                    )
+                    .await
+                    .ok();
             }
+            continue;
+        }
 
-            // rosary-c75925/e0e19f: a commit REFERENCING this bead merging is
-            // not proof that whatever this bead's acceptance_criteria actually
-            // demands (if it demands something beyond "a PR merges") ran and
-            // passed — a local git-log scan has no way to check that. Only
-            // auto-close when the bead's own declared condition IS "a PR
-            // merges".
-            if !crate::bead::merge_alone_satisfies_close(&b.acceptance_criteria) {
-                summary.refused_unmet_condition += 1;
-                eprintln!(
-                    "close-merged --local: PR #{} merged for {} but NOT closed — \
+        // rosary-c75925/e0e19f: a commit REFERENCING this bead merging is
+        // not proof that whatever this bead's acceptance_criteria actually
+        // demands (if it demands something beyond "a PR merges") ran and
+        // passed — a local git-log scan has no way to check that. Only
+        // auto-close when the bead's own declared condition IS "a PR
+        // merges".
+        if !crate::bead::merge_alone_satisfies_close(&b.acceptance_criteria) {
+            summary.refused_unmet_condition += 1;
+            eprintln!(
+                "close-merged --local: PR #{} merged for {} but NOT closed — \
                      acceptance_criteria requires more than a merge: {}",
-                    closure.pr_number, b.id, b.acceptance_criteria
-                );
-                if !dry_run
-                    && let Err(e) = store
-                        .add_comment(
-                            &b.id,
-                            &format!(
-                                "PR #{} merged, but NOT auto-closed — this bead's \
+                closure.pr_number, b.id, b.acceptance_criteria
+            );
+            if !dry_run
+                && let Err(e) = store
+                    .add_comment(
+                        &b.id,
+                        &format!(
+                            "PR #{} merged, but NOT auto-closed — this bead's \
                                  acceptance_criteria requires verification close-merged \
                                  can't provide: \"{}\". Close manually once actually \
                                  verified, or update the condition if a merge alone is \
                                  sufficient.",
-                                closure.pr_number, b.acceptance_criteria
-                            ),
-                            "rosary",
-                        )
-                        .await
-                {
-                    eprintln!(
-                        "close-merged --local: failed to record refusal comment for {}: {e:#}",
-                        b.id
-                    );
-                }
-                continue;
-            }
-
-            if dry_run {
-                summary.merged_closed += 1;
-                summary.bead_ids_closed.push(b.id.clone());
-                continue;
-            }
-            let audit_msg = format!(
-                "Auto-closed by rsry close-merged --local: PR #{} merged",
-                closure.pr_number
-            );
-            if let Err(e) = store.add_comment(&b.id, &audit_msg, "rosary").await {
+                            closure.pr_number, b.acceptance_criteria
+                        ),
+                        "rosary",
+                    )
+                    .await
+            {
                 eprintln!(
-                    "close-merged --local: failed to record audit comment for {}: {e:#}",
+                    "close-merged --local: failed to record refusal comment for {}: {e:#}",
                     b.id
                 );
             }
-            // rosary-c75925: only count a close as done once the write actually
-            // succeeds — a failed write must never be reported as a success.
-            // merge_alone_satisfies_close above IS this call site's gate;
-            // bead_ops::close_bead's stricter "looks like a runnable command"
-            // check is the wrong question here.
-            let close_result = store.close_bead(&b.id).await; // nosemgrep: bead-close-bypasses-gate
-            match close_result {
-                Ok(()) => {
-                    summary.merged_closed += 1;
-                    summary.bead_ids_closed.push(b.id.clone());
-                }
-                Err(e) => {
-                    summary.close_failed += 1;
-                    eprintln!("close-merged --local: failed to close {}: {e:#}", b.id);
-                }
+            continue;
+        }
+
+        if dry_run {
+            summary.merged_closed += 1;
+            summary.bead_ids_closed.push(b.id.clone());
+            continue;
+        }
+        let audit_msg = format!(
+            "Auto-closed by rsry close-merged --local: PR #{} merged",
+            closure.pr_number
+        );
+        if let Err(e) = store.add_comment(&b.id, &audit_msg, "rosary").await {
+            eprintln!(
+                "close-merged --local: failed to record audit comment for {}: {e:#}",
+                b.id
+            );
+        }
+        // rosary-c75925: only count a close as done once the write actually
+        // succeeds — a failed write must never be reported as a success.
+        // merge_alone_satisfies_close above IS this call site's gate;
+        // bead_ops::close_bead's stricter "looks like a runnable command"
+        // check is the wrong question here.
+        let close_result = store.close_bead(&b.id).await; // nosemgrep: bead-close-bypasses-gate
+        match close_result {
+            Ok(()) => {
+                summary.merged_closed += 1;
+                summary.bead_ids_closed.push(b.id.clone());
+            }
+            Err(e) => {
+                summary.close_failed += 1;
+                eprintln!("close-merged --local: failed to close {}: {e:#}", b.id);
             }
         }
     }
-
-    Ok(summary)
 }
 
 #[cfg(test)]
@@ -4023,7 +3959,7 @@ mod tests {
             .await
             .unwrap();
 
-        run_epic_scan(store.as_ref(), root, "t", false, false)
+        run_epic_scan(store.as_ref(), "t", false, false)
             .await
             .unwrap();
 
@@ -4032,7 +3968,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn epic_scan_execute_merges_near_duplicates_and_refreshes_jsonl() {
+    async fn epic_scan_execute_merges_near_duplicates() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         tgit(root, &["init", "-q", "-b", "main"]);
@@ -4071,17 +4007,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Opt in to the tracked export (jsonl_sync::refresh_tracked_beads_jsonl
-        // no-ops on an untracked file — matches every other jsonl-refresh test).
-        let both = store.list_beads("t").await.unwrap();
-        let jsonl = import::export_beads_contract_jsonl(store.as_ref(), &both)
-            .await
-            .unwrap();
-        std::fs::write(beads_dir.join("beads.jsonl"), jsonl).unwrap();
-        tgit(root, &["add", ".beads/beads.jsonl"]);
-        tgit(root, &["commit", "-qm", "opt in"]);
-
-        run_epic_scan(store.as_ref(), root, "t", true, false)
+        run_epic_scan(store.as_ref(), "t", true, false)
             .await
             .unwrap();
 
@@ -4092,16 +4018,6 @@ mod tests {
         assert!(
             comments.iter().any(|c| c.text.contains("Merged into t-a")),
             "closed bead must record why it was merged, not just disappear"
-        );
-
-        let records = restore::read_beads_jsonl(Some(
-            beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
-        ))
-        .unwrap();
-        let b = records.iter().find(|r| r["id"] == "t-b").unwrap();
-        assert_eq!(
-            b["status"], "done",
-            "the merge must reach the tracked export, not just the store"
         );
     }
 
@@ -4157,7 +4073,7 @@ mod tests {
             ..Default::default()
         };
 
-        let summary = run_close_merged_local_with_config(&cfg, None, false, Publication::Publish)
+        let summary = run_close_merged_local_with_config(&cfg, None, false)
             .await
             .unwrap();
 
@@ -4188,7 +4104,7 @@ mod tests {
         // Now close the child and re-run: the parent is eligible and closes.
         store.close_bead("testrepo-child").await.unwrap(); // nosemgrep: bead-close-bypasses-gate — test setup, not a bypass
         drop(store);
-        let summary2 = run_close_merged_local_with_config(&cfg, None, false, Publication::Publish)
+        let summary2 = run_close_merged_local_with_config(&cfg, None, false)
             .await
             .unwrap();
         assert_eq!(
@@ -4255,7 +4171,7 @@ mod tests {
             ..Default::default()
         };
 
-        let summary = run_close_merged_local_with_config(&cfg, None, false, Publication::Publish)
+        let summary = run_close_merged_local_with_config(&cfg, None, false)
             .await
             .unwrap();
 
@@ -4326,7 +4242,7 @@ mod tests {
             ..Default::default()
         };
 
-        let summary = run_close_merged_local_with_config(&cfg, None, false, Publication::Publish)
+        let summary = run_close_merged_local_with_config(&cfg, None, false)
             .await
             .unwrap();
 
@@ -4400,7 +4316,7 @@ mod tests {
             ..Default::default()
         };
 
-        let summary = run_close_merged_local_with_config(&cfg, None, false, Publication::Publish)
+        let summary = run_close_merged_local_with_config(&cfg, None, false)
             .await
             .unwrap();
 

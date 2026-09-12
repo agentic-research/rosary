@@ -109,12 +109,28 @@ fn bead_matches_status_all_is_a_wildcard_like_cli() {
     assert!(bead_matches_status(&open, Some("all")));
 }
 
-#[tokio::test]
-async fn mcp_close_refreshes_only_the_published_jsonl_record() {
-    use crate::store::NewBead;
-    use std::process::Command;
+/// `git status --porcelain` on the tracked projection. The fixture commits the
+/// seed, so an empty result is a real git observation: the write left no
+/// working-tree change, not merely "the bytes look the same".
+fn projection_status(repo: &std::path::Path) -> String {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--", ".beads/beads.jsonl"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
 
-    let tmp = tempfile::TempDir::new().unwrap();
+/// A git repo with `.beads/` and one committed tracked projection holding
+/// `published` (serialised from `store`), so a later write has something it
+/// COULD dirty. Returns the repo root.
+async fn opted_in_repo(
+    tmp: &tempfile::TempDir,
+    store: &crate::bead_sqlite::SqliteBeadStore,
+    published: &[crate::bead::Bead],
+) -> std::path::PathBuf {
+    use std::process::Command;
     let repo = tmp.path().join("project");
     let beads_dir = repo.join(".beads");
     std::fs::create_dir_all(&beads_dir).unwrap();
@@ -134,38 +150,51 @@ async fn mcp_close_refreshes_only_the_published_jsonl_record() {
     git(&["init", "-q", "-b", "main"]);
     git(&["config", "user.email", "test@example.com"]);
     git(&["config", "user.name", "Test User"]);
+    let jsonl = crate::import::export_beads_contract_jsonl(store, published)
+        .await
+        .unwrap();
+    std::fs::write(beads_dir.join("beads.jsonl"), jsonl).unwrap();
+    git(&["add", ".beads/beads.jsonl"]);
+    git(&["commit", "-qm", "publish"]);
+    repo
+}
 
-    let store = crate::bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db")).unwrap();
-    for (id, title) in [
-        ("project-public1", "published"),
-        ("project-private1", "local only"),
-    ] {
-        store
-            .create_bead_full(NewBead {
-                id: id.to_string(),
-                title: title.to_string(),
-                issue_type: "bug".to_string(),
-                files: vec!["src/lib.rs".to_string()],
-                test_files: vec!["tests/smoke.rs".to_string()],
-                acceptance_criteria: "cargo test".to_string(),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
+fn published_bead(id: &str, priority: u8) -> crate::store::NewBead {
+    crate::store::NewBead {
+        id: id.to_string(),
+        title: "published".to_string(),
+        priority,
+        issue_type: "bug".to_string(),
+        files: vec!["src/lib.rs".to_string()],
+        test_files: vec!["tests/smoke.rs".to_string()],
+        acceptance_criteria: "cargo test".to_string(),
+        ..Default::default()
     }
+}
+
+// ADR-0024 amendment A (rosary-e5fb88): a store write NEVER touches
+// `.beads/beads.jsonl`. The hooks publish at commit time; no handler does. The
+// four tests below are the inverses of the ones #465/#477 added — same
+// fixtures, opposite assertion. `tests/publish_single_writer_gate.rs` is the
+// mechanical form of the same rule at the source level.
+
+#[tokio::test]
+async fn mcp_close_leaves_the_projection_untouched() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store =
+        crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+    store
+        .create_bead_full(published_bead("project-public1", 1))
+        .await
+        .unwrap();
     let published = store
         .get_bead("project-public1", "project")
         .await
         .unwrap()
         .unwrap();
-    let jsonl = crate::import::export_beads_contract_jsonl(&store, &[published])
-        .await
-        .unwrap();
-    std::fs::write(beads_dir.join("beads.jsonl"), jsonl).unwrap();
-    git(&["add", ".beads/beads.jsonl"]);
-    git(&["commit", "-qm", "publish one bead"]);
+    let repo = opted_in_repo(&tmp, &store, &[published]).await;
 
-    let pool = RepoPool::from_client("project", repo, Box::new(store));
+    let pool = RepoPool::from_client("project", repo.clone(), Box::new(store));
     let response = tool_bead_close(
         &json!({ "scope": "repo:project", "id": "project-public1" }),
         &pool,
@@ -180,51 +209,27 @@ async fn mcp_close_refreshes_only_the_published_jsonl_record() {
         "tool_bead_close response must match the persisted status"
     );
 
+    let dirty = projection_status(&repo);
+    assert_eq!(
+        dirty, "",
+        "MCP close must not write the tracked projection — the hooks publish"
+    );
     let records = crate::restore::read_beads_jsonl(Some(
-        beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
+        repo.join(".beads/beads.jsonl")
+            .to_string_lossy()
+            .into_owned(),
     ))
     .unwrap();
-    assert_eq!(
-        records.len(),
-        1,
-        "MCP close must not publish local-only beads"
-    );
-    assert_eq!(records[0]["id"], "project-public1");
-    assert_eq!(
-        records[0]["status"], "done",
-        "MCP close must immediately refresh the published record to the store's terminal status"
-    );
+    assert_eq!(records[0]["status"], "open");
 }
 
 #[tokio::test]
-async fn mcp_create_publishes_into_an_opted_in_jsonl_projection() {
-    use std::process::Command;
-
+async fn mcp_create_leaves_the_projection_untouched() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let repo = tmp.path().join("project");
-    let beads_dir = repo.join(".beads");
-    std::fs::create_dir_all(&beads_dir).unwrap();
-    let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(&repo)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "test@example.com"]);
-    git(&["config", "user.name", "Test User"]);
-    std::fs::write(beads_dir.join("beads.jsonl"), "").unwrap();
-    git(&["add", ".beads/beads.jsonl"]);
-    git(&["commit", "-qm", "opt in"]);
+    let store =
+        crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+    let repo = opted_in_repo(&tmp, &store, &[]).await;
 
-    let store = crate::bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db")).unwrap();
     let pool = RepoPool::from_client("project", repo.clone(), Box::new(store));
     let result = tool_bead_create(
         &json!({
@@ -242,57 +247,37 @@ async fn mcp_create_publishes_into_an_opted_in_jsonl_projection() {
     .await
     .unwrap();
 
-    let records = crate::restore::read_beads_jsonl(Some(
-        beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
-    ))
-    .unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["id"], result["id"]);
-    assert_eq!(records[0]["title"], "created through MCP");
+    let (_scope, client_ref) = resolve_repo_client(&json!({ "scope": "repo:project" }), &pool)
+        .await
+        .unwrap();
+    assert!(
+        client_ref
+            .as_store()
+            .get_bead(result["id"].as_str().unwrap(), "project")
+            .await
+            .unwrap()
+            .is_some(),
+        "the bead must exist in the store"
+    );
+    let dirty = projection_status(&repo);
+    assert_eq!(
+        dirty, "",
+        "MCP create must not write the tracked projection — the hooks publish"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join(".beads/beads.jsonl")).unwrap(),
+        "",
+        "an opted-in but empty projection stays empty until a commit names the bead"
+    );
 }
 
-/// Comments are part of the canonical contract (bead_to_contract_value
-/// includes them) but never got the refresh that create/close did — a live
-/// instance of the re-declaration class (rosary-c1f669) this session found
-/// in its own substrate. Pins tool_bead_comment's refresh so it can't drift
-/// back to silent again.
 #[tokio::test]
-async fn mcp_comment_refreshes_the_published_jsonl_record() {
-    use crate::store::NewBead;
-    use std::process::Command;
-
+async fn mcp_comment_leaves_the_projection_untouched() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let repo = tmp.path().join("project");
-    let beads_dir = repo.join(".beads");
-    std::fs::create_dir_all(&beads_dir).unwrap();
-    let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(&repo)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "test@example.com"]);
-    git(&["config", "user.name", "Test User"]);
-
-    let store = crate::bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db")).unwrap();
+    let store =
+        crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
     store
-        .create_bead_full(NewBead {
-            id: "project-public1".to_string(),
-            title: "published".to_string(),
-            issue_type: "bug".to_string(),
-            files: vec!["src/lib.rs".to_string()],
-            test_files: vec!["tests/smoke.rs".to_string()],
-            acceptance_criteria: "cargo test".to_string(),
-            ..Default::default()
-        })
+        .create_bead_full(published_bead("project-public1", 1))
         .await
         .unwrap();
     let published = store
@@ -300,19 +285,14 @@ async fn mcp_comment_refreshes_the_published_jsonl_record() {
         .await
         .unwrap()
         .unwrap();
-    let jsonl = crate::import::export_beads_contract_jsonl(&store, &[published])
-        .await
-        .unwrap();
-    std::fs::write(beads_dir.join("beads.jsonl"), jsonl).unwrap();
-    git(&["add", ".beads/beads.jsonl"]);
-    git(&["commit", "-qm", "publish one bead"]);
+    let repo = opted_in_repo(&tmp, &store, &[published]).await;
 
-    let pool = RepoPool::from_client("project", repo, Box::new(store));
+    let pool = RepoPool::from_client("project", repo.clone(), Box::new(store));
     tool_bead_comment(
         &json!({
             "scope": "repo:project",
             "id": "project-public1",
-            "body": "a comment that should reach the tracked export"
+            "body": "a comment that stays in the store until a commit publishes it"
         }),
         &pool,
         None,
@@ -320,58 +300,27 @@ async fn mcp_comment_refreshes_the_published_jsonl_record() {
     .await
     .unwrap();
 
+    let dirty = projection_status(&repo);
+    assert_eq!(
+        dirty, "",
+        "MCP comment must not write the tracked projection — the hooks publish"
+    );
     let records = crate::restore::read_beads_jsonl(Some(
-        beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
+        repo.join(".beads/beads.jsonl")
+            .to_string_lossy()
+            .into_owned(),
     ))
     .unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(
-        records[0]["comment_count"].as_u64(),
-        Some(1),
-        "MCP comment must refresh the published record's comment_count, not leave it stale"
-    );
+    assert_eq!(records[0]["comment_count"].as_u64(), Some(0));
 }
 
-/// Same gap, different handler: rsry_bead_update (e.g. a priority downgrade)
-/// must reach the tracked export too, not just create/close.
 #[tokio::test]
-async fn mcp_update_refreshes_the_published_jsonl_record() {
-    use crate::store::NewBead;
-    use std::process::Command;
-
+async fn mcp_update_leaves_the_projection_untouched() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let repo = tmp.path().join("project");
-    let beads_dir = repo.join(".beads");
-    std::fs::create_dir_all(&beads_dir).unwrap();
-    let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(&repo)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "test@example.com"]);
-    git(&["config", "user.name", "Test User"]);
-
-    let store = crate::bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db")).unwrap();
+    let store =
+        crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
     store
-        .create_bead_full(NewBead {
-            id: "project-public1".to_string(),
-            title: "published".to_string(),
-            priority: 0,
-            issue_type: "bug".to_string(),
-            files: vec!["src/lib.rs".to_string()],
-            test_files: vec!["tests/smoke.rs".to_string()],
-            acceptance_criteria: "cargo test".to_string(),
-            ..Default::default()
-        })
+        .create_bead_full(published_bead("project-public1", 0))
         .await
         .unwrap();
     let published = store
@@ -379,14 +328,9 @@ async fn mcp_update_refreshes_the_published_jsonl_record() {
         .await
         .unwrap()
         .unwrap();
-    let jsonl = crate::import::export_beads_contract_jsonl(&store, &[published])
-        .await
-        .unwrap();
-    std::fs::write(beads_dir.join("beads.jsonl"), jsonl).unwrap();
-    git(&["add", ".beads/beads.jsonl"]);
-    git(&["commit", "-qm", "publish one bead"]);
+    let repo = opted_in_repo(&tmp, &store, &[published]).await;
 
-    let pool = RepoPool::from_client("project", repo, Box::new(store));
+    let pool = RepoPool::from_client("project", repo.clone(), Box::new(store));
     tool_bead_update(
         &json!({ "scope": "repo:project", "id": "project-public1", "priority": 2 }),
         &pool,
@@ -395,16 +339,18 @@ async fn mcp_update_refreshes_the_published_jsonl_record() {
     .await
     .unwrap();
 
+    let dirty = projection_status(&repo);
+    assert_eq!(
+        dirty, "",
+        "MCP update must not write the tracked projection — the hooks publish"
+    );
     let records = crate::restore::read_beads_jsonl(Some(
-        beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
+        repo.join(".beads/beads.jsonl")
+            .to_string_lossy()
+            .into_owned(),
     ))
     .unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(
-        records[0]["priority"].as_u64(),
-        Some(2),
-        "MCP update must refresh the published record's priority, not leave it stale"
-    );
+    assert_eq!(records[0]["priority"].as_u64(), Some(0));
 }
 
 /// get_client's own pool-hit-by-name fast path (rosary-2b8568 pool refactor):
@@ -424,66 +370,6 @@ async fn get_client_returns_pooled_store_when_name_matches() {
         matches!(store_ref, StoreRef::Pooled(_)),
         "a repo_path matching a pooled name must return the pooled store, not an ad-hoc connect"
     );
-}
-
-/// tool_bead_create's repo_root resolution has two paths: an explicit
-/// `repo_path` arg (resolved directly), or falling back to the pool's
-/// recorded path for a scope-only call. The scope-only path is covered by
-/// `mcp_create_publishes_into_an_opted_in_jsonl_projection` above; this
-/// covers the explicit-`repo_path` arm.
-#[tokio::test]
-async fn mcp_create_with_explicit_repo_path_resolves_and_publishes() {
-    use std::process::Command;
-
-    let tmp = tempfile::TempDir::new().unwrap();
-    let repo = tmp.path().join("project");
-    let beads_dir = repo.join(".beads");
-    std::fs::create_dir_all(&beads_dir).unwrap();
-    let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(&repo)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "test@example.com"]);
-    git(&["config", "user.name", "Test User"]);
-    std::fs::write(beads_dir.join("beads.jsonl"), "").unwrap();
-    git(&["add", ".beads/beads.jsonl"]);
-    git(&["commit", "-qm", "opt in"]);
-
-    let store = crate::bead_sqlite::SqliteBeadStore::connect(&beads_dir.join("beads.db")).unwrap();
-    let pool = RepoPool::from_client("project", repo.clone(), Box::new(store));
-    let result = tool_bead_create(
-        &json!({
-            "scope": "repo:project",
-            "repo_path": repo.to_string_lossy(),
-            "title": "created via explicit repo_path",
-            "description": "A sufficiently refined implementation bead created through MCP.",
-            "issue_type": "bug",
-            "files": ["src/lib.rs"],
-            "test_files": ["tests/smoke.rs"],
-            "acceptance_criteria": "cargo test"
-        }),
-        &pool,
-        None,
-    )
-    .await
-    .unwrap();
-
-    let records = crate::restore::read_beads_jsonl(Some(
-        beads_dir.join("beads.jsonl").to_string_lossy().into_owned(),
-    ))
-    .unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["id"], result["id"]);
 }
 
 // ---- tool_review (rosary-cd5d2a) --------------------------------------

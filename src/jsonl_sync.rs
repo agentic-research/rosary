@@ -109,51 +109,6 @@ pub async fn refresh_tracked_beads_jsonl(
     Ok(true)
 }
 
-/// Publish one newly-created bead into an already opted-in projection.
-///
-/// Unlike [`refresh_tracked_beads_jsonl`], this deliberately broadens the
-/// public id set by exactly `bead_id`. The tracked-file check remains the
-/// repository owner's opt-in boundary.
-pub async fn publish_created_bead_to_tracked_jsonl(
-    store: &dyn BeadStore,
-    bead_id: &str,
-    repo_name: &str,
-    repo_root: &Path,
-) -> Result<bool> {
-    let jsonl = repo_root.join(".beads/beads.jsonl");
-    if !is_opted_in(repo_root, &jsonl) {
-        return Ok(false);
-    }
-
-    let mut published =
-        crate::restore::read_beads_jsonl(Some(jsonl.to_string_lossy().into_owned()))?;
-    if !published
-        .iter()
-        .any(|record| record.get("id").and_then(Value::as_str) == Some(bead_id))
-    {
-        published.push(serde_json::json!({ "id": bead_id }));
-    }
-    let next = export_published_beads_contract_jsonl(store, &published, repo_name).await?;
-    let mut verify = || {
-        anyhow::ensure!(
-            next.lines().any(|line| {
-                serde_json::from_str::<Value>(line)
-                    .ok()
-                    .and_then(|record| record.get("id").cloned())
-                    .and_then(|id| id.as_str().map(str::to_owned))
-                    .as_deref()
-                    == Some(bead_id)
-            }),
-            "rendered public projection is missing newly-created bead {bead_id}"
-        );
-        Ok(())
-    };
-    let mut publish =
-        |_: &crate::dispatch::commit_point::VerificationReceipt| atomic_replace(&jsonl, &next);
-    crate::dispatch::commit_point::commit_external_mutation(&mut verify, &mut publish)?;
-    Ok(true)
-}
-
 /// Re-render exactly ONE bead's record in the tracked projection.
 ///
 /// The bounded whole-file paths above re-read every bead plus its dependencies
