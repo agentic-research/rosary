@@ -82,9 +82,13 @@ pub fn subject_bead_ids(message: &str) -> Vec<String> {
     crate::vcs::extract_bracket_ids(message.lines().next().unwrap_or(""))
 }
 
+/// Generated ids carry `sanitize_prefix(repo basename)` (`Repo_2` → `repo_2`,
+/// `My Repo!` → `my-repo`), so the raw basename alone would disown the very
+/// ids this repo mints.
 fn is_own_repo_id(id: &str, repo_name: &str) -> bool {
-    id.rsplit_once('-')
-        .is_some_and(|(prefix, _)| prefix == repo_name)
+    id.rsplit_once('-').is_some_and(|(prefix, _)| {
+        prefix == repo_name || prefix == crate::sanitize_prefix(repo_name)
+    })
 }
 
 fn dedup(ids: Vec<String>) -> Vec<String> {
@@ -111,6 +115,10 @@ mod tests {
         assert!(!is_own_repo_id("other-aaaaaa", "rosary"));
         assert!(is_own_repo_id("canonical-hours-aaaaaa", "canonical-hours"));
         assert!(!is_own_repo_id("rosaryaaaaaa", "rosary"));
+        // the generated grammar: sanitize_prefix normalises the basename
+        assert!(is_own_repo_id("repo_2-aaaaaa", "Repo_2"));
+        assert!(is_own_repo_id("my-repo-aaaaaa", "My Repo!"));
+        assert!(!is_own_repo_id("repo-2-aaaaaa", "Repo_2"));
     }
 
     #[tokio::test]

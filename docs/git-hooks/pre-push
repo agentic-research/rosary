@@ -1,4 +1,3 @@
-REPO=$(basename "$PWD")
 # Refuse to push when the PUSHED ref's tracked bead export is stale for the
 # beads the pushed commits name (rosary-e5c037). This gates the ARTIFACT, not
 # the checkout: the rosary-9c0e6c gate it replaces re-exported the whole store
@@ -18,7 +17,8 @@ REPO=$(basename "$PWD")
 # from (the primitive checks each pushed sha, not this checkout's index).
 # Dolt-backed repos push their own store directly (`dolt push`, see
 # post-push); an ambiguous dolt/+beads.db store fails closed.
-if [ ! -d ".beads/dolt/$REPO" ]; then
+# No shell-side backend guard: the primitive classifies the store itself and
+# an ambiguous dolt/+beads.db layout FAILS CLOSED instead of being skipped.
 
     # ---- GUARD: canonical checkout only (mirrors pre-commit's rosary-599778 guard) ----
     # A linked worktree never receives `.beads/beads.db` (gitignored) but
@@ -57,4 +57,3 @@ if [ ! -d ".beads/dolt/$REPO" ]; then
             fi
         fi
     fi
-fi
