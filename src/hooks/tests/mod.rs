@@ -94,29 +94,6 @@ fn hooks_run_unknown_hook_errors() {
     assert!(format!("{err:#}").contains("unknown hook"), "{err:#}");
 }
 
-/// `run`, but with an explicit `RSRY_BIN` — the hook's own
-/// first-choice resolution, so a stub can stand in for a real store
-/// without touching PATH. Returns the raw output because these tests
-/// assert on the refusal itself (exit status + the operator-facing
-/// message), which `run` collapses into an opaque `Err`.
-pub(in crate::hooks) fn run_hook_with_rsry(
-    repo_root: &Path,
-    name: &str,
-    rsry_bin: &Path,
-) -> std::process::Output {
-    let (_, block) = HOOKS
-        .iter()
-        .find(|(n, _)| *n == name)
-        .expect("hook must be registered");
-    Command::new("sh")
-        .arg("-c")
-        .arg(render_block(block))
-        .current_dir(repo_root)
-        .env("RSRY_BIN", rsry_bin)
-        .output()
-        .expect("spawn hook")
-}
-
 /// Exit-code propagation, proven without depending on the `rsry`
 /// binary: `commit-msg`'s embedded script reads `$1` for the commit
 /// message file. `hooks run` passes no positional argument, so `$1`
@@ -178,6 +155,29 @@ fn templates_embedded_and_nonempty() {
 // --- audit: end-to-end fixtures --------------------------------------
 
 // --- documentation / marker consistency ---------------------------
+
+/// `run`, but with an explicit `RSRY_BIN` — the hook's own
+/// first-choice resolution, so a stub can stand in for a real store
+/// without touching PATH. Returns the raw output because these tests
+/// assert on the refusal itself (exit status + the operator-facing
+/// message), which `run` collapses into an opaque `Err`.
+pub(in crate::hooks) fn run_hook_with_rsry(
+    repo_root: &Path,
+    name: &str,
+    rsry_bin: &Path,
+) -> std::process::Output {
+    let (_, block) = HOOKS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .expect("hook must be registered");
+    Command::new("sh")
+        .arg("-c")
+        .arg(render_block(block))
+        .current_dir(repo_root)
+        .env("RSRY_BIN", rsry_bin)
+        .output()
+        .expect("spawn hook")
+}
 
 /// A stub `rsry` whose `bead export -o <path>` writes `body`.
 ///

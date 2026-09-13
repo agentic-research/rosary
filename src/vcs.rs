@@ -416,9 +416,14 @@ fn valid_bead_id(id: &str) -> Option<String> {
     let (prefix, suffix) = (&id[..dash], &id[dash + 1..]);
     let ok = !prefix.is_empty()
         && !suffix.is_empty()
+        // The prefix grammar is `sanitize_prefix`'s output (main.rs): lowercase
+        // alphanumerics and `_`, joined by `-`; legacy ids also carry `.`.
+        // A digit-led or underscored repo name (`0day`, `repo_2`) is a real
+        // bead id, and dropping it here made close-merged and the pre-push
+        // gate blind to those repos (rosary-e5c037 review).
         && prefix
             .chars()
-            .all(|c| c.is_ascii_lowercase() || c == '.' || c == '-')
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'))
         && suffix.chars().all(|c| c.is_ascii_alphanumeric());
     ok.then(|| id.to_string())
 }
@@ -759,6 +764,18 @@ mod tests {
     #[test]
     fn trailing_pr_number_rejects_digits_without_closing_paren() {
         assert_eq!(trailing_pr_number("fix thing (#318 not closed"), None);
+    }
+
+    #[test]
+    fn bracket_ids_accept_the_generated_prefix_grammar() {
+        // sanitize_prefix emits digits and underscores; these were silently
+        // dropped, so `[0day-…]` merges never closed their beads.
+        assert_eq!(
+            extract_bracket_ids(
+                "[0day-029928] fix: a [repo_2-abc123] b [my.repo-abc123] c [Bad-abc123] d"
+            ),
+            vec!["0day-029928", "repo_2-abc123", "my.repo-abc123"]
+        );
     }
 
     #[test]

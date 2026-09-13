@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 mod publish_ids_tests;
+mod render_pin_tests;
 
 /// A repo with a git-tracked `.beads/beads.jsonl` holding `seed_ids`.
 ///

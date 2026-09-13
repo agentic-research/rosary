@@ -7,6 +7,8 @@ use std::path::Path;
 
 use crate::store::BeadStore;
 
+/// One bead as the projection renders it: the contract value with its live
+/// dependencies and comments.
 async fn live_contract_value(store: &dyn BeadStore, bead: &crate::bead::Bead) -> Result<Value> {
     let deps = store
         .get_dependencies(&bead.id)
@@ -19,6 +21,21 @@ async fn live_contract_value(store: &dyn BeadStore, bead: &crate::bead::Bead) ->
     Ok(crate::import::bead_to_contract_value(
         bead, &deps, &comments,
     ))
+}
+
+/// The exact JSONL line (no terminator) `upsert_tracked_bead` writes for `bead`.
+///
+/// `serialize_records` renders each record with the same `serde_json::to_string`
+/// over the same value, so a consumer comparing bytes against the tracked file
+/// (`publish::push::verify_pushed`) compares against this, not a look-alike —
+/// pinned by `render_bead_line_is_the_line_upsert_writes`.
+pub(crate) async fn render_bead_line(
+    store: &dyn BeadStore,
+    bead: &crate::bead::Bead,
+) -> Result<String> {
+    Ok(serde_json::to_string(
+        &live_contract_value(store, bead).await?,
+    )?)
 }
 
 fn serialize_records(records: BTreeMap<String, Value>) -> Result<String> {

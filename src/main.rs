@@ -932,7 +932,12 @@ enum BeadAction {
     /// pre-push gate: for the beads the pushed commits name, the pushed
     /// ref's `.beads/beads.jsonl` blob must agree with the store. Reads
     /// git's pre-push stdin (rosary-e5c037).
-    VerifyPushed,
+    VerifyPushed {
+        /// The destination remote's name (git passes it to pre-push as `$1`);
+        /// scopes "commits the remote lacks" to that remote's tracking refs
+        #[arg(long)]
+        remote: Option<String>,
+    },
     /// On the trunk after a merge: re-render every published bead from the
     /// store and commit the projection (rosary-e5c0a0).
     TrunkRefresh {
@@ -2216,8 +2221,13 @@ async fn main() -> Result<()> {
                     .await?;
                     return Ok(());
                 }
-                BeadAction::VerifyPushed => {
-                    publish::push::verify_pushed(&repo_root, std::io::stdin().lock())?;
+                BeadAction::VerifyPushed { remote } => {
+                    publish::push::verify_pushed(
+                        &repo_root,
+                        remote.as_deref(),
+                        std::io::stdin().lock(),
+                    )
+                    .await?;
                     return Ok(());
                 }
                 BeadAction::TrunkRefresh { push } => {
@@ -2549,7 +2559,7 @@ async fn main() -> Result<()> {
                 // exhaustive.
                 BeadAction::Diff { .. } => unreachable!("Diff is dispatched pre-store"),
                 BeadAction::Publish { .. }
-                | BeadAction::VerifyPushed
+                | BeadAction::VerifyPushed { .. }
                 | BeadAction::TrunkRefresh { .. } => {
                     unreachable!("projection-timing surfaces are dispatched pre-store")
                 }
