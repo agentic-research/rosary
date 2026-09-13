@@ -302,6 +302,48 @@ fn a_pushed_record_that_lags_the_store_is_refused_until_published() {
     );
 }
 
+/// (d) The gate reads the PUSHED blob, never the working tree: a record that
+/// is current in the working tree but not yet committed must not satisfy it.
+/// This is the case that separates the ref-blob comparison from the
+/// working-tree `cmp` it replaced (mutation: read `.beads/beads.jsonl` from
+/// the tree in `blob_records` and this passes a stale push).
+#[test]
+fn a_published_but_uncommitted_record_does_not_satisfy_the_gate() {
+    let r = PrepushRepo::new();
+    r.must(
+        "checkout feature",
+        &r.git(&["checkout", "-q", "-b", "feature"]),
+    );
+    let id = r.create_bead("feature work", "a.rs");
+    r.publish_all();
+    r.commit_code("a.rs", &format!("[{id}] feat(core): work"));
+    r.must(
+        "comment add",
+        &r.rsry(&["bead", "comment", "add", &id, "opened PR #1"]),
+    );
+    // Working tree current, pushed tip stale.
+    r.publish_all();
+    let tree = std::fs::read_to_string(r.root.join(PREPUSH_JSONL)).unwrap();
+    assert!(
+        record_for(&tree, &id).is_some_and(|line| line.contains("opened PR #1")),
+        "fixture: the working tree must hold the current record"
+    );
+    assert!(
+        !record_for(&r.blob("HEAD"), &id)
+            .unwrap()
+            .contains("opened PR #1"),
+        "fixture: the pushed tip must still hold the stale record"
+    );
+
+    let push = r.git(&["push", "-q", "-u", "origin", "feature"]);
+    let err = err_text(&push);
+    assert!(
+        !push.status.success(),
+        "a current working tree must not vouch for a stale pushed blob:\n{err}"
+    );
+    assert!(err.contains(&id), "the refusal must name the bead:\n{err}");
+}
+
 /// (b) On main with nothing to push, a store holding beads main's file lacks
 /// is not this push's business — neither for `git push` nor for the primitive
 /// fed an empty ref list or an empty range.
