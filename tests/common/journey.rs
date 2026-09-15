@@ -306,6 +306,13 @@ impl Journey {
             let o = self.git(&["checkout", "-q", "main"]);
             self.must("checkout main after discard", &o);
         }
+        // Bring main up to date first: in the reconciler variant a peer has
+        // pushed to origin/main, and a non-fast-forward rejection from git
+        // would be about history, not about beads. The fast-forward also runs
+        // the post-merge hook on main — a store write whose only legitimate
+        // effect, under ADR-0024 amendment A, is on the store.
+        let o = self.git(&["pull", "-q", "--ff-only", "origin", "main"]);
+        self.must("fast-forward main", &o);
         let push_main = self.git(&["push", "-q", "origin", "main"]);
         self.observe(
             5,

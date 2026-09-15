@@ -20,21 +20,27 @@
 //! lands; it is fix-agnostic — commit-time materialization, main-only
 //! regeneration, or a projection outside the working tree all turn it green.
 //!
-//! Mutation: re-enable write-through in `PublishingBeadStore::publish`, or
-//! point pre-push back at the working-tree file, and observations 1/3/4/5 go
-//! red again; drop `--published-from` from pre-commit and observation 2 does.
+//! MUTATIONS, as measured (rosary-e5fd35, 2026-09-12), each on the branch
+//! that carried the whole fix:
 //!
-//! It is `#[ignore]`d so `task check` on main stays green while the decision
-//! is pending. Run it with `cargo test --test beads_dirty_journey -- --ignored`;
-//! that invocation is RED today and is the bead's close condition. The fix
-//! removes the `#[ignore]` — a fix that leaves it in place has not landed.
+//! - restore write-through in `PublishingBeadStore::publish` → observation 1 RED
+//! - commit-time publish renders every store bead, not the named ones
+//!   → observation 2 RED
+//! - pre-push reads the working-tree file instead of the pushed blob → this
+//!   journey STAYS GREEN (a store write no longer touches the tree, so tree
+//!   equals blob at push time); the discriminator is
+//!   `tests/hooks_prepush_ref_blob.rs::a_published_but_uncommitted_record_does_not_satisfy_the_gate`
+//! - post-commit never folds the record in → this journey is vacuously green;
+//!   the discriminator is `tests/hooks_commit_scoped_publish.rs` (3 of 3 RED)
+//!
+//! It ran ignored while the amendment was pending; since the wave landed
+//! (#495 #497 #498 #496) it runs in `task check` like any other test.
 
 #[path = "common/journey.rs"]
 mod cli_journey;
 use cli_journey::{Journey, created_id};
 
 #[test]
-#[ignore = "rosary-3d455a: RED by design until the ADR-0024 materialization amendment lands; run with -- --ignored"]
 fn a_bead_written_on_a_feature_branch_does_not_dirty_or_block_the_checkout() {
     let mut j = Journey::new();
     j.seed(&[]);
