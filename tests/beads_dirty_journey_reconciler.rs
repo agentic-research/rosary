@@ -10,7 +10,8 @@
 //! (so the owner's pull is a fast-forward) and squash-merge subjects
 //! `[<id>] … (#N)` to `main` (what the hook's trunk scan reads).
 //!
-//! RED by design until rosary-3d455a P1–P4 land (F1 removes the `#[ignore]`).
+//! Green since the projection-timing wave landed (#495 #497 #498 #496);
+//! runs in `task check` (rosary-e5fd35).
 //! Run with `cargo test --test beads_dirty_journey_reconciler -- --ignored`.
 
 #[path = "common/journey.rs"]
@@ -43,7 +44,6 @@ fn assert_closed_by_sweep(j: &mut Journey, id: &str) {
 }
 
 #[test]
-#[ignore = "rosary-3d455a: RED until P1–P4 land; run with -- --ignored"]
 fn a_bead_closed_by_the_post_merge_hook_on_a_feature_branch_does_not_dirty_or_block_the_checkout() {
     let mut j = Journey::new();
     // All three beads exist before the export is tracked: the journey's only

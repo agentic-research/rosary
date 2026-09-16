@@ -6,7 +6,8 @@
 //! `tools/call rsry_bead_comment`), the exact path `rsry_bead_comment` takes
 //! from a live Claude session.
 //!
-//! RED by design until rosary-3d455a P1–P4 land (F1 removes the `#[ignore]`).
+//! Green since the projection-timing wave landed (#495 #497 #498 #496);
+//! runs in `task check` (rosary-e5fd35).
 //! Run with `cargo test --test beads_dirty_journey_mcp -- --ignored`.
 
 use std::io::{BufRead, BufReader, Write};
@@ -124,7 +125,6 @@ fn drain_stderr(mut err: std::process::ChildStderr) -> std::thread::JoinHandle<S
 }
 
 #[test]
-#[ignore = "rosary-3d455a: RED until P1–P4 land; run with -- --ignored"]
 fn a_bead_commented_over_mcp_stdio_on_a_feature_branch_does_not_dirty_or_block_the_checkout() {
     let mut j = Journey::new();
     // Both beads exist before the export is tracked: the journey's only store
