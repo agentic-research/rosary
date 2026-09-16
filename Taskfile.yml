@@ -160,6 +160,17 @@ tasks:
       - target/release/capnpc-schema-bridge-tooldefs
       - src/serve/tools.generated.json
 
+  fleet-audit:
+    desc: >-
+      Fleet hook rollout gate (rosary-e5fd9a): walk every [[repo]] in
+      ~/.rsry/config.toml, run `rsry hooks audit` in each, and fail when any
+      repo with a store runs a stale rsry hook (or none). Pass INSTALL=1 to
+      re-install the hooks from this rsry's templates first. Owner-run — it
+      needs the owner's registry, so it is not part of `task check`.
+    cmds:
+      - |
+        if [ "{{.INSTALL}}" = "1" ]; then scripts/fleet-hooks-audit.sh --install; else scripts/fleet-hooks-audit.sh; fi
+
   smells:
     desc: >-
       mache structural-smell ratchet (ADR-0018) — the god_file/long_file/
