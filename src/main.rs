@@ -3023,7 +3023,7 @@ async fn main() -> Result<()> {
                     let result = match &action {
                         HooksAction::Install => hooks::install(&repo_root),
                         HooksAction::Status => hooks::status(&repo_root),
-                        HooksAction::Audit => hooks::audit(&repo_root),
+                        HooksAction::Audit => hooks::audit(&repo_root).await,
                         HooksAction::Run { name } => hooks::run(&repo_root, name),
                     };
                     if let Err(error) = result {
@@ -3042,7 +3042,7 @@ async fn main() -> Result<()> {
                 match &action {
                     HooksAction::Install => hooks::install(&repo_root)?,
                     HooksAction::Status => hooks::status(&repo_root)?,
-                    HooksAction::Audit => hooks::audit(&repo_root)?,
+                    HooksAction::Audit => hooks::audit(&repo_root).await?,
                     HooksAction::Run { name } => hooks::run(&repo_root, name)?,
                 }
             }

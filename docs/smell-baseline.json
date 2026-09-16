@@ -1249,7 +1249,7 @@
     {
       "rule_id": "fan_out_skew",
       "source_id": "src/hooks/audit.rs",
-      "count": 1
+      "count": 2
     },
     {
       "rule_id": "fan_out_skew",

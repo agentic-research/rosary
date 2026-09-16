@@ -342,6 +342,25 @@ pub fn install(repo_root: &Path) -> Result<()> {
                 "[hooks] {name} is pre-commit-framework-owned — writing to \
                  .pre-commit-config.yaml instead of the raw hook file (rosary-00f2b5)"
             );
+            // A managed block left in the raw file by a pre-framework install
+            // keeps RUNNING (git executes the raw file) with whatever contract
+            // it encoded then — the every-write export swept 14 unrelated
+            // records into a commit on rosary itself (2026-09-15,
+            // rosary-e5fc0e). The yaml entry renders the current template, so
+            // the raw block is at best redundant and at worst stale: strip it.
+            let dst = hooks_dir.join(name);
+            if let Ok(existing) = std::fs::read_to_string(&dst)
+                && let Some(stripped) = strip_managed_block(&existing)
+            {
+                std::fs::write(&dst, stripped).with_context(|| {
+                    format!("stripping the stale rsry block from {}", dst.display())
+                })?;
+                println!(
+                    "[hooks] removed the stale rsry-managed block from {} — the framework \
+                     entry `rsry hooks run pre-commit` renders the current template",
+                    dst.display()
+                );
+            }
             continue;
         }
         let dst = hooks_dir.join(name);
