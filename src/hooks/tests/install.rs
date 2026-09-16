@@ -349,3 +349,46 @@ fn install_into_fresh_repo() {
         }
     }
 }
+
+/// A raw pre-commit that still carries an rsry-managed block from a
+/// pre-framework install keeps RUNNING that block (git executes the raw
+/// file) — with the old contract. Once the framework owns pre-commit the
+/// block is stripped; the yaml entry renders the current template instead.
+#[test]
+fn install_strips_a_stale_managed_block_from_a_framework_owned_raw_hook() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    init_repo(root);
+    seed_commit(root);
+    std::fs::write(
+        root.join(".pre-commit-config.yaml"),
+        "repos:\n  - repo: https://github.com/psf/black\n    rev: 24.0\n",
+    )
+    .unwrap();
+    let hooks_dir = root.join(".git").join("hooks");
+    std::fs::create_dir_all(&hooks_dir).unwrap();
+    let stale = format!(
+        "#!/bin/sh\n{MARKER_START}\n# rsry-hook pre-commit v0.9.0 sha256:0000\n\
+         rsry bead export --jsonl --status all -o .beads/beads.jsonl\n{MARKER_END}\n\
+         echo user-content-after\n"
+    );
+    std::fs::write(hooks_dir.join("pre-commit"), &stale).unwrap();
+
+    install(root).unwrap();
+
+    let raw = std::fs::read_to_string(hooks_dir.join("pre-commit")).unwrap();
+    assert!(
+        !raw.contains(MARKER_START),
+        "stale block must be stripped: {raw}"
+    );
+    assert!(
+        !raw.contains("bead export"),
+        "old contract must be gone: {raw}"
+    );
+    assert!(
+        raw.contains("echo user-content-after"),
+        "user content preserved: {raw}"
+    );
+    let yaml = std::fs::read_to_string(root.join(".pre-commit-config.yaml")).unwrap();
+    assert!(yaml.contains("entry: rsry hooks run pre-commit"), "{yaml}");
+}

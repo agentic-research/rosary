@@ -9,7 +9,7 @@ use super::*;
 /// Unlike `status()` (purely informational), this is a GATE: returns
 /// `Err` naming every failing check if any check fails, so `rsry hooks
 /// audit` exits non-zero and is safe to script/CI against.
-pub fn audit(repo_root: &Path) -> Result<()> {
+pub async fn audit(repo_root: &Path) -> Result<()> {
     let mut problems = Vec::new();
     let beads_dir = repo_root.join(".beads");
     let jsonl_rel = ".beads/beads.jsonl";
@@ -71,29 +71,11 @@ pub fn audit(repo_root: &Path) -> Result<()> {
 
     // --- 3. store/export drift -------------------------------------------
     if has_sqlite {
-        match count_sqlite_issues(&sqlite_db) {
-            Ok(db_count) => {
-                let jsonl_lines = std::fs::read_to_string(beads_dir.join("beads.jsonl"))
-                    .map(|c| c.lines().filter(|l| !l.trim().is_empty()).count())
-                    .unwrap_or(0);
-                if store_export_drifted(db_count, jsonl_lines) {
-                    println!(
-                        "  ✗ STORE/EXPORT DRIFT: beads.db has {db_count} bead(s), beads.jsonl has {jsonl_lines} line(s) — no durable copy"
-                    );
-                    problems.push(format!(
-                        "{db_count} bead(s) in beads.db, only {jsonl_lines} in beads.jsonl"
-                    ));
-                } else {
-                    println!(
-                        "  ✓ store/export roughly agree (beads.db={db_count}, beads.jsonl={jsonl_lines} line(s))"
-                    );
-                }
-            }
-            Err(e) => println!("  ? could not read beads.db to check drift: {e}"),
-        }
+        trunk_projection_check(repo_root, &beads_dir, &mut problems).await;
     }
 
-    // --- 4. cross-repo dependency shape (rosary-d93ab7) -----------------
+    hook_stamp_check(repo_root, &mut problems);
+
     if let Ok(content) = std::fs::read_to_string(beads_dir.join("beads.jsonl")) {
         let mut foreign = Vec::new();
         for line in content.lines() {
@@ -152,6 +134,164 @@ pub fn audit(repo_root: &Path) -> Result<()> {
             problems.len(),
             problems.join("; ")
         )
+    }
+}
+
+/// The trunk ref whose projection is the durable copy: the remote trunk when
+/// one is fetched, else a local `main`/`master`. `None` when the repo has no
+/// trunk at all (a fresh `git init`), which is not a drift condition.
+fn trunk_projection_ref(repo_root: &Path) -> Option<&'static str> {
+    [
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+        "refs/remotes/origin/master",
+        "refs/heads/main",
+        "refs/heads/master",
+    ]
+    .into_iter()
+    .find(|candidate| {
+        Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", candidate])
+            .current_dir(repo_root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}
+
+/// ADR-0024 amendment A (rosary-e5fc0e): the invariant the audit checks is
+/// "the trunk carries the current record of every published bead". A feature
+/// branch's file is EXPECTED to lag the store, so the old row-count heuristic
+/// measured the wrong artifact; this compares the TRUNK blob, record by
+/// record, against the store's exact rendering — the same comparison the
+/// pre-push gate makes for the beads a push names.
+async fn trunk_projection_check(repo_root: &Path, beads_dir: &Path, problems: &mut Vec<String>) {
+    let Some(trunk) = trunk_projection_ref(repo_root) else {
+        println!("  ? no trunk ref to compare the projection against (fresh repo)");
+        return;
+    };
+    let blob = Command::new("git")
+        .args(["show", &format!("{trunk}:.beads/beads.jsonl")])
+        .current_dir(repo_root)
+        .output();
+    let text = match blob {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        _ => {
+            println!("  ? {trunk} carries no .beads/beads.jsonl — projection not tracked there");
+            return;
+        }
+    };
+    let index = crate::publish::push::parse_blob(&text);
+    if index.records.is_empty() {
+        println!("  ✓ trunk projection at {trunk} is empty — nothing to drift");
+        return;
+    }
+    let repo_name = repo_root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let store = match crate::bead_sqlite::connect_bead_store(beads_dir).await {
+        Ok(s) => s,
+        Err(e) => {
+            println!("  ? could not open the bead store to check the trunk projection: {e:#}");
+            return;
+        }
+    };
+    let mut stale = Vec::new();
+    let mut missing = Vec::new();
+    for (id, line) in &index.records {
+        if index.duplicates.contains(id) {
+            stale.push(id.clone());
+            continue;
+        }
+        match store.get_bead(id, &repo_name).await {
+            Ok(Some(bead)) => {
+                match crate::jsonl_sync::render_bead_line(store.as_ref(), &bead).await {
+                    Ok(rendered) if rendered == *line => {}
+                    Ok(_) => stale.push(id.clone()),
+                    Err(e) => {
+                        println!("  ? could not render {id}: {e:#}");
+                    }
+                }
+            }
+            Ok(None) => missing.push(id.clone()),
+            Err(e) => println!("  ? could not read {id} from the store: {e:#}"),
+        }
+    }
+    if !stale.is_empty() {
+        println!(
+            "  ✗ TRUNK PROJECTION STALE: {} record(s) at {trunk} differ from the store — \
+             run `rsry bead trunk-refresh` (rosary-e5c0a0): {}",
+            stale.len(),
+            stale.join(", ")
+        );
+        problems.push(format!(
+            "{} trunk record(s) stale at {trunk}: {}",
+            stale.len(),
+            stale.join(", ")
+        ));
+    }
+    if !missing.is_empty() {
+        println!(
+            "  ✗ STORE BEHIND TRUNK: {} bead(s) published at {trunk} are absent from the \
+             store — run `rsry bead import --jsonl .beads/beads.jsonl`: {}",
+            missing.len(),
+            missing.join(", ")
+        );
+        problems.push(format!(
+            "{} published bead(s) absent from the store: {}",
+            missing.len(),
+            missing.join(", ")
+        ));
+    }
+    if stale.is_empty() && missing.is_empty() {
+        println!(
+            "  ✓ trunk projection ({} record(s) at {trunk}) agrees with the store",
+            index.records.len()
+        );
+    }
+}
+
+/// An installed hook whose stamp is not this binary's stamp encodes an older
+/// contract. Under amendment A that is not cosmetic: a stale pre-push keeps
+/// refusing pushes for the OLD reason and a stale pre-commit keeps sweeping
+/// unrelated records in (seen live on rosary, 2026-09-15). A managed block
+/// with a stale stamp fails the audit; a hook file without a stamp is not
+/// rsry-managed and is left alone.
+fn hook_stamp_check(repo_root: &Path, problems: &mut Vec<String>) {
+    let Ok(hooks_dir) = resolve_hooks_dir(repo_root) else {
+        return;
+    };
+    let mut fresh = 0;
+    for (name, block) in HOOKS {
+        let Ok(content) = std::fs::read_to_string(hooks_dir.join(name)) else {
+            continue;
+        };
+        let prefix = format!("# rsry-hook {name} v");
+        let Some(found) = content.lines().find(|l| l.starts_with(&prefix)) else {
+            continue;
+        };
+        let expected = hook_stamp(name, block);
+        if found == expected {
+            fresh += 1;
+        } else {
+            let found_version = found[prefix.len()..]
+                .split_whitespace()
+                .next()
+                .unwrap_or("?");
+            println!(
+                "  ✗ HOOK STALE: {name} is v{found_version} but this rsry renders v{} — \
+                 run `rsry hooks install`",
+                env!("CARGO_PKG_VERSION")
+            );
+            problems.push(format!(
+                "hook {name} is stale (v{found_version} vs v{})",
+                env!("CARGO_PKG_VERSION")
+            ));
+        }
+    }
+    if fresh > 0 {
+        println!("  ✓ {fresh} installed hook(s) match this rsry's templates");
     }
 }
 
@@ -217,32 +357,6 @@ pub(crate) fn classify_gitignore_check(
         }
         Ok(_) => GitignoreCheck::Reachable,
     }
-}
-
-/// Has the local store outrun its tracked export badly enough that real
-/// bead data has no durable copy? Lines needn't match exactly (status
-/// filters, in-flight writes change the count run to run) — this states
-/// the boundary as a threshold shape, not a hardcoded magic number, so
-/// the property tests characterize it independent of the exact ratio.
-///
-/// Laws: an empty store never drifts (nothing to lose); a nonempty store
-/// with zero exported lines always drifts (the exact incident this
-/// check exists for — 366 beads, 9 repos, 2026-07-29); drift is
-/// monotonic in `jsonl_lines` — exporting more can only cure a flagged
-/// state, never cause one; an export meeting or exceeding the store
-/// count never drifts.
-pub(crate) fn store_export_drifted(db_count: i64, jsonl_lines: usize) -> bool {
-    db_count > 0 && (jsonl_lines == 0 || jsonl_lines * 2 < db_count as usize)
-}
-
-/// Row count of the `issues` table in a bead SQLite store, opened
-/// read-only so an audit run can never itself mutate or lock the store.
-fn count_sqlite_issues(path: &Path) -> Result<i64> {
-    let conn =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .with_context(|| format!("opening {}", path.display()))?;
-    conn.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
-        .context("counting issues")
 }
 
 /// Result of probing `dolt remote -v` in a Dolt-backed bead directory.

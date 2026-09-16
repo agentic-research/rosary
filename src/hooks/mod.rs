@@ -410,10 +410,15 @@ pub fn run(repo_root: &Path, name: &str) -> Result<()> {
         .iter()
         .find(|(n, _)| *n == name)
         .with_context(|| format!("unknown hook: {name} (known: {:?})", hook_names()))?;
+    // stdin is closed on purpose: a hook run this way has no git ref list to
+    // read (pre-push's `bead verify-pushed` reads stdin to EOF — inheriting a
+    // harness socket or a terminal hung `cargo test --bin rsry hooks::` for
+    // days locally while CI, whose stdin is closed, passed; rosary-e5fc0e).
     let status = Command::new("sh")
         .arg("-c")
         .arg(render_block(block))
         .current_dir(repo_root)
+        .stdin(std::process::Stdio::null())
         .status()
         .with_context(|| format!("running hook `{name}`"))?;
     if !status.success() {
