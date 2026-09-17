@@ -195,9 +195,14 @@ impl Drop for CliSandbox {
 // ---------------------------------------------------------------------------
 
 fn run_cmd(cmd: &str, args: &[&str], dir: &Path) {
+    // The owner's real global git config (a global core.hooksPath with its
+    // own commit contract) must not reach the fixture: it refused
+    // `git commit -m initial` on 2026-09-17 (rosary-590ddf).
     let output = Command::new(cmd)
         .args(args)
         .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output()
