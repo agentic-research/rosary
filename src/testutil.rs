@@ -15,6 +15,16 @@ impl TestRepo {
     pub fn new() -> Self {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path();
+        // The owner's real global git config (identity, a global
+        // core.hooksPath with a commit contract) must not reach a fixture:
+        // `git commit -m initial` was refused by it on 2026-09-17
+        // (rosary-590ddf). Process-wide because production code shells git
+        // in-process too.
+        // SAFETY: test-only, single well-known value, idempotent.
+        unsafe {
+            std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+            std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+        }
 
         run_git(path, &["init"]);
         run_git(path, &["config", "user.email", "test@test.com"]);
@@ -102,6 +112,8 @@ fn run_git(dir: &Path, args: &[&str]) {
     let output = std::process::Command::new("git")
         .args(args)
         .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
         .unwrap_or_else(|e| panic!("git {}: {e}", args.join(" ")));
     assert!(

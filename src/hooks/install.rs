@@ -315,6 +315,30 @@ pub fn install(repo_root: &Path) -> Result<()> {
     migrate_bd_hooks_path(repo_root);
 
     let hooks_dir = resolve_hooks_dir(repo_root)?;
+
+    // A hooks dir outside the repo AND outside its common git dir means a
+    // global `core.hooksPath` is in force: git ignores `.git/hooks` there, and
+    // writing rsry's per-repo blocks into the owner's global hooks from a
+    // repo command is exactly what a test run did on 2026-09-17
+    // (rosary-590ddf). A linked worktree's hooks live under the COMMON git
+    // dir, which is inside the main checkout, not this worktree — allowed.
+    let inside = |dir: &Path, root: &Path| {
+        let (d, r) = (
+            dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
+            root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
+        );
+        d.starts_with(&r)
+    };
+    let common_dir = git_config_common_dir(repo_root);
+    if !inside(&hooks_dir, repo_root)
+        && !common_dir.as_deref().is_some_and(|c| inside(&hooks_dir, c))
+    {
+        println!(
+            "[hooks] {} is outside this repo (a global core.hooksPath is in force) — per-repo hook install skipped; see rosary-590ddf for the per-user install",
+            hooks_dir.display()
+        );
+        return Ok(());
+    }
     std::fs::create_dir_all(&hooks_dir)
         .with_context(|| format!("creating {}", hooks_dir.display()))?;
     neutralize_inactive_standard_hooks(repo_root, &hooks_dir)?;
@@ -465,4 +489,24 @@ pub fn install(repo_root: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The repo's common git dir (`git rev-parse --git-common-dir`), absolute.
+fn git_config_common_dir(repo_root: &Path) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let rel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let p = Path::new(&rel);
+    Some(if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        repo_root.join(p)
+    })
 }

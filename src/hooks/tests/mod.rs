@@ -39,7 +39,22 @@ pub(in crate::hooks) fn git(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("spawn git")
 }
 
+/// Point git's GLOBAL config at nothing for this test process. `install()`
+/// resolves the hooks dir in-process with `git rev-parse --git-path hooks`,
+/// which honours a global `core.hooksPath` — on 2026-09-17 that spliced
+/// rsry-managed blocks into the owner's real `~/.rsry/hooks` from a test run
+/// (rosary-590ddf). Idempotent; every fixture calls it.
+pub(in crate::hooks) fn isolate_global_git() {
+    // SAFETY: test-only, single well-known value, set before any git child is
+    // spawned by this fixture; concurrent tests set the same value.
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    }
+}
+
 pub(in crate::hooks) fn init_repo(dir: &Path) {
+    isolate_global_git();
     assert!(git(dir, &["init", "-q", "-b", "main"]).status.success());
     // user.email / user.name go into THIS repo's local config, not
     // global — so they don't need the env scaffolding above to take
