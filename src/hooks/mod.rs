@@ -435,3 +435,23 @@ pub fn run(repo_root: &Path, name: &str) -> Result<()> {
 fn hook_names() -> Vec<&'static str> {
     HOOKS.iter().map(|(n, _)| *n).collect()
 }
+
+/// The repo's common git dir (`git rev-parse --git-common-dir`), absolute.
+pub(crate) fn git_config_common_dir(repo_root: &Path) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let rel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let p = Path::new(&rel);
+    Some(if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        repo_root.join(p)
+    })
+}

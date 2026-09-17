@@ -64,8 +64,13 @@ impl Journey {
     /// (config, registry, gitconfig) and `RSRY_BIN` pinned to THIS build so the
     /// hooks exercise it against THIS store, never the installed rsry.
     pub fn env(&self, cmd: &mut Command) {
+        // The owner's real global git config (identity, a global core.hooksPath
+        // with its own commit contract) must never reach a journey; every
+        // fixture sets its own identity below (rosary-590ddf).
         cmd.env("HOME", self.home.path())
             .env("XDG_CONFIG_HOME", self.home.path().join(".config"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("RSRY_BIN", env!("CARGO_BIN_EXE_rsry"));
     }
 
@@ -90,7 +95,18 @@ impl Journey {
 
     pub fn git_in(&mut self, label: &str, dir: &Path, args: &[&str]) -> Output {
         let mut cmd = Command::new("git");
-        cmd.args(args).current_dir(dir);
+        // Identity inline, for the owner AND the peer clone: the global config
+        // is isolated (rosary-590ddf), so nothing else supplies one.
+        cmd.args([
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(dir);
         self.env(&mut cmd);
         let out = cmd
             .output()
@@ -160,6 +176,14 @@ impl Journey {
     pub fn seed(&mut self, seed_beads: &[&str]) -> Vec<String> {
         let o = self.git(&["init", "-q", "-b", "main"]);
         self.must("git init", &o);
+        for args in [
+            &["config", "user.email", "t@example.com"][..],
+            &["config", "user.name", "t"][..],
+            &["config", "commit.gpgsign", "false"][..],
+        ] {
+            let o = self.git(args);
+            self.must("git config", &o);
+        }
         self.write("README.md", "# journey\n");
         let o = self.git(&["add", "README.md"]);
         self.must("add README", &o);

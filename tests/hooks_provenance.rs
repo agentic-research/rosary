@@ -7,6 +7,8 @@ fn provenance_rsry_binary() -> PathBuf {
 
 fn run_provenance_git(repo: &Path, args: &[&str]) -> Output {
     Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .args(args)
         .current_dir(repo)
         .output()
@@ -20,6 +22,8 @@ fn init_provenance_repo(repo: &Path) {
 
 fn run_provenance_rsry(repo: &Path, args: &[&str]) -> Output {
     Command::new(provenance_rsry_binary())
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .args(args)
         .current_dir(repo)
         .env("NO_COLOR", "1")
@@ -29,6 +33,8 @@ fn run_provenance_rsry(repo: &Path, args: &[&str]) -> Output {
 
 fn run_provenance_rsry_with_home(repo: &Path, home: &Path, args: &[&str]) -> Output {
     Command::new(provenance_rsry_binary())
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .args(args)
         .current_dir(repo)
         .env("HOME", home)
@@ -131,6 +137,8 @@ fn installed_hook_warns_when_runtime_rsry_version_differs() {
     std::fs::set_permissions(&fake_rsry, permissions).unwrap();
 
     let output = Command::new(repo.join(".git/hooks/post-merge"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .current_dir(&repo)
         .env("RSRY_BIN", &fake_rsry)
         .output()
@@ -277,6 +285,8 @@ fn pre_commit_managed_block_runs_before_framework_exec() {
     std::fs::set_permissions(&fake_rsry, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = Command::new(&hook)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .current_dir(&repo)
         .env("RSRY_BIN", &fake_rsry)
         .output()
@@ -307,6 +317,8 @@ fn pre_commit_managed_block_runs_before_framework_exec() {
     assert!(linked_output.status.success(), "{linked_output:?}");
 
     let linked_hook = Command::new(&hook)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .current_dir(&linked)
         .env("RSRY_BIN", &fake_rsry)
         .output()

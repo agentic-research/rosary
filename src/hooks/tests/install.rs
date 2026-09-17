@@ -392,3 +392,38 @@ fn install_strips_a_stale_managed_block_from_a_framework_owned_raw_hook() {
     let yaml = std::fs::read_to_string(root.join(".pre-commit-config.yaml")).unwrap();
     assert!(yaml.contains("entry: rsry hooks run pre-commit"), "{yaml}");
 }
+
+/// With a `core.hooksPath` outside the repo (what a global one looks like
+/// from inside), install must not write there — those are not this repo's
+/// hooks (rosary-590ddf, the 2026-09-17 global-hooks pollution).
+#[test]
+fn install_refuses_a_hooks_dir_outside_the_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    init_repo(&root);
+    seed_commit(&root);
+    let elsewhere = tmp.path().join("global-hooks");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("pre-push"), "#!/bin/sh\necho theirs\n").unwrap();
+    assert!(
+        git(
+            &root,
+            &["config", "core.hooksPath", elsewhere.to_str().unwrap()]
+        )
+        .status
+        .success()
+    );
+
+    install(&root).unwrap();
+
+    let theirs = std::fs::read_to_string(elsewhere.join("pre-push")).unwrap();
+    assert!(
+        !theirs.contains(MARKER_START),
+        "must not splice into a foreign hooks dir: {theirs}"
+    );
+    assert!(
+        !elsewhere.join("commit-msg").exists(),
+        "must not create hooks in a foreign hooks dir"
+    );
+}
