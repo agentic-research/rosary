@@ -60,6 +60,15 @@ impl TrunkRepo {
             "bare remote",
             &r.git(&r.root, &["init", "-q", "--bare", &remote]),
         );
+        // CI's git defaults a bare repo's HEAD to `master`; pin it to `main` so
+        // the peer's clone lands on the branch the owner pushes.
+        r.must(
+            "remote default branch",
+            &r.git(
+                r.remote.path(),
+                &["symbolic-ref", "HEAD", "refs/heads/main"],
+            ),
+        );
         r.must(
             "remote add",
             &r.git(&r.root, &["remote", "add", "origin", &remote]),
@@ -143,6 +152,10 @@ impl TrunkRepo {
             &self.git(self._parent.path(), &["clone", "-q", &remote, &peer]),
         );
         self.configure(&self.peer);
+        self.must(
+            "peer on main",
+            &self.git(&self.peer, &["checkout", "-q", "main"]),
+        );
         std::fs::write(self.peer.join("peer.rs"), "fn peer() {}\n").unwrap();
         self.must("peer add", &self.git(&self.peer, &["add", "peer.rs"]));
         self.must(
