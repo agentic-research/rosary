@@ -1295,6 +1295,11 @@
       "rule_id": "fan_out_skew",
       "source_id": "src/publish/commit.rs",
       "count": 1
+    },
+    {
+      "rule_id": "fan_out_skew",
+      "source_id": "src/publish/trunk.rs",
+      "count": 1
     }
   ]
 }

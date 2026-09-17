@@ -42,3 +42,21 @@ fn post_merge_block_is_portable_and_discloses_installer_version() {
         "hook must disclose the installer version to its runtime"
     );
 }
+
+/// The trunk refresh runs after the sweep, with --push, and never fails the
+/// merge (rosary-e5c0a0).
+#[test]
+fn post_merge_runs_the_trunk_refresh_after_close_merged() {
+    let rendered = render_block(post_merge_template());
+    let sweep = rendered
+        .find("close-merged --local")
+        .expect("sweep present");
+    let refresh = rendered
+        .find("bead trunk-refresh --push")
+        .expect("trunk refresh present");
+    assert!(refresh > sweep, "the refresh must see the sweep's closures");
+    assert!(
+        rendered[refresh..].contains("|| true"),
+        "must never fail the merge"
+    );
+}
