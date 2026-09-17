@@ -2231,7 +2231,26 @@ async fn main() -> Result<()> {
                     return Ok(());
                 }
                 BeadAction::TrunkRefresh { push } => {
-                    publish::trunk::refresh_trunk(&repo_root, *push)?;
+                    use publish::trunk::TrunkRefresh;
+                    match publish::trunk::refresh_trunk(&repo_root, *push).await? {
+                        TrunkRefresh::Skipped(why) => {
+                            eprintln!("[rsry trunk-refresh] skipped: {why}")
+                        }
+                        TrunkRefresh::NoChange => {
+                            eprintln!("[rsry trunk-refresh] trunk projection already current")
+                        }
+                        TrunkRefresh::Committed { ids, pushed } => eprintln!(
+                            "[rsry trunk-refresh] committed {} record(s){}: {}",
+                            ids.len(),
+                            if pushed { " and pushed" } else { "" },
+                            ids.join(" ")
+                        ),
+                        TrunkRefresh::Parked { ids } => eprintln!(
+                            "[rsry trunk-refresh] {} record(s) parked on {}",
+                            ids.len(),
+                            publish::trunk::PARKING_BRANCH
+                        ),
+                    }
                     return Ok(());
                 }
                 // Diff reads snapshots (files / git revs / refs), never the

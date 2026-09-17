@@ -39,6 +39,13 @@ else
     # Best-effort: never block or fail the merge.
     "$RSRY" close-merged --local --repo "$REPO" >/dev/null 2>&1 || true
 
+    # Trunk refresh (ADR-0024 amendment A, rosary-e5c0a0): on the trunk, after
+    # the merge, re-render every published bead from the store and commit the
+    # projection, then push. A refused push (PR-only trunk) parks the commit
+    # on rsry/trunk-refresh and resets the trunk — the tree stays clean.
+    # Best-effort; the primitive decides whether this checkout qualifies.
+    "$RSRY" bead trunk-refresh --push 2>&1 | grep -v '^\[rsry trunk-refresh\] skipped' >&2 || true
+
     # rsry version-drift nudge (rosary-d09889): in the rosary source repo, if this
     # pull moved the crate version past the installed binary, say so — the release
     # pull IS the trigger, so nobody has to notice manually. Warn-only: `task
