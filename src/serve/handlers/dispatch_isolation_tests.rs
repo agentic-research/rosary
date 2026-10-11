@@ -39,7 +39,7 @@ async fn unversioned_repo_with_bead() -> (tempfile::TempDir, String) {
     (tmp, path)
 }
 
-async fn bead_status(repo_path: &str) -> String {
+async fn isolation_fixture_status(repo_path: &str) -> String {
     let beads_dir = std::path::Path::new(repo_path).join(".beads");
     let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
         .await
@@ -71,7 +71,7 @@ fn assert_refused_at_isolation(result: Result<Value>, repo_path: &str) {
 #[tokio::test]
 async fn dispatch_refuses_when_workspace_cannot_be_isolated() {
     let (_tmp, repo_path) = unversioned_repo_with_bead().await;
-    let before = bead_status(&repo_path).await;
+    let before = isolation_fixture_status(&repo_path).await;
 
     let result = tool_dispatch(
         &json!({
@@ -85,7 +85,7 @@ async fn dispatch_refuses_when_workspace_cannot_be_isolated() {
 
     assert_refused_at_isolation(result, &repo_path);
     assert_eq!(
-        bead_status(&repo_path).await,
+        isolation_fixture_status(&repo_path).await,
         before,
         "a refused dispatch must not move the bead"
     );
