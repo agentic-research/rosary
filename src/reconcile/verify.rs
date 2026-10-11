@@ -421,12 +421,21 @@ impl Reconciler {
         };
 
         for (bead_id, exit_success) in completed {
+            // Classify FIRST, from everything the run left behind, on EVERY path
+            // (orchestrator-managed included): a session-limit hit exits 0 with a
+            // "successful" result and must never enter verifying (rosary-1780ea).
+            // Also before execute_action, which drops the work_dir on failure.
+            let (failure_class, exit_success, retry_wait) =
+                self.classify_completion(bead_id, *exit_success);
+
             // Skip orchestrator-managed beads — their completions are handled
             // by orchestrator_tick() which calls on_worker_completed().
             if self.orchestrators.contains_key(bead_id.as_str()) {
-                // Feed the completion back to the orchestrator.
+                // Feed the completion back to the orchestrator. The orchestrator
+                // owns its own retry budget, so a parsed reset time is not applied
+                // here — but the downgraded exit keeps a limit hit out of verify.
                 let (action, _verify_summary) =
-                    self.verify_and_decide(bead_id, *exit_success, beads);
+                    self.verify_and_decide(bead_id, exit_success, beads);
                 let passed = matches!(
                     action,
                     CompletionAction::Advance { .. } | CompletionAction::Terminal
@@ -472,13 +481,6 @@ impl Reconciler {
             // but only when the agent exited successfully. A crashed agent
             // (exit_success=false) goes straight to retry/deadletter without
             // running any verification, so "verifying" would be misleading.
-            // Classify FIRST, from everything the run left behind: a session-limit
-            // hit exits 0 with a "successful" result and must never enter
-            // verifying (rosary-1780ea). Also before execute_action, which drops
-            // the work_dir on failure.
-            let (failure_class, exit_success, retry_wait) =
-                self.classify_completion(bead_id, *exit_success);
-
             if exit_success {
                 let (agent, phase) = self
                     .trackers
@@ -894,6 +896,10 @@ impl Reconciler {
                             )
                             .await;
                             self.trackers.remove(bead_id.as_str());
+                            // A deadletter like any other: the targeted run's exit
+                            // condition must see it, or it reports deadlettered=0
+                            // and exits via the no-active-work path.
+                            wait_outcome.deadlettered_ids.push(bead_id.clone());
                         }
                     }
                 }
@@ -926,12 +932,25 @@ fn close_condition_text(bead: &crate::bead::Bead) -> String {
 /// classification. Best-effort — a missing or unreadable log yields an empty
 /// string (which classifies to [`FailureClass::Unknown`]).
 fn read_log_tail(work_dir: &std::path::Path, name: &str) -> String {
-    const MAX_TAIL_BYTES: usize = 8 * 1024;
-    let Ok(bytes) = std::fs::read(work_dir.join(name)) else {
+    use std::io::{Read, Seek, SeekFrom};
+    const MAX_TAIL_BYTES: u64 = 8 * 1024;
+    // Seek, don't slurp: the stream log is the whole transcript (tool output,
+    // file contents) and can be large; only the bounded tail is ever used.
+    let Ok(mut file) = std::fs::File::open(work_dir.join(name)) else {
         return String::new();
     };
-    let start = bytes.len().saturating_sub(MAX_TAIL_BYTES);
-    String::from_utf8_lossy(&bytes[start..]).into_owned()
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if file
+        .seek(SeekFrom::Start(len.saturating_sub(MAX_TAIL_BYTES)))
+        .is_err()
+    {
+        return String::new();
+    }
+    let mut bytes = Vec::with_capacity(len.min(MAX_TAIL_BYTES) as usize);
+    if file.read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// The text of the stream log's final `{"type":"result"}` record — the

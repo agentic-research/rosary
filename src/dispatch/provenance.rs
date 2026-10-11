@@ -199,6 +199,12 @@ pub fn session_limit_reset(
     let naive = now.date_naive().and_hms_opt(hour, minute, 0)?;
     let mut target = now.timezone().from_local_datetime(&naive).single()?;
     if target <= now {
+        // The notice has minute precision: within the displayed minute the
+        // reset has arrived, not moved to tomorrow. Nothing to key to — the
+        // caller's exponential backoff applies.
+        if now - target < chrono::Duration::minutes(1) {
+            return None;
+        }
         target += chrono::Duration::days(1);
     }
     (target - now).to_std().ok()
@@ -335,6 +341,10 @@ mod tests {
         // Already past today: the next occurrence is tomorrow.
         let wait = session_limit_reset("resets 3:00pm", now).unwrap();
         assert_eq!(wait, std::time::Duration::from_secs(23 * 3600 + 38 * 60));
+        // Inside the displayed minute the reset has arrived — never roll a
+        // "resets 3:22pm" seen at 3:22:30 to tomorrow.
+        let within = now + chrono::Duration::seconds(30);
+        assert_eq!(session_limit_reset("resets 3:22pm", within), None);
         // No reset time in the message: nothing to key to.
         assert_eq!(
             session_limit_reset("You've hit your session limit", now),
