@@ -8,6 +8,8 @@
 !/Cargo.lock
 !/build.rs
 !/clippy.toml
+# Pinned compiler: local `task check` == CI (rosary-1a73c9).
+!/rust-toolchain.toml
 !/src
 !/crates
 !/tests

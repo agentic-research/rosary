@@ -1,0 +1,8 @@
+# Pin the compiler so local `task check` green == CI green (rosary-1a73c9).
+# CI used a floating `stable`: when it moved to 1.99, clippy's new
+# `double_must_use` fired on async_trait expansions and broke main while every
+# local gate (1.97) stayed green. Bump this deliberately, in its own PR.
+[toolchain]
+channel = "1.99"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
