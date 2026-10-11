@@ -76,23 +76,40 @@ impl Reconciler {
     }
 
     /// Run verification tiers on an agent's work directory.
-    /// Returns None (skip verification) for ReadOnly agents — they produce
-    /// research/comments, not code changes.
+    ///
+    /// Returns None (skip verification) for a read-only phase that produces
+    /// research/comments, not code. Whether to verify is keyed to the BEAD,
+    /// not the agent (rosary-1780ea): a read-only agent that is the terminal
+    /// phase of a bead declaring `files`/`test_files` delivered the bead's
+    /// work, and that work is verified like anyone else's. A read-only agent
+    /// mid-pipeline (scoping before dev) still has nothing to verify.
     pub(super) fn verify_agent(
         &mut self,
         bead_id: &str,
         close_condition: Option<&str>,
+        bead: Option<&crate::bead::Bead>,
     ) -> Option<VerifySummary> {
-        // Skip verification for ReadOnly agents (scoping-agent, staging-agent review)
-        // They don't write code — their output is bead comments, not commits.
-        let is_readonly = self
+        let (agent, issue_type) = self
             .trackers
             .get(bead_id)
-            .and_then(|t| t.current_agent.as_deref())
+            .map(|t| (t.current_agent.clone(), t.issue_type.clone()))
+            .unwrap_or_default();
+        let is_readonly = agent
+            .as_deref()
             .is_some_and(|agent| matches!(agent, "scoping-agent" | "staging-agent"));
         if is_readonly {
-            eprintln!("[verify] {bead_id}: skipped (ReadOnly agent)");
-            return None;
+            let delivers_the_bead = agent
+                .as_deref()
+                .is_some_and(|a| self.pipeline.next_agent(&issue_type, a).is_none())
+                && bead.is_some_and(|b| !b.files.is_empty() || !b.test_files.is_empty());
+            if !delivers_the_bead {
+                eprintln!("[verify] {bead_id}: skipped (read-only phase with nothing to verify)");
+                return None;
+            }
+            eprintln!(
+                "[verify] {bead_id}: read-only agent is the terminal phase of a bead that \
+                 declares files — verifying (rosary-1780ea)"
+            );
         }
 
         let (work_dir, repo) = self.completed_work_dirs.remove(bead_id)?;

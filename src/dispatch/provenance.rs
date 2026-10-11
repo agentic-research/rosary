@@ -39,6 +39,11 @@ pub enum FailureClass {
     MissingBinary,
     /// The dispatch exceeded its deadline.
     Timeout,
+    /// The seat's usage/session limit was hit — claude reports this as a
+    /// *successful* result ("You've hit your session limit · resets 3:40pm"),
+    /// so it is detected from the output, not the exit code. A failure of the
+    /// seat, not of the work: nothing to verify, retry after the reset.
+    SessionLimit,
     /// The agent ran and failed, but the reason isn't classifiable from output.
     Unknown,
 }
@@ -53,6 +58,7 @@ impl FailureClass {
             Self::Config => "config",
             Self::MissingBinary => "missing-binary",
             Self::Timeout => "timeout",
+            Self::SessionLimit => "session-limit",
             Self::Unknown => "unknown",
         }
     }
@@ -93,7 +99,13 @@ pub fn classify(exit_success: bool, stderr_tail: &str) -> FailureClass {
         return FailureClass::MissingBinary;
     }
 
-    // 2. Auth — credential missing or rejected.
+    // 2. Seat limit — claude reports it as a *successful* result, so this is
+    //    detected from the text alone and outranks the exit code (rosary-1780ea).
+    if t.contains("session limit") || t.contains("usage limit") {
+        return FailureClass::SessionLimit;
+    }
+
+    // 3. Auth — credential missing or rejected.
     if t.contains("not logged in")
         || t.contains("invalid api key")
         || t.contains("authentication_error")
@@ -135,6 +147,61 @@ pub fn classify(exit_success: bool, stderr_tail: &str) -> FailureClass {
     } else {
         FailureClass::Unknown
     }
+}
+
+/// How long until the seat's limit resets, parsed from the limit notice
+/// ("… resets 3:40pm", "… will reset at 4pm"). `None` when the text carries no
+/// wall-clock reset time — the caller falls back to exponential backoff.
+pub fn session_limit_reset(
+    text: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> Option<std::time::Duration> {
+    use chrono::TimeZone;
+    let t = text.to_ascii_lowercase();
+    let tail = &t[t.find("reset")?..];
+    let b = tail.as_bytes();
+    let mut i = 0;
+    while i < b.len() && !b[i].is_ascii_digit() {
+        i += 1;
+    }
+    let mut j = i;
+    while j < b.len() && b[j].is_ascii_digit() {
+        j += 1;
+    }
+    let mut hour: u32 = tail[i..j].parse().ok()?;
+    let mut minute: u32 = 0;
+    let mut k = j;
+    if b.get(k) == Some(&b':') {
+        let m0 = k + 1;
+        let mut m1 = m0;
+        while m1 < b.len() && b[m1].is_ascii_digit() {
+            m1 += 1;
+        }
+        minute = tail[m0..m1].parse().ok()?;
+        k = m1;
+    }
+    while b.get(k) == Some(&b' ') {
+        k += 1;
+    }
+    match &tail[k..] {
+        r if r.starts_with("pm") => {
+            if hour != 12 {
+                hour += 12;
+            }
+        }
+        r if r.starts_with("am") => {
+            if hour == 12 {
+                hour = 0;
+            }
+        }
+        _ => return None,
+    }
+    let naive = now.date_naive().and_hms_opt(hour, minute, 0)?;
+    let mut target = now.timezone().from_local_datetime(&naive).single()?;
+    if target <= now {
+        target += chrono::Duration::days(1);
+    }
+    (target - now).to_std().ok()
 }
 
 #[cfg(test)]
@@ -227,6 +294,53 @@ mod tests {
             classify(false, "thread 'main' panicked at src/foo.rs:42"),
             FailureClass::Unknown
         );
+    }
+
+    /// rosary-1780ea: claude reports a session-limit hit as a *successful*
+    /// result ("You've hit your session limit · resets 3:40pm", exit 0). It is
+    /// a failure of the seat, not of the work, and must be classified as such
+    /// regardless of the exit code so the record is the diagnosis.
+    #[test]
+    fn session_limit_is_classified_even_on_exit_zero() {
+        assert_eq!(
+            classify(true, "You've hit your session limit · resets 3:40pm"),
+            FailureClass::SessionLimit
+        );
+        assert_eq!(
+            classify(
+                false,
+                "Claude usage limit reached. Your limit will reset at 4pm"
+            ),
+            FailureClass::SessionLimit
+        );
+        assert_eq!(
+            FailureClass::SessionLimit.qualify("failure"),
+            "failure:session-limit"
+        );
+    }
+
+    #[test]
+    fn session_limit_reset_time_parses_to_a_wait() {
+        use chrono::TimeZone;
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 9, 12, 15, 22, 0)
+            .unwrap();
+        // Same day, later: wait until then.
+        let wait = session_limit_reset("You've hit your session limit · resets 3:40pm", now)
+            .expect("reset time present");
+        assert_eq!(wait, std::time::Duration::from_secs(18 * 60));
+        // Minutes optional, "at" optional.
+        let wait = session_limit_reset("limit will reset at 4pm", now).unwrap();
+        assert_eq!(wait, std::time::Duration::from_secs(38 * 60));
+        // Already past today: the next occurrence is tomorrow.
+        let wait = session_limit_reset("resets 3:00pm", now).unwrap();
+        assert_eq!(wait, std::time::Duration::from_secs(23 * 3600 + 38 * 60));
+        // No reset time in the message: nothing to key to.
+        assert_eq!(
+            session_limit_reset("You've hit your session limit", now),
+            None
+        );
+        assert_eq!(session_limit_reset("not logged in", now), None);
     }
 
     #[test]

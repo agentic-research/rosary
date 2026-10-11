@@ -1183,7 +1183,7 @@ async fn verify_agent_readonly_vs_readwrite() {
     let mut r = reconciler_with_bead("ro-1", "repo", "bug", "scoping-agent", 0).await;
 
     // ReadOnly agent → verify_agent returns None (skip)
-    let result = r.verify_agent("ro-1", None);
+    let result = r.verify_agent("ro-1", None, None);
     assert!(
         result.is_none(),
         "scoping-agent (ReadOnly) should skip verification"
@@ -1192,7 +1192,7 @@ async fn verify_agent_readonly_vs_readwrite() {
     // dev-agent with no work_dir → verify_agent returns None (no work_dir)
     // but NOT because it was skipped as ReadOnly
     let mut r2 = reconciler_with_bead("rw-1", "repo", "bug", "dev-agent", 0).await;
-    let result2 = r2.verify_agent("rw-1", None);
+    let result2 = r2.verify_agent("rw-1", None, None);
     assert!(
         result2.is_none(),
         "dev-agent without work_dir returns None (not found, not skipped)"
@@ -1206,7 +1206,7 @@ async fn verify_agent_readonly_vs_readwrite() {
         "rw-2".to_string(),
         (test_repo.path().to_path_buf(), "repo".to_string()),
     );
-    let result3 = r3.verify_agent("rw-2", None);
+    let result3 = r3.verify_agent("rw-2", None, None);
     assert!(
         result3.is_some(),
         "dev-agent WITH work_dir should run verifier"

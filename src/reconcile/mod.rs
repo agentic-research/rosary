@@ -38,6 +38,8 @@ pub struct ReconcilerConfig {
     pub max_concurrent: usize,
     pub scan_interval: Duration,
     pub max_retries: u32,
+    /// First retry delay (doubles per retry, capped in `queue`). Default 30 s.
+    pub backoff_base: Duration,
     pub triage_threshold: f64,
     pub repo: Vec<RepoConfig>,
     pub once: bool,
@@ -86,6 +88,7 @@ impl Default for ReconcilerConfig {
             max_concurrent: 5,
             scan_interval: Duration::from_secs(30),
             max_retries: 5,
+            backoff_base: crate::queue::DEFAULT_BACKOFF_BASE,
             triage_threshold: 0.3,
             repo: Vec::new(),
             once: false,
@@ -422,9 +425,11 @@ impl Reconciler {
             );
         }
 
+        let queue = WorkQueue::with_backoff_base(config.backoff_base);
+
         Reconciler {
             config,
-            queue: WorkQueue::new(),
+            queue,
             active: HashMap::new(),
             trackers: HashMap::new(),
             repo_info,
@@ -519,7 +524,12 @@ impl Reconciler {
                         "[reconcile] waiting for {} active agent(s)...",
                         self.active.len()
                     );
-                    self.wait_and_verify().await?;
+                    let waited = self.wait_and_verify().await?;
+                    cumulative.passed += waited.passed;
+                    cumulative.deadlettered += waited.deadlettered_ids.len();
+                    if self.config.target_bead.is_some() {
+                        cumulative.deadlettered_ids.extend(waited.deadlettered_ids);
+                    }
                 }
 
                 // When targeting a specific bead, keep looping until it

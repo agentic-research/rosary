@@ -87,8 +87,9 @@ impl Reconciler {
             .find(|b| b.id == bead_id)
             .map(close_condition_text);
 
+        let bead = beads.iter().find(|b| b.id == bead_id);
         let (verify_passed, verify_summary) = if exit_success {
-            let vs = self.verify_agent(bead_id, close_condition.as_deref());
+            let vs = self.verify_agent(bead_id, close_condition.as_deref(), bead);
             match &vs {
                 Some(v) if v.passed() => (Some(true), vs),
                 Some(_) => (Some(false), vs),
@@ -246,16 +247,48 @@ impl Reconciler {
     /// `execute_action`, which drops `completed_work_dirs` on failure
     /// (`handle_failure` above). Best-effort: an unreadable log yields
     /// [`FailureClass::Unknown`], which qualifies to a bare base outcome.
-    fn classify_failure(&self, bead_id: &str, exit_success: bool) -> FailureClass {
-        if exit_success {
-            return FailureClass::Ok;
-        }
-        let tail = self
+    /// Classify a completion from everything the run left behind — the stderr
+    /// tail AND the stream log tail — regardless of the exit code, so the
+    /// recorded outcome (`failure:auth`, `failure:session-limit`, …) is the
+    /// diagnosis instead of an absence. Returns `(class, effective_exit_success,
+    /// wait_before_retry)`: a session-limit hit exits 0 with a "successful"
+    /// result (rosary-1780ea), so its exit is downgraded here and it never
+    /// reaches verify; the wait is present only when the notice names a reset
+    /// time. Must be called *before* `execute_action`, which drops
+    /// `completed_work_dirs` on failure. Best-effort: unreadable logs yield
+    /// [`FailureClass::Unknown`] / [`FailureClass::Ok`].
+    pub(super) fn classify_completion(
+        &self,
+        bead_id: &str,
+        exit_success: bool,
+    ) -> (FailureClass, bool, Option<Duration>) {
+        let text = self
             .completed_work_dirs
             .get(bead_id)
-            .map(|(work_dir, _repo)| read_stderr_tail(work_dir))
+            .map(|(work_dir, _repo)| {
+                let mut t = read_log_tail(work_dir, dispatch::STDERR_LOG_FILENAME);
+                t.push('\n');
+                t.push_str(&stream_result_text(&read_log_tail(
+                    work_dir,
+                    dispatch::STREAM_LOG_FILENAME,
+                )));
+                t
+            })
             .unwrap_or_default();
-        classify(false, &tail)
+        let class = classify(exit_success, &text);
+        if class == FailureClass::SessionLimit {
+            let wait =
+                crate::dispatch::provenance::session_limit_reset(&text, chrono::Local::now());
+            eprintln!(
+                "[limit] {bead_id}: the seat's session limit was hit — not verifying; {}",
+                match wait {
+                    Some(w) => format!("next attempt after the reset (~{} min)", w.as_secs() / 60),
+                    None => "no reset time in the notice, exponential backoff".to_string(),
+                }
+            );
+            return (class, false, wait);
+        }
+        (class, exit_success, None)
     }
 
     /// Write handoff, update tracker, persist pipeline state, set assignee, reopen.
@@ -439,7 +472,14 @@ impl Reconciler {
             // but only when the agent exited successfully. A crashed agent
             // (exit_success=false) goes straight to retry/deadletter without
             // running any verification, so "verifying" would be misleading.
-            if *exit_success {
+            // Classify FIRST, from everything the run left behind: a session-limit
+            // hit exits 0 with a "successful" result and must never enter
+            // verifying (rosary-1780ea). Also before execute_action, which drops
+            // the work_dir on failure.
+            let (failure_class, exit_success, retry_wait) =
+                self.classify_completion(bead_id, *exit_success);
+
+            if exit_success {
                 let (agent, phase) = self
                     .trackers
                     .get(bead_id.as_str())
@@ -468,8 +508,7 @@ impl Reconciler {
                     .push((bead_id.clone(), repo.clone(), "verifying".into()));
             }
 
-            let (mut action, verify_summary) =
-                self.verify_and_decide(bead_id, *exit_success, beads);
+            let (mut action, verify_summary) = self.verify_and_decide(bead_id, exit_success, beads);
 
             // Enforceable feedback contract (rosary feedback-contract): a run
             // isn't complete until the agent recorded a native `feedback`
@@ -509,19 +548,21 @@ impl Reconciler {
                 }
             }
 
-            // Classify before execute_action — it drops the work_dir on failure.
-            let failure_class = self.classify_failure(bead_id, *exit_success);
-
             let outcome = self
                 .execute_action(
                     bead_id,
                     &repo,
                     &action,
-                    *exit_success,
+                    exit_success,
                     verify_summary.as_ref(),
                     thread_map,
                 )
                 .await;
+
+            if let (ActionOutcome::Retrying, Some(wait)) = (&outcome, retry_wait) {
+                self.queue
+                    .defer_until(&repo, bead_id, std::time::Instant::now() + wait);
+            }
 
             let outcome_str = match &outcome {
                 ActionOutcome::Advanced { .. } => "success",
@@ -578,7 +619,8 @@ impl Reconciler {
     /// Wait for all active agents to complete, then verify their work.
     /// Supports multi-stage pipelines: on phase advance, re-dispatches the
     /// next agent inline and continues the wait loop.
-    pub(super) async fn wait_and_verify(&mut self) -> Result<()> {
+    pub(super) async fn wait_and_verify(&mut self) -> Result<WaitOutcome> {
+        let mut wait_outcome = WaitOutcome::default();
         let poll_interval = Duration::from_secs(5);
         let timeout = Duration::from_secs(1800);
         let start = std::time::Instant::now();
@@ -642,7 +684,14 @@ impl Reconciler {
 
                 // Signal "In Review" in Linear while verification runs —
                 // only when the agent exited successfully (same guard as verify_completed).
-                if *exit_success {
+                // Classify FIRST, from everything the run left behind: a session-limit
+                // hit exits 0 with a "successful" result and must never enter
+                // verifying (rosary-1780ea). Also before execute_action, which drops
+                // the work_dir on failure.
+                let (failure_class, exit_success, retry_wait) =
+                    self.classify_completion(bead_id, *exit_success);
+
+                if exit_success {
                     let (agent, phase) = self
                         .trackers
                         .get(bead_id.as_str())
@@ -669,23 +718,25 @@ impl Reconciler {
                 }
 
                 let (action, verify_summary) =
-                    self.verify_and_decide(bead_id, *exit_success, &completed_beads);
-
-                // Classify before execute_action — it drops the work_dir on failure.
-                let failure_class = self.classify_failure(bead_id, *exit_success);
+                    self.verify_and_decide(bead_id, exit_success, &completed_beads);
 
                 let outcome = self
                     .execute_action(
                         bead_id,
                         &repo,
                         &action,
-                        *exit_success,
+                        exit_success,
                         verify_summary.as_ref(),
                         &thread_map,
                     )
                     .await;
 
                 // Record completion for every dispatch attempt in --once mode.
+                if let (ActionOutcome::Retrying, Some(wait)) = (&outcome, retry_wait) {
+                    self.queue
+                        .defer_until(&repo, bead_id, std::time::Instant::now() + wait);
+                }
+
                 let outcome_str = match &outcome {
                     ActionOutcome::Advanced { .. } => "success",
                     ActionOutcome::Completed => "success",
@@ -700,6 +751,19 @@ impl Reconciler {
                     self.pipeline
                         .complete_dispatch(dispatch_id, &failure_class.qualify(outcome_str))
                         .await;
+                }
+
+                // Report terminal outcomes to the run loop: its targeted-mode exit
+                // conditions are the target's own deadletter and a completed
+                // pipeline, and this path is the only one that sees them in
+                // once mode. Before rosary-1780ea nothing flowed back, so a
+                // deadlettered target was re-dispatched every scan, forever.
+                match &outcome {
+                    ActionOutcome::Completed => wait_outcome.passed += 1,
+                    ActionOutcome::Deadlettered => {
+                        wait_outcome.deadlettered_ids.push(bead_id.clone())
+                    }
+                    _ => {}
                 }
 
                 // wait_and_verify dispatches the next agent inline (unlike verify_completed
@@ -836,8 +900,18 @@ impl Reconciler {
             }
         }
 
-        Ok(())
+        Ok(wait_outcome)
     }
+}
+
+/// What a targeted (`--once`) wait observed: the terminal outcomes the run
+/// loop's exit conditions are keyed on.
+#[derive(Debug, Default)]
+pub(super) struct WaitOutcome {
+    /// Pipelines that reached Terminal (PR open).
+    pub passed: usize,
+    /// Beads deadlettered during the wait.
+    pub deadlettered_ids: Vec<String>,
 }
 
 fn close_condition_text(bead: &crate::bead::Bead) -> String {
@@ -851,13 +925,29 @@ fn close_condition_text(bead: &crate::bead::Bead) -> String {
 /// Read up to the last 8 KiB of a workspace's stderr log for failure
 /// classification. Best-effort — a missing or unreadable log yields an empty
 /// string (which classifies to [`FailureClass::Unknown`]).
-fn read_stderr_tail(work_dir: &std::path::Path) -> String {
+fn read_log_tail(work_dir: &std::path::Path, name: &str) -> String {
     const MAX_TAIL_BYTES: usize = 8 * 1024;
-    let Ok(bytes) = std::fs::read(work_dir.join(dispatch::STDERR_LOG_FILENAME)) else {
+    let Ok(bytes) = std::fs::read(work_dir.join(name)) else {
         return String::new();
     };
     let start = bytes.len().saturating_sub(MAX_TAIL_BYTES);
     String::from_utf8_lossy(&bytes[start..]).into_owned()
+}
+
+/// The text of the stream log's final `{"type":"result"}` record — the
+/// harness's own verdict on the run. Only this record is classified: the rest
+/// of the stream is the agent's transcript (tool output, file contents, its
+/// own prose), and an agent that merely *talks about* a session limit — e.g.
+/// one editing this classifier — must not have its successful run downgraded.
+/// Empty when the tail holds no parseable result record.
+fn stream_result_text(stream_tail: &str) -> String {
+    stream_tail
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok())
+        .find(|v| v.get("type").and_then(|t| t.as_str()) == Some("result"))
+        .and_then(|v| v.get("result").and_then(|r| r.as_str()).map(str::to_string))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -875,7 +965,7 @@ mod stderr_tail_tests {
         )
         .unwrap();
 
-        let tail = read_stderr_tail(dir.path());
+        let tail = read_log_tail(dir.path(), dispatch::STDERR_LOG_FILENAME);
         assert_eq!(classify(false, &tail), FailureClass::Auth);
     }
 
@@ -883,7 +973,133 @@ mod stderr_tail_tests {
     fn missing_log_yields_empty_tail_and_unknown() {
         let dir = tempfile::tempdir().unwrap();
         // No .rsry-stderr.log written.
-        assert!(read_stderr_tail(dir.path()).is_empty());
+        assert!(read_log_tail(dir.path(), dispatch::STDERR_LOG_FILENAME).is_empty());
         assert_eq!(classify(false, ""), FailureClass::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod bead_keyed_verify_tests {
+    use super::*;
+    use crate::reconcile::{BeadTracker, ReconcilerConfig};
+
+    fn tracker(agent: &str, issue_type: &str) -> BeadTracker {
+        BeadTracker {
+            repo: "test-repo".into(),
+            last_generation: 0,
+            retries: 0,
+            consecutive_reverts: 0,
+            highest_tier: None,
+            current_agent: Some(agent.into()),
+            phase_index: 0,
+            issue_type: issue_type.into(),
+            dispatch_id: None,
+            scope: String::new(),
+        }
+    }
+
+    /// rosary-1780ea (2): staging-agent on rosary-e5fcd2 — a bead that WRITES
+    /// three test files — logged "skipped (ReadOnly agent)" and went straight
+    /// to PR creation; the PR carried an out-of-scope src change only a human
+    /// caught. Verification is keyed to the BEAD: when a read-only agent is the
+    /// terminal phase of a bead that declares files, its work is verified.
+    #[tokio::test]
+    async fn readonly_terminal_agent_on_bead_with_test_files_is_verified() {
+        let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+        // "review" pipelines are [staging-agent] alone — staging is terminal.
+        r.trackers
+            .insert("e5fcd2".into(), tracker("staging-agent", "review"));
+        let work = tempfile::tempdir().unwrap();
+        r.completed_work_dirs.insert(
+            "e5fcd2".into(),
+            (work.path().to_path_buf(), "test-repo".into()),
+        );
+        let mut bead = crate::testutil::make_bead("e5fcd2", "review", "test-repo");
+        bead.test_files = vec!["tests/beads_dirty_journey.rs".into()];
+
+        let summary = r.verify_agent("e5fcd2", None, Some(&bead));
+        assert!(
+            summary.is_some(),
+            "a terminal read-only phase on a bead with test_files must be verified \
+             (rosary-1780ea) — verify is keyed to the bead, not the agent"
+        );
+        // And it is a real verification: an empty work dir has no commit.
+        assert!(!summary.unwrap().passed());
+    }
+
+    /// The scoping phase of a bug pipeline is read-only AND non-terminal: it
+    /// produces comments, not commits, so verifying it would fail every bug
+    /// bead at phase 0. The skip survives for that case.
+    #[tokio::test]
+    async fn readonly_non_terminal_phase_is_still_skipped() {
+        let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+        r.trackers
+            .insert("b-1".into(), tracker("scoping-agent", "bug"));
+        let mut bead = crate::testutil::make_bead("b-1", "bug", "test-repo");
+        bead.test_files = vec!["tests/x.rs".into()];
+        assert!(r.verify_agent("b-1", None, Some(&bead)).is_none());
+    }
+
+    /// rosary-1780ea (3): a work dir whose stream log carries the claude
+    /// session-limit result classifies as SessionLimit even though the process
+    /// exited 0, and the reported exit is downgraded so verify never runs.
+    #[tokio::test]
+    async fn session_limit_in_stream_log_downgrades_a_zero_exit() {
+        let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(
+            work.path().join(dispatch::STREAM_LOG_FILENAME),
+            "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\
+             \"result\":\"You've hit your session limit · resets 3:40pm\"}\n",
+        )
+        .unwrap();
+        r.completed_work_dirs.insert(
+            "sl-1".into(),
+            (work.path().to_path_buf(), "test-repo".into()),
+        );
+        let (class, exit_success, wait) = r.classify_completion("sl-1", true);
+        assert_eq!(class, FailureClass::SessionLimit);
+        assert!(
+            !exit_success,
+            "a limit hit is a failed attempt, not work to verify"
+        );
+        assert!(wait.is_some(), "the reset time keys the backoff");
+    }
+
+    /// A successful run whose TRANSCRIPT mentions a session limit (an agent
+    /// editing this very classifier, or writing docs about limits) is not a
+    /// limit hit: only the final `result` record is the harness's verdict.
+    #[tokio::test]
+    async fn session_limit_text_in_transcript_does_not_downgrade_a_success() {
+        let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(
+            work.path().join(dispatch::STREAM_LOG_FILENAME),
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
+             \"text\":\"Matching \\\"You've hit your session limit\\\" in provenance.rs\"}]}}\n\
+             {\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\
+             \"content\":\"if t.contains(\\\"session limit\\\") || t.contains(\\\"usage limit\\\")\"}]}}\n\
+             {\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\
+             \"result\":\"Implemented the classifier change; tests pass.\"}\n",
+        )
+        .unwrap();
+        r.completed_work_dirs.insert(
+            "ok-1".into(),
+            (work.path().to_path_buf(), "test-repo".into()),
+        );
+        let (class, exit_success, wait) = r.classify_completion("ok-1", true);
+        assert_eq!(class, FailureClass::Ok);
+        assert!(exit_success, "a real success must reach verify");
+        assert!(wait.is_none());
+    }
+
+    #[test]
+    fn stream_result_text_takes_the_last_result_record_only() {
+        let tail = "{\"type\":\"assistant\",\"text\":\"session limit\"}\n\
+                    not json at all\n\
+                    {\"type\":\"result\",\"result\":\"done\"}\n";
+        assert_eq!(stream_result_text(tail), "done");
+        assert_eq!(stream_result_text("{\"type\":\"assistant\"}\n"), "");
+        assert_eq!(stream_result_text(""), "");
     }
 }
