@@ -3,6 +3,16 @@ use super::*;
 /// A git repo with a tracked file, mirroring the real shape: canonical bead
 /// state in the working tree, coordination state in refs.
 fn repo() -> tempfile::TempDir {
+    // The owner's global git config (a global core.hooksPath whose commit-msg
+    // hook refuses a subject with no [bead-id]) must not reach this fixture:
+    // it silently refused the `seed` commit below, leaving beads.jsonl staged
+    // (rosary-7bf605). Same isolation, same reason, as testutil::TestRepo
+    // (rosary-590ddf); process-wide because `append` shells git in-process.
+    // SAFETY: test-only, single well-known value, idempotent.
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    }
     let tmp = tempfile::tempdir().unwrap();
     let p = tmp.path();
     for args in [
