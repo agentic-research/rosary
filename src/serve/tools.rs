@@ -228,7 +228,7 @@ fn hand_written_tool_definitions() -> Vec<Value> {
                         "repo_path": { "type": "string", "description": "Path to repo containing the bead" },
                         "provider": { "type": "string", "description": "Agent provider (claude, gemini, acp, codex)", "default": "claude" },
                         "agent": { "type": "string", "description": "Agent persona override (dev-agent, staging-agent, prod-agent, feature-agent, pm-agent). If omitted, uses bead owner." },
-                        "isolate": { "type": "boolean", "description": "Create an isolated workspace (git worktree / jj workspace) before dispatch. Defaults to true. Set to false only for single-concurrency in-place execution.", "default": true }
+                        "isolate": { "type": "boolean", "description": "Deprecated: isolation is mandatory. The agent always runs in an isolated workspace (git worktree / jj workspace); false is ignored with a warning, and dispatch is refused if a workspace cannot be created (it never falls back to the main checkout).", "default": true }
                     },
                     "required": ["bead_id", "repo_path"]
                 }
