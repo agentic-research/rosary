@@ -1,46 +1,39 @@
 use super::*;
 
+/// Run git in the fixture with the owner's global and system config shut out
+/// (rosary-7bf605): a global `core.hooksPath` whose commit-msg hook refuses a
+/// subject with no [bead-id] silently refused the `seed` commit, leaving
+/// beads.jsonl staged. Per-command, not `std::env::set_var` — mutating the
+/// process environment is unsound under the parallel test runner.
+fn fixture_git(p: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .arg("-C")
+        .arg(p)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "fixture `git {}` failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// A git repo with a tracked file, mirroring the real shape: canonical bead
 /// state in the working tree, coordination state in refs.
 fn repo() -> tempfile::TempDir {
-    // The owner's global git config (a global core.hooksPath whose commit-msg
-    // hook refuses a subject with no [bead-id]) must not reach this fixture:
-    // it silently refused the `seed` commit below, leaving beads.jsonl staged
-    // (rosary-7bf605). Same isolation, same reason, as testutil::TestRepo
-    // (rosary-590ddf); process-wide because `append` shells git in-process.
-    // SAFETY: test-only, single well-known value, idempotent.
-    unsafe {
-        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
-        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
-    }
     let tmp = tempfile::tempdir().unwrap();
     let p = tmp.path();
-    for args in [
-        vec!["init", "--quiet"],
-        vec!["config", "user.email", "t@example.com"],
-        vec!["config", "user.name", "t"],
-    ] {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(&args)
-            .output()
-            .unwrap();
-    }
+    fixture_git(p, &["init", "--quiet"]);
+    fixture_git(p, &["config", "user.email", "t@example.com"]);
+    fixture_git(p, &["config", "user.name", "t"]);
     std::fs::create_dir_all(p.join(".beads")).unwrap();
     std::fs::write(p.join(".beads/beads.jsonl"), "{\"id\":\"x-1\"}\n").unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(p)
-        .args(["add", ".beads/beads.jsonl"])
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(p)
-        .args(["commit", "--quiet", "-m", "seed"])
-        .output()
-        .unwrap();
+    fixture_git(p, &["add", ".beads/beads.jsonl"]);
+    fixture_git(p, &["commit", "--quiet", "-m", "seed"]);
     tmp
 }
 
