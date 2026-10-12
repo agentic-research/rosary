@@ -621,6 +621,14 @@ mod derived_from_verification_tests {
         let mut lossy = bead_with_provenance("m-1");
         lossy.derived_from = vec![];
         dst.create_bead_full(lossy).await.unwrap();
+        // Carry the timestamps across exactly as `migrate_store` does, so
+        // provenance is the ONLY difference. Without this the two creates can
+        // straddle a second boundary and verify reports `created_at` first —
+        // the test then fails for the wrong reason (flaked in CI on #509).
+        let original = src.get_bead("m-1", "r").await.unwrap().unwrap();
+        dst.restore_timestamps("m-1", original.created_at, original.updated_at)
+            .await
+            .unwrap();
 
         let err = match verify_migration(&src, &dst, "r").await {
             Ok(()) => panic!("verify must not pass a migration that dropped provenance"),
