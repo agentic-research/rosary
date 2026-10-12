@@ -262,23 +262,30 @@ impl Reconciler {
         bead_id: &str,
         exit_success: bool,
     ) -> (FailureClass, bool, Option<Duration>) {
-        let text = self
+        let (stderr, result) = self
             .completed_work_dirs
             .get(bead_id)
             .map(|(work_dir, _repo)| {
-                let mut t = read_log_tail(work_dir, dispatch::STDERR_LOG_FILENAME);
-                t.push('\n');
-                t.push_str(&stream_result_text(&read_log_tail(
-                    work_dir,
-                    dispatch::STREAM_LOG_FILENAME,
-                )));
-                t
+                (
+                    read_log_tail(work_dir, dispatch::STDERR_LOG_FILENAME),
+                    stream_result_text(&read_log_tail(work_dir, dispatch::STREAM_LOG_FILENAME)),
+                )
             })
             .unwrap_or_default();
-        let class = classify(exit_success, &text);
-        if class == FailureClass::SessionLimit {
-            let wait =
-                crate::dispatch::provenance::session_limit_reset(&text, chrono::Local::now());
+        // The final `result` is the agent's own prose on a good run, so only a
+        // result that IS the limit notice counts — never one that mentions it.
+        // A failed exit's stderr is the harness talking, not the agent, and
+        // keeps the substring classifier.
+        let notice = if crate::dispatch::provenance::is_session_limit_notice(&result) {
+            Some(result.as_str())
+        } else if !exit_success && classify(false, &stderr) == FailureClass::SessionLimit {
+            Some(stderr.as_str())
+        } else {
+            None
+        };
+        if let Some(text) = notice {
+            let class = FailureClass::SessionLimit;
+            let wait = crate::dispatch::provenance::session_limit_reset(text, chrono::Local::now());
             eprintln!(
                 "[limit] {bead_id}: the seat's session limit was hit — not verifying; {}",
                 match wait {
@@ -288,7 +295,12 @@ impl Reconciler {
             );
             return (class, false, wait);
         }
-        (class, exit_success, None)
+        // A clean exit that isn't a limit is a success, whatever words its
+        // stderr carries (a benign "timeout" warning is not `success:timeout`).
+        if exit_success {
+            return (FailureClass::Ok, true, None);
+        }
+        (classify(false, &stderr), false, None)
     }
 
     /// Write handoff, update tracker, persist pipeline state, set assignee, reopen.
@@ -760,13 +772,7 @@ impl Reconciler {
                 // pipeline, and this path is the only one that sees them in
                 // once mode. Before rosary-1780ea nothing flowed back, so a
                 // deadlettered target was re-dispatched every scan, forever.
-                match &outcome {
-                    ActionOutcome::Completed => wait_outcome.passed += 1,
-                    ActionOutcome::Deadlettered => {
-                        wait_outcome.deadlettered_ids.push(bead_id.clone())
-                    }
-                    _ => {}
-                }
+                wait_outcome.record(&outcome, bead_id);
 
                 // wait_and_verify dispatches the next agent inline (unlike verify_completed
                 // which defers to the next triage pass).
@@ -899,7 +905,7 @@ impl Reconciler {
                             // A deadletter like any other: the targeted run's exit
                             // condition must see it, or it reports deadlettered=0
                             // and exits via the no-active-work path.
-                            wait_outcome.deadlettered_ids.push(bead_id.clone());
+                            wait_outcome.record(&ActionOutcome::Deadlettered, bead_id);
                         }
                     }
                 }
@@ -916,8 +922,26 @@ impl Reconciler {
 pub(super) struct WaitOutcome {
     /// Pipelines that reached Terminal (PR open).
     pub passed: usize,
+    /// Failed attempts (retrying or deadlettered), as `VerifyResult::failed`
+    /// counts them — else a targeted run that failed six times reports 0.
+    pub failed: usize,
     /// Beads deadlettered during the wait.
     pub deadlettered_ids: Vec<String>,
+}
+
+impl WaitOutcome {
+    /// Tally one bead's outcome the way `verify_completed` tallies its own.
+    fn record(&mut self, outcome: &ActionOutcome, bead_id: &str) {
+        match outcome {
+            ActionOutcome::Completed => self.passed += 1,
+            ActionOutcome::Retrying => self.failed += 1,
+            ActionOutcome::Deadlettered => {
+                self.failed += 1;
+                self.deadlettered_ids.push(bead_id.to_string());
+            }
+            _ => {}
+        }
+    }
 }
 
 fn close_condition_text(bead: &crate::bead::Bead) -> String {
@@ -1110,6 +1134,93 @@ mod bead_keyed_verify_tests {
         assert_eq!(class, FailureClass::Ok);
         assert!(exit_success, "a real success must reach verify");
         assert!(wait.is_none());
+    }
+
+    /// Work dir with the given stderr tail and final `result` text.
+    fn completion_fixture(
+        r: &mut Reconciler,
+        id: &str,
+        stderr: &str,
+        result: &str,
+    ) -> tempfile::TempDir {
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join(dispatch::STDERR_LOG_FILENAME), stderr).unwrap();
+        let record = serde_json::json!({"type": "result", "subtype": "success", "result": result});
+        std::fs::write(
+            work.path().join(dispatch::STREAM_LOG_FILENAME),
+            format!("{record}\n"),
+        )
+        .unwrap();
+        r.completed_work_dirs
+            .insert(id.into(), (work.path().to_path_buf(), "test-repo".into()));
+        work
+    }
+
+    /// The final `result` is the agent's own summary on a good run. One that
+    /// MENTIONS limits (this repo's own session-limit work) is a success, and
+    /// so is a clean exit whose stderr carries a benign "timeout" warning: a
+    /// zero exit is only ever overturned by the limit notice itself.
+    #[tokio::test]
+    async fn a_success_whose_summary_mentions_limits_still_reaches_verify() {
+        let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+        let _w = completion_fixture(
+            &mut r,
+            "ok-2",
+            "warning: request timeout raised to 30s\n",
+            "Implemented session limit handling: a usage limit notice now backs off until the reset.",
+        );
+        assert_eq!(
+            r.classify_completion("ok-2", true),
+            (FailureClass::Ok, true, None)
+        );
+    }
+
+    /// A failed exit keeps the stderr classifier: the harness's own limit or
+    /// timeout message is the diagnosis.
+    #[tokio::test]
+    async fn a_failed_exit_is_classified_from_stderr() {
+        let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+        let _a = completion_fixture(&mut r, "f-1", "Claude usage limit reached.\n", "");
+        assert_eq!(
+            r.classify_completion("f-1", false).0,
+            FailureClass::SessionLimit
+        );
+        let _b = completion_fixture(&mut r, "f-2", "error: request timed out\n", "");
+        assert_eq!(
+            r.classify_completion("f-2", false),
+            (FailureClass::Timeout, false, None)
+        );
+    }
+
+    #[test]
+    fn session_limit_notice_is_anchored_not_a_substring() {
+        use crate::dispatch::provenance::is_session_limit_notice;
+        assert!(is_session_limit_notice(
+            "You've hit your session limit · resets 3:40pm"
+        ));
+        assert!(is_session_limit_notice(
+            "  Claude usage limit reached. Your limit will reset at 4pm"
+        ));
+        assert!(!is_session_limit_notice(
+            "Fixed: \"You've hit your session limit\" now backs off"
+        ));
+        assert!(!is_session_limit_notice(
+            "Implemented session limit handling"
+        ));
+        assert!(!is_session_limit_notice(""));
+    }
+
+    /// The e2e shape: five retries then a deadletter is six failures, not the
+    /// "failed=0" a targeted run reported when `WaitOutcome` carried no count.
+    #[test]
+    fn wait_outcome_counts_every_failed_attempt() {
+        let mut w = WaitOutcome::default();
+        for _ in 0..5 {
+            w.record(&ActionOutcome::Retrying, "t-1");
+        }
+        w.record(&ActionOutcome::Deadlettered, "t-1");
+        assert_eq!((w.passed, w.failed), (0, 6));
+        assert_eq!(w.deadlettered_ids, vec!["t-1".to_string()]);
     }
 
     #[test]

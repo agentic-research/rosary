@@ -149,6 +149,25 @@ pub fn classify(exit_success: bool, stderr_tail: &str) -> FailureClass {
     }
 }
 
+/// Whether an agent's final `result` text IS the seat-limit notice, as opposed
+/// to prose that mentions one. claude reports a limit hit as a successful
+/// result whose whole text is the notice ("You've hit your session limit ·
+/// resets 3:40pm"), while a successful run's result is the agent's own summary,
+/// which may well say "implemented session limit handling". So this is anchored
+/// at the start of the result, never a substring match (rosary-1780ea).
+pub fn is_session_limit_notice(result: &str) -> bool {
+    const NOTICES: &[&str] = &[
+        "you've hit your session limit",
+        "you’ve hit your session limit",
+        "you've hit your usage limit",
+        "you’ve hit your usage limit",
+        "claude usage limit reached",
+        "claude ai usage limit reached",
+    ];
+    let r = result.trim_start().to_lowercase();
+    NOTICES.iter().any(|n| r.starts_with(n))
+}
+
 /// How long until the seat's limit resets, parsed from the limit notice
 /// ("… resets 3:40pm", "… will reset at 4pm"). `None` when the text carries no
 /// wall-clock reset time — the caller falls back to exponential backoff.
