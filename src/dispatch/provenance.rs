@@ -353,6 +353,35 @@ mod tests {
         assert_eq!(session_limit_reset("not logged in", now), None);
     }
 
+    /// The 12-o'clock edges and the morning branch: 12pm is noon (not 24:00),
+    /// 12am is midnight (not noon), and a 24-hour time without am/pm is not a
+    /// reset we can read.
+    #[test]
+    fn session_limit_reset_handles_am_and_twelve_o_clock() {
+        use chrono::TimeZone;
+        use std::time::Duration;
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 9, 12, 15, 22, 0)
+            .unwrap();
+        // Noon today has passed → tomorrow noon.
+        assert_eq!(
+            session_limit_reset("resets 12pm", now),
+            Some(Duration::from_secs(20 * 3600 + 38 * 60))
+        );
+        // Midnight is the next 00:00, not noon.
+        assert_eq!(
+            session_limit_reset("resets 12am", now),
+            Some(Duration::from_secs(8 * 3600 + 38 * 60))
+        );
+        // A morning time already past today → tomorrow morning.
+        assert_eq!(
+            session_limit_reset("resets 9:05 am", now),
+            Some(Duration::from_secs(17 * 3600 + 43 * 60))
+        );
+        // No meridiem: ambiguous, nothing to key to.
+        assert_eq!(session_limit_reset("resets 15:40", now), None);
+    }
+
     #[test]
     fn qualify_composes_failure_with_class() {
         assert_eq!(FailureClass::Auth.qualify("failure"), "failure:auth");
