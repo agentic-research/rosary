@@ -101,7 +101,9 @@ impl Reconciler {
             let delivers_the_bead = agent
                 .as_deref()
                 .is_some_and(|a| self.pipeline.next_agent(&issue_type, a).is_none())
-                && bead.is_some_and(|b| !b.files.is_empty() || !b.test_files.is_empty());
+                // Unreadable bead metadata fails CLOSED: a transient store
+                // read must not turn the terminal phase into "nothing to verify".
+                && bead.is_none_or(|b| !b.files.is_empty() || !b.test_files.is_empty());
             if !delivers_the_bead {
                 eprintln!("[verify] {bead_id}: skipped (read-only phase with nothing to verify)");
                 return None;

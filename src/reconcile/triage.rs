@@ -26,6 +26,11 @@ impl Reconciler {
         let mut triaged = 0;
 
         for bead in beads {
+            // The store now agrees the bead is deadlettered: drop the
+            // in-process marker so a later human reopen is admitted.
+            if bead.state() == BeadState::DeadLetter {
+                self.deadlettered.remove(&bead.id);
+            }
             if let Some(ref target) = target_filter {
                 if bead.id != *target {
                     continue;
@@ -41,6 +46,11 @@ impl Reconciler {
                 continue;
             }
             if self.active.contains_key(&bead.id) {
+                continue;
+            }
+            // decide() deadlettered it but the status write was lost: the
+            // stored `open` is stale, not a reopen (Copilot on #506).
+            if self.deadlettered.contains(&bead.id) && target_filter.is_none() {
                 continue;
             }
             // No deadletter gate here: `pipeline.decide()` is the ONLY owner of

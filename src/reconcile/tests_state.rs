@@ -1010,3 +1010,39 @@ async fn target_bead_mode_only_exits_when_target_bead_deadletters() {
          the old `deadlettered > 0` check would have falsely terminated target mode here"
     );
 }
+
+/// Copilot on #506: `persist_status` swallows write errors, so a bead that
+/// `decide()` deadlettered can still read `open`. The in-process marker keeps
+/// it out of triage until the store agrees; once a scan SEES it dead_letter
+/// the marker drops, so a later human reopen is admitted again.
+#[tokio::test]
+async fn triage_holds_a_deadletter_whose_status_write_was_lost() {
+    let cfg = || ReconcilerConfig {
+        triage_threshold: 0.0,
+        ..Default::default()
+    };
+    let none = std::collections::HashMap::new();
+    let blocked = std::collections::HashSet::new();
+    let open = make_test_bead("dl-lost");
+
+    let mut r = Reconciler::new(cfg()).await;
+    r.deadlettered.insert("dl-lost".into());
+    assert_eq!(
+        r.triage(std::slice::from_ref(&open), &none, &blocked),
+        0,
+        "a stale `open` after a lost deadletter write must not be re-admitted"
+    );
+
+    let mut dead = open.clone();
+    dead.status = crate::bead::BeadState::DeadLetter.to_string();
+    r.triage(&[dead], &none, &blocked);
+    assert!(
+        r.deadlettered.is_empty(),
+        "the store agreeing clears the marker"
+    );
+    assert_eq!(
+        r.triage(&[open], &none, &blocked),
+        1,
+        "a human reopen after the store recorded the deadletter is admitted"
+    );
+}

@@ -122,10 +122,13 @@ impl Reconciler {
         bead_id: &str,
         repo: &str,
         action: &CompletionAction,
-        exit_success: bool,
+        failure_class: FailureClass,
         verify_summary: Option<&VerifySummary>,
         thread_map: &HashMap<String, String>,
     ) -> ActionOutcome {
+        // `classify_completion` returns Ok exactly when the run succeeded: a
+        // failed exit is never Ok, and a downgraded zero exit is SessionLimit.
+        let exit_success = failure_class == FailureClass::Ok;
         // Resolve agent name and phase for the observation.
         let (agent, phase) = self
             .trackers
@@ -177,12 +180,12 @@ impl Reconciler {
             }
             CompletionAction::Retry => {
                 let detail = if exit_success {
-                    "verify failed"
+                    "verify failed".to_string()
                 } else {
-                    "agent exit non-zero"
+                    failed_run_detail(failure_class)
                 };
                 self.handle_failure(bead_id, exit_success, verify_summary, true);
-                self.append_observation(bead_id, repo, &agent, phase, Verdict::Fail, detail)
+                self.append_observation(bead_id, repo, &agent, phase, Verdict::Fail, &detail)
                     .await;
                 self.persist_status(bead_id, repo, crate::bead::BeadState::Open)
                     .await;
@@ -193,12 +196,15 @@ impl Reconciler {
                 // on EITHER retries >= max_retries OR the consecutive-reverts
                 // threshold, and the observation can't tell which fired.
                 let detail = if exit_success {
-                    "verify failed, retry budget exhausted"
+                    "verify failed, retry budget exhausted".to_string()
                 } else {
-                    "agent exit non-zero, retry budget exhausted"
+                    format!(
+                        "{}, retry budget exhausted",
+                        failed_run_detail(failure_class)
+                    )
                 };
                 self.handle_failure(bead_id, exit_success, verify_summary, false);
-                self.append_observation(bead_id, repo, &agent, phase, Verdict::Deadletter, detail)
+                self.append_observation(bead_id, repo, &agent, phase, Verdict::Deadletter, &detail)
                     .await;
                 self.cleanup_workspace(bead_id);
                 let bead_ref = WorkRef {
@@ -211,6 +217,7 @@ impl Reconciler {
                     bead_id: bead_id.to_string(),
                 };
                 self.pipeline.clear_state(&bead_ref).await;
+                self.deadlettered.insert(bead_id.to_string());
                 self.persist_status(bead_id, repo, crate::bead::BeadState::DeadLetter)
                     .await;
                 ActionOutcome::Deadlettered
@@ -567,7 +574,7 @@ impl Reconciler {
                     bead_id,
                     &repo,
                     &action,
-                    exit_success,
+                    failure_class,
                     verify_summary.as_ref(),
                     thread_map,
                 )
@@ -739,7 +746,7 @@ impl Reconciler {
                         bead_id,
                         &repo,
                         &action,
-                        exit_success,
+                        failure_class,
                         verify_summary.as_ref(),
                         &thread_map,
                     )
@@ -944,6 +951,17 @@ impl WaitOutcome {
     }
 }
 
+/// The observation detail for a failed run. A zero exit downgraded to a
+/// failure (a session limit) must not be logged as a non-zero process exit,
+/// or the event log misdiagnoses the incident.
+fn failed_run_detail(class: FailureClass) -> String {
+    match class {
+        FailureClass::Unknown | FailureClass::Ok => "agent exit non-zero".to_string(),
+        FailureClass::SessionLimit => "session limit hit (zero exit downgraded)".to_string(),
+        other => format!("agent exit non-zero ({other})"),
+    }
+}
+
 fn close_condition_text(bead: &crate::bead::Bead) -> String {
     match (bead.acceptance_criteria.trim(), bead.description.trim()) {
         ("", description) => description.to_string(),
@@ -1068,6 +1086,43 @@ mod bead_keyed_verify_tests {
         );
         // And it is a real verification: an empty work dir has no commit.
         assert!(!summary.unwrap().passed());
+    }
+
+    /// Copilot on #506: `wait_and_verify` ignores `get_bead` errors, so the
+    /// bead can be missing here. A terminal read-only phase must then be
+    /// verified (fail closed), not waved through as "nothing to verify".
+    #[tokio::test]
+    async fn readonly_terminal_phase_without_bead_metadata_fails_closed() {
+        let mut r = Reconciler::new(ReconcilerConfig::default()).await;
+        r.trackers
+            .insert("nb-1".into(), tracker("staging-agent", "review"));
+        let work = tempfile::tempdir().unwrap();
+        r.completed_work_dirs.insert(
+            "nb-1".into(),
+            (work.path().to_path_buf(), "test-repo".into()),
+        );
+        let summary = r.verify_agent("nb-1", None, None);
+        assert!(
+            summary.is_some_and(|s| !s.passed()),
+            "missing metadata must verify, and an empty work dir fails"
+        );
+    }
+
+    #[test]
+    fn failed_run_detail_does_not_call_a_session_limit_a_nonzero_exit() {
+        assert_eq!(
+            failed_run_detail(FailureClass::Unknown),
+            "agent exit non-zero"
+        );
+        let limit = failed_run_detail(FailureClass::SessionLimit);
+        assert!(
+            limit.contains("session limit") && !limit.contains("non-zero"),
+            "{limit}"
+        );
+        assert_eq!(
+            failed_run_detail(FailureClass::Auth),
+            "agent exit non-zero (auth)"
+        );
     }
 
     /// The scoping phase of a bug pipeline is read-only AND non-terminal: it

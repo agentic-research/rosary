@@ -142,6 +142,12 @@ pub struct Reconciler {
     repo_info: HashMap<String, (PathBuf, String)>,
     /// Stash work_dir + repo when agent completes so verify_agent can find it
     completed_work_dirs: HashMap<String, (PathBuf, String)>,
+    /// Beads `pipeline.decide()` deadlettered in this process whose stored
+    /// state has not yet been SEEN as dead_letter. `persist_status` is
+    /// best-effort, so a lost write would otherwise leave the bead `open` and
+    /// re-admit it every scan. Not a retry threshold — only decide()'s verdict,
+    /// held until the store agrees (then a human reopen admits it again).
+    deadlettered: std::collections::HashSet<String>,
     /// Stash workspaces from completed agents for checkpoint + teardown
     completed_workspaces: HashMap<String, crate::workspace::Workspace>,
     /// Bead stores keyed by repo name, lazily connected
@@ -434,6 +440,7 @@ impl Reconciler {
             trackers: HashMap::new(),
             repo_info,
             completed_work_dirs: HashMap::new(),
+            deadlettered: std::collections::HashSet::new(),
             completed_workspaces: HashMap::new(),
             dolt_clients: HashMap::new(),
             provider,
