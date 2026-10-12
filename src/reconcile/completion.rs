@@ -281,7 +281,7 @@ impl Reconciler {
         self.queue
             .record_backoff(&repo, bead_id, retries, Instant::now());
         eprintln!(
-            "[retry] {bead_id}: agent exited non-zero, retry #{} scheduled",
+            "[retry] {bead_id}: agent run failed (exit or classified failure), retry #{} scheduled",
             retries
         );
         // Preserve workspace on failure so stderr/stream logs are readable

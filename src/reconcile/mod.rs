@@ -548,10 +548,11 @@ impl Reconciler {
                     // which now includes liveness-sweep deadletters for
                     // unrelated beads (would false-trip otherwise).
                     if cumulative.deadlettered_ids.iter().any(|id| id == target) {
-                        eprintln!(
-                            "[reconcile] bead {target} deadlettered after {} retries",
-                            cumulative.failed
-                        );
+                        // The bead's own retry count — `cumulative.failed` counts
+                        // failed verifies, which is 0 when every attempt was a
+                        // classified exit failure (session limit, rosary-1780ea).
+                        let retries = self.trackers.get(target.as_str()).map_or(0, |t| t.retries);
+                        eprintln!("[reconcile] bead {target} deadlettered after {retries} retries");
                         break;
                     }
                     if cumulative.passed > 0 {
