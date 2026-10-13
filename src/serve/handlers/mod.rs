@@ -1201,6 +1201,39 @@ async fn tool_bead_search(
 // Dispatch / active
 // ---------------------------------------------------------------------------
 
+/// The isolated workspace an MCP dispatch runs in. Isolation is mandatory and
+/// fails CLOSED (rosary-caa952): a creation error is returned to the caller so
+/// nothing is spawned — the agent must never fall back to the main checkout,
+/// the shared-tree incident class rosary-ea6c7f closed. `isolate=false` is
+/// ignored with a warning, matching the CLI (`rsry dispatch --isolate=false`).
+///
+/// reuse=true preserves current behavior; whether this MCP-facing caller
+/// should upgrade to strict (reuse=false) is a deliberate follow-up, not
+/// bundled into rosary-3b8a9b — the orphan sweep that runs before it already
+/// clears the STALE case this call would otherwise attach to.
+async fn dispatch_workspace(
+    bead_id: &str,
+    repo_name: &str,
+    root: &std::path::Path,
+    isolate_requested: bool,
+) -> Result<crate::workspace::Workspace> {
+    if !isolate_requested {
+        eprintln!(
+            "[dispatch] isolate=false is ignored — isolation is mandatory (a shared-checkout \
+             dispatch caused a data-loss incident; rosary-caa952). Dispatching isolated."
+        );
+    }
+    crate::workspace::Workspace::create(bead_id, repo_name, root, true, true)
+        .await
+        .with_context(|| {
+            format!(
+                "workspace isolation failed for {bead_id} — refusing to dispatch into the main \
+                 checkout {}",
+                root.display()
+            )
+        })
+}
+
 /// MCP dispatch: prepares workspace + prompt + spawns the agent as a
 /// detached subprocess. Returns the pid + stream-log path.
 ///
@@ -1255,29 +1288,9 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         .as_deref()
         .unwrap_or_else(|| crate::dispatch::default_agent(&bead.issue_type));
 
-    // Create isolated workspace (worktree/jj workspace) — this is safe to do
-    // from the server because it's just git operations, no process spawning.
-    let workspace = if isolate {
-        // reuse=true preserves current behavior; whether this MCP-facing
-        // caller should upgrade to strict (reuse=false) is a deliberate
-        // follow-up, not bundled into rosary-3b8a9b — an orphan sweep runs
-        // just above, which already clears the STALE case this call would
-        // otherwise attach to.
-        match crate::workspace::Workspace::create(bead_id, &repo_name, &root, true, true).await {
-            Ok(ws) => Some(ws),
-            Err(e) => {
-                eprintln!("[dispatch] workspace creation failed: {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let work_dir = workspace
-        .as_ref()
-        .map(|ws| ws.work_dir.to_string_lossy().to_string())
-        .unwrap_or_else(|| root.to_string_lossy().to_string());
+    // Isolated workspace (worktree/jj workspace) — mandatory, fails CLOSED.
+    let workspace = dispatch_workspace(bead_id, &repo_name, &root, isolate).await?;
+    let work_dir = workspace.work_dir.to_string_lossy().to_string();
 
     // Build the prompt + system_prompt the agent will see. system_prompt is
     // assembled from the agent definition + golden rules.
@@ -1285,7 +1298,7 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
     let prompt = crate::dispatch::build_prompt(
         &bead,
         &work_dir,
-        workspace.as_ref().map(|ws| ws.work_dir.as_path()),
+        Some(workspace.work_dir.as_path()),
         bead.owner.as_deref(),
     );
     let system_prompt = crate::dispatch::build_system_prompt(
@@ -1365,15 +1378,12 @@ async fn tool_dispatch(args: &Value, _config_path: &str) -> Result<Value> {
         (Some(spawned.pid), None, spawned.stream_log)
     };
 
-    let workspace_vcs = workspace
-        .as_ref()
-        .map(|ws| match ws.vcs {
-            crate::workspace::VcsKind::Jj => "jj",
-            crate::workspace::VcsKind::Git => "git",
-            crate::workspace::VcsKind::None => "",
-        })
-        .unwrap_or("")
-        .to_string();
+    let workspace_vcs = match workspace.vcs {
+        crate::workspace::VcsKind::Jj => "jj",
+        crate::workspace::VcsKind::Git => "git",
+        crate::workspace::VcsKind::None => "",
+    }
+    .to_string();
     let session_entry = crate::session::SessionEntry {
         bead_id: bead_id.to_string(),
         repo: repo_name.clone(),
@@ -3231,6 +3241,8 @@ async fn tool_ticket_load(args: &Value, pool: &RepoPool) -> Result<Value> {
 // Tests
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod dispatch_isolation_tests;
 #[cfg(test)]
 mod input_validation_tests;
 #[cfg(test)]
