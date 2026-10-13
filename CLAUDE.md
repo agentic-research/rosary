@@ -66,7 +66,7 @@ else. `task ci` is also an alias for `task check`.
 | src/dispatch/providers.rs      | AgentProvider trait — claude / gemini / **codex (`codex exec`)** / acp / plugin-kind="dispatch"; `resolve_launch_env` cred routing (OAuth vs API key, rosary-1be3b8) |
 | src/dispatch/codex_runtime.rs  | Codex app-server **runtime** — `classify_turn_signal` + `run_turn_loop` (read past `turn/start`'s ack, answer approvals, observe real completion) + `CodexAppServerRuntime` (oneshot-backed session; `wait()` reflects the turn). Protocol verified vs `codex app-server generate-json-schema` v0.142.5 |
 | src/dispatch/codex_transport.rs| Persistent `CodexWebSocketConnection` + `CodexUnixSocketConnector` over the codex Unix control socket; `send_turn_interrupt` (cooperative `kill`)                       |
-| src/dispatch/provenance.rs     | `FailureClass` classifier — reads the agent stderr tail → a *classified* dispatch outcome (`failure:auth` / `:skew` / `:missing-binary` / …) so the failure record is the diagnosis (subsumes b1495c/82caac/ACP-skew) |
+| src/dispatch/provenance.rs     | `FailureClass` classifier — reads the agent stderr tail + stream-log tail → a *classified* dispatch outcome (`failure:auth` / `:skew` / `:missing-binary` / `:session-limit` / …) so the failure record is the diagnosis (subsumes b1495c/82caac/ACP-skew). `:session-limit` is detected from the TEXT (claude reports a limit hit as a successful result, rosary-1780ea): the exit is downgraded, verify never runs, and `session_limit_reset` keys the backoff to the "resets 3:40pm" time |
 | src/dispatch/sweep.rs          | Orphan-dispatch detection — self-heals stuck `Dispatched` beads (rosary-67c43d)                                                                                      |
 | src/epic.rs                    | Semantic clustering, dedup, file overlap detection                                                                                                                   |
 | src/dolt/mod.rs                | Dolt client (per-repo beads, server mode) — used only when `.beads/dolt/` exists                                                                                     |
@@ -210,9 +210,17 @@ command/criteria) → diff-sanity → mache blast-radius/duplication (advisory)
 → `review` (adversarial, nonce-fenced). The order matters: `Verifier::run`
 short-circuits on first failure, so a failing close-condition never reaches
 review. `highest_tier` records how far it got; a tier failure
-schedules a backoff retry until `max_retries` (default 5) → deadletter. The
+schedules a backoff retry until `max_retries` (default 5) → deadletter.
+`pipeline.decide()` is the ONLY retry/deadletter judgment (rosary-45b069): the
+queue keeps no threshold of its own — its copy refused the retry `decide()` had
+just scheduled at `retries == max_retries`, so the bead was never dispatched and
+never deadlettered (the 2.3 h "waiting for backoff" park, rosary-1780ea). The
 targeted-run loop exits when the **target's own** deadletter id is recorded
-(rosary-5361f4 — else it re-dispatches forever). Keep the suite green: a live
+(rosary-5361f4 — else it re-dispatches forever); in `--once` mode that id flows
+back from `wait_and_verify` (`WaitOutcome`), which is the only path that sees it.
+Whether to verify is keyed to the **bead**, not the agent: a read-only agent
+(scoping/staging) that is the terminal phase of a bead declaring `files`/
+`test_files` delivered the work and is verified like anyone else. Keep the suite green: a live
 test that hard-fails (e.g. a stale-cred integration test) fails **every**
 dispatch's `test` tier — mark such tests `#[ignore]` (rosary-59ff84).
 

@@ -226,24 +226,162 @@ async fn triage_target_filter_overrides_non_open_state() {
     assert_eq!(triaged, 1, "--bead must override non-open state filter");
 }
 
+/// rosary-1780ea, the park: on 2026-09-12 four targeted runs each recorded
+/// exactly `max_retries` failures and then logged "waiting for backoff" every
+/// scan for 2.3 h without ever dispatching or deadlettering. `decide()` reads
+/// `tracker.retries` BEFORE `on_fail*` increments it (4 >= 5 is false → Retry),
+/// the increment lands the queue's backoff record at 5, and triage's copy of
+/// the threshold (`queue::is_deadlettered`, retries >= 5) then refuses the very
+/// retry the pipeline just scheduled. The pipeline's decision is the only
+/// deadletter judgment (rosary-45b069); a retry it scheduled must be admitted.
 #[tokio::test]
-async fn triage_skips_deadlettered_bead() {
+async fn retry_scheduled_at_max_retries_is_still_triaged() {
     let bead = make_test_bead("dl-1");
-
-    let mut r = Reconciler::new(ReconcilerConfig::default()).await;
-    // Drive the bead past MAX_RETRIES (5) so is_deadlettered() returns true.
-    for retries in 1..=5 {
-        r.queue
-            .record_backoff("test-repo", "dl-1", retries, std::time::Instant::now());
-    }
-    assert!(r.queue.is_deadlettered("test-repo", "dl-1"));
+    let config = ReconcilerConfig {
+        max_retries: 5,
+        repo: Vec::new(),
+        ..Default::default()
+    };
+    let mut r = Reconciler::new(config).await;
+    r.trackers.insert(
+        "dl-1".into(),
+        BeadTracker {
+            repo: "test-repo".into(),
+            last_generation: bead.generation(),
+            retries: 4,
+            consecutive_reverts: 0,
+            highest_tier: None,
+            current_agent: Some("dev-agent".into()),
+            phase_index: 0,
+            issue_type: "task".into(),
+            dispatch_id: None,
+            scope: String::new(),
+        },
+    );
+    // The fifth failure: the pipeline decides with the pre-increment count.
+    let action = r
+        .pipeline
+        .decide("task", Some("dev-agent"), false, None, 4, 5, 0);
+    assert_eq!(action, crate::pipeline::CompletionAction::Retry);
+    r.on_fail_exit("dl-1", true);
+    assert_eq!(r.trackers["dl-1"].retries, 5);
+    assert!(r.queue.has_backoff("test-repo", "dl-1"));
 
     let triaged = r.triage(
         &[bead],
         &std::collections::HashMap::new(),
         &std::collections::HashSet::new(),
     );
-    assert_eq!(triaged, 0, "deadlettered bead must not be triaged");
+    assert_eq!(
+        triaged, 1,
+        "a retry the pipeline scheduled must be re-admitted by triage; refusing it \
+         here is the 2.3 h 'waiting for backoff' park (rosary-1780ea)"
+    );
+}
+
+/// rosary-1780ea end to end: the provider keeps exiting 0 with the claude
+/// stream result "You've hit your session limit" (claude reports the limit as
+/// a successful result). The targeted loop must terminate: every attempt is
+/// classified as a session-limit failure (never sent to verify), retried up
+/// to `max_retries`, and the bead deadlettered — instead of parking forever.
+#[tokio::test]
+async fn session_limit_exit_is_classified_and_retried_or_deadlettered() {
+    use crate::dispatch::tests::MockAgentProvider;
+
+    let repo = crate::testutil::TestRepo::new();
+    let beads_dir = repo.path().join(".beads");
+    std::fs::create_dir_all(&beads_dir).unwrap();
+    let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
+        .await
+        .unwrap();
+    store
+        .create_bead(
+            "TARGET",
+            "session-limit target",
+            "This bead exists to drive the targeted loop through a provider that \
+             keeps hitting the session limit; the description is long enough to \
+             pass the refinement gate.",
+            1,
+            "task",
+        )
+        .await
+        .unwrap();
+    drop(store);
+
+    let config = ReconcilerConfig {
+        once: true,
+        target_bead: Some("TARGET".to_string()),
+        repo: vec![crate::config::RepoConfig {
+            name: "test-repo".into(),
+            path: repo.path().to_path_buf(),
+            lang: Some("unknown".into()),
+            self_managed: false,
+            approval: Default::default(),
+        }],
+        max_retries: 5,
+        scan_interval: Duration::from_millis(20),
+        backoff_base: Duration::from_millis(1),
+        ..Default::default()
+    };
+    let mut r = Reconciler::new(config).await;
+    r.provider = Box::new(MockAgentProvider {
+        side_effect: Some(Box::new(|dir: &std::path::Path| {
+            // What `claude -p --output-format json` leaves behind on a limit hit:
+            // a *successful* result whose text is the limit notice.
+            std::fs::write(
+                dir.join(crate::dispatch::STREAM_LOG_FILENAME),
+                "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\
+                 \"result\":\"You've hit your session limit\",\"num_turns\":1}\n",
+            )
+            .unwrap();
+        })),
+        exit_success: true,
+    });
+
+    let summary = tokio::time::timeout(Duration::from_secs(60), r.run())
+        .await
+        .expect(
+            "the targeted loop must terminate (deadletter) when the provider keeps \
+             hitting the session limit — it parked in 'waiting for backoff' forever \
+             on 2026-09-12 (rosary-1780ea)",
+        )
+        .unwrap();
+
+    assert!(
+        summary.deadlettered_ids.iter().any(|id| id == "TARGET"),
+        "TARGET must deadletter within max_retries, got {summary:?}"
+    );
+    assert_eq!(summary.passed, 0, "a limit hit is never a pass");
+    assert_eq!(
+        r.trackers["TARGET"].retries, 6,
+        "max_retries=5 retries then the sixth failure deadletters"
+    );
+
+    // Classified, not verified: a limit hit carries no work to verify, so the
+    // bead must never have entered `verifying` (that is what burned a retry
+    // every 5 s on 2026-09-12).
+    let store = crate::bead_sqlite::connect_bead_store(&beads_dir)
+        .await
+        .unwrap();
+    let bead = store
+        .get_bead("TARGET", "test-repo")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bead.status, "dead_letter");
+    let db = rusqlite::Connection::open(beads_dir.join("beads.db")).unwrap();
+    let verifying: i64 = db
+        .query_row(
+            "select count(*) from events where issue_id='TARGET' and event_type='state_change' \
+             and comment like '%verifying%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        verifying, 0,
+        "a session-limit exit must not enter verifying"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -360,7 +498,7 @@ async fn verify_agent_skips_staging_agent_readonly() {
             scope: String::new(),
         },
     );
-    let result = r.verify_agent("ro-2", None);
+    let result = r.verify_agent("ro-2", None, None);
     assert!(
         result.is_none(),
         "staging-agent is read-only — verify must skip"
@@ -870,5 +1008,41 @@ async fn target_bead_mode_only_exits_when_target_bead_deadletters() {
         !ids.iter().any(|id| id == target),
         "target {target} must NOT appear in deadlettered_ids when only SIBLING died — \
          the old `deadlettered > 0` check would have falsely terminated target mode here"
+    );
+}
+
+/// Copilot on #506: `persist_status` swallows write errors, so a bead that
+/// `decide()` deadlettered can still read `open`. The in-process marker keeps
+/// it out of triage until the store agrees; once a scan SEES it dead_letter
+/// the marker drops, so a later human reopen is admitted again.
+#[tokio::test]
+async fn triage_holds_a_deadletter_whose_status_write_was_lost() {
+    let cfg = || ReconcilerConfig {
+        triage_threshold: 0.0,
+        ..Default::default()
+    };
+    let none = std::collections::HashMap::new();
+    let blocked = std::collections::HashSet::new();
+    let open = make_test_bead("dl-lost");
+
+    let mut r = Reconciler::new(cfg()).await;
+    r.deadlettered.insert("dl-lost".into());
+    assert_eq!(
+        r.triage(std::slice::from_ref(&open), &none, &blocked),
+        0,
+        "a stale `open` after a lost deadletter write must not be re-admitted"
+    );
+
+    let mut dead = open.clone();
+    dead.status = crate::bead::BeadState::DeadLetter.to_string();
+    r.triage(&[dead], &none, &blocked);
+    assert!(
+        r.deadlettered.is_empty(),
+        "the store agreeing clears the marker"
+    );
+    assert_eq!(
+        r.triage(&[open], &none, &blocked),
+        1,
+        "a human reopen after the store recorded the deadletter is admitted"
     );
 }

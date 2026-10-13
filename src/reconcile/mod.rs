@@ -38,6 +38,8 @@ pub struct ReconcilerConfig {
     pub max_concurrent: usize,
     pub scan_interval: Duration,
     pub max_retries: u32,
+    /// First retry delay (doubles per retry, capped in `queue`). Default 30 s.
+    pub backoff_base: Duration,
     pub triage_threshold: f64,
     pub repo: Vec<RepoConfig>,
     pub once: bool,
@@ -86,6 +88,7 @@ impl Default for ReconcilerConfig {
             max_concurrent: 5,
             scan_interval: Duration::from_secs(30),
             max_retries: 5,
+            backoff_base: crate::queue::DEFAULT_BACKOFF_BASE,
             triage_threshold: 0.3,
             repo: Vec::new(),
             once: false,
@@ -139,6 +142,12 @@ pub struct Reconciler {
     repo_info: HashMap<String, (PathBuf, String)>,
     /// Stash work_dir + repo when agent completes so verify_agent can find it
     completed_work_dirs: HashMap<String, (PathBuf, String)>,
+    /// Beads `pipeline.decide()` deadlettered in this process whose stored
+    /// state has not yet been SEEN as dead_letter. `persist_status` is
+    /// best-effort, so a lost write would otherwise leave the bead `open` and
+    /// re-admit it every scan. Not a retry threshold — only decide()'s verdict,
+    /// held until the store agrees (then a human reopen admits it again).
+    deadlettered: std::collections::HashSet<String>,
     /// Stash workspaces from completed agents for checkpoint + teardown
     completed_workspaces: HashMap<String, crate::workspace::Workspace>,
     /// Bead stores keyed by repo name, lazily connected
@@ -422,13 +431,16 @@ impl Reconciler {
             );
         }
 
+        let queue = WorkQueue::with_backoff_base(config.backoff_base);
+
         Reconciler {
             config,
-            queue: WorkQueue::new(),
+            queue,
             active: HashMap::new(),
             trackers: HashMap::new(),
             repo_info,
             completed_work_dirs: HashMap::new(),
+            deadlettered: std::collections::HashSet::new(),
             completed_workspaces: HashMap::new(),
             dolt_clients: HashMap::new(),
             provider,
@@ -519,7 +531,13 @@ impl Reconciler {
                         "[reconcile] waiting for {} active agent(s)...",
                         self.active.len()
                     );
-                    self.wait_and_verify().await?;
+                    let waited = self.wait_and_verify().await?;
+                    cumulative.passed += waited.passed;
+                    cumulative.failed += waited.failed;
+                    cumulative.deadlettered += waited.deadlettered_ids.len();
+                    if self.config.target_bead.is_some() {
+                        cumulative.deadlettered_ids.extend(waited.deadlettered_ids);
+                    }
                 }
 
                 // When targeting a specific bead, keep looping until it
@@ -538,10 +556,10 @@ impl Reconciler {
                     // which now includes liveness-sweep deadletters for
                     // unrelated beads (would false-trip otherwise).
                     if cumulative.deadlettered_ids.iter().any(|id| id == target) {
-                        eprintln!(
-                            "[reconcile] bead {target} deadlettered after {} retries",
-                            cumulative.failed
-                        );
+                        // The bead's own retry count — `cumulative.failed` sums
+                        // every bead's failures in the run, not the target's.
+                        let retries = self.trackers.get(target.as_str()).map_or(0, |t| t.retries);
+                        eprintln!("[reconcile] bead {target} deadlettered after {retries} retries");
                         break;
                     }
                     if cumulative.passed > 0 {

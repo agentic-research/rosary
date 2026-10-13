@@ -269,7 +269,7 @@ null. ACP agents can report cost through the ACP protocol's
 | `agent_closed_via_mcp` | `is_bead_agent_closed()` check                                        | At completion  | True if the agent called `rsry_bead_close` during execution                              |
 | `error`                | Error message from agent stderr, verification failure detail, or null | At completion  | null on success. On failure: first verification failure reason, or exit code description |
 | `retries`              | `BeadTracker.retries` or `Pipeline.retries_used()`                    | At completion  | Number of retries consumed for this dispatch (not cumulative)                            |
-| `deadlettered`         | `WorkQueue.is_deadlettered()` check                                   | At completion  | Whether this dispatch exhausted retries and the bead was deadlettered                    |
+| `deadlettered`         | `pipeline.decide()` → `CompletionAction::Deadletter` (the only judgment) | At completion  | Whether this dispatch exhausted retries and the bead was deadlettered                    |
 
 ______________________________________________________________________
 

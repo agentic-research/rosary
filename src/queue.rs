@@ -10,12 +10,10 @@ use std::time::{Duration, Instant};
 use crate::bead::Bead;
 
 /// Base backoff period (doubles per retry).
-const BACKOFF_BASE: Duration = Duration::from_secs(30);
+/// Default first retry delay; doubles per retry up to `BACKOFF_MAX`.
+pub const DEFAULT_BACKOFF_BASE: Duration = Duration::from_secs(30);
 /// Maximum backoff period.
 const BACKOFF_MAX: Duration = Duration::from_secs(30 * 60);
-/// Default max retries before deadletter.
-const MAX_RETRIES: u32 = 5;
-
 /// An entry in the priority queue.
 #[derive(Debug, Clone)]
 pub struct QueueEntry {
@@ -64,11 +62,8 @@ pub struct BackoffState {
 }
 
 impl BackoffState {
-    pub fn new(retries: u32, now: Instant) -> Self {
-        let delay = std::cmp::min(
-            BACKOFF_BASE.saturating_mul(1 << retries.min(10)),
-            BACKOFF_MAX,
-        );
+    pub fn new(retries: u32, now: Instant, base: Duration) -> Self {
+        let delay = std::cmp::min(base.saturating_mul(1 << retries.min(10)), BACKOFF_MAX);
         BackoffState {
             retries,
             next_eligible: now + delay,
@@ -77,10 +72,6 @@ impl BackoffState {
 
     pub fn is_eligible(&self, now: Instant) -> bool {
         now >= self.next_eligible
-    }
-
-    pub fn exceeded_max(&self) -> bool {
-        self.retries >= MAX_RETRIES
     }
 }
 
@@ -92,15 +83,24 @@ pub struct WorkQueue {
     /// Minimum priority level for auto-dispatch. Beads with priority > min_priority
     /// are blocked (P0=highest, P3=lowest). Default 2 means P0, P1, P2 pass; P3 blocked.
     pub min_priority: u8,
+    /// First retry delay; doubles per retry up to `BACKOFF_MAX`. Configurable
+    /// so a test can drive a whole retry budget in milliseconds.
+    backoff_base: Duration,
 }
 
 impl WorkQueue {
+    #[cfg(test)]
     pub fn new() -> Self {
+        Self::with_backoff_base(DEFAULT_BACKOFF_BASE)
+    }
+
+    pub fn with_backoff_base(backoff_base: Duration) -> Self {
         WorkQueue {
             heap: BinaryHeap::new(),
             in_queue: HashSet::new(),
             backoff: HashMap::new(),
             min_priority: 2,
+            backoff_base,
         }
     }
 
@@ -150,15 +150,22 @@ impl WorkQueue {
     pub fn record_backoff(&mut self, repo: &str, bead_id: &str, retries: u32, now: Instant) {
         self.backoff.insert(
             (repo.to_string(), bead_id.to_string()),
-            BackoffState::new(retries, now),
+            BackoffState::new(retries, now, self.backoff_base),
         );
     }
 
-    /// Check if a bead has exceeded max retries.
-    pub fn is_deadlettered(&self, repo: &str, bead_id: &str) -> bool {
-        self.backoff
-            .get(&(repo.to_string(), bead_id.to_string()))
-            .is_some_and(|s| s.exceeded_max())
+    /// Hold a bead's next dispatch until at least `until` — used when the
+    /// failure names its own recovery time (a seat limit that "resets 3:40pm"),
+    /// which the exponential schedule knows nothing about. Never shortens an
+    /// existing backoff; a no-op for a bead with no backoff record.
+    pub fn defer_until(&mut self, repo: &str, bead_id: &str, until: Instant) {
+        if let Some(state) = self
+            .backoff
+            .get_mut(&(repo.to_string(), bead_id.to_string()))
+            && state.next_eligible < until
+        {
+            state.next_eligible = until;
+        }
     }
 
     /// Get retry count for a bead.
@@ -361,10 +368,10 @@ mod tests {
     fn backoff_exponential_growth() {
         let now = Instant::now();
 
-        let b0 = BackoffState::new(0, now);
-        let b1 = BackoffState::new(1, now);
-        let b2 = BackoffState::new(2, now);
-        let b5 = BackoffState::new(5, now);
+        let b0 = BackoffState::new(0, now, DEFAULT_BACKOFF_BASE);
+        let b1 = BackoffState::new(1, now, DEFAULT_BACKOFF_BASE);
+        let b2 = BackoffState::new(2, now, DEFAULT_BACKOFF_BASE);
+        let b5 = BackoffState::new(5, now, DEFAULT_BACKOFF_BASE);
 
         // Each retry doubles the delay
         let d0 = b0.next_eligible.duration_since(now);
@@ -381,15 +388,31 @@ mod tests {
     }
 
     #[test]
-    fn max_retries_deadletters() {
-        let mut q = WorkQueue::new();
+    fn defer_until_only_extends_a_backoff() {
+        let mut q = WorkQueue::with_backoff_base(Duration::from_millis(1));
         let now = Instant::now();
-
-        q.record_backoff("r", "doomed", MAX_RETRIES, now);
-        assert!(q.is_deadlettered("r", "doomed"));
-
-        q.record_backoff("r", "ok", 1, now);
-        assert!(!q.is_deadlettered("r", "ok"));
+        let entry = |t: Instant| QueueEntry {
+            bead_id: "x".into(),
+            repo: "r".into(),
+            score: 1.0,
+            enqueued_at: t,
+            retries: 1,
+            generation: 1,
+        };
+        q.record_backoff("r", "x", 1, now);
+        let later = now + Duration::from_secs(3600);
+        q.defer_until("r", "x", later);
+        q.enqueue(entry(now));
+        // The exponential schedule (2 ms) is long past; the deferral holds it.
+        assert!(q.dequeue(later - Duration::from_secs(1)).is_none());
+        // Never shortens: an earlier `until` is ignored.
+        q.defer_until("r", "x", now);
+        assert!(q.dequeue(now).is_none());
+        // Past the deferral the entry is eligible again.
+        assert!(q.dequeue(later).is_some());
+        // No backoff record → no-op.
+        q.defer_until("r", "none", later);
+        assert!(!q.has_backoff("r", "none"));
     }
 
     #[test]
@@ -402,7 +425,7 @@ mod tests {
 
         q.clear_backoff("r", "x");
         assert_eq!(q.retries("r", "x"), 0);
-        assert!(!q.is_deadlettered("r", "x"));
+        assert!(!q.has_backoff("r", "x"));
     }
 
     #[test]

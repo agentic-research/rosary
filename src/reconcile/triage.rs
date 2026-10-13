@@ -26,6 +26,11 @@ impl Reconciler {
         let mut triaged = 0;
 
         for bead in beads {
+            // The store now agrees the bead is deadlettered: drop the
+            // in-process marker so a later human reopen is admitted.
+            if bead.state() == BeadState::DeadLetter {
+                self.deadlettered.remove(&bead.id);
+            }
             if let Some(ref target) = target_filter {
                 if bead.id != *target {
                     continue;
@@ -43,9 +48,18 @@ impl Reconciler {
             if self.active.contains_key(&bead.id) {
                 continue;
             }
-            if self.queue.is_deadlettered(&bead.repo, &bead.id) {
+            // decide() deadlettered it but the status write was lost: the
+            // stored `open` is stale, not a reopen (Copilot on #506).
+            if self.deadlettered.contains(&bead.id) && target_filter.is_none() {
                 continue;
             }
+            // No deadletter gate here: `pipeline.decide()` is the ONLY owner of
+            // the retry/deadletter decision (rosary-45b069). The queue used to
+            // keep its own copy of the threshold and refused the retry decide()
+            // had just scheduled at retries == max_retries — the bead was then
+            // never dispatched and never deadlettered: the 2.3 h "waiting for
+            // backoff" park of rosary-1780ea. A deadlettered bead is excluded by
+            // its stored state (and the targeted loop exits on it).
 
             // Severity floor: skip beads below minimum priority level.
             // Targeted dispatch (--bead) bypasses — explicit intent overrides floor.
