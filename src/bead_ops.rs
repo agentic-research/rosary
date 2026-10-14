@@ -13,6 +13,8 @@
 
 use crate::store::BeadStore;
 
+pub use crate::bead_markup::reject_absorbed_parameter;
+
 /// Max byte length for a comment body (and bead description). Shared by every
 /// surface so the limit is defined once, not per-handler.
 pub const BODY_MAX_LEN: usize = 50_000;
@@ -71,6 +73,12 @@ impl BeadCreateArgs {
     /// [`crate::bead::resolve_acceptance_criteria`]) so every bead is closeable
     /// without breaking bare `rsry bead create "title"`.
     pub fn validate(&self) -> anyhow::Result<()> {
+        reject_absorbed_parameter("title", &self.title)?;
+        reject_absorbed_parameter("description", &self.description)?;
+        reject_absorbed_parameter("acceptance_criteria", &self.acceptance_criteria)?;
+        if let Some(owner) = &self.owner {
+            reject_absorbed_parameter("owner", owner)?;
+        }
         if crate::bead::requires_files(&self.issue_type) && self.files.is_empty() {
             anyhow::bail!(
                 "files required for {} beads — specify which code this bead touches",

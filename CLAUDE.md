@@ -187,6 +187,24 @@ rsry lattice audit [--repo <path>]           # fold each bead's observations, di
 rsry lattice backfill [--repo <path>] [--limit N] [--dry-run]  # replay the trunk's `[bead-id] … (#N)` squash merges into the lattice as `PipelineVerdict::Done` observations — the corpus `audit` needs. Behavior-neutral (writes `observation` events only; persist_status untouched), idempotent on the commit sha. Git witnesses the terminal MERGE, so a backfilled bead gets ONE Done observation, not a reconstructed lifecycle
 ```
 
+### How a bead reaches git
+
+ADR-0024 amendment A. The store (`.beads/beads.db` or Dolt) is the authority; the
+tracked `.beads/beads.jsonl` is a projection of it, and a store write never touches
+that file. A bead reaches git only through a commit that names it:
+
+1. **commit-msg** publishes the beads the subject names (`[bead-id] …`) into the export;
+   **post-commit** folds that record into the same commit (rosary-e5bfd3).
+1. **pre-push** (`rsry bead verify-pushed`) compares the PUSHED tip's blob with the store
+   for the beads the pushed commits name. It never reads the working tree, so a code-only
+   push is never refused (rosary-e5c037).
+1. **post-merge** imports the merged export, runs `close-merged --local`, then
+   `bead trunk-refresh --push` re-renders every published bead on the trunk. A refused push
+   parks the commit on `rsry/trunk-refresh` until the trunk writer is decided (rosary-e5be46).
+
+`rsry bead publish <ids>` is the explicit hand; `rsry hooks audit` checks the trunk
+projection against the store record by record.
+
 ## Triage & Dispatch
 
 The reconciler's triage phase applies multiple filters before dispatch:
