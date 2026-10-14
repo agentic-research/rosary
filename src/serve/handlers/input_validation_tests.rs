@@ -1749,3 +1749,55 @@ async fn bead_history_returns_folded_observation_history() {
     assert_eq!(history[1]["verdict"], "pass");
     assert_eq!(history[1]["git_sha"], "deadbee");
 }
+
+// ---- rosary-4d5d70: absorbed adjacent parameter ---------------------------
+
+#[tokio::test]
+async fn create_rejects_description_that_absorbed_the_criteria() {
+    let args = json!({
+        "title": "t",
+        "description": "Body.\n</description>\n<parameter name=\"acceptance_criteria\">cargo test",
+        "acceptance_criteria": ""
+    });
+    let err = tool_bead_create(&args, &empty_pool(), None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("description contains tool-call markup"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn create_rejects_criteria_that_absorbed_the_description() {
+    let args = json!({
+        "title": "t",
+        "description": "",
+        "acceptance_criteria": "cargo test</acceptance_criteria>\n<parameter name=\"description\">Body."
+    });
+    let err = tool_bead_create(&args, &empty_pool(), None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("acceptance_criteria contains tool-call markup"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn update_rejects_absorbed_parameter_markup() {
+    let args = json!({
+        "id": "x-1",
+        "acceptance_criteria": "cargo test</acceptance_criteria>\n<parameter name=\"description\">Body."
+    });
+    let err = tool_bead_update(&args, &empty_pool(), None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("acceptance_criteria contains tool-call markup"),
+        "{err}"
+    );
+}

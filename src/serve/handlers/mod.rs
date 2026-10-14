@@ -675,6 +675,11 @@ async fn tool_bead_update(
             d.len()
         );
     }
+    for field in ["title", "description", "acceptance_criteria"] {
+        if let Some(value) = args.get(field).and_then(|v| v.as_str()) {
+            crate::bead_ops::reject_absorbed_parameter(field, value)?;
+        }
+    }
     if let Some(pv) = args.get("priority").filter(|v| !v.is_null()) {
         let p = pv.as_u64().ok_or_else(|| {
             anyhow::anyhow!("priority must be an integer 0–{PRIORITY_MAX}, got {:?}", pv)

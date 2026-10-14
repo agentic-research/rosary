@@ -30,6 +30,35 @@ pub fn validate_comment_body(body: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Reject a field value that absorbed its neighbouring tool parameter
+/// (rosary-4d5d70). A client that mis-serialises adjacent parameters leaves one
+/// field holding `…</description>\n<parameter name="acceptance_criteria">…` and
+/// the neighbour empty — and the close gate then reads the empty one. The
+/// signature is a closing tag immediately followed by a `<parameter name=`
+/// opener; prose that merely *mentions* `<parameter name=...>` (as bug reports
+/// about this very leak do) does not match, so it is still accepted.
+pub fn reject_absorbed_parameter(field: &str, value: &str) -> anyhow::Result<()> {
+    const OPENER: &str = "<parameter name=";
+    for (at, _) in value.match_indices(OPENER) {
+        let before = value[..at].trim_end();
+        let Some(tag_start) = before.rfind("</") else {
+            continue;
+        };
+        let tag = &before[tag_start + 2..];
+        let is_closing_tag = tag.strip_suffix('>').is_some_and(|name| {
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        });
+        if is_closing_tag {
+            anyhow::bail!(
+                "{field} contains tool-call markup ({}{OPENER}…) — an adjacent parameter \
+                 was absorbed into it (rosary-4d5d70); resend each field separately",
+                &before[tag_start..]
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Typed inputs for authoring a new bead. Both front-ends build this; the core
 /// validates + creates. `owner`/`created_by`/`id` are resolved by the caller
 /// (they differ by surface — CLI uses the repo name + git config; MCP resolves
@@ -71,6 +100,9 @@ impl BeadCreateArgs {
     /// [`crate::bead::resolve_acceptance_criteria`]) so every bead is closeable
     /// without breaking bare `rsry bead create "title"`.
     pub fn validate(&self) -> anyhow::Result<()> {
+        reject_absorbed_parameter("title", &self.title)?;
+        reject_absorbed_parameter("description", &self.description)?;
+        reject_absorbed_parameter("acceptance_criteria", &self.acceptance_criteria)?;
         if crate::bead::requires_files(&self.issue_type) && self.files.is_empty() {
             anyhow::bail!(
                 "files required for {} beads — specify which code this bead touches",

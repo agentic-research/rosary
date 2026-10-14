@@ -620,3 +620,51 @@ async fn expand_ref_returns_stored_blob() {
         serde_json::json!({ "hash": "0".repeat(64), "cas_dir": tmp.path().to_str().unwrap() });
     assert!(super::tool_expand_ref(&miss).await.unwrap()["content"].is_null());
 }
+
+/// rosary-4d5d70: multi-line `description` + `acceptance_criteria` through the
+/// real create path land in their own columns, byte-for-byte — neither absorbs
+/// the other. The description deliberately *mentions* the leak's markup in
+/// prose, which must still be accepted.
+#[tokio::test]
+async fn mcp_create_keeps_multiline_description_and_criteria_apart() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store =
+        crate::bead_sqlite::SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap();
+    let pool = RepoPool::from_client("project", tmp.path().to_path_buf(), Box::new(store));
+
+    let description = "## Symptom\n\nA field ends with `</description>` and then\n\
+                       `<parameter name=...>` text.\n\n## Scope\n\nFix the leak.";
+    let criteria = "A regression test creates the bead and\nasserts both fields are clean.";
+    let result = tool_bead_create(
+        &json!({
+            "scope": "repo:project",
+            "title": "multi-line fields stay apart",
+            "description": description,
+            "issue_type": "bug",
+            "files": ["src/lib.rs"],
+            "acceptance_criteria": criteria
+        }),
+        &pool,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let (_scope, client_ref) = resolve_repo_client(&json!({ "scope": "repo:project" }), &pool)
+        .await
+        .unwrap();
+    let bead = client_ref
+        .as_store()
+        .get_bead(result["id"].as_str().unwrap(), "project")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bead.description, description);
+    assert_eq!(bead.acceptance_criteria, criteria);
+    for field in [&bead.description, &bead.acceptance_criteria] {
+        assert!(
+            !field.contains("<parameter name=\"") && !field.contains("</acceptance_criteria>"),
+            "a stored field carries tool-call markup: {field:?}"
+        );
+    }
+}
