@@ -675,7 +675,7 @@ async fn tool_bead_update(
             d.len()
         );
     }
-    for field in ["title", "description", "acceptance_criteria"] {
+    for field in ["title", "description", "acceptance_criteria", "owner"] {
         if let Some(value) = args.get(field).and_then(|v| v.as_str()) {
             crate::bead_ops::reject_absorbed_parameter(field, value)?;
         }

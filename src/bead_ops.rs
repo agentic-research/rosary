@@ -103,6 +103,9 @@ impl BeadCreateArgs {
         reject_absorbed_parameter("title", &self.title)?;
         reject_absorbed_parameter("description", &self.description)?;
         reject_absorbed_parameter("acceptance_criteria", &self.acceptance_criteria)?;
+        if let Some(owner) = &self.owner {
+            reject_absorbed_parameter("owner", owner)?;
+        }
         if crate::bead::requires_files(&self.issue_type) && self.files.is_empty() {
             anyhow::bail!(
                 "files required for {} beads — specify which code this bead touches",

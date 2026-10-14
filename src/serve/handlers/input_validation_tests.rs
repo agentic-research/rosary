@@ -1801,3 +1801,29 @@ async fn update_rejects_absorbed_parameter_markup() {
         "{err}"
     );
 }
+
+#[tokio::test]
+async fn create_rejects_owner_that_absorbed_the_criteria() {
+    let args = json!({
+        "title": "t",
+        "owner": "dev-agent</owner>\n<parameter name=\"acceptance_criteria\">cargo test"
+    });
+    let err = tool_bead_create(&args, &empty_pool(), None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("owner contains tool-call markup"), "{err}");
+}
+
+#[tokio::test]
+async fn update_rejects_owner_that_absorbed_a_parameter() {
+    let args = json!({
+        "id": "x-1",
+        "owner": "dev-agent</owner>\n<parameter name=\"description\">Body."
+    });
+    let err = tool_bead_update(&args, &empty_pool(), None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("owner contains tool-call markup"), "{err}");
+}
