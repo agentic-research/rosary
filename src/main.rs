@@ -45,6 +45,7 @@ mod cli;
 mod cloister_provider;
 mod column_rail;
 mod config;
+mod repo_identity;
 // Test-only: the export/import round-trip property (rosary-c45a35).
 mod context;
 #[cfg(test)]
@@ -1417,7 +1418,8 @@ async fn bootstrap_git_tracked_beads(
     repo_entry: &config::RepoConfig,
 ) -> Result<InitSyncSummary> {
     let beads_dir = resolve_beads_dir(repo_root);
-    let jsonl = beads_dir.join("beads.jsonl");
+    // The projection is per-checkout even when the store is shared.
+    let jsonl = repo_root.join(".beads/beads.jsonl");
     if crate::bead_backend::is_dolt_backed(&beads_dir) || !jsonl.is_file() {
         return Ok(InitSyncSummary::default());
     }
@@ -1464,29 +1466,17 @@ fn resolve_lattice_repo(repo: &str) -> (PathBuf, String) {
 }
 
 pub fn resolve_beads_dir(repo_root: &Path) -> PathBuf {
-    if repo_root.join(".beads").exists() {
-        return repo_root.join(".beads");
+    // A linked worktree's own `.beads/` is a git-tracked copy, not the store
+    // (rosary-5e6d0f): stale Dolt files, or no beads.db at all. The store is
+    // the main checkout's whenever it has one. The tracked projection stays
+    // per-worktree; its callers derive it from their own root.
+    if let Some(main) = repo_identity::main_worktree_root(repo_root) {
+        let main_beads = main.join(".beads");
+        if main_beads.exists() {
+            return main_beads;
+        }
     }
-    // Try to find the main worktree's .beads/ via git commondir
-    let git_common = std::process::Command::new("git")
-        .args(["rev-parse", "--git-common-dir"])
-        .current_dir(repo_root)
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map(|s| PathBuf::from(s.trim()));
-    if let Some(common) = git_common {
-        let main_root = common.parent().unwrap_or(repo_root);
-        main_root.join(".beads")
-    } else {
-        repo_root.join(".beads")
-    }
+    repo_root.join(".beads")
 }
 
 fn daemon_pid_path() -> PathBuf {
@@ -2303,7 +2293,9 @@ async fn main() -> Result<()> {
             }
 
             let client = bead_sqlite::connect_bead_store(&beads_dir).await?;
-            let repo_name = repo_root
+            // The main checkout's name, not a linked worktree's directory
+            // (rosary-5e6d0f: `cloister-wt-rsaudit-…` ids).
+            let repo_name = repo_identity::identity_root(&repo_root)
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| repo.clone());
@@ -2782,7 +2774,9 @@ async fn main() -> Result<()> {
             let repo_root = scanner::resolve_repo_path(std::path::Path::new(&repo));
             let beads_dir = resolve_beads_dir(&repo_root);
             let client = bead_sqlite::connect_bead_store(&beads_dir).await?;
-            let repo_name = repo_root
+            // The main checkout's name, not a linked worktree's directory
+            // (rosary-5e6d0f: `cloister-wt-rsaudit-…` ids).
+            let repo_name = repo_identity::identity_root(&repo_root)
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| repo.clone());
