@@ -670,6 +670,16 @@ mod owner_canonical_tests {
         }
     }
 
+    /// Carry `o-1`'s timestamps across as `migrate_store` does, so owner is the
+    /// only field under test — two creates can straddle a second boundary and
+    /// verify then reports `created_at` first (flaked in CI on #510).
+    async fn same_timestamps(src: &SqliteBeadStore, dst: &SqliteBeadStore) {
+        let original = src.get_bead("o-1", "r").await.unwrap().unwrap();
+        dst.restore_timestamps("o-1", original.created_at, original.updated_at)
+            .await
+            .unwrap();
+    }
+
     /// Absent and empty owner mean the same thing. Dolt stores `Some("")`,
     /// SQLite normalises to `None` — measured blocking signet's migration on
     /// 2026-07-27 with `owner mismatch (None != Some(""))`.
@@ -679,6 +689,7 @@ mod owner_canonical_tests {
         src.create_bead_full(nb("o-1", "")).await.unwrap();
         let dst = store();
         dst.create_bead_full(nb("o-1", "   ")).await.unwrap();
+        same_timestamps(&src, &dst).await;
         verify_migration(&src, &dst, "r")
             .await
             .expect("empty vs whitespace vs absent must not block a migration");
@@ -692,6 +703,7 @@ mod owner_canonical_tests {
         src.create_bead_full(nb("o-1", "dev-agent")).await.unwrap();
         let dst = store();
         dst.create_bead_full(nb("o-1", "pm-agent")).await.unwrap();
+        same_timestamps(&src, &dst).await;
         let err = match verify_migration(&src, &dst, "r").await {
             Ok(()) => panic!("a genuine owner change must fail verification"),
             Err(e) => e.to_string(),
