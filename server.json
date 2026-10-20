@@ -3,7 +3,7 @@
   "name": "io.github.agentic-research/rosary",
   "title": "rosary",
   "description": "Agent orchestration and bead tracking: dispatch agents, reconcile pipeline state, sync to Linear.",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "repository": {
     "url": "https://github.com/agentic-research/rosary",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "oci",
       "identifier": "ghcr.io/agentic-research/rosary",
-      "version": "0.10.0",
+      "version": "0.10.1",
       "transport": {
         "type": "streamable-http",
         "url": "http://localhost:8383/mcp"
