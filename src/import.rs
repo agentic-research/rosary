@@ -93,7 +93,6 @@ pub fn bead_to_contract_value(
     });
 
     crate::contract_deps::attach_types(&mut contract, dep_types);
-
     // Extensions come from the REGISTRY, never a list here (rosary-79393f).
     let full = serde_json::to_value(bead).unwrap_or(Value::Null);
     if let Value::Object(m) = &mut contract {
