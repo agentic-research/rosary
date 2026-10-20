@@ -11,7 +11,7 @@ use crate::store::BeadStore;
 /// dependencies and comments.
 async fn live_contract_value(store: &dyn BeadStore, bead: &crate::bead::Bead) -> Result<Value> {
     let deps = store
-        .get_dependencies(&bead.id)
+        .get_dependencies_typed(&bead.id)
         .await
         .with_context(|| format!("fetching dependencies for {}", bead.id))?;
     let comments = store

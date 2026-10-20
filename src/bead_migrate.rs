@@ -104,14 +104,20 @@ pub async fn migrate_store(
 
     // Pass 2: dependency edges + live comments (all targets now exist).
     for b in &beads {
-        for dep in source.get_dependencies(&b.id).await.unwrap_or_default() {
+        // Typed, and a fetch error fails the migration instead of silently
+        // copying zero edges (rosary-664e25).
+        let deps = source
+            .get_dependencies_typed(&b.id)
+            .await
+            .with_context(|| format!("reading dependencies of {}", b.id))?;
+        for (dep, dep_type) in deps {
             // restore_dependency (not add_dependency): preserve CROSS-REPO edges
             // verbatim — a rosary bead may block on a mache bead, which the
             // target holds as a dangling depends_on_id (no FK) but which
             // add_dependency's existence check would reject (found by the dry
             // run against the live store, 7/237 edges).
             target
-                .restore_dependency(&b.id, &dep)
+                .restore_dependency(&b.id, &dep, &dep_type)
                 .await
                 .with_context(|| format!("copying dependency {} -> {dep}", b.id))?;
             report.dependencies += 1;
@@ -126,6 +132,12 @@ pub async fn migrate_store(
                 .with_context(|| format!("copying comment on {}", b.id))?;
             report.comments += 1;
         }
+        // A comment write advances updated_at (rosary-664e25); a migration
+        // copies the record verbatim, so re-stamp the source's timestamps.
+        target
+            .restore_timestamps(&b.id, b.created_at, b.updated_at)
+            .await
+            .with_context(|| format!("restoring timestamps for {}", b.id))?;
     }
 
     Ok(report)
@@ -235,8 +247,16 @@ pub async fn verify_migration(
         same!(derived_from);
 
         // Dependency edges must match exactly (set equality).
-        let mut s_deps = source.get_dependencies(&b.id).await.unwrap_or_default();
-        let mut t_deps = target.get_dependencies(&b.id).await.unwrap_or_default();
+        // Compare TYPED edges: an id-only compare passed a migration that had
+        // turned every parent-child edge into blocks (rosary-664e25).
+        let mut s_deps = source
+            .get_dependencies_typed(&b.id)
+            .await
+            .unwrap_or_default();
+        let mut t_deps = target
+            .get_dependencies_typed(&b.id)
+            .await
+            .unwrap_or_default();
         s_deps.sort();
         t_deps.sort();
         if s_deps != t_deps {
@@ -461,7 +481,9 @@ mod tests {
         // it verbatim (restore_dependency).
         let src = store();
         src.create_bead("x", "t", "", 2, "task").await.unwrap();
-        src.restore_dependency("x", "mache-cbf644").await.unwrap();
+        src.restore_dependency("x", "mache-cbf644", "blocks")
+            .await
+            .unwrap();
 
         let tgt = store();
         let report = migrate_store(&src, &tgt, "repo").await.unwrap();

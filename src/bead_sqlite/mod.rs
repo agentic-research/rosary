@@ -343,13 +343,56 @@ impl SqliteBeadStore {
         &self,
         issue_id: &str,
         depends_on_id: &str,
+        dep_type: &str,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR IGNORE INTO dependencies (issue_id, depends_on_id) VALUES (?1, ?2)",
-            params![issue_id, depends_on_id],
+            "INSERT INTO dependencies (issue_id, depends_on_id, dep_type) VALUES (?1, ?2, ?3)
+             ON CONFLICT(issue_id, depends_on_id) DO UPDATE SET dep_type = excluded.dep_type",
+            params![issue_id, depends_on_id, dep_type],
         )
         .with_context(|| format!("restoring dependency {issue_id} -> {depends_on_id}"))?;
+        Ok(())
+    }
+
+    /// Make `issue_id`'s outgoing edge set EXACTLY `deps` — the restore of an
+    /// incoming record that won last-writer-wins (rosary-664e25). An
+    /// insert-only restore can't propagate a removed edge or a changed type.
+    /// Verbatim like [`Self::restore_dependency`] (cross-repo targets allowed).
+    pub(crate) async fn replace_dependencies(
+        &self,
+        issue_id: &str,
+        deps: &[(String, String)],
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM dependencies WHERE issue_id = ?1",
+            params![issue_id],
+        )?;
+        for (dep, dep_type) in deps {
+            tx.execute(
+                "INSERT INTO dependencies (issue_id, depends_on_id, dep_type) VALUES (?1, ?2, ?3)",
+                params![issue_id, dep, dep_type],
+            )?;
+        }
+        tx.commit()
+            .with_context(|| format!("replacing dependencies of {issue_id}"))?;
+        Ok(())
+    }
+
+    /// An edge or comment write is an edit of the bead record it lives on, so
+    /// it advances `updated_at` — otherwise a peer's last-writer-wins import
+    /// sees "nothing newer", skips the change, and the post-merge trunk refresh
+    /// re-renders the stale store and commits a REVERT (rosary-664e25).
+    fn touch(conn: &rusqlite::Connection, full_id: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE issues SET updated_at = ?1 WHERE id = ?2",
+            params![
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                full_id
+            ],
+        )?;
         Ok(())
     }
 
@@ -1161,6 +1204,7 @@ impl BeadStore for SqliteBeadStore {
              ON CONFLICT(issue_id, depends_on_id) DO UPDATE SET dep_type = excluded.dep_type",
             params![full_issue, full_dep, dep_type],
         )?;
+        Self::touch(&conn, &full_issue)?;
         Ok(())
     }
 
@@ -1192,6 +1236,7 @@ impl BeadStore for SqliteBeadStore {
             "DELETE FROM dependencies WHERE issue_id = ?1 AND depends_on_id = ?2",
             params![full_issue, full_dep],
         )?;
+        Self::touch(&conn, &full_issue)?;
         Ok(())
     }
 
@@ -1205,6 +1250,21 @@ impl BeadStore for SqliteBeadStore {
             conn.prepare("SELECT depends_on_id FROM dependencies WHERE issue_id = ?1")?;
         let deps = stmt
             .query_map(params![full_id], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(deps)
+    }
+
+    async fn get_dependencies_typed(&self, issue_id: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let full_id = match Self::resolve_id(&conn, issue_id) {
+            Ok(id) => id,
+            Err(_) => return Ok(vec![]),
+        };
+        let mut stmt =
+            conn.prepare("SELECT depends_on_id, dep_type FROM dependencies WHERE issue_id = ?1")?;
+        let deps = stmt
+            .query_map(params![full_id], |row| Ok((row.get(0)?, row.get(1)?)))?
             .filter_map(|r| r.ok())
             .collect();
         Ok(deps)
@@ -1236,6 +1296,7 @@ impl BeadStore for SqliteBeadStore {
             "INSERT INTO comments (issue_id, text, author, created_at) VALUES (?1, ?2, ?3, datetime('now'))",
             params![full_id, body, author],
         )?;
+        Self::touch(&conn, &full_id)?;
         Ok(())
     }
 

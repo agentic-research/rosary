@@ -165,6 +165,31 @@ impl DoltClient {
             .collect())
     }
 
+    /// Dependencies with their edge type — `(depends_on_id, type)`.
+    pub async fn get_dependencies_typed(&self, issue_id: &str) -> Result<Vec<(String, String)>> {
+        let full_id = match self.resolve_id(issue_id).await {
+            Ok(id) => id,
+            Err(_) => return Ok(vec![]),
+        };
+        let col = self.dep_schema().await?.type_col; // hardcoded "type" | "dep_type"
+        let rows = query(&format!(
+            "SELECT depends_on_id, `{col}` AS dep_type FROM dependencies WHERE issue_id = ?"
+        ))
+        .bind(&full_id)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| format!("listing typed dependencies for {issue_id}"))?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>("depends_on_id"),
+                    r.get::<String, _>("dep_type"),
+                )
+            })
+            .collect())
+    }
+
     /// List dependents of a bead (what depends on IT).
     #[allow(dead_code)] // API surface — used by future MCP tools and reconciler dep checks
     pub async fn get_dependents(&self, issue_id: &str) -> Result<Vec<String>> {

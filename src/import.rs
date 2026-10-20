@@ -58,9 +58,25 @@ pub const BEAD_CONTRACT_SCHEMA_VERSION: i64 = 1;
 /// `bd` ignores keys it doesn't recognize.
 pub fn bead_to_contract_value(
     bead: &crate::bead::Bead,
-    deps: &[String],
+    deps: &[(String, String)],
     comments: &[crate::bead::Comment],
 ) -> Value {
+    // ONE ordering for every caller (export, projection, publish, pre-push
+    // compare): sorted by target id, so the line is diff-stable however the
+    // store happened to return the edges.
+    let mut deps: Vec<&(String, String)> = deps.iter().collect();
+    deps.sort();
+    let dep_ids: Vec<&str> = deps.iter().map(|(id, _)| id.as_str()).collect();
+    // The edge TYPE (rosary-664e25). `dependencies` stays a list of ids — the
+    // bd-compatible shape, so a record whose edges are all `blocks` is
+    // byte-identical to before — and any non-default type rides in
+    // `dependency_types`. Without it every `parent-child` edge came back as
+    // `blocks` and the close-merged containment gate saw no children.
+    let dep_types: serde_json::Map<String, Value> = deps
+        .iter()
+        .filter(|(_, t)| t != "blocks")
+        .map(|(id, t)| (id.clone(), Value::String(t.clone())))
+        .collect();
     let mut contract = serde_json::json!({
         // --- documented bead JSON contract ---
         "schema_version": BEAD_CONTRACT_SCHEMA_VERSION,
@@ -77,7 +93,7 @@ pub fn bead_to_contract_value(
         "dependency_count": bead.dependency_count,
         "dependent_count": bead.dependent_count,
         "comment_count": bead.comment_count,
-        "dependencies": deps,
+        "dependencies": dep_ids,
         "comments": comments,
         // --- rosary-specific extras (lossless rosary round-trip) ---
         "repo": bead.repo,
@@ -90,6 +106,12 @@ pub fn bead_to_contract_value(
         // (rosary-a18a1f; the ADR-0021 field-set gap on the export surface).
         "acceptance_criteria": bead.acceptance_criteria,
     });
+
+    if !dep_types.is_empty()
+        && let Value::Object(m) = &mut contract
+    {
+        m.insert("dependency_types".to_string(), Value::Object(dep_types));
+    }
 
     // Extensions come from the REGISTRY, never a list here (rosary-79393f).
     let full = serde_json::to_value(bead).unwrap_or(Value::Null);
@@ -122,11 +144,10 @@ pub async fn export_beads_contract_jsonl(
     let beads = sorted;
     let mut lines = Vec::with_capacity(beads.len());
     for b in beads {
-        let mut deps = store
-            .get_dependencies(&b.id)
+        let deps = store
+            .get_dependencies_typed(&b.id)
             .await
             .with_context(|| format!("fetching dependencies for {}", b.id))?;
-        deps.sort();
         let comments = store
             .list_comments(&b.id, true)
             .await
@@ -345,7 +366,7 @@ mod tests {
         b.acceptance_criteria = "cargo test green".to_string();
         b.dependency_count = 1;
         b.comment_count = 1;
-        let deps = vec!["rosary-dep001".to_string()];
+        let deps = vec![("rosary-dep001".to_string(), "blocks".to_string())];
         let comments = vec![sample_comment("c1", "rosary-abc123", "looks good", "alice")];
 
         let v = bead_to_contract_value(&b, &deps, &comments);
@@ -375,8 +396,14 @@ mod tests {
         for id in ["dep-a", "dep-z", "parent"] {
             store.create_bead(id, id, "", 2, "task").await.unwrap();
         }
-        store.restore_dependency("parent", "dep-z").await.unwrap();
-        store.restore_dependency("parent", "dep-a").await.unwrap();
+        store
+            .restore_dependency("parent", "dep-z", "blocks")
+            .await
+            .unwrap();
+        store
+            .restore_dependency("parent", "dep-a", "blocks")
+            .await
+            .unwrap();
 
         let parent = store.get_bead("parent", "rosary").await.unwrap().unwrap();
         let exported = export_beads_contract_jsonl(&store, &[parent])

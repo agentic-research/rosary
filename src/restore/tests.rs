@@ -31,7 +31,7 @@ async fn restore_from_contract_preserves_id_status_and_deps() {
     b.priority = 1;
     // A cross-repo / not-yet-restored dep target — restore_dependency must
     // preserve it verbatim (no existence check), like the migration.
-    let deps = vec!["ley-line-open-71b20c".to_string()];
+    let deps = vec![("ley-line-open-71b20c".to_string(), "blocks".to_string())];
     let comments = vec![sample_comment(
         "c1",
         "ley-line-open-4aeb4f",

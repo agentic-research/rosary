@@ -266,13 +266,27 @@ pub async fn restore_beads_from_contract(
         if !restored_ids.contains(id) {
             continue;
         }
-        for dep in str_array(bead, "dependencies") {
-            store
-                .restore_dependency(id, &dep)
-                .await
-                .with_context(|| format!("restoring dependency {id} -> {dep}"))?;
-            result.dependencies += 1;
-        }
+        // The record's edge set is authoritative for a bead we created or that
+        // won LWW: REPLACE, so a removed edge or a changed type propagates
+        // (an insert-only pass could do neither — rosary-664e25). A record
+        // written before `dependency_types` existed reads as all-`blocks`.
+        let types = bead.get("dependency_types").and_then(|v| v.as_object());
+        let deps: Vec<(String, String)> = str_array(bead, "dependencies")
+            .into_iter()
+            .map(|dep| {
+                let t = types
+                    .and_then(|m| m.get(&dep))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("blocks")
+                    .to_string();
+                (dep, t)
+            })
+            .collect();
+        store
+            .replace_dependencies(id, &deps)
+            .await
+            .with_context(|| format!("restoring dependencies of {id}"))?;
+        result.dependencies += deps.len();
         if let Some(comments) = bead.get("comments").and_then(|v| v.as_array()) {
             // Comments are append-only and this pass now also runs for beads
             // updated by LWW, so adding blindly would duplicate every comment
@@ -308,10 +322,17 @@ pub async fn restore_beads_from_contract(
                 result.comments += 1;
             }
         }
+        // Edge and comment writes advance updated_at (they edit the record);
+        // a restore reconstructs the SOURCE's state, so re-stamp its
+        // timestamps last — else every import would make the copy look newer
+        // than the record it came from and LWW would ping-pong.
+        restore_ts(store, bead, id).await?;
     }
 
     Ok(result)
 }
 
+#[cfg(test)]
+mod edge_sync_tests;
 #[cfg(test)]
 mod tests;
