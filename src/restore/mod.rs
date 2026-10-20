@@ -166,17 +166,6 @@ pub async fn restore_beads_from_contract(
     // for ones we left alone, so a no-op sync stays a no-op.
     let mut restored_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    let str_array = |bead: &Value, key: &str| -> Vec<String> {
-        bead.get(key)
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-
     // Pass 1: beads. Skip any id already present (idempotent, never clobbers).
     for bead in beads {
         let id = bead["id"]
@@ -270,18 +259,7 @@ pub async fn restore_beads_from_contract(
         // won LWW: REPLACE, so a removed edge or a changed type propagates
         // (an insert-only pass could do neither — rosary-664e25). A record
         // written before `dependency_types` existed reads as all-`blocks`.
-        let types = bead.get("dependency_types").and_then(|v| v.as_object());
-        let deps: Vec<(String, String)> = str_array(bead, "dependencies")
-            .into_iter()
-            .map(|dep| {
-                let t = types
-                    .and_then(|m| m.get(&dep))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("blocks")
-                    .to_string();
-                (dep, t)
-            })
-            .collect();
+        let deps = crate::contract_deps::decode(bead);
         store
             .replace_dependencies(id, &deps)
             .await

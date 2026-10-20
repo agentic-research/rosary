@@ -13,7 +13,7 @@ use crate::store::{BeadStore, NewBead};
 
 const REPO: &str = "rosary";
 
-fn store() -> SqliteBeadStore {
+fn edge_store() -> SqliteBeadStore {
     SqliteBeadStore::connect(std::path::Path::new(":memory:")).unwrap()
 }
 
@@ -45,7 +45,7 @@ async fn export(store: &SqliteBeadStore) -> Vec<serde_json::Value> {
         .collect()
 }
 
-async fn sync(from: &SqliteBeadStore, to: &SqliteBeadStore) {
+async fn sync_into(from: &SqliteBeadStore, to: &SqliteBeadStore) {
     restore_beads_from_contract(&export(from).await, to, REPO)
         .await
         .unwrap();
@@ -53,23 +53,23 @@ async fn sync(from: &SqliteBeadStore, to: &SqliteBeadStore) {
 
 /// Two clones holding identical records.
 async fn clones(ids: &[&str]) -> (SqliteBeadStore, SqliteBeadStore) {
-    let a = store();
+    let a = edge_store();
     seed(&a, ids).await;
-    let b = store();
-    sync(&a, &b).await;
+    let b = edge_store();
+    sync_into(&a, &b).await;
     (a, b)
 }
 
 #[tokio::test]
 async fn a_parent_child_edge_survives_the_round_trip() {
-    let a = store();
+    let a = edge_store();
     seed(&a, &["rosary-par001", "rosary-kid001"]).await;
     a.add_dependency_typed("rosary-kid001", "rosary-par001", "parent-child")
         .await
         .unwrap();
 
-    let b = store();
-    sync(&a, &b).await;
+    let b = edge_store();
+    sync_into(&a, &b).await;
 
     assert_eq!(
         b.get_dependencies_typed("rosary-kid001").await.unwrap(),
@@ -90,7 +90,7 @@ async fn an_edge_only_addition_reaches_the_peer() {
         .await
         .unwrap();
 
-    sync(&a, &b).await;
+    sync_into(&a, &b).await;
 
     assert_eq!(
         b.get_dependencies("rosary-aaa001").await.unwrap(),
@@ -104,7 +104,7 @@ async fn an_edge_removal_reaches_the_peer() {
     a.add_dependency("rosary-aaa002", "rosary-bbb002")
         .await
         .unwrap();
-    sync(&a, &b).await;
+    sync_into(&a, &b).await;
     assert_eq!(b.get_dependencies("rosary-aaa002").await.unwrap().len(), 1);
 
     // Back-date A's record again so the removal is the only newer change.
@@ -119,7 +119,7 @@ async fn an_edge_removal_reaches_the_peer() {
         .await
         .unwrap();
 
-    sync(&a, &b).await;
+    sync_into(&a, &b).await;
 
     assert!(
         b.get_dependencies("rosary-aaa002")
@@ -137,7 +137,7 @@ async fn a_comment_only_addition_reaches_the_peer() {
         .await
         .unwrap();
 
-    sync(&a, &b).await;
+    sync_into(&a, &b).await;
 
     let comments = b.list_comments("rosary-ccc001", true).await.unwrap();
     assert_eq!(comments.len(), 1);
@@ -150,7 +150,7 @@ async fn a_comment_only_addition_reaches_the_peer() {
 /// tracked projection doesn't churn on every post-merge import).
 #[tokio::test]
 async fn a_synced_peer_re_exports_identically() {
-    let a = store();
+    let a = edge_store();
     seed(&a, &["rosary-par002", "rosary-kid002"]).await;
     a.add_dependency_typed("rosary-kid002", "rosary-par002", "parent-child")
         .await
@@ -163,8 +163,8 @@ async fn a_synced_peer_re_exports_identically() {
         a.restore_timestamps(id, past, past).await.unwrap();
     }
 
-    let b = store();
-    sync(&a, &b).await;
+    let b = edge_store();
+    sync_into(&a, &b).await;
 
     let strip = |v: Vec<serde_json::Value>| -> Vec<serde_json::Value> {
         v.into_iter()

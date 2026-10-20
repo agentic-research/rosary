@@ -117,7 +117,7 @@ pub async fn migrate_store(
             // add_dependency's existence check would reject (found by the dry
             // run against the live store, 7/237 edges).
             target
-                .restore_dependency(&b.id, &dep, &dep_type)
+                .restore_dependency_typed(&b.id, &dep, &dep_type)
                 .await
                 .with_context(|| format!("copying dependency {} -> {dep}", b.id))?;
             report.dependencies += 1;
@@ -481,9 +481,7 @@ mod tests {
         // it verbatim (restore_dependency).
         let src = store();
         src.create_bead("x", "t", "", 2, "task").await.unwrap();
-        src.restore_dependency("x", "mache-cbf644", "blocks")
-            .await
-            .unwrap();
+        src.restore_dependency("x", "mache-cbf644").await.unwrap();
 
         let tgt = store();
         let report = migrate_store(&src, &tgt, "repo").await.unwrap();

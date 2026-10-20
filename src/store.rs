@@ -449,10 +449,9 @@ pub trait BeadStore: Send + Sync {
 
     // ── Dependencies ──
     async fn add_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()>;
-    /// Add a typed dependency edge: `blocks` (the default `add_dependency`
-    /// records) | `related` | `parent-child` | `discovered-from`. The default
-    /// impl falls back to a plain `blocks` edge so backends that don't yet
-    /// carry a `dep_type` column stay correct.
+    /// Add a typed edge: `blocks` (what `add_dependency` records) | `related` |
+    /// `parent-child` | `discovered-from`. `get_dependencies_typed` reads it
+    /// back for the export renderer (rosary-664e25).
     async fn add_dependency_typed(
         &self,
         issue_id: &str,
@@ -463,18 +462,7 @@ pub trait BeadStore: Send + Sync {
     }
     async fn remove_dependency(&self, issue_id: &str, depends_on_id: &str) -> Result<()>;
     async fn get_dependencies(&self, issue_id: &str) -> Result<Vec<String>>;
-    /// Dependencies WITH their edge type — `(depends_on_id, dep_type)`. The
-    /// export/projection read (one renderer, rosary-664e25): a bare-id read is
-    /// what lost every `parent-child` edge on the contract round-trip. Default
-    /// reports `blocks`, which is exact for backends with no type column.
-    async fn get_dependencies_typed(&self, issue_id: &str) -> Result<Vec<(String, String)>> {
-        Ok(self
-            .get_dependencies(issue_id)
-            .await?
-            .into_iter()
-            .map(|d| (d, "blocks".to_string()))
-            .collect())
-    }
+    async fn get_dependencies_typed(&self, issue_id: &str) -> Result<Vec<(String, String)>>;
     async fn get_dependents(&self, issue_id: &str) -> Result<Vec<String>>;
     /// Containment children — beads linked by a `parent-child` or
     /// `discovered-from` edge. Used by the close-merged containment gate so a

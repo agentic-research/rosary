@@ -61,22 +61,7 @@ pub fn bead_to_contract_value(
     deps: &[(String, String)],
     comments: &[crate::bead::Comment],
 ) -> Value {
-    // ONE ordering for every caller (export, projection, publish, pre-push
-    // compare): sorted by target id, so the line is diff-stable however the
-    // store happened to return the edges.
-    let mut deps: Vec<&(String, String)> = deps.iter().collect();
-    deps.sort();
-    let dep_ids: Vec<&str> = deps.iter().map(|(id, _)| id.as_str()).collect();
-    // The edge TYPE (rosary-664e25). `dependencies` stays a list of ids — the
-    // bd-compatible shape, so a record whose edges are all `blocks` is
-    // byte-identical to before — and any non-default type rides in
-    // `dependency_types`. Without it every `parent-child` edge came back as
-    // `blocks` and the close-merged containment gate saw no children.
-    let dep_types: serde_json::Map<String, Value> = deps
-        .iter()
-        .filter(|(_, t)| t != "blocks")
-        .map(|(id, t)| (id.clone(), Value::String(t.clone())))
-        .collect();
+    let (dep_ids, dep_types) = crate::contract_deps::encode(deps);
     let mut contract = serde_json::json!({
         // --- documented bead JSON contract ---
         "schema_version": BEAD_CONTRACT_SCHEMA_VERSION,
@@ -107,11 +92,7 @@ pub fn bead_to_contract_value(
         "acceptance_criteria": bead.acceptance_criteria,
     });
 
-    if !dep_types.is_empty()
-        && let Value::Object(m) = &mut contract
-    {
-        m.insert("dependency_types".to_string(), Value::Object(dep_types));
-    }
+    crate::contract_deps::attach_types(&mut contract, dep_types);
 
     // Extensions come from the REGISTRY, never a list here (rosary-79393f).
     let full = serde_json::to_value(bead).unwrap_or(Value::Null);
@@ -396,14 +377,8 @@ mod tests {
         for id in ["dep-a", "dep-z", "parent"] {
             store.create_bead(id, id, "", 2, "task").await.unwrap();
         }
-        store
-            .restore_dependency("parent", "dep-z", "blocks")
-            .await
-            .unwrap();
-        store
-            .restore_dependency("parent", "dep-a", "blocks")
-            .await
-            .unwrap();
+        store.restore_dependency("parent", "dep-z").await.unwrap();
+        store.restore_dependency("parent", "dep-a").await.unwrap();
 
         let parent = store.get_bead("parent", "rosary").await.unwrap().unwrap();
         let exported = export_beads_contract_jsonl(&store, &[parent])

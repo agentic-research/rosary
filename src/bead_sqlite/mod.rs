@@ -339,7 +339,22 @@ impl SqliteBeadStore {
     /// `depends_on_id` (the table has no FK), but which `add_dependency`'s
     /// existence check rejects. Inherent, so the bypass stays out of normal
     /// code paths.
+    #[cfg(test)] // production restores are typed (`restore_dependency_typed`)
     pub(crate) async fn restore_dependency(
+        &self,
+        issue_id: &str,
+        depends_on_id: &str,
+    ) -> Result<()> {
+        self.restore_dependency_typed(
+            issue_id,
+            depends_on_id,
+            crate::contract_deps::DEFAULT_DEP_TYPE,
+        )
+        .await
+    }
+
+    /// [`Self::restore_dependency`] with the edge's type (rosary-664e25).
+    pub(crate) async fn restore_dependency_typed(
         &self,
         issue_id: &str,
         depends_on_id: &str,
