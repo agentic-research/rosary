@@ -149,7 +149,7 @@ async fn round_trip(bead: &Bead) -> (Bead, Bead) {
         .unwrap();
 
     let stored = source.get_bead(&bead.id, "rosary").await.unwrap().unwrap();
-    let deps = source.get_dependencies(&bead.id).await.unwrap();
+    let deps = source.get_dependencies_typed(&bead.id).await.unwrap();
     let comments = source.list_comments(&bead.id, true).await.unwrap();
     let exported = crate::import::bead_to_contract_value(&stored, &deps, &comments);
 

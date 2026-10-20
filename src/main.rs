@@ -45,6 +45,7 @@ mod cli;
 mod cloister_provider;
 mod column_rail;
 mod config;
+mod contract_deps;
 mod repo_identity;
 // Test-only: the export/import round-trip property (rosary-c45a35).
 mod context;

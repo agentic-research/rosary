@@ -58,9 +58,10 @@ pub const BEAD_CONTRACT_SCHEMA_VERSION: i64 = 1;
 /// `bd` ignores keys it doesn't recognize.
 pub fn bead_to_contract_value(
     bead: &crate::bead::Bead,
-    deps: &[String],
+    deps: &[(String, String)],
     comments: &[crate::bead::Comment],
 ) -> Value {
+    let (dep_ids, dep_types) = crate::contract_deps::encode(deps);
     let mut contract = serde_json::json!({
         // --- documented bead JSON contract ---
         "schema_version": BEAD_CONTRACT_SCHEMA_VERSION,
@@ -77,7 +78,7 @@ pub fn bead_to_contract_value(
         "dependency_count": bead.dependency_count,
         "dependent_count": bead.dependent_count,
         "comment_count": bead.comment_count,
-        "dependencies": deps,
+        "dependencies": dep_ids,
         "comments": comments,
         // --- rosary-specific extras (lossless rosary round-trip) ---
         "repo": bead.repo,
@@ -91,6 +92,7 @@ pub fn bead_to_contract_value(
         "acceptance_criteria": bead.acceptance_criteria,
     });
 
+    crate::contract_deps::attach_types(&mut contract, dep_types);
     // Extensions come from the REGISTRY, never a list here (rosary-79393f).
     let full = serde_json::to_value(bead).unwrap_or(Value::Null);
     if let Value::Object(m) = &mut contract {
@@ -122,11 +124,10 @@ pub async fn export_beads_contract_jsonl(
     let beads = sorted;
     let mut lines = Vec::with_capacity(beads.len());
     for b in beads {
-        let mut deps = store
-            .get_dependencies(&b.id)
+        let deps = store
+            .get_dependencies_typed(&b.id)
             .await
             .with_context(|| format!("fetching dependencies for {}", b.id))?;
-        deps.sort();
         let comments = store
             .list_comments(&b.id, true)
             .await
@@ -345,7 +346,7 @@ mod tests {
         b.acceptance_criteria = "cargo test green".to_string();
         b.dependency_count = 1;
         b.comment_count = 1;
-        let deps = vec!["rosary-dep001".to_string()];
+        let deps = vec![("rosary-dep001".to_string(), "blocks".to_string())];
         let comments = vec![sample_comment("c1", "rosary-abc123", "looks good", "alice")];
 
         let v = bead_to_contract_value(&b, &deps, &comments);

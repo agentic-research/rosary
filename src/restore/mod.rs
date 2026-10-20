@@ -166,17 +166,6 @@ pub async fn restore_beads_from_contract(
     // for ones we left alone, so a no-op sync stays a no-op.
     let mut restored_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    let str_array = |bead: &Value, key: &str| -> Vec<String> {
-        bead.get(key)
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-
     // Pass 1: beads. Skip any id already present (idempotent, never clobbers).
     for bead in beads {
         let id = bead["id"]
@@ -266,13 +255,16 @@ pub async fn restore_beads_from_contract(
         if !restored_ids.contains(id) {
             continue;
         }
-        for dep in str_array(bead, "dependencies") {
-            store
-                .restore_dependency(id, &dep)
-                .await
-                .with_context(|| format!("restoring dependency {id} -> {dep}"))?;
-            result.dependencies += 1;
-        }
+        // The record's edge set is authoritative for a bead we created or that
+        // won LWW: REPLACE, so a removed edge or a changed type propagates
+        // (an insert-only pass could do neither — rosary-664e25). A record
+        // written before `dependency_types` existed reads as all-`blocks`.
+        let deps = crate::contract_deps::decode(bead);
+        store
+            .replace_dependencies(id, &deps)
+            .await
+            .with_context(|| format!("restoring dependencies of {id}"))?;
+        result.dependencies += deps.len();
         if let Some(comments) = bead.get("comments").and_then(|v| v.as_array()) {
             // Comments are append-only and this pass now also runs for beads
             // updated by LWW, so adding blindly would duplicate every comment
@@ -308,10 +300,17 @@ pub async fn restore_beads_from_contract(
                 result.comments += 1;
             }
         }
+        // Edge and comment writes advance updated_at (they edit the record);
+        // a restore reconstructs the SOURCE's state, so re-stamp its
+        // timestamps last — else every import would make the copy look newer
+        // than the record it came from and LWW would ping-pong.
+        restore_ts(store, bead, id).await?;
     }
 
     Ok(result)
 }
 
+#[cfg(test)]
+mod edge_sync_tests;
 #[cfg(test)]
 mod tests;

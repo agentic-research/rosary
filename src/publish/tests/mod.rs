@@ -409,6 +409,7 @@ fn every_trait_method_is_classified() {
         ("find_by_external_ref", Read),
         ("list_closed_linked_beads", Read),
         ("get_dependencies", Read),
+        ("get_dependencies_typed", Read),
         ("get_dependents", Read),
         ("get_children", Read),
         ("list_comments", Read),
@@ -459,7 +460,7 @@ fn every_trait_method_is_classified() {
     );
     assert_eq!(
         declared.len(),
-        34,
+        35,
         "trait size changed; re-read the classes"
     );
 }

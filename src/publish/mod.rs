@@ -200,6 +200,9 @@ impl BeadStore for PublishingBeadStore {
     async fn get_dependencies(&self, issue_id: &str) -> Result<Vec<String>> {
         self.inner.get_dependencies(issue_id).await
     }
+    async fn get_dependencies_typed(&self, issue_id: &str) -> Result<Vec<(String, String)>> {
+        self.inner.get_dependencies_typed(issue_id).await
+    }
     async fn get_dependents(&self, issue_id: &str) -> Result<Vec<String>> {
         self.inner.get_dependents(issue_id).await
     }
